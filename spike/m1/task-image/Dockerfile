@@ -6,6 +6,7 @@
 #
 # The worker may start the container as an arbitrary uid. Writable state lives
 # under /tmp so git and go work without a home directory owned by that uid.
+# /workspace is the task cwd; mode 1777 lets that uid clone a repo into it.
 #
 # Build:
 #
@@ -17,7 +18,9 @@ RUN apk add --no-cache \
     ca-certificates=20260909-r0 \
     curl=8.22.0-r0 \
     git=2.54.0-r0 \
-    github-cli=2.97.0-r1
+    github-cli=2.97.0-r1 \
+    && mkdir -p /workspace \
+    && chmod 1777 /workspace
 
 ENV HOME=/tmp \
     GOCACHE=/tmp/gocache \
