@@ -10,3 +10,6 @@ spike/*/.work/
 
 # static binary copied into the sidecar build context
 harness/generic-openai/factory-harness
+
+# Session trails and captured command logs. CI re-runs the checks.
+.audit/
