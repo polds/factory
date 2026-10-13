@@ -1,0 +1,34 @@
+# Standard linters plus a few high-signal checks. Formatters run as part of
+# `golangci-lint run`, so `gofmt` and `goimports` are required, not optional.
+#
+# Left off on purpose:
+# - revive, gocritic: no house style yet; enabling them would be noise.
+# - gosec: the harness shells out and reads workspace paths by contract.
+#   Enable it only with a reviewed exclusion list.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - misspell
+    - nilerr
+    - unconvert
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/polds/factory
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
