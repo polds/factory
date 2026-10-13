@@ -12,10 +12,7 @@ import (
 	"time"
 )
 
-const (
-	adapterName = "generic-openai"
-	maxTurns    = 8
-)
+const adapterName = "generic-openai"
 
 const systemPrompt = "You are a coding agent. The working directory is the workspace. Use the tools to complete the task. When you are finished, reply with a short summary and no tool calls. If you cannot complete the task, reply with only this JSON object and no other text: {\"status\":\"failed_by_agent\",\"summary\":\"what failed\"}."
 
@@ -106,6 +103,11 @@ func Run(ctx context.Context, opt Options) int {
 
 	secrets = secretList(task, opt.Env)
 
+	turns, err := maxTurnsFrom(opt.Env)
+	if err != nil {
+		return finish(ExitConfigInvalid, "config_invalid", "FACTORY_MAX_TURNS: "+err.Error())
+	}
+
 	if task.SetupCommand != "" {
 		cmd := exec.CommandContext(ctx, "sh", "-c", task.SetupCommand)
 		cmd.Dir = opt.Workspace
@@ -132,7 +134,7 @@ func Run(ctx context.Context, opt Options) int {
 		if prompt == "" {
 			return finish(ExitConfigInvalid, "config_invalid", "prompt is empty")
 		}
-		code, status, summaryRun := runConversation(ctx, log, box, baseURL, apiKey, model, prompt, secrets)
+		code, status, summaryRun := runConversation(ctx, log, box, baseURL, apiKey, model, prompt, secrets, turns)
 		summary = summaryRun
 		if code != ExitOK {
 			return finish(code, status, summary)
@@ -149,7 +151,7 @@ func Run(ctx context.Context, opt Options) int {
 		if !ok {
 			break
 		}
-		code, status, summaryRun := runConversation(ctx, log, box, baseURL, apiKey, model, next, secrets)
+		code, status, summaryRun := runConversation(ctx, log, box, baseURL, apiKey, model, next, secrets, turns)
 		summary = summaryRun
 		if code != ExitOK {
 			return finish(code, status, summary)
@@ -200,7 +202,7 @@ func pollFollowup(ctx context.Context, runtime string, deadline time.Time) (stri
 	}
 }
 
-func runConversation(ctx context.Context, log *Log, box toolbox, baseURL, apiKey, model, prompt string, secrets []string) (int, string, string) {
+func runConversation(ctx context.Context, log *Log, box toolbox, baseURL, apiKey, model, prompt string, secrets []string, maxTurns int) (int, string, string) {
 	messages := []chatMessage{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: prompt},
