@@ -1,0 +1,1 @@
+agents/implementer/agent.md:1: duplicate agent slug "implementer"

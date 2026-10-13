@@ -1,0 +1,6 @@
+description: Local docker runner
+platform:
+  os: linux
+  arch: x86_64
+  linux:
+    dockerImage: factory-m1-task:dev

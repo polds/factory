@@ -1,0 +1,1 @@
+factory.yaml:6: unknown key "surprise"
