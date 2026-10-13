@@ -1,0 +1,202 @@
+# Single-node factory stack.
+#
+#   cp .env.example .env     # set FACTORY_* and provider keys
+#   docker compose up -d
+#   open http://localhost:8080
+#
+# Profiles:
+#   (default)  factoryd + postgres + minio + one docker-backend worker
+#   oidc       adds Dex for local OIDC login
+#   upstream   swaps our worker for the unmodified MIT oz-agent-worker
+#              (continuous proof that protocol compatibility holds)
+#   otel       adds an OpenTelemetry collector
+#
+# This file is a design artifact: image references are placeholders until M2.
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-factory}
+      POSTGRES_DB: factory
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factory -d factory"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging: *logging
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-factoryadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-factoryadmin}
+    ports:
+      - "9001:9001"          # MinIO console
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging: *logging
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio: { condition: service_healthy }
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+        mc mb --ignore-existing local/factory &&
+        mc anonymous set none local/factory
+      "
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-factoryadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-factoryadmin}
+    restart: "no"
+
+  migrate:
+    image: ghcr.io/polds/factoryd:${FACTORY_VERSION:-dev}
+    depends_on:
+      postgres: { condition: service_healthy }
+    command: ["migrate", "up"]
+    environment:
+      FACTORY_DATABASE_URL: postgres://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory?sslmode=disable
+    restart: "no"
+
+  factoryd:
+    image: ghcr.io/polds/factoryd:${FACTORY_VERSION:-dev}
+    restart: unless-stopped
+    depends_on:
+      postgres:   { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+      migrate:    { condition: service_completed_successfully }
+    ports:
+      - "8080:8080"
+    environment:
+      FACTORY_EXTERNAL_URL: ${FACTORY_EXTERNAL_URL:-http://localhost:8080}
+      FACTORY_DATABASE_URL: postgres://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory?sslmode=disable
+
+      FACTORY_S3_ENDPOINT: http://minio:9000
+      FACTORY_S3_BUCKET: factory
+      FACTORY_S3_ACCESS_KEY: ${S3_ACCESS_KEY:-factoryadmin}
+      FACTORY_S3_SECRET_KEY: ${S3_SECRET_KEY:-factoryadmin}
+      FACTORY_S3_FORCE_PATH_STYLE: "true"
+
+      # Definition source: the bind-mounted tree below.
+      FACTORY_DEFINITION_SOURCE: local
+      FACTORY_DEFINITION_PATH: /definitions/acme-factory
+
+      # Secrets: dev-only provider. Use vault/kubernetes/external-secrets in production.
+      FACTORY_SECRETS_PROVIDER: postgres-encrypted
+      FACTORY_SECRETS_MASTER_KEY: ${FACTORY_SECRETS_MASTER_KEY:?set a 32-byte base64 key}
+
+      # Inference. Set at least one provider or runs cannot start.
+      FACTORY_INFERENCE_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      FACTORY_INFERENCE_OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL: ${LOCAL_MODEL_BASE_URL:-}
+
+      # Forge
+      FACTORY_GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      FACTORY_GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      FACTORY_GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+
+      # Single-user dev login. Replace with the oidc profile for anything shared.
+      FACTORY_AUTH_MODE: ${FACTORY_AUTH_MODE:-dev-single-user}
+      FACTORY_DEV_USER_EMAIL: ${FACTORY_DEV_USER_EMAIL:-dev@localhost}
+
+      FACTORY_WORKER_API_KEY: ${FACTORY_WORKER_API_KEY:?set a worker api key}
+      FACTORY_LOG_LEVEL: ${FACTORY_LOG_LEVEL:-info}
+    volumes:
+      - ../examples:/definitions:ro
+    healthcheck:
+      test: ["CMD", "/factoryd", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  # Data plane. Needs the Docker socket to spawn task containers — this grants
+  # control of the host daemon, so treat this host as one trust domain.
+  worker:
+    image: ghcr.io/polds/factory-worker:${FACTORY_VERSION:-dev}
+    restart: unless-stopped
+    depends_on:
+      factoryd: { condition: service_healthy }
+    command:
+      - --worker-id=local-1
+      - --pool=standard
+      - --backend=docker
+      - --max-concurrent-tasks=2
+      - --web-socket-url=ws://factoryd:8080/api/v1/selfhosted/worker/ws
+      - --server-root-url=http://factoryd:8080
+      - --idle-on-complete=15m
+    environment:
+      FACTORY_API_KEY: ${FACTORY_WORKER_API_KEY:?}
+      OTEL_METRICS_EXPORTER: prometheus
+      OTEL_EXPORTER_PROMETHEUS_HOST: 0.0.0.0
+      OTEL_EXPORTER_PROMETHEUS_PORT: "9464"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - workspaces:/var/lib/factory/workspaces
+    # A worker killed in 30s abandons running agent tasks. Drain instead.
+    stop_grace_period: 10m
+    logging: *logging
+
+  # Protocol-compatibility check: the unmodified MIT worker against factoryd.
+  worker-upstream:
+    profiles: ["upstream"]
+    image: warpdotdev/oz-agent-worker:latest
+    restart: unless-stopped
+    depends_on:
+      factoryd: { condition: service_healthy }
+    command:
+      - --worker-id=upstream-1
+      - --backend=docker
+      - --max-concurrent-tasks=1
+      - --web-socket-url=ws://factoryd:8080/api/v1/selfhosted/worker/ws
+      - --server-root-url=http://factoryd:8080
+    environment:
+      WARP_API_KEY: ${FACTORY_WORKER_API_KEY:?}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    stop_grace_period: 10m
+    logging: *logging
+
+  dex:
+    profiles: ["oidc"]
+    image: dexidp/dex:latest
+    restart: unless-stopped
+    ports:
+      - "5556:5556"
+    volumes:
+      - ./dex/config.yaml:/etc/dex/config.yaml:ro
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    logging: *logging
+
+  otel-collector:
+    profiles: ["otel"]
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    volumes:
+      - ./otel/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4318:4318"
+    logging: *logging
+
+volumes:
+  pgdata:
+  miniodata:
+  workspaces:

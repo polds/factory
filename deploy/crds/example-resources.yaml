@@ -1,0 +1,207 @@
+# CRD-mode equivalent of examples/acme-factory — the cluster as source of truth.
+#
+#   kubectl apply -f deploy/crds/example-resources.yaml
+#   kubectl get factories,factoryagents,workerpools -n factory-payments
+#
+# Convert in either direction:
+#   factoryctl convert ./examples/acme-factory            > manifests.yaml
+#   factoryctl convert --from-cluster -n factory-payments  > definition-tree/
+#
+# Design artifact: the CRDs themselves ship with the operator
+# (`factoryctl crds apply`), not with this file.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: factory-payments
+---
+apiVersion: factory.dev/v1alpha1
+kind: Factory
+metadata:
+  name: acme-payments
+  namespace: factory-payments
+spec:
+  displayName: acme-payments
+  alias: acme
+  codeForges: [GITHUB]
+  repositories:
+    - { codeForge: GITHUB, owner: acme, name: payments-service }
+    - { codeForge: GITHUB, owner: acme, name: payments-docs, deferred: true }
+  credentialStrategy: EXECUTOR
+  agentDefaults:
+    model: auto
+    runner: linux-standard
+    poolRef: { name: standard }
+  inference:
+    default: { provider: anthropic, credentialRef: anthropic-api-key }
+    providers:
+      anthropic: { kind: anthropic, credentialRef: anthropic-api-key }
+      local:     { kind: openai-compatible, baseUrl: http://vllm.internal:8000/v1 }
+  pipeline:
+    stages: [triage, planning, building, reviewing]
+    agents:
+      triage: triage
+      planning: spec
+      building: implementer
+      reviewing: reviewer
+    skip:
+      triage: whenIntakeHasScope
+      planning: whenScopeClear
+    approvals:
+      spec:    { required: true, approvers: "role:editor" }
+      handoff: { required: true, approvers: "role:user" }
+    revisionLimit: 3
+  selfImprovement:
+    failedRunThreshold: 25
+    staleFailureDays: 7
+    reviewerType: admins
+---
+apiVersion: factory.dev/v1alpha1
+kind: Runner
+metadata:
+  name: linux-standard
+  namespace: factory-payments
+spec:
+  factoryRef: { name: acme-payments }
+  description: Standard Linux runner for payments builds and tests
+  setupCommands:
+    - corepack enable
+    - pnpm install --frozen-lockfile
+  instanceShape: { vcpus: 4, memoryGb: 8 }
+  platform:
+    os: linux
+    arch: x86_64
+    linux:
+      dockerImage: ghcr.io/acme/payments-ci:2026-10
+  failureSessionRetentionMinutes: 30
+---
+apiVersion: factory.dev/v1alpha1
+kind: FactoryAgent
+metadata:
+  name: foreman
+  namespace: factory-payments
+spec:
+  factoryRef: { name: acme-payments }
+  agentType: FOREMAN
+  description: Routes payments work from intake to human handoff.
+  model: auto
+  idleTimeoutMinutes: 30
+  secretRefs:
+    - { name: sentry-auth-token, as: SENTRY_AUTH_TOKEN }
+  mcpServers:
+    sentry:
+      url: https://mcp.sentry.internal/sse
+      headers:
+        Authorization: { secretKeyRef: { name: sentry-mcp, key: token } }
+  # Long prompts belong in a ConfigMap: it keeps `kubectl get -o yaml`
+  # readable and GitOps diffs meaningful.
+  instructionsFrom:
+    configMapKeyRef: { name: agent-instructions, key: foreman.md }
+---
+apiVersion: factory.dev/v1alpha1
+kind: FactoryAgent
+metadata:
+  name: reviewer
+  namespace: factory-payments
+spec:
+  factoryRef: { name: acme-payments }
+  agentType: REVIEW
+  description: Adversarial code review. Advisory verdict; humans merge.
+  model: claude-5-5-sonnet-high      # deliberately not the implementer's model
+  spawnableBy: [foreman]
+  requiredRepos:
+    - { codeForge: GITHUB, owner: acme, name: payments-service }
+  instructionsFrom:
+    configMapKeyRef: { name: agent-instructions, key: reviewer.md }
+---
+apiVersion: factory.dev/v1alpha1
+kind: Automation
+metadata:
+  name: issue-labeled
+  namespace: factory-payments
+spec:
+  factoryRef: { name: acme-payments }
+  enabled: true
+  agentRef: { name: foreman }
+  displayName: Labeled issue intake
+  triggers:
+    - provider: github
+      event: issue_labeled
+      filter:
+        repos: [acme/payments-service]
+        labels: [factory-ready]
+        authors: { notIn: [dependabot, renovate] }
+  promptFrom:
+    configMapKeyRef: { name: automation-prompts, key: issue-labeled.md }
+---
+apiVersion: factory.dev/v1alpha1
+kind: Scorer
+metadata:
+  name: tests-run
+  namespace: factory-payments
+spec:
+  factoryRef: { name: acme-payments }
+  description: Did the implementer run the relevant tests before opening the PR?
+  agents: [{ name: implementer }]
+  output: classification
+  labels:
+    - { value: tests_run,     score: 1, description: Test command and its output are present. }
+    - { value: tests_claimed, score: 0, description: PR claims tests pass; transcript shows none. }
+    - { value: tests_skipped, score: 0, description: No test run and none claimed. }
+  passingScore: 1
+  samplingRate: 25
+  model: claude-4-5-haiku
+  selfImprovement: true
+  rubricFrom:
+    configMapKeyRef: { name: scorer-rubrics, key: tests-run.md }
+---
+apiVersion: factory.dev/v1alpha1
+kind: WorkerPool
+metadata:
+  name: standard
+  namespace: factory-payments
+spec:
+  backend: kubernetes
+  platform: { os: linux, arch: x86_64 }
+  replicas: 2
+  maxConcurrentTasks: 8
+  labels: { tier: standard }
+  harnessImages:
+    claude-code: ghcr.io/acme/factory-harness-claude:1.4.0
+    codex:       ghcr.io/acme/factory-harness-codex:1.4.0
+  kubernetesBackend:
+    namespace: factory-runs          # separate from the control plane namespace
+    defaultImage: ghcr.io/acme/payments-ci:2026-10
+    imagePullPolicy: IfNotPresent
+    activeDeadlineSeconds: 28800     # 8h hard stop
+    ttlSecondsAfterFinished: 86400   # keep failed Jobs 24h for diagnosis
+    workspaceSizeLimit: 20Gi
+    unschedulableTimeout: 10m        # longer than node provisioning
+    extraAnnotations:
+      karpenter.sh/do-not-disrupt: "true"
+    podTemplate:
+      serviceAccountName: factory-task
+      nodeSelector: { factory.dev/pool: standard }
+      containers:
+        - name: task                 # this exact name customizes the task container
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits:   { memory: 8Gi }
+---
+# Imperative: create one of these to start work.
+# `kubectl delete` cancels the run (finalizer drains it).
+# Exclude this kind from GitOps pruning.
+apiVersion: factory.dev/v1alpha1
+kind: AgentRun
+metadata:
+  generateName: hotfix-
+  namespace: factory-payments
+spec:
+  factoryRef: { name: acme-payments }
+  agentRef:   { name: foreman }
+  priority: interactive
+  externalRef: { provider: manual, id: INC-4471 }
+  timeoutSeconds: 10800
+  prompt: |
+    The /health endpoint returns 500 after the 2026-10-11 deploy. Find the
+    cause, fix it, add a regression test, and open a pull request.
