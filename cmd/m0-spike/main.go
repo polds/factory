@@ -147,18 +147,111 @@ func (r *result) ok() bool {
 	return !r.heartbeatReq || r.pings > 0
 }
 
-func main() {
-	addr := flag.String("addr", ":8080", "listen address")
-	apiKey := flag.String("api-key", "m0-spike-key", "expected worker bearer token")
-	dockerImage := flag.String("docker-image", "alpine:3.20", "task container image")
-	sidecarImage := flag.String("sidecar-image", "factory-m0-harness:dev", "harness sidecar image mounted at /agent")
-	prompt := flag.String("prompt", "M0 protocol spike: confirm the harness contract is reachable.", "task prompt")
-	timeout := flag.Duration("timeout", 3*time.Minute, "overall deadline")
-	hold := flag.Duration("hold-for-heartbeat", 0,
+// spikeConfig is the parsed CLI. Pointer fields are filled by defineFlags.
+type spikeConfig struct {
+	addr         *string
+	apiKey       *string
+	dockerImage  *string
+	sidecarImage *string
+	prompt       *string
+	timeout      *time.Duration
+	hold         *time.Duration
+	model        *string
+	title        *string
+	taskIDPrefix *string
+	envFile      *string
+	env          *envFlag
+}
+
+func defineFlags(fs *flag.FlagSet) spikeConfig {
+	cfg := spikeConfig{env: &envFlag{}}
+	cfg.addr = fs.String("addr", ":8080", "listen address")
+	cfg.apiKey = fs.String("api-key", "m0-spike-key", "expected worker bearer token")
+	cfg.dockerImage = fs.String("docker-image", "alpine:3.20", "task container image")
+	cfg.sidecarImage = fs.String("sidecar-image", "factory-m0-harness:dev", "harness sidecar image mounted at /agent")
+	cfg.prompt = fs.String("prompt", "M0 protocol spike: confirm the harness contract is reachable.", "task prompt")
+	cfg.timeout = fs.Duration("timeout", 3*time.Minute, "overall deadline")
+	cfg.hold = fs.Duration("hold-for-heartbeat", 0,
 		"after the terminal message, keep the connection open this long to observe a heartbeat ping (the worker's interval is 30s)")
+	cfg.model = fs.String("model", "m0-stub-model", "model id written to agent_config_snapshot.model_id")
+	cfg.title = fs.String("title", "M0 protocol spike", "task title")
+	cfg.taskIDPrefix = fs.String("task-id-prefix", "run_m0_", "prefix for the generated task id")
+	cfg.envFile = fs.String("env-file", "", "dotenv file of KEY=VALUE lines (# comments and blank lines ignored; -env overrides)")
+	fs.Var(cfg.env, "env", "task env KEY=VALUE (repeatable; overrides -env-file; values are never logged)")
+	return cfg
+}
+
+// assignOpts is the input to buildAssignment. Env is caller-supplied and is
+// not mutated; FACTORY_M0_MARKER is always set to the task id.
+type assignOpts struct {
+	Prefix, Title, Prompt, Model, DockerImage, SidecarImage string
+	Env                                                     map[string]string
+}
+
+func buildAssignment(now time.Time, o assignOpts) taskAssignment {
+	now = now.UTC()
+	stamp := now.Format("20060102T150405")
+	taskID := o.Prefix + stamp
+
+	env := make(map[string]string, len(o.Env)+2)
+	for k, v := range o.Env {
+		env[k] = v
+	}
+	// A non-empty prompt fills FACTORY_TASK_PROMPT only when the caller did
+	// not already pass that key (-env / -env-file win).
+	if o.Prompt != "" {
+		if _, exists := env["FACTORY_TASK_PROMPT"]; !exists {
+			env["FACTORY_TASK_PROMPT"] = o.Prompt
+		}
+	}
+	// Stands in for the scoped, short-TTL credentials a real control
+	// plane mints per run (docs/11-security-model.md). The spike's
+	// harness asserts it arrives, proving the injection path works.
+	// Always the task id, even if the caller tried to set the marker.
+	env["FACTORY_M0_MARKER"] = taskID
+
+	model := o.Model
+	base := o.Prompt
+	return taskAssignment{
+		TaskID:      taskID,
+		ExecutionID: "exec_" + stamp,
+		Task: &task{
+			ID:         taskID,
+			Title:      o.Title,
+			Definition: taskDefinition{Prompt: o.Prompt},
+			CreatedAt:  now,
+			UpdatedAt:  now,
+			AgentConfigSnapshot: &agentConfigSnapshot{
+				BasePrompt: &base,
+				ModelID:    &model,
+			},
+		},
+		DockerImage:   o.DockerImage,
+		SidecarImage:  o.SidecarImage,
+		EnvVars:       env,
+		InstanceShape: &instanceShape{Vcpus: 2, MemoryGb: 4},
+	}
+}
+
+func main() {
+	cfg := defineFlags(flag.CommandLine)
 	flag.Parse()
 
-	res := &result{done: make(chan struct{}), heartbeatReq: *hold > 30*time.Second}
+	envVars, err := mergeEnv(*cfg.envFile, cfg.env.m)
+	if err != nil {
+		log.Fatalf("env: %v", err)
+	}
+	opts := assignOpts{
+		Prefix:       *cfg.taskIDPrefix,
+		Title:        *cfg.title,
+		Prompt:       *cfg.prompt,
+		Model:        *cfg.model,
+		DockerImage:  *cfg.dockerImage,
+		SidecarImage: *cfg.sidecarImage,
+		Env:          envVars,
+	}
+
+	res := &result{done: make(chan struct{}), heartbeatReq: *cfg.hold > 30*time.Second}
 
 	// gorilla's default ping handler replies with a pong automatically. The
 	// worker's heartbeat is a WebSocket PING control frame every 30s (not a
@@ -174,7 +267,7 @@ func main() {
 	mux.HandleFunc("/api/v1/selfhosted/worker/ws", func(w http.ResponseWriter, r *http.Request) {
 		// The worker authenticates on the upgrade request and declares its
 		// identity as a query parameter: ?worker_id=<id>.
-		if got := r.Header.Get("Authorization"); got != "Bearer "+*apiKey {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+*cfg.apiKey {
 			log.Printf("auth: rejected upgrade (authorization=%q)", redact(got))
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -212,7 +305,7 @@ func main() {
 			return prev(appData)
 		})
 
-		serve(conn, workerID, res, *dockerImage, *sidecarImage, *prompt, *hold)
+		serve(conn, workerID, res, opts, *cfg.hold)
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -220,14 +313,14 @@ func main() {
 	})
 
 	srv := &http.Server{
-		Addr:              *addr,
+		Addr:              *cfg.addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {
-		log.Printf("m0-spike listening on %s", *addr)
-		log.Printf("point a worker at: ws://127.0.0.1%s/api/v1/selfhosted/worker/ws", *addr)
+		log.Printf("m0-spike listening on %s", *cfg.addr)
+		log.Printf("point a worker at: ws://127.0.0.1%s/api/v1/selfhosted/worker/ws", *cfg.addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("listen: %v", err)
 		}
@@ -238,8 +331,8 @@ func main() {
 
 	select {
 	case <-res.done:
-	case <-time.After(*timeout):
-		log.Printf("timeout after %s", *timeout)
+	case <-time.After(*cfg.timeout):
+		log.Printf("timeout after %s", *cfg.timeout)
 	case <-ctx.Done():
 		log.Printf("interrupted")
 	}
@@ -255,37 +348,9 @@ func main() {
 }
 
 // serve assigns one task on the established connection and reads until a
-// terminal message arrives.
-func serve(conn *websocket.Conn, workerID string, res *result, dockerImage, sidecarImage, prompt string, hold time.Duration) {
-	now := time.Now().UTC()
-	taskID := "run_m0_" + now.Format("20060102T150405")
-	model := "m0-stub-model"
-	base := prompt
-
-	assignment := taskAssignment{
-		TaskID:      taskID,
-		ExecutionID: "exec_" + now.Format("20060102T150405"),
-		Task: &task{
-			ID:         taskID,
-			Title:      "M0 protocol spike",
-			Definition: taskDefinition{Prompt: prompt},
-			CreatedAt:  now,
-			UpdatedAt:  now,
-			AgentConfigSnapshot: &agentConfigSnapshot{
-				BasePrompt: &base,
-				ModelID:    &model,
-			},
-		},
-		DockerImage:  dockerImage,
-		SidecarImage: sidecarImage,
-		EnvVars: map[string]string{
-			// Stands in for the scoped, short-TTL credentials a real control
-			// plane mints per run (docs/11-security-model.md). The spike's
-			// harness asserts it arrives, proving the injection path works.
-			"FACTORY_M0_MARKER": taskID,
-		},
-		InstanceShape: &instanceShape{Vcpus: 2, MemoryGb: 4},
-	}
+// terminal message arrives. The log line lists env keys, never values.
+func serve(conn *websocket.Conn, workerID string, res *result, o assignOpts, hold time.Duration) {
+	assignment := buildAssignment(time.Now().UTC(), o)
 
 	if err := writeMessage(conn, msgTaskAssignment, assignment); err != nil {
 		log.Printf("assign: %v", err)
@@ -295,7 +360,8 @@ func serve(conn *websocket.Conn, workerID string, res *result, dockerImage, side
 	res.mu.Lock()
 	res.assigned = true
 	res.mu.Unlock()
-	log.Printf("assigned task_id=%s image=%s sidecar=%s", taskID, dockerImage, sidecarImage)
+	log.Printf("assigned task_id=%s image=%s sidecar=%s env_keys=%v",
+		assignment.TaskID, assignment.DockerImage, assignment.SidecarImage, sortedKeys(assignment.EnvVars))
 
 	for {
 		_, raw, err := conn.ReadMessage()
