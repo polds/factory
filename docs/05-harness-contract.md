@@ -231,7 +231,8 @@ OpenAI-compatible stub. They do not call a vendor.
 | Model endpoint | `OPENAI_BASE_URL` + `/chat/completions`. `OPENAI_API_KEY` if set |
 | Runtime directory | `FACTORY_RUNTIME_DIR`, default `/var/run/factory` |
 | Follow-up | While `--idle-on-complete` is a positive duration, read `{runtime}/followup.json` as `{"prompt":"..."}` |
-| Agent-reported failure | The whole assistant message is `{"status":"failed_by_agent","summary":"..."}`. Exit 10. Stopping after 8 model turns uses the same code: the task did not finish, and the provider and the setup command did not fail |
+| Turn budget | FACTORY_MAX_TURNS, default 8, range 1..200. Invalid is code 20 |
+| Agent-reported failure | The whole assistant message is `{"status":"failed_by_agent","summary":"..."}`. Exit 10. Exhausting the turn budget uses the same code: the task did not finish, and the provider and the setup command did not fail |
 | Other `--harness` values | Exit 20. `claude-code` is not in this build |
 
 `bash`, `read`, `write`, `edit`, `grep`, and `glob` are the tool set. `write` and
