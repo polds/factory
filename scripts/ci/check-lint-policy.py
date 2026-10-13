@@ -15,7 +15,20 @@ for line in editorconfig.splitlines():
         errors.append(f"editorconfig section uses a brace glob: {stripped}")
 
 workflow = (root / ".github" / "workflows" / "ci.yml").read_text()
-printer_flags = ("-i", "-ci", "-bn", "-sr", "-kp", "-fn", "--indent", "--case-indent", "--binary-next-line", "--space-redirects", "--keep-padding", "--func-next-line")
+printer_flags = (
+    "-i",
+    "-ci",
+    "-bn",
+    "-sr",
+    "-kp",
+    "-fn",
+    "--indent",
+    "--case-indent",
+    "--binary-next-line",
+    "--space-redirects",
+    "--keep-padding",
+    "--func-next-line",
+)
 for line in workflow.splitlines():
     if "shfmt" not in line:
         continue
