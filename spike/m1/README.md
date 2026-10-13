@@ -19,7 +19,7 @@ Offline needs Docker, Go, git, and curl. Live also needs `gh` and:
 | `OPENAI_API_KEY` | no | Sent only when set |
 | `M1_REPO` | no | Default `polds/factory` |
 
-Scratch (binaries, logs, the bare repo) is `spike/m1/.work/`, which is gitignored.
+Scratch (binaries, logs, the bare repo, the event archive) is `spike/m1/.work/`, which is gitignored.
 
 ## What each mode publishes
 
@@ -84,8 +84,10 @@ the file, and the harness splits that value on newlines.
 
 Tool subprocesses still receive `GH_TOKEN` (they have to push). They do not
 receive `OPENAI_API_KEY` or `FACTORY_SECRET_VALUES`. After the run, `run.sh`
-greps the worker log, the server log, and the offline helper logs for every
-token value. A match is a failure and the logs are not printed.
+greps the worker log, the server log, the offline helper logs, and
+`spike/m1/.work/evidence/events.ndjson` for every token value. A match is a
+failure, the logs are not printed, and the evidence directory is removed so
+the live workflow does not upload it.
 
 Offline uses a dummy `OPENAI_API_KEY` (`m1-offline-dummy-7f3c9a`) so that
 scan has something to look for. The scripted commands never include it.
@@ -95,9 +97,25 @@ scan has something to look for. The scripted commands never include it.
 - The clean-tree line: `built worker from <sha> — clean tree, no local modifications`.
 - The `m0-spike` verdict block in the server log (`task_completed`).
 - Harness lines (`factory-harness:`) from the worker log.
+- `spike/m1/.work/evidence/events.ndjson`, the harness event log.
 - Offline: `git --git-dir=spike/m1/.work/git/remote.git show m1-run:greet/greet.go`.
 - Live: the printed PR URL.
 
+The harness writes that NDJSON at `/var/run/factory/events.ndjson` inside the
+task container. The worker config sets `cleanup: true`, which removes the
+container when the task ends, so `run.sh` bind-mounts
+`spike/m1/.work/runtime` at `/var/run/factory` and copies the file to
+`spike/m1/.work/evidence/events.ndjson` afterwards. Both modes do this. The
+worker log still keeps the `factory-harness:` and `[harness]` stderr lines;
+those lines are the human-readable mirror, and the archive is the NDJSON
+file from the mount.
+
+`.github/workflows/m1-live.yml` uploads `spike/m1/.work/evidence/`
+(`actions/upload-artifact` v7.0.2, `if: always()`, 30-day retention). The
+path sits under the hidden `.work` directory, so the step sets
+`include-hidden-files: true`.
+
 The script exits non-zero if the worker tree is dirty, if `m0-spike` does not
 report `task_completed`, if the offline branch was not pushed, if the live PR
-URL is empty, or if a secret value appears in the logs.
+URL is empty, if `events.ndjson` was not archived, or if a secret value
+appears in the logs or in that file.

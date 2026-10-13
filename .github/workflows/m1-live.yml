@@ -9,6 +9,9 @@
 #   M1_OPENAI_BASE_URL   OpenAI-compatible endpoint (OPENAI_BASE_URL)
 #   M1_OPENAI_API_KEY    optional; omit the secret to run without a key
 #   M1_GH_TOKEN          fine-grained PAT, fixture repo only (GH_TOKEN)
+#
+# actions: write lets this workflow upload spike/m1/.work/evidence/.
+# contents stays read-only; this workflow does not push.
 name: m1-live
 
 on:
@@ -26,6 +29,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 defaults:
   run:
@@ -53,3 +57,13 @@ jobs:
           M1_MODEL: ${{ inputs.model }}
           M1_REPO: ${{ inputs.repo }}
         run: MODE=live ./spike/m1/run.sh
+      # .work is a hidden directory, so the upload must opt in.
+      - name: Upload harness event archive
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: m1-harness-events
+          path: spike/m1/.work/evidence/
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: error
