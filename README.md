@@ -12,8 +12,11 @@ Target operating modes, all from one definition:
 | Self-hosted cloud | Helm chart: control plane + operator + worker pools |
 | Cloud-native | Kubernetes CRDs (`factory.dev/v1alpha1`) reconciled by an operator |
 
-**Status: design only.** No implementation in this repo yet. `docs/12-build-sequence.md`
-is the proposed order of work.
+**Status.** The design is in `docs/`. M0, the protocol spike, is done
+([`spike/m0`](spike/m0)). M1 has started: [`cmd/factory-harness`](cmd/factory-harness)
+is the `generic-openai` adapter, and `factoryctl harness verify` checks it.
+The `claude-code` adapter and a run that opens a pull request are still open.
+[`docs/12-build-sequence.md`](docs/12-build-sequence.md) is the order of work.
 
 ---
 

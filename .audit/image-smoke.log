@@ -1,0 +1,5 @@
+factory-harness: ignoring positional argument agent
+factory-harness: ignoring positional argument run
+factory-harness: skipped initial turn
+image smoke: skipped initial turn
+SMOKE_EXIT:0

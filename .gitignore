@@ -7,3 +7,6 @@ spike/*/.work/
 
 # stray go build output at repo root
 /m0-spike
+
+# static binary copied into the sidecar build context
+harness/generic-openai/factory-harness
