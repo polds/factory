@@ -1,0 +1,9 @@
+# spike scratch: cloned upstream worker, built binaries, logs
+spike/*/.work/
+
+# build output
+/bin/
+*.test
+
+# stray go build output at repo root
+/m0-spike

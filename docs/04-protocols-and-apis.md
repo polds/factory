@@ -1,0 +1,338 @@
+# 04 — Protocols and APIs
+
+Three interfaces: the **worker protocol** (control plane ↔ data plane), the **REST + SSE
+API** (clients ↔ control plane), and the **MCP endpoint** (external coding agents ↔
+factory).
+
+---
+
+## 1. Worker protocol
+
+Wire-compatible with the observed `oz-agent-worker` protocol (O3), so an
+unmodified MIT worker can serve a self-hosted control plane (O2).
+
+### Transport
+
+```
+WebSocket   <scheme>://<host>/api/v1/selfhosted/worker/ws?worker_id=<id>
+Auth        Authorization: Bearer <worker-api-key>      (upgrade request headers)
+Heartbeat   worker → server PING control frame every 30s; server MUST pong
+            within PongWait (60s) or the worker drops the connection
+Reconnect   exponential backoff, 1s → 60s cap, reset on success
+Envelope    {"type": "<message_type>", "data": { … }}
+Client lib  gorilla/websocket
+```
+
+> **The heartbeat is a ping frame, not a message.** The worker's type enum declares a
+> `heartbeat` constant, but liveness is implemented as `conn.WriteControl(PingMessage, …)`
+> — see [01 · O3](01-evidence-and-provenance.md#o3--the-workerserver-protocol-is-six-json-messages-plus-a-ping).
+> Most server libraries pong automatically; if yours does not, every worker will
+> disconnect after 60 seconds. The M0 spike asserts one ping/pong exchange precisely so
+> this cannot regress silently.
+
+Server identifies the worker by the key's team scope plus the `worker_id` the worker
+declares. Worker IDs prefixed `warp` are reserved upstream; we reserve `factory` and
+refuse to start on a collision — the same guard, renamed.
+
+Multiple worker processes **may share one `worker_id`** for load balancing. The scheduler
+therefore treats `worker_id` as a routing label and `connection_id` as the identity of a
+process, which is why `workers.pool` exists in the schema
+([02](02-architecture.md#core-tables)).
+
+### Messages
+
+**Server → worker**
+
+`task_assignment`
+```jsonc
+{
+  "task_id": "run_01J…",          // logical run; stable across follow-ups
+  "execution_id": "exec_01J…",    // this concrete launch
+  "task": {
+    "id": "run_01J…",
+    "title": "Fix broken doc link",
+    "task_definition": { "prompt": "…" },
+    "created_at": "2026-10-12T19:00:00Z",
+    "updated_at": "2026-10-12T19:00:00Z",
+    "owner": { "Type": "TEAM", "Id": 42 },        // USER | TEAM
+    "agent_conversation_id": "conv_01J…",
+    "agent_config_snapshot": {
+      "environment_id": "env_01J…",
+      "base_prompt": "…",
+      "model_id": "claude-5-sonnet-high",
+      "profile_id": "prof_01J…",
+      "skill_spec": "…",
+      "mcp_servers": { "sentry": { /* opaque to the worker */ } },
+      "computer_use_enabled": true,
+      "computer_use_model_id": "claude-5-sonnet-high",
+      "idle_timeout_minutes": 15,
+      "harness": { "type": "claude" },
+      "harness_auth_secrets": { "claude_auth_secret_name": "ANTHROPIC_API_KEY" },
+      "inference_providers": {
+        "aws": { "disabled": false, "role_arn": "arn:…", "region": "us-west-2" }
+      },
+      "session_sharing": { "public_access": "VIEWER" },   // VIEWER | EDITOR
+      "snapshot_disabled": false,
+      "snapshot_upload_timeout_secs": 300,
+      "snapshot_script_timeout_secs": 120,
+      "repository_head_overrides": [
+        {
+          "code_forge": "GITHUB", "repo_owner": "acme", "repo_name": "payments-docs",
+          "head": { "type": "COMMIT_SHA", "value": "0123…4567" },
+          "clone_from": { "code_forge": "GITHUB", "owner": "acme-bench", "repo": "payments-docs" },
+          "preserve_origin": true
+        }
+      ]
+    }
+  },
+  "docker_image": "ghcr.io/acme/payments-ci:2026-10",
+  "sidecar_image": "ghcr.io/acme/factory-harness-claude:1.4.0",
+  "additional_sidecars": [
+    { "image": "ghcr.io/acme/toolbox:1", "mount_path": "/mnt/toolbox", "read_write": false }
+  ],
+  "env_vars": { "GITHUB_ACCESS_TOKEN": "…", "FACTORY_API_KEY": "…" },
+  "additional_oz_args": ["--skill", "repository-conventions"],
+  "instance_shape": { "vcpus": 4, "memory_gb": 8 },
+  "telemetry_collection": {
+    "endpoint": "https://otel.internal:4318",
+    "tracing_enabled": true, "logging_enabled": true,
+    "bootstrap_token": { "token": "…", "expires_at": "2026-10-12T20:00:00Z" }
+  }
+}
+```
+
+`task_cancellation` — `{"task_id": "run_01J…"}`
+
+**Worker → server**
+
+| Message | Payload | Meaning |
+| --- | --- | --- |
+| `task_claimed` | `{task_id, worker_id}` | Accepted; server marks assigned |
+| `task_completed` | `{task_id, execution_id, message, task_state?}` | Agent process exited 0 |
+| `task_failed` | `{task_id, execution_id, message, task_state?, failure_reason, exit_code, failure_details?}` | Launch or run failed |
+| `task_rejected` | `{task_id, reason}` | **Requeue, do not fail** (O4) |
+
+Liveness is the ping frame described above, not a row in this table.
+
+`exit_code` is normalized to `128+signal`. `failure_details.kubernetes` carries a bounded,
+privacy-filtered snapshot: `schema_version`, `observation_source`, `observed_at`, Job
+(name/uid/conditions), Pod (name/uid/phase/reason/deletion_timestamp/conditions),
+Container (kind/name/state/waiting_reason/termination_reason/raw_exit_code/
+normalized_exit_code/signal/started_at/finished_at), Events (type/reason/count/first and
+last observed), and `truncated`.
+
+**Design rule:** keep `failure_reason` orthogonal to agent outcome. A run that fails
+because a pod was evicted is not a quality signal, and scorers must never sample it.
+This is why scorer eligibility filters on `failure_reason == null`
+([08](08-measure-and-self-improvement.md)).
+
+### Server obligations
+
+1. Never assign to a worker whose heartbeat is older than 90 s.
+2. On `task_rejected`, requeue with `attempts++` and no failure record.
+3. On missing terminal message past the lease, requeue as a **new `execution_id`** and mark
+   the prior execution `orphaned` — never reuse an execution ID.
+4. Treat `env_vars` as secret-bearing: redact in logs, never persist, mint short-TTL
+   values ([11](11-security-model.md)).
+5. Accept terminal messages idempotently — a worker may retry after a reconnect.
+
+### Native mode (protocol v2)
+
+`factory-worker` adds a `factory` mode with three additions, negotiated by a
+`protocol_version` field the upstream worker simply omits:
+
+- `run_event` (worker → server): streams NDJSON harness events during the run instead of
+  only at terminal state, so the console gets live transcript without polling
+  ([09](09-web-console.md)).
+- `capacity_report` (worker → server): pool labels, platform, in-flight count, and free
+  slots, so the scheduler stops guessing.
+- `task_steer` (server → worker): injects a follow-up turn or interrupt into a live
+  session — the "attach for steering" capability.
+
+A v1 worker loses live events and steering, keeps everything else.
+
+---
+
+## 2. REST API
+
+`/api/v1`, JSON, `application/problem+json` for errors. Bearer tokens (service account
+keys) or OIDC access tokens. `X-Factory-Team` header scopes multi-tenant deployments.
+
+The shape follows the observed Oz Agent API (O9) because it is a reasonable
+decomposition and because matching it lets existing SDK-shaped tooling port.
+
+### Factories and definitions
+
+```
+GET    /factory                             list (by name or alias, paginated)
+POST   /factory                             create
+GET    /factory/{uid}
+PATCH  /factory/{uid}
+GET    /factory/{uid}/definition            current applied tree + git sha
+POST   /factory/{uid}/definition:validate   dry-run a tree, returns per-file diagnostics
+POST   /factory/{uid}/definition:apply      apply atomically
+GET    /factory-files/schemas               supported versions + current
+GET    /factory-files/schemas/{version}     all documents, keyed by name
+GET    /factory-files/schemas/{version}/{document}
+```
+
+Schema endpoints are **unauthenticated** — they are public contract, and requiring auth
+breaks editor integration for exactly the people you want validating before they push.
+
+### Work items and runs
+
+```
+GET    /factory/{uid}/tasks                 work items (filter: stage, status, source)
+POST   /factory/{uid}/tasks                 create a work item (intake)
+GET    /factory/{uid}/tasks/{task_uid}
+POST   /factory/{uid}/tasks/{task_uid}/cancel
+GET    /factory/{uid}/task-by-conversation  resolve by conversation id
+GET    /factory/{uid}/task-by-run           resolve by run id
+GET    /factory/{uid}/runs                  runs within a factory
+
+POST   /agent/run                           start a single run (no work item)
+GET    /agent/runs                          list (filter: agent, status, worker, model)
+GET    /agent/runs/{runId}
+POST   /agent/runs/{runId}/cancel
+POST   /agent/runs/{runId}/interrupt        stop the current turn, keep the session
+POST   /agent/runs/{runId}/followups        queue an additional turn
+GET    /agent/runs/{runId}/transcript
+GET    /agent/runs/{runId}/timeline         stage/event summary
+GET    /agent/runs/{runId}/conversation     structured turns + tool calls
+GET    /agent/runs/{runId}/harness-usage    tokens, cost, per-model breakdown
+GET    /agent/run-by-external-reference     resolve by (provider, external id)
+```
+
+`run-by-external-reference` is what makes integrations idempotent: a Slack thread or a
+Linear issue maps to one run, so a redelivered webhook continues the conversation instead
+of starting a parallel one. Getting this wrong produces duplicate agents arguing in one
+thread, which is the most visible failure mode of this product class.
+
+### Approvals (new)
+
+```
+GET    /factory/{uid}/approvals             pending gates (the inbox query)
+POST   /approvals/{id}:decide               {decision: approve|reject, note}
+```
+
+Not present upstream because upstream's gates are prompt-resident
+([03](03-definition-schema.md#deviation-declarative-pipeline)). Declarative gates need an
+API or they cannot be actioned outside the console.
+
+### Schedules, identities, infrastructure
+
+```
+GET|POST       /agent/schedules
+GET|PATCH|DEL  /agent/schedules/{id}
+POST           /agent/schedules/{id}/pause | /resume
+GET|POST       /agent/identities            non-human identity per agent
+GET|PATCH|DEL  /agent/identities/{uid}
+GET            /agent/environments          image + repo + setup definitions
+GET            /agent/models                catalog available to this deployment
+GET            /agent/connected-self-hosted-workers
+GET            /agent/artifacts/{uid}       metadata
+GET            /agent/artifacts/{uid}/download
+GET            /agent/conversations/{id}/screenshots/{uid}/download
+GET            /networking/egress-ranges    this deployment's egress CIDRs
+```
+
+`/networking/egress-ranges` exists so an operator can allowlist the factory in downstream
+firewalls. Self-hosted, it reports your worker pools' egress addresses as configured —
+which only you can know, so it is operator-declared rather than computed.
+
+### Scoring and benchmarks (new surface)
+
+```
+POST   /agent/runs/{runId}/score            on-demand score with one scorer
+GET    /factory/{uid}/scorers/{id}/results
+POST   /factory/{uid}/benchmarks/{suite}:run
+GET    /factory/{uid}/benchmarks/{suite}/trials
+GET    /factory/{uid}/improvement-batches
+POST   /factory/{uid}/improvement:run-now
+```
+
+---
+
+## 3. Event stream
+
+Live run output over **SSE** at:
+
+```
+GET /api/v1/agent/runs/{runId}/events?from_seq=<n>
+Accept: text/event-stream
+```
+
+(The byte scan found `/api/v1/agent/events/stream` in the Warp client — O13 —
+but its payload shape is unknown (U1), so this is specified from first principles rather
+than imitated.)
+
+Events are an **append-only, monotonically sequenced** log per run, persisted in
+`run_events`. `from_seq` makes reconnection exact: a console that drops its connection
+resumes without gaps or duplicates. Polling a transcript endpoint cannot give that.
+
+```
+event: run.status      {seq, status: queued|assigned|running|…, worker_id}
+event: turn.started    {seq, turn, model_id}
+event: message.delta   {seq, turn, role, text}
+event: tool.call       {seq, turn, tool, input_digest, redacted_input}
+event: tool.result     {seq, turn, tool, ok, duration_ms, output_digest}
+event: skill.read      {seq, skill_path | bundled_skill_id}
+event: file.changed    {seq, path, additions, deletions}
+event: screenshot      {seq, artifact_uid}
+event: approval.requested {seq, gate, work_item_id}
+event: usage           {seq, model_id, input_tokens, output_tokens, cost_cents}
+event: run.terminal    {seq, status, failure_reason?, exit_code?}
+```
+
+`tool.call` carries a **digest plus a redacted rendering**, never raw input. Tool inputs
+routinely contain secrets, and an audit log that leaks them is worse than no audit log.
+
+`skill.read` distinguishes `bundled_skill_id` from `skill_path` deliberately: usage
+attribution for team-owned skills is only meaningful if platform-bundled reads are
+excluded, and a path alone does not identify an owner
+([07](07-integrations-and-webhooks.md#skills)).
+
+Aggregate stream for dashboards: `GET /api/v1/factory/{uid}/events` — same envelope,
+multiplexed, with `run_id` on every event.
+
+---
+
+## 4. MCP endpoint
+
+`factoryd` exposes an MCP server at `/api/v1/mcp/factory` (the path the byte scan
+suggests upstream uses — O13; our tool surface is our own) so any MCP-capable
+coding agent can use a factory as a tool:
+
+| Tool | Purpose |
+| --- | --- |
+| `factory_send_work` | Create a work item and return its id |
+| `factory_get_status` | Work item stage, runs, blocking gate |
+| `factory_get_findings` | Review findings for a work item |
+| `factory_reply` | Answer a question the factory asked |
+| `factory_schema` | Fetch the definition JSON Schemas |
+| `factory_validate` | Validate a definition tree |
+
+This is the integration path for agents that cannot be a factory's execution host but
+should be able to **exchange work with one** — a local Claude Code session handing a task
+to the factory and polling for the PR.
+
+---
+
+## 5. Authentication
+
+| Principal | Mechanism |
+| --- | --- |
+| Human (console) | OIDC authorization code + PKCE; Dex in the compose profile |
+| Human (CLI) | Device-code flow: `POST /api/v1/oauth/device/auth` → poll `POST /api/v1/oauth/token` |
+| Worker | Long-lived worker API key, team-scoped, `Bearer` on the WS upgrade |
+| Service account | API key, scoped to a factory and a role |
+| Agent (non-human identity) | Per-agent identity, short-TTL token minted per run ([11](11-security-model.md)) |
+
+Device-code is chosen because the byte scan shows the real client uses it (O13)
+and because it is the correct flow for a terminal tool — no loopback listener, works over
+SSH.
+
+Worker keys are the highest-value credential in the system: a key holder can receive task
+assignments containing scoped repo tokens. They are therefore separately scoped from user
+keys, rotatable without downtime (overlapping validity), and bound to a pool so a leaked
+key cannot drain another pool's queue.
