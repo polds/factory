@@ -55,8 +55,13 @@ Three things the spike established that are easy to get wrong:
 1. **`agent run` arrives as leading positional arguments**, before any flag — the worker
    invokes the agent CLI's subcommand path. A harness that assumes argv starts with a flag
    fails immediately. Accept and ignore unrecognized positionals.
-2. **A flag may arrive with an empty value.** `--idle-on-complete ''` appears when neither
-   the task nor the worker sets a timeout. Treat empty as absent, not as a parse error.
+2. **`--idle-on-complete` may arrive with no value.** Upstream
+   `AugmentArgsForTask` appends a bare `--idle-on-complete` when neither the task nor the
+   worker sets a duration (`oz-agent-worker` `63dbb8a`, test "uses oz cli default"). An
+   empty following argument is also accepted. In this harness both mean absent: the
+   process exits when the conversation ends. `0s` and `0m` mean the same thing. A
+   positive duration stays alive for a follow-up. The proprietary `oz` CLI's 45m default
+   belongs to that CLI, and waiting it here would hang every unmodified worker.
 3. **The task container's working directory is `/workspace`** and the harness is mounted
    read-only at `/agent`.
 
@@ -184,8 +189,9 @@ expressible — and the visual evidence attached to a PR is the output.
 
 ## Conformance
 
-A harness image is conformant if it passes `factoryctl harness verify <image>`, which runs
-a fixture suite in a throwaway container:
+A harness is conformant if `factoryctl harness verify --bin <factory-harness>` passes.
+The suite runs the binary directly. [`harness/generic-openai/smoke.sh`](../harness/generic-openai/smoke.sh)
+checks that the sidecar image starts.
 
 1. Accepts every flag in the table above, ignoring unknown flags with a warning.
 2. Emits well-formed NDJSON with monotonic timestamps and a single `terminal` event.
@@ -194,7 +200,46 @@ a fixture suite in a throwaway container:
    model, unreachable provider, failing setup command.
 5. Honors `--skip-initial-turn` and `--idle-on-complete` (process stays alive, accepts a
    follow-up, then exits).
-6. Writes no files outside `/workspace` and `/var/run/factory`.
+6. Writes no files outside `/workspace` and `/var/run/factory`. The suite checks
+   `write` and `edit`. `bash` is not jailed in the process. The task container is that
+   boundary.
 
 Conformance is a test suite rather than prose because "bring your own harness" is only
 real if there is a way to prove a harness works before it runs on production work.
+
+## Shipped adapter
+
+`cmd/factory-harness` is the `generic-openai` adapter. The sidecar image that an
+unmodified worker mounts at `/agent` is [`harness/generic-openai`](../harness/generic-openai).
+Build it with `CGO_ENABLED=0` so the binary runs in an Alpine task image.
+`cmd/factoryctl` runs the conformance suite:
+
+```bash
+go build -o bin/factory-harness ./cmd/factory-harness
+go build -o bin/factoryctl ./cmd/factoryctl
+./bin/factoryctl harness verify --bin ./bin/factory-harness
+```
+
+`verify` exits 0 only when every case below passes. The cases use a local
+OpenAI-compatible stub. They do not call a vendor.
+
+| Input | Behavior |
+| --- | --- |
+| Prompt | `task.json` field `prompt`, otherwise `FACTORY_TASK_PROMPT` |
+| Secrets | `task.json` `secrets`, plus newline-separated `FACTORY_SECRET_VALUES` |
+| Setup | `task.json` `setup_command`. Non-zero exit is code 30 |
+| Model endpoint | `OPENAI_BASE_URL` + `/chat/completions`. `OPENAI_API_KEY` if set |
+| Runtime directory | `FACTORY_RUNTIME_DIR`, default `/var/run/factory` |
+| Follow-up | While `--idle-on-complete` is a positive duration, read `{runtime}/followup.json` as `{"prompt":"..."}` |
+| Agent-reported failure | The whole assistant message is `{"status":"failed_by_agent","summary":"..."}`. Exit 10. Stopping after 8 model turns uses the same code: the task did not finish, and the provider and the setup command did not fail |
+| Other `--harness` values | Exit 20. `claude-code` is not in this build |
+
+`bash`, `read`, `write`, `edit`, `grep`, and `glob` are the tool set. `write` and
+`edit` refuse a path outside the workspace. `bash` is not jailed by the process.
+The task container is that boundary. Tool subprocesses do not receive
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FACTORY_SECRET_VALUES`, or names listed in
+`task.json` `harness_auth_env`.
+
+Events go to `{runtime}/events.ndjson`. Secret values are replaced with
+`[REDACTED]` before a `tool.call` or assistant text is written. `tool.result`
+carries a digest, not the output.

@@ -28,13 +28,18 @@ built on them: the flag is `--web-socket-url`, the heartbeat is a ping frame rat
 JSON message, and the harness argv begins with `agent run` positionals. See
 [`spike/m0/README.md`](../spike/m0/README.md).
 
-## M1 — Harness Contract v1 (weeks)
+## M1 — Harness Contract v1 (in progress)
 
 - `generic-openai` adapter: a real agent loop (bash, read, write, edit, grep, glob) against
-  any OpenAI-compatible endpoint. No vendor dependency.
+  any OpenAI-compatible endpoint. No vendor dependency. **Landed** in
+  [`cmd/factory-harness`](../cmd/factory-harness).
 - NDJSON event emission, redaction against the injected secret set, the exit-code taxonomy.
-- `claude-code` adapter.
-- `factoryctl harness verify` conformance suite ([05](05-harness-contract.md#conformance)).
+  **Landed.** `factoryctl harness verify` runs the cases that do not need a live vendor
+  ([05](05-harness-contract.md#shipped-adapter)).
+- `claude-code` adapter. **Not in this build.** `--harness claude-code` exits 20.
+- A real agent run that clones a repo, changes a file, runs tests, and opens a PR,
+  driven by the unmodified upstream worker and the M0 stub server. **Not done.**
+  That run needs a model endpoint and a forge token the conformance suite does not have.
 
 **Exit criterion:** a real agent run — clone a repo, change a file, run tests, open a PR —
 driven by the unmodified upstream worker and the M0 stub server. At this point the hardest
