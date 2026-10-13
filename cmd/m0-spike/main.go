@@ -140,7 +140,7 @@ func (r *result) finish() { r.closeOnce.Do(func() { close(r.done) }) }
 func (r *result) ok() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !(r.connected && r.assigned && r.claimed && r.terminal == msgTaskCompleted) {
+	if !r.connected || !r.assigned || !r.claimed || r.terminal != msgTaskCompleted {
 		return false
 	}
 	// Only gate on the heartbeat when we actually waited for one.
@@ -190,7 +190,11 @@ func main() {
 			log.Printf("upgrade: %v", err)
 			return
 		}
-		defer conn.Close()
+		defer func() {
+			if err := conn.Close(); err != nil {
+				log.Printf("close websocket: %v", err)
+			}
+		}()
 
 		res.mu.Lock()
 		res.connected = true

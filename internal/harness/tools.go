@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -200,23 +201,22 @@ func (t toolbox) grep(pattern, path string) toolResult {
 		if len(lines) >= 100 {
 			return io.EOF
 		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(t.workspace, p)
-		rel = filepath.ToSlash(rel)
-		for i, line := range strings.Split(string(b), "\n") {
-			if re.MatchString(line) {
-				lines = append(lines, fmt.Sprintf("%s:%d:%s", rel, i+1, line))
-				if len(lines) >= 100 {
-					break
+		// Skip a file we cannot read. One unreadable path should not fail the search.
+		if b, err := os.ReadFile(p); err == nil {
+			rel, _ := filepath.Rel(t.workspace, p)
+			rel = filepath.ToSlash(rel)
+			for i, line := range strings.Split(string(b), "\n") {
+				if re.MatchString(line) {
+					lines = append(lines, fmt.Sprintf("%s:%d:%s", rel, i+1, line))
+					if len(lines) >= 100 {
+						break
+					}
 				}
 			}
 		}
 		return nil
 	})
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return toolResult{Output: err.Error()}
 	}
 	return toolResult{OK: true, Output: strings.Join(lines, "\n")}
@@ -238,7 +238,7 @@ func (t toolbox) glob(pattern string) toolResult {
 		}
 		return nil
 	})
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return toolResult{Output: err.Error()}
 	}
 	return toolResult{OK: true, Output: strings.Join(matches, "\n")}

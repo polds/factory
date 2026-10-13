@@ -28,12 +28,17 @@ WORKER_ID="m0-spike"
 SERVER_PID=""
 WORKER_PID=""
 
+# shellcheck disable=SC2329 # invoked by the EXIT/INT/TERM trap
 cleanup() {
   local code=$?
-  [[ -n "$WORKER_PID" ]] && kill "$WORKER_PID" 2>/dev/null || true
-  [[ -n "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null || true
+  if [[ -n "${WORKER_PID}" ]]; then
+    kill "${WORKER_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${SERVER_PID}" ]]; then
+    kill "${SERVER_PID}" 2>/dev/null || true
+  fi
   wait 2>/dev/null || true
-  exit $code
+  exit "${code}"
 }
 trap cleanup EXIT INT TERM
 
@@ -41,16 +46,31 @@ say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
 # ---------------------------------------------------------------------------
 say "Preflight"
-command -v docker >/dev/null || { echo "docker not found"; exit 2; }
-command -v go     >/dev/null || { echo "go not found"; exit 2; }
-command -v git    >/dev/null || { echo "git not found"; exit 2; }
-docker info >/dev/null 2>&1 || { echo "docker daemon is not reachable"; exit 2; }
+command -v docker >/dev/null || {
+  echo "docker not found"
+  exit 2
+}
+command -v go >/dev/null || {
+  echo "go not found"
+  exit 2
+}
+command -v git >/dev/null || {
+  echo "git not found"
+  exit 2
+}
+docker info >/dev/null 2>&1 || {
+  echo "docker daemon is not reachable"
+  exit 2
+}
 
 # The worker only supports linux/amd64 and linux/arm64 task platforms.
 platform="$(docker info --format '{{.OSType}}/{{.Architecture}}' 2>/dev/null || true)"
 case "$platform" in
-  linux/aarch64|linux/arm64|linux/x86_64|linux/amd64) ;;
-  *) echo "unsupported docker platform: $platform"; exit 2 ;;
+  linux/aarch64 | linux/arm64 | linux/x86_64 | linux/amd64) ;;
+  *)
+    echo "unsupported docker platform: $platform"
+    exit 2
+    ;;
 esac
 echo "docker platform: $platform"
 echo "go: $(go version)"
@@ -74,15 +94,15 @@ if [[ ! -d "$WORK/oz-agent-worker/.git" ]]; then
   git clone --depth 1 --branch "$WORKER_REF" "$WORKER_REPO" "$WORK/oz-agent-worker"
 fi
 WORKER_SHA="$(git -C "$WORK/oz-agent-worker" rev-parse --short HEAD)"
-( cd "$WORK/oz-agent-worker" && go build -o "$WORK/oz-agent-worker-bin" . )
+(cd "$WORK/oz-agent-worker" && go build -o "$WORK/oz-agent-worker-bin" .)
 echo "built worker from $WORKER_SHA — source unmodified:"
 git -C "$WORK/oz-agent-worker" status --porcelain | sed 's/^/  /' || true
-[[ -z "$(git -C "$WORK/oz-agent-worker" status --porcelain)" ]] \
-  && echo "  (clean tree — no local modifications)"
+[[ -z "$(git -C "$WORK/oz-agent-worker" status --porcelain)" ]] &&
+  echo "  (clean tree — no local modifications)"
 
 # ---------------------------------------------------------------------------
 say "Build the M0 control-plane spike"
-( cd "$ROOT" && go build -o "$WORK/m0-spike" ./cmd/m0-spike )
+(cd "$ROOT" && go build -o "$WORK/m0-spike" ./cmd/m0-spike)
 echo "built m0-spike"
 
 # IfNotPresent keeps the worker off the registry for our locally-built images.
@@ -101,7 +121,10 @@ say "Start the spike server"
 # half of the protocol. Hold the connection open past one interval to verify
 # ping/pong too. FAST=1 skips the wait.
 HOLD="35s"
-if [[ -n "${FAST:-}" ]]; then HOLD="0s"; echo "FAST=1 — skipping heartbeat verification"; fi
+if [[ -n "${FAST:-}" ]]; then
+  HOLD="0s"
+  echo "FAST=1 — skipping heartbeat verification"
+fi
 
 "$WORK/m0-spike" \
   -addr ":$PORT" \
@@ -117,7 +140,11 @@ for _ in $(seq 1 50); do
   if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then break; fi
   sleep 0.2
 done
-curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null || { echo "server did not start"; cat "$WORK/server.log"; exit 1; }
+curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null || {
+  echo "server did not start"
+  cat "$WORK/server.log"
+  exit 1
+}
 echo "server healthy on :$PORT"
 
 # ---------------------------------------------------------------------------

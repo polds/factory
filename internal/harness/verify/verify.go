@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -54,23 +55,33 @@ func All(bin string) []Result {
 
 // Report writes the spike-style verdict. It returns an error when any case failed.
 func Report(w io.Writer, results []Result) error {
-	fmt.Fprintln(w, "── harness verify ─────────────────────────────────────────")
+	if _, err := fmt.Fprintln(w, "── harness verify ─────────────────────────────────────────"); err != nil {
+		return err
+	}
 	var failed []string
 	for _, r := range results {
 		if r.Err != nil {
-			fmt.Fprintf(w, "  FAIL  %-28s %s\n", r.Name, r.Err)
+			if _, err := fmt.Fprintf(w, "  FAIL  %-28s %s\n", r.Name, r.Err); err != nil {
+				return err
+			}
 			failed = append(failed, r.Name)
 			continue
 		}
-		fmt.Fprintf(w, "  PASS  %s\n", r.Name)
+		if _, err := fmt.Fprintf(w, "  PASS  %s\n", r.Name); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintln(w, "────────────────────────────────────────────────────────────")
+	if _, err := fmt.Fprintln(w, "────────────────────────────────────────────────────────────"); err != nil {
+		return err
+	}
 	if len(failed) > 0 {
-		fmt.Fprintf(w, "VERDICT: failed (%s)\n", strings.Join(failed, ", "))
+		if _, err := fmt.Fprintf(w, "VERDICT: failed (%s)\n", strings.Join(failed, ", ")); err != nil {
+			return err
+		}
 		return fmt.Errorf("failed: %s", strings.Join(failed, ", "))
 	}
-	fmt.Fprintln(w, "VERDICT: conformant")
-	return nil
+	_, err := fmt.Fprintln(w, "VERDICT: conformant")
+	return err
 }
 
 type runOut struct {
@@ -119,7 +130,8 @@ func runHarness(bin string, args []string, extraEnv []string, task any, timeout 
 		if ctx.Err() != nil {
 			return runOut{Stderr: stderr.String(), Dir: ws}, fmt.Errorf("timed out after %s\n%s", timeout, stderr.String())
 		}
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			code = ee.ExitCode()
 		} else {
 			return runOut{}, err
@@ -438,7 +450,9 @@ func checkUnreachable(bin string) error {
 		return err
 	}
 	addr := ln.Addr().String()
-	ln.Close()
+	if err := ln.Close(); err != nil {
+		return err
+	}
 	got, err := runHarness(bin, []string{
 		"agent", "run", "--task-id", "down", "--model", "m", "--idle-on-complete", "0s",
 	}, []string{"OPENAI_BASE_URL=http://" + addr}, map[string]string{"prompt": "hi"}, 5*time.Second)
@@ -497,8 +511,12 @@ func checkOutsideWrite(bin string) error {
 	if got.Code != 0 {
 		return fmt.Errorf("exit %d\n%s", got.Code, got.Stderr)
 	}
-	if _, err := os.Stat(outside); !os.IsNotExist(err) {
-		return fmt.Errorf("outside stat %v", err)
+	_, statErr := os.Stat(outside)
+	switch {
+	case statErr == nil:
+		return fmt.Errorf("outside write created %s", outside)
+	case !errors.Is(statErr, os.ErrNotExist):
+		return fmt.Errorf("outside stat: %w", statErr)
 	}
 	var saw bool
 	for _, e := range got.Events {
@@ -644,8 +662,8 @@ func checkFollowUp(bin string) error {
 	}
 	code := 0
 	if waitErr != nil {
-		ee, ok := waitErr.(*exec.ExitError)
-		if !ok {
+		var ee *exec.ExitError
+		if !errors.As(waitErr, &ee) {
 			return waitErr
 		}
 		code = ee.ExitCode()
