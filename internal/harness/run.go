@@ -37,7 +37,7 @@ func Run(ctx context.Context, opt Options) int {
 	if opt.Workspace == "" {
 		wd, err := os.Getwd()
 		if err != nil {
-			fmt.Fprintf(opt.Stderr, "factory-harness: %v\n", err)
+			warnf(opt.Stderr, "factory-harness: %v\n", err)
 			return ExitEnvironment
 		}
 		opt.Workspace = wd
@@ -52,26 +52,26 @@ func Run(ctx context.Context, opt Options) int {
 
 	inv := ParseArgs(opt.Args)
 	for _, w := range inv.Warnings {
-		fmt.Fprintf(opt.Stderr, "factory-harness: %s\n", w)
+		warnf(opt.Stderr, "factory-harness: %s\n", w)
 	}
 
 	if err := os.MkdirAll(opt.RuntimeDir, 0o700); err != nil {
-		fmt.Fprintf(opt.Stderr, "factory-harness: %v\n", err)
+		warnf(opt.Stderr, "factory-harness: %v\n", err)
 		return ExitEnvironment
 	}
 	ef, err := os.OpenFile(filepath.Join(opt.RuntimeDir, "events.ndjson"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		fmt.Fprintf(opt.Stderr, "factory-harness: %v\n", err)
+		warnf(opt.Stderr, "factory-harness: %v\n", err)
 		return ExitEnvironment
 	}
-	defer ef.Close()
+	defer func() { _ = ef.Close() }()
 	log := NewLog(ef, opt.Now)
 
 	var secrets []string
 	finish := func(code int, status, summary string) int {
 		summary = Redact(summary, secrets)
 		_ = log.Emit(Event{Type: "terminal", Status: status, Summary: summary})
-		fmt.Fprintf(opt.Stderr, "factory-harness: %s\n", summary)
+		warnf(opt.Stderr, "factory-harness: %s\n", summary)
 		return code
 	}
 
@@ -123,11 +123,8 @@ func Run(ctx context.Context, opt Options) int {
 	apiKey := lookupEnv(opt.Env, "OPENAI_API_KEY")
 	box := toolbox{workspace: opt.Workspace, env: scrubEnv(opt.Env, task.HarnessAuthEnv)}
 
-	var code int
-	var status, summary string
-	if inv.SkipInitialTurn() {
-		code, status, summary = ExitOK, "succeeded", "skipped initial turn"
-	} else {
+	summary := "skipped initial turn"
+	if !inv.SkipInitialTurn() {
 		prompt := task.Prompt
 		if prompt == "" {
 			prompt = lookupEnv(opt.Env, "FACTORY_TASK_PROMPT")
@@ -135,7 +132,8 @@ func Run(ctx context.Context, opt Options) int {
 		if prompt == "" {
 			return finish(ExitConfigInvalid, "config_invalid", "prompt is empty")
 		}
-		code, status, summary = runConversation(ctx, log, box, baseURL, apiKey, model, prompt, secrets)
+		code, status, summaryRun := runConversation(ctx, log, box, baseURL, apiKey, model, prompt, secrets)
+		summary = summaryRun
 		if code != ExitOK {
 			return finish(code, status, summary)
 		}
@@ -151,7 +149,8 @@ func Run(ctx context.Context, opt Options) int {
 		if !ok {
 			break
 		}
-		code, status, summary = runConversation(ctx, log, box, baseURL, apiKey, model, next, secrets)
+		code, status, summaryRun := runConversation(ctx, log, box, baseURL, apiKey, model, next, secrets)
+		summary = summaryRun
 		if code != ExitOK {
 			return finish(code, status, summary)
 		}
@@ -315,4 +314,9 @@ func agentFailure(content string) (string, bool) {
 		return "", false
 	}
 	return body.Summary, true
+}
+
+// warnf reports a diagnostic. A failed write must not change the contract exit code.
+func warnf(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...)
 }

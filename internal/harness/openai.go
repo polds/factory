@@ -152,7 +152,7 @@ func completeChat(ctx context.Context, baseURL, apiKey string, req chatRequest) 
 	if err != nil {
 		return chatResponse{}, &providerError{Message: err.Error()}
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
 		return chatResponse{}, &providerError{Status: res.StatusCode, Message: err.Error()}

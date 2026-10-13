@@ -36,20 +36,33 @@ server_root=""
 sandboxed="no"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --task-id)          task_id="${2:-}"; shift 2 ;;
-    --server-root-url)  server_root="${2:-}"; shift 2 ;;
-    --sandboxed)        sandboxed="yes"; shift ;;
+    --task-id)
+      task_id="${2:-}"
+      shift 2
+      ;;
+    --server-root-url)
+      server_root="${2:-}"
+      shift 2
+      ;;
+    --sandboxed)
+      sandboxed="yes"
+      shift
+      ;;
     # Harness Contract v1: unknown flags are ignored with a warning, never
     # rejected, so a newer control plane cannot deadlock an older harness.
     --*)
-      if [ $# -ge 2 ] && case "${2:-}" in --*) false ;; *) [ -n "${2:-}" ] ;; esac; then
+      if [ $# -ge 2 ] && case "${2:-}" in --*) false ;; *) [ -n "${2:-}" ] ;; esac then
         echo "[harness] warning: ignoring unknown flag $1 ${2}"
         shift 2
       else
         echo "[harness] warning: ignoring unknown flag $1"
         shift
-      fi ;;
-    *) echo "[harness] warning: ignoring positional argument $1"; shift ;;
+      fi
+      ;;
+    *)
+      echo "[harness] warning: ignoring positional argument $1"
+      shift
+      ;;
   esac
 done
 
