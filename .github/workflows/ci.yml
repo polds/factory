@@ -1,0 +1,54 @@
+# Proves the branch that contains the harness work.
+# test runs the Go suite, including factoryctl harness verify.
+# harness-image builds the sidecar and checks the entrypoint.
+# protocol-spike runs an unmodified oz-agent-worker against the M0 server.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: go test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - run: go test -count=1 ./...
+
+  harness-image:
+    name: harness image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - run: ./harness/generic-openai/smoke.sh
+
+  protocol-spike:
+    name: m0 protocol spike
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - run: ./spike/m0/run.sh
