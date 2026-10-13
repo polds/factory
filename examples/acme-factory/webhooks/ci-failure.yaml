@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=http://localhost:8080/api/v1/factory-files/schemas/v1alpha1/webhook.schema.json
+#
+# Ingress for the internal CI system to report failures on main.
+# `secretName` references a managed secret — never the secret material.
+#
+# authMode and signatureScheme are immutable once created. To change either,
+# delete this webhook and create a replacement under a different name.
+authMode: token
+secretName: CI_WEBHOOK_SECRET
+deliveryIdHeader: X-CI-Run-Id      # used to deduplicate provider retries
+enabled: true
