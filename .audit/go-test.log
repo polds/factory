@@ -1,6 +1,0 @@
-?   	github.com/polds/factory/cmd/factory-harness	[no test files]
-?   	github.com/polds/factory/cmd/factoryctl	[no test files]
-?   	github.com/polds/factory/cmd/m0-spike	[no test files]
-ok  	github.com/polds/factory/internal/harness	0.006s
-ok  	github.com/polds/factory/internal/harness/verify	7.465s
-TEST_EXIT:0

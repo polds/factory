@@ -1,9 +1,0 @@
-ts	phase	decision	why	evidence	result
-2026-10-13T17:01:59Z	start	collapsed orchestrate into one harness slice	M1 through M8 is a program, and the next checkable slice fits one agent	docs/12-build-sequence.md	open
-2026-10-13T17:03:23Z	harness	treat a bare --idle-on-complete as absent	upstream test expects a bare flag when no timeout is set, and waiting the oz 45m default would hang every unmodified worker	oz-agent-worker 63dbb8a internal/common/task_utils_test.go uses oz cli default	open
-2026-10-13T17:17:44Z	harness	shipped generic-openai and factoryctl harness verify	the next checkable slice of M1 is the contract the worker already speaks, without a vendor account	go test ./... exit 0	tests green
-2026-10-13T17:17:44Z	harness	left claude-code as exit 20	that adapter needs the Claude CLI contract, which this slice does not have	cmd/factory-harness internal/harness/run.go adapterName	open
-2026-10-13T17:17:44Z	harness	sidecar image smoke passed	the worker mounts a filesystem, so a binary alone does not satisfy the entrypoint path	harness/generic-openai/smoke.sh	image smoke: skipped initial turn
-2026-10-13T17:23:38Z	harness	M1 exit criterion stays open	verify and the image smoke do not clone a repo or open a pull request, and the M0 spike still runs the stub sidecar	docs/12-build-sequence.md .audit/go-test.log .audit/image-smoke.log	open
-2026-10-13T17:23:38Z	harness	turn cap uses exit 10	eight model turns with no finish is the agent not completing the task, which is the only non-infrastructure failure in the contract	docs/05-harness-contract.md shipped adapter table	kept
-2026-10-13T17:24:47Z	review	composer flagged overclaim and missing logs	the verify suite is not the M1 exit criterion, and the test output was only outside the repo	.audit/go-test.log .audit/image-smoke.log	logs copied, M1 exit still open
