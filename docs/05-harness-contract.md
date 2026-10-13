@@ -235,6 +235,11 @@ OpenAI-compatible stub. They do not call a vendor.
 | Agent-reported failure | The whole assistant message is `{"status":"failed_by_agent","summary":"..."}`. Exit 10. Exhausting the turn budget uses the same code: the task did not finish, and the provider and the setup command did not fail |
 | Other `--harness` values | Exit 20. `claude-code` is not in this build |
 
+The M1 live run did not write `task.json`. `cmd/m0-spike` copied
+`FACTORY_TASK_PROMPT` and `FACTORY_SECRET_VALUES` into the assignment `env_vars`,
+and the harness read them from the process environment. That run used model
+`claude-sonnet-5-5` and opened [PR #12](https://github.com/polds/factory/pull/12).
+
 `bash`, `read`, `write`, `edit`, `grep`, and `glob` are the tool set. `write` and
 `edit` refuse a path outside the workspace. `bash` is not jailed by the process.
 The task container is that boundary. Tool subprocesses do not receive
