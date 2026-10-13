@@ -367,7 +367,9 @@ func TestReportRejectedBatchDoesNotDropTheRest(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	rep := newEventReporter(srv.URL, "report-reject-token", reporterConfig{batchWait: 0})
+	rep := newEventReporter(srv.URL, "report-reject-token", reporterConfig{
+		batchWait: 500 * time.Millisecond,
+	})
 	for i := 0; i < 64; i++ {
 		rep.push([]byte(fmt.Sprintf("{\"n\":%d}\n", i)))
 	}
