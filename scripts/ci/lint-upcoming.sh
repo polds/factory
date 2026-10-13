@@ -13,7 +13,11 @@
 #   *.schema.json                    published JSON Schemas (M3)
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [[ -n "${LINT_UPCOMING_ROOT:-}" ]]; then
+  root="$(cd "${LINT_UPCOMING_ROOT}" && pwd)"
+else
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+fi
 cd "${root}"
 
 export PATH="${HOME}/.local/bin:${PATH}"
@@ -53,7 +57,11 @@ fi
 
 echo "python"
 if found_any '*.py'; then
-  python3 -m pip install --user "ruff==${RUFF_VERSION}"
+  if [[ "${LINT_UPCOMING_OFFLINE:-}" == 1 ]]; then
+    command -v ruff >/dev/null
+  else
+    python3 -m pip install --user "ruff==${RUFF_VERSION}"
+  fi
   mapfile -d '' py_files < <(find . \
     \( -path './.git' -o -path '*/.work' -o -path '*/node_modules' \) -prune \
     -o -name '*.py' -print0)
@@ -65,7 +73,11 @@ fi
 
 echo "sql"
 if found_any '*.sql'; then
-  python3 -m pip install --user "sqlfluff==${SQLFLUFF_VERSION}"
+  if [[ "${LINT_UPCOMING_OFFLINE:-}" == 1 ]]; then
+    command -v sqlfluff >/dev/null
+  else
+    python3 -m pip install --user "sqlfluff==${SQLFLUFF_VERSION}"
+  fi
   mapfile -d '' sql_files < <(find . \
     \( -path './.git' -o -path '*/.work' -o -path '*/node_modules' \) -prune \
     -o -name '*.sql' -print0)
@@ -76,7 +88,9 @@ fi
 
 echo "helm"
 if [[ -f deploy/helm/factory/Chart.yaml ]]; then
-  if ! command -v helm >/dev/null 2>&1 || [[ "$(helm version --template '{{.Version}}')" != "v${HELM_VERSION}" ]]; then
+  if [[ "${LINT_UPCOMING_OFFLINE:-}" == 1 ]]; then
+    command -v helm >/dev/null
+  elif ! command -v helm >/dev/null 2>&1 || [[ "$(helm version --template '{{.Version}}')" != "v${HELM_VERSION}" ]]; then
     case "$(uname -m)" in
       x86_64) helm_arch="amd64" ;;
       aarch64 | arm64) helm_arch="arm64" ;;
@@ -99,7 +113,11 @@ fi
 
 echo "jsonschema"
 if found_any '*.schema.json'; then
-  python3 -m pip install --user "check-jsonschema==${CHECK_JSONSCHEMA_VERSION}"
+  if [[ "${LINT_UPCOMING_OFFLINE:-}" == 1 ]]; then
+    command -v check-jsonschema >/dev/null
+  else
+    python3 -m pip install --user "check-jsonschema==${CHECK_JSONSCHEMA_VERSION}"
+  fi
   mapfile -d '' schema_files < <(find . \
     \( -path './.git' -o -path '*/.work' -o -path '*/node_modules' \) -prune \
     -o -name '*.schema.json' -print0)
