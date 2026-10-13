@@ -1,0 +1,35 @@
+[
+  {
+    "tool": "bash",
+    "args": {
+      "command": "git clone git://__M1_GIT_HOST__/remote.git repo"
+    }
+  },
+  {
+    "tool": "bash",
+    "args": {
+      "command": "sed -i 's/\"Hello, \" + name/\"Hello, \" + name + \"!\"/' repo/greet/greet.go"
+    }
+  },
+  {
+    "tool": "bash",
+    "args": {
+      "command": "sed -i 's/\"Hello, M1\"/\"Hello, M1!\"/g' repo/greet/greet_test.go"
+    }
+  },
+  {
+    "tool": "bash",
+    "args": {
+      "command": "cd repo && GOPROXY=off GOSUMDB=off go test ./..."
+    }
+  },
+  {
+    "tool": "bash",
+    "args": {
+      "command": "cd repo && git config user.email m1@example.com && git config user.name m1-agent && git checkout -b m1-run && git commit -am 'M1: add emphasis to Hello' && git push origin m1-run"
+    }
+  },
+  {
+    "final": "pushed branch m1-run"
+  }
+]
