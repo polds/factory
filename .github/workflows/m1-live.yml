@@ -1,0 +1,55 @@
+# Manual M1 live run.
+#
+# One click (after filling the model id) drives the unmodified upstream
+# worker through cmd/m0-spike and the generic-openai harness. The agent
+# clones the target repo, edits spike/m1/fixture, and opens a draft PR.
+# This workflow is not part of the required CI check.
+#
+# Repository secrets (values are masked; never printed by run.sh):
+#   M1_OPENAI_BASE_URL   OpenAI-compatible endpoint (OPENAI_BASE_URL)
+#   M1_OPENAI_API_KEY    optional; omit the secret to run without a key
+#   M1_GH_TOKEN          fine-grained PAT, fixture repo only (GH_TOKEN)
+name: m1-live
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model id (M1_MODEL)
+        required: true
+        type: string
+      repo:
+        description: Repository the agent clones and opens a draft PR against (M1_REPO)
+        required: false
+        default: polds/factory
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  live:
+    name: m1 live
+    runs-on: ubuntu-latest
+    # spike timeout is 20m; the rest is image builds and the worker clone.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run the live M1 driver
+        env:
+          OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          GH_TOKEN: ${{ secrets.M1_GH_TOKEN }}
+          M1_MODEL: ${{ inputs.model }}
+          M1_REPO: ${{ inputs.repo }}
+        run: MODE=live ./spike/m1/run.sh

@@ -20,6 +20,7 @@
 #   vuln                   govulncheck
 #   harness image          sidecar image smoke
 #   m0 protocol spike      unmodified oz-agent-worker against the M0 server
+#   m1 offline e2e         MODE=offline ./spike/m1/run.sh
 #   upcoming languages     TypeScript, Python, SQL, Helm, JSON Schema
 #
 # Not required, and not workflows yet:
@@ -29,6 +30,8 @@
 #   CodeQL                 turn on after code scanning is enabled for the repo
 #   nightly model e2e      docs/12; there is no fixture and it needs a local model
 #   action SHA review      pins are updated by Dependabot, not by a status check
+# Manual, not part of `required`:
+#   m1 live                .github/workflows/m1-live.yml (workflow_dispatch)
 name: ci
 
 on:
@@ -259,6 +262,21 @@ jobs:
       - name: Run an unmodified worker against the M0 server
         run: ./spike/m0/run.sh
 
+  m1-offline:
+    name: m1 offline e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run the offline M1 driver
+        run: MODE=offline ./spike/m1/run.sh
+
   upcoming-languages:
     name: upcoming languages
     runs-on: ubuntu-latest
@@ -284,6 +302,7 @@ jobs:
       - vuln
       - harness-image
       - protocol-spike
+      - m1-offline
       - upcoming-languages
     if: always()
     runs-on: ubuntu-latest
@@ -302,6 +321,7 @@ jobs:
           VULN: ${{ needs.vuln.result }}
           HARNESS_IMAGE: ${{ needs.harness-image.result }}
           PROTOCOL_SPIKE: ${{ needs.protocol-spike.result }}
+          M1_OFFLINE: ${{ needs.m1-offline.result }}
           UPCOMING: ${{ needs.upcoming-languages.result }}
         run: |
           set -euo pipefail
@@ -330,5 +350,6 @@ jobs:
           report "vuln" "${VULN}"
           report "harness image" "${HARNESS_IMAGE}"
           report "m0 protocol spike" "${PROTOCOL_SPIKE}"
+          report "m1 offline e2e" "${M1_OFFLINE}"
           report "upcoming languages" "${UPCOMING}"
           exit "${fail}"
