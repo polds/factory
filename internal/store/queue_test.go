@@ -1,0 +1,917 @@
+package store_test
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/polds/factory/internal/store"
+)
+
+// Tests share a Postgres advisory-lock key and LISTEN/NOTIFY, so they stay sequential.
+// Each test creates a schema t_<rand> and connects with search_path set to it.
+
+func TestExportedStructsOmitSecrets(t *testing.T) {
+	t.Parallel()
+	types := []reflect.Type{
+		reflect.TypeOf(store.Run{}),
+		reflect.TypeOf(store.NewRun{}),
+		reflect.TypeOf(store.Factory{}),
+		reflect.TypeOf(store.Agent{}),
+		reflect.TypeOf(store.Event{}),
+		reflect.TypeOf(store.Worker{}),
+		reflect.TypeOf(store.QueuedRun{}),
+		reflect.TypeOf(store.OrphanedExecution{}),
+		reflect.TypeOf(store.AppliedDefinition{}),
+		reflect.TypeOf(store.DefinedAgent{}),
+		reflect.TypeOf(store.DefinedRunner{}),
+		reflect.TypeOf(store.Terminal{}),
+		reflect.TypeOf(store.RunFilter{}),
+	}
+	for _, typ := range types {
+		assertNoSecretFields(t, typ)
+	}
+	execType := reflect.TypeOf(store.Execution{})
+	for i := 0; i < execType.NumField(); i++ {
+		field := execType.Field(i)
+		if field.Name == "RunTokenSHA256" {
+			continue
+		}
+		if secretish(field.Name) {
+			t.Fatalf("Execution.%s looks like a secret", field.Name)
+		}
+	}
+}
+
+func TestLeaseSkipLocked(t *testing.T) {
+	h := newHarness(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	factoryID, agentID := h.seed(t)
+
+	want := make([]string, 10)
+	for i := range want {
+		run := h.createRun(t, factoryID, agentID, "default", store.PriorityBatch)
+		want[i] = run.ID
+	}
+	other := h.createRun(t, factoryID, agentID, "other", store.PriorityInteractive)
+
+	var mu sync.Mutex
+	got := map[string]int{}
+	errCh := make(chan error, 5)
+	var wg sync.WaitGroup
+	for range 5 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 2 {
+				leased, err := h.st.Lease(ctx, "default", 30*time.Second, 1)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				if len(leased) != 1 {
+					errCh <- fmt.Errorf("lease returned %d runs", len(leased))
+					return
+				}
+				mu.Lock()
+				got[leased[0].RunID]++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
+	if t.Failed() {
+		return
+	}
+	if len(got) != 10 {
+		t.Fatalf("distinct leased ids %d", len(got))
+	}
+	for _, id := range want {
+		if got[id] != 1 {
+			t.Fatalf("run %s leased %d times", id, got[id])
+		}
+	}
+	leasedOther, err := h.st.Lease(ctx, "other", 30*time.Second, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leasedOther) != 1 || leasedOther[0].RunID != other.ID {
+		t.Fatalf("other pool lease %+v", leasedOther)
+	}
+}
+
+func TestLeasePriorityOrder(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+
+	batch := h.createRun(t, factoryID, agentID, "default", store.PriorityBatch)
+	interactive := h.createRun(t, factoryID, agentID, "default", store.PriorityInteractive)
+	pipeline := h.createRun(t, factoryID, agentID, "default", store.PriorityPipeline)
+
+	leased, err := h.st.Lease(ctx, "default", 30*time.Second, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leased) != 3 {
+		t.Fatalf("leased %d", len(leased))
+	}
+	got := []string{leased[0].RunID, leased[1].RunID, leased[2].RunID}
+	want := []string{interactive.ID, pipeline.ID, batch.ID}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("order %v want %v", got, want)
+	}
+	if leased[0].Priority != store.PriorityInteractive || leased[1].Priority != store.PriorityPipeline || leased[2].Priority != store.PriorityBatch {
+		t.Fatalf("priorities %+v", leased)
+	}
+
+	listed, err := h.st.ListRuns(ctx, store.RunFilter{FactoryID: factoryID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 3 {
+		t.Fatalf("ListRuns %d", len(listed))
+	}
+}
+
+func TestLeaseFIFOWithinPriority(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+	var ids []string
+	for range 3 {
+		run := h.createRun(t, factoryID, agentID, "default", store.PriorityBatch)
+		ids = append(ids, run.ID)
+		time.Sleep(5 * time.Millisecond)
+	}
+	leased, err := h.st.Lease(ctx, "default", 30*time.Second, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leased) != 3 {
+		t.Fatalf("leased %d", len(leased))
+	}
+	for i, id := range ids {
+		if leased[i].RunID != id {
+			t.Fatalf("fifo position %d got %s want %s", i, leased[i].RunID, id)
+		}
+	}
+}
+
+func TestRequeueOnReject(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+	run := h.createRun(t, factoryID, agentID, "default", store.PriorityPipeline)
+	if run.Prompt != "say hello" || run.Status != store.StatusQueued {
+		t.Fatalf("created %+v", run)
+	}
+
+	leased, err := h.st.Lease(ctx, "default", 30*time.Second, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leased) != 1 || leased[0].RunID != run.ID || leased[0].Attempts != 0 {
+		t.Fatalf("lease %+v", leased)
+	}
+	assigned, err := h.st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assigned.Status != store.StatusAssigned {
+		t.Fatalf("leased status %s", assigned.Status)
+	}
+	if err := h.st.Requeue(ctx, run.ID, "task_rejected"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusQueued {
+		t.Fatalf("status %s", got.Status)
+	}
+	again, err := h.st.Lease(ctx, "default", 30*time.Second, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 1 || again[0].RunID != run.ID || again[0].Attempts != 1 {
+		t.Fatalf("requeued lease %+v", again)
+	}
+	var failed, total int
+	if err := h.raw.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state = 'failed'), count(*) FROM executions WHERE run_id = $1`, run.ID).Scan(&failed, &total); err != nil {
+		t.Fatal(err)
+	}
+	if failed != 0 || total != 0 {
+		t.Fatalf("failed executions %d total %d", failed, total)
+	}
+}
+
+func TestExpireLeasesOrphans(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+	run := h.createRun(t, factoryID, agentID, "default", store.PriorityBatch)
+	leased, err := h.st.Lease(ctx, "default", 30*time.Second, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := tokenHash("attempt-1")
+	exec, err := h.st.StartExecution(ctx, run.ID, "worker-a", hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exec.Attempt != 1 || exec.State != store.ExecRunning || exec.RunID != run.ID {
+		t.Fatalf("execution %+v", exec)
+	}
+	if !bytesEqual(exec.RunTokenSHA256, hash) {
+		t.Fatal("token hash not stored")
+	}
+	started, err := h.st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Status != store.StatusRunning || started.WorkerID != "worker-a" {
+		t.Fatalf("running run %+v", started)
+	}
+
+	orphans, err := h.st.ExpireLeases(ctx, leased[0].LeaseUntil.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orphans) != 1 || orphans[0].ExecutionID != exec.ID || orphans[0].RunID != run.ID || orphans[0].WorkerID != "worker-a" {
+		t.Fatalf("orphans %+v", orphans)
+	}
+	var state string
+	if err := h.raw.QueryRow(ctx, `SELECT state FROM executions WHERE id = $1`, exec.ID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != store.ExecOrphaned {
+		t.Fatalf("state %s", state)
+	}
+	after, err := h.st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != store.StatusQueued {
+		t.Fatalf("status after expire %s", after.Status)
+	}
+
+	again, err := h.st.Lease(ctx, "default", 30*time.Second, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 1 || again[0].RunID != run.ID {
+		t.Fatalf("re-lease %+v", again)
+	}
+	exec2, err := h.st.StartExecution(ctx, run.ID, "worker-b", tokenHash("attempt-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exec2.ID == exec.ID || exec2.Attempt != 2 {
+		t.Fatalf("new execution %+v old %s", exec2, exec.ID)
+	}
+}
+
+func TestLateTerminalAfterOrphanDoesNotChangeRun(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+	run := h.createRun(t, factoryID, agentID, "default", store.PriorityBatch)
+	leased, err := h.st.Lease(ctx, "default", 30*time.Second, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec, err := h.st.StartExecution(ctx, run.ID, "worker-a", tokenHash("late"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.st.ExpireLeases(ctx, leased[0].LeaseUntil.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := h.st.FinishExecution(ctx, exec.ID, store.Terminal{State: store.ExecFailed, FailureReason: "lost", ExitCode: intPtr(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("late terminal applied")
+	}
+	got, err := h.st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusQueued {
+		t.Fatalf("status %s", got.Status)
+	}
+	var state string
+	if err := h.raw.QueryRow(ctx, `SELECT state FROM executions WHERE id = $1`, exec.ID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != store.ExecOrphaned {
+		t.Fatalf("state %s", state)
+	}
+}
+
+func TestFinishExecutionIdempotent(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+	run := h.createRun(t, factoryID, agentID, "default", store.PriorityBatch)
+	if _, err := h.st.Lease(ctx, "default", 30*time.Second, 1); err != nil {
+		t.Fatal(err)
+	}
+	exec, err := h.st.StartExecution(ctx, run.ID, "worker-a", tokenHash("finish"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := store.Terminal{State: store.ExecCompleted, ExitCode: intPtr(0)}
+	applied, err := h.st.FinishExecution(ctx, exec.ID, terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Fatal("first finish did not apply")
+	}
+	got, err := h.st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusSucceeded {
+		t.Fatalf("status %s", got.Status)
+	}
+	applied, err = h.st.FinishExecution(ctx, exec.ID, terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("second finish applied")
+	}
+	again, err := h.st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Status != got.Status {
+		t.Fatalf("status changed %s -> %s", got.Status, again.Status)
+	}
+	var state string
+	var exitCode *int
+	if err := h.raw.QueryRow(ctx, `SELECT state, exit_code FROM executions WHERE id = $1`, exec.ID).Scan(&state, &exitCode); err != nil {
+		t.Fatal(err)
+	}
+	if state != store.ExecCompleted || exitCode == nil || *exitCode != 0 {
+		t.Fatalf("execution state %s exit %v", state, exitCode)
+	}
+	leased, err := h.st.Lease(ctx, "default", 30*time.Second, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leased) != 0 {
+		t.Fatalf("finished run leased %+v", leased)
+	}
+}
+
+func TestAppendEventsDedup(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+	run := h.createRun(t, factoryID, agentID, "default", store.PriorityBatch)
+	if _, err := h.st.Lease(ctx, "default", 30*time.Second, 1); err != nil {
+		t.Fatal(err)
+	}
+	exec, err := h.st.StartExecution(ctx, run.ID, "worker-a", tokenHash("events"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := h.st.AppendEvents(ctx, run.ID, exec.ID, 0, eventBatch(0, 5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !int64sEqual(first, []int64{1, 2, 3, 4, 5}) {
+		t.Fatalf("first seqs %v", first)
+	}
+	second, err := h.st.AppendEvents(ctx, run.ID, exec.ID, 3, eventBatch(3, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !int64sEqual(second, []int64{4, 5, 6, 7}) {
+		t.Fatalf("second seqs %v", second)
+	}
+	var rows, distinctSeq, distinctIdx int
+	if err := h.raw.QueryRow(ctx, `SELECT count(*), count(DISTINCT seq), count(DISTINCT idx) FROM run_events WHERE run_id = $1`, run.ID).Scan(&rows, &distinctSeq, &distinctIdx); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 7 || distinctSeq != 7 || distinctIdx != 7 {
+		t.Fatalf("rows %d seqs %d idx %d", rows, distinctSeq, distinctIdx)
+	}
+	events, err := h.st.EventsFrom(ctx, run.ID, 5, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Seq != 6 || events[1].Seq != 7 {
+		t.Fatalf("from seq 5: %+v", events)
+	}
+	if events[0].Idx != 5 || events[1].Idx != 6 || events[0].Type != "message.delta" {
+		t.Fatalf("event meta %+v %+v", events[0], events[1])
+	}
+	if events[0].ExecutionID != exec.ID || events[0].RunID != run.ID {
+		t.Fatalf("event ids %+v", events[0])
+	}
+}
+
+func TestNotifyOnEnqueue(t *testing.T) {
+	h := newHarness(t, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	factoryID, agentID := h.seed(t)
+
+	ch, err := h.st.Listen(ctx, "run_queue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := h.createRun(t, factoryID, agentID, "default", store.PriorityInteractive)
+	select {
+	case got := <-ch:
+		if got != run.ID {
+			t.Fatalf("notify %q want %s", got, run.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Listen did not receive the run id within 2s")
+	}
+}
+
+func TestApplyDefinitionAtomic(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	defID, err := h.st.ApplyDefinition(ctx, "acme", validDefinition())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fac, err := h.st.GetFactory(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID, err := h.st.GetFactory(ctx, fac.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byID.ID != fac.ID || fac.Name != "acme" || fac.CurrentDefinitionID != defID || fac.Alias != "acme" {
+		t.Fatalf("factory %+v", fac)
+	}
+	agents, err := h.st.ListAgents(ctx, fac.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].Name != "implementer" || agents[0].Runner != "local" || agents[0].ID == "" {
+		t.Fatalf("agents %+v", agents)
+	}
+	factories, err := h.st.ListFactories(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(factories) != 1 || factories[0].ID != fac.ID {
+		t.Fatalf("factories %+v", factories)
+	}
+
+	bad := validDefinition()
+	bad.Agents = []store.DefinedAgent{{
+		Name:      "implementer",
+		AgentType: "IMPLEMENT",
+		Runner:    "missing",
+	}}
+	if _, err := h.st.ApplyDefinition(ctx, "acme", bad); err == nil {
+		t.Fatal("expected foreign key error")
+	}
+	after, err := h.st.GetFactory(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.CurrentDefinitionID != defID {
+		t.Fatalf("definition changed %s -> %s", defID, after.CurrentDefinitionID)
+	}
+	agentsAfter, err := h.st.ListAgents(ctx, fac.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agentsAfter) != 1 || agentsAfter[0].ID != agents[0].ID || agentsAfter[0].Runner != "local" {
+		t.Fatalf("agents changed %+v", agentsAfter)
+	}
+	var defCount, strayAgents int
+	if err := h.raw.QueryRow(ctx, `SELECT count(*) FROM definitions`).Scan(&defCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.raw.QueryRow(ctx, `SELECT count(*) FROM agents WHERE definition_id <> $1`, defID).Scan(&strayAgents); err != nil {
+		t.Fatal(err)
+	}
+	if defCount != 1 || strayAgents != 0 {
+		t.Fatalf("definitions %d stray agents %d", defCount, strayAgents)
+	}
+}
+
+func TestMigrateIdempotent(t *testing.T) {
+	h := newHarness(t, false)
+	ctx := context.Background()
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errCh <- h.st.Migrate(ctx)
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var files, distinct int
+	if err := h.raw.QueryRow(ctx, `SELECT count(*), count(DISTINCT filename) FROM schema_migrations`).Scan(&files, &distinct); err != nil {
+		t.Fatal(err)
+	}
+	if files != 1 || distinct != 1 {
+		t.Fatalf("schema_migrations rows %d distinct %d", files, distinct)
+	}
+	var filename string
+	if err := h.raw.QueryRow(ctx, `SELECT filename FROM schema_migrations`).Scan(&filename); err != nil {
+		t.Fatal(err)
+	}
+	if filename != "0001_init.sql" {
+		t.Fatalf("filename %s", filename)
+	}
+	var tables int
+	if err := h.raw.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.tables
+		WHERE table_schema = current_schema()
+		  AND table_name IN (
+		    'factories', 'definitions', 'agents', 'runners', 'runs', 'executions',
+		    'run_events', 'workers', 'run_queue', 'schema_migrations'
+		  )`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if tables != 10 {
+		t.Fatalf("tables %d", tables)
+	}
+}
+
+func TestNoSecretColumns(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	rows, err := h.raw.Query(ctx, `
+		SELECT table_name, column_name, data_type
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var tokenCols int
+	for rows.Next() {
+		var table, column, dataType string
+		if err := rows.Scan(&table, &column, &dataType); err != nil {
+			t.Fatal(err)
+		}
+		if column == "run_token_sha256" {
+			tokenCols++
+			if table != "executions" || dataType != "bytea" {
+				t.Fatalf("run_token_sha256 on %s type %s", table, dataType)
+			}
+			continue
+		}
+		if secretish(column) || strings.Contains(strings.ToLower(column), "env_var") {
+			t.Fatalf("secret column %s.%s", table, column)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if tokenCols != 1 {
+		t.Fatalf("run_token_sha256 columns %d", tokenCols)
+	}
+}
+
+func TestGetRunNotFound(t *testing.T) {
+	h := newHarness(t, true)
+	_, err := h.st.GetRun(context.Background(), "run_missing")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestRequestCancel(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+
+	queued := h.createRun(t, factoryID, agentID, "default", store.PriorityBatch)
+	cancelled, err := h.st.RequestCancel(ctx, queued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Status != store.StatusCancelled || cancelled.ID != queued.ID {
+		t.Fatalf("cancel %+v", cancelled)
+	}
+	leased, err := h.st.Lease(ctx, "default", 30*time.Second, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leased) != 0 {
+		t.Fatalf("cancelled run leased %+v", leased)
+	}
+	stillQueued, err := h.st.ListRuns(ctx, store.RunFilter{FactoryID: factoryID, Status: store.StatusQueued})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stillQueued) != 0 {
+		t.Fatalf("queued after cancel %+v", stillQueued)
+	}
+
+	running := h.createRun(t, factoryID, agentID, "default", store.PriorityInteractive)
+	if _, err := h.st.Lease(ctx, "default", 30*time.Second, 1); err != nil {
+		t.Fatal(err)
+	}
+	exec, err := h.st.StartExecution(ctx, running.ID, "worker-a", tokenHash("cancel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked, err := h.st.RequestCancel(ctx, running.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marked.Status != store.StatusRunning || !marked.CancelRequested {
+		t.Fatalf("running cancel %+v", marked)
+	}
+	applied, err := h.st.FinishExecution(ctx, exec.ID, store.Terminal{State: store.ExecCancelled})
+	if err != nil || !applied {
+		t.Fatalf("finish applied %v err %v", applied, err)
+	}
+	final, err := h.st.GetRun(ctx, running.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Status != store.StatusCancelled {
+		t.Fatalf("final %s", final.Status)
+	}
+	if _, err := h.st.RequestCancel(ctx, running.ID); !errors.Is(err, store.ErrAlreadyTerminal) {
+		t.Fatalf("second cancel err %v", err)
+	}
+}
+
+func TestUpsertAndTouchWorker(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	at := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	worker := store.Worker{
+		ID:              "w1",
+		Pool:            "default",
+		Platform:        "linux",
+		LabelsJSON:      json.RawMessage(`{"slot":"a"}`),
+		LastHeartbeatAt: at,
+		MaxConcurrent:   2,
+		Status:          "connected",
+	}
+	if err := h.st.UpsertWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	later := at.Add(time.Minute)
+	if err := h.st.TouchWorker(ctx, "w1", later); err != nil {
+		t.Fatal(err)
+	}
+	var pool, platform string
+	var hb time.Time
+	var maxc int
+	if err := h.raw.QueryRow(ctx, `SELECT pool, platform, last_heartbeat_at, max_concurrent FROM workers WHERE id = $1`, "w1").Scan(&pool, &platform, &hb, &maxc); err != nil {
+		t.Fatal(err)
+	}
+	if pool != "default" || platform != "linux" || !hb.Equal(later) || maxc != 2 {
+		t.Fatalf("worker pool %s platform %s hb %s max %d", pool, platform, hb, maxc)
+	}
+	worker.Pool = "gpu"
+	worker.MaxConcurrent = 4
+	if err := h.st.UpsertWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.raw.QueryRow(ctx, `SELECT pool, max_concurrent FROM workers WHERE id = $1`, "w1").Scan(&pool, &maxc); err != nil {
+		t.Fatal(err)
+	}
+	if pool != "gpu" || maxc != 4 {
+		t.Fatalf("upsert pool %s max %d", pool, maxc)
+	}
+	if err := h.st.TouchWorker(ctx, "missing", later); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("touch missing err %v", err)
+	}
+}
+
+type harness struct {
+	st  *store.Store
+	raw *pgx.Conn
+}
+
+func newHarness(t *testing.T, migrate bool) *harness {
+	t.Helper()
+	base := os.Getenv("FACTORY_TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	ctx := context.Background()
+	var entropy [8]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		t.Fatal(err)
+	}
+	schema := "t_" + hex.EncodeToString(entropy[:])
+	admin, err := pgx.Connect(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ident := pgx.Identifier{schema}.Sanitize()
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+ident); err != nil {
+		_ = admin.Close(ctx)
+		t.Fatal(err)
+	}
+	rawDSN, err := withSearchPath(base, schema, false)
+	if err != nil {
+		_ = admin.Close(ctx)
+		t.Fatal(err)
+	}
+	poolDSN, err := withSearchPath(base, schema, true)
+	if err != nil {
+		_ = admin.Close(ctx)
+		t.Fatal(err)
+	}
+	st, err := store.Open(ctx, poolDSN)
+	if err != nil {
+		_ = admin.Close(ctx)
+		t.Fatal(err)
+	}
+	raw, err := pgx.Connect(ctx, rawDSN)
+	if err != nil {
+		st.Close()
+		_ = admin.Close(ctx)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		st.Close()
+		if err := raw.Close(context.Background()); err != nil {
+			t.Errorf("close db: %v", err)
+		}
+		if _, err := admin.Exec(context.Background(), "DROP SCHEMA "+ident+" CASCADE"); err != nil {
+			t.Errorf("drop schema: %v", err)
+		}
+		if err := admin.Close(context.Background()); err != nil {
+			t.Errorf("close admin: %v", err)
+		}
+	})
+	if migrate {
+		if err := st.Migrate(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return &harness{st: st, raw: raw}
+}
+
+func (h *harness) seed(t *testing.T) (factoryID, agentID string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := h.st.ApplyDefinition(ctx, "acme", validDefinition()); err != nil {
+		t.Fatal(err)
+	}
+	fac, err := h.st.GetFactory(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := h.st.ListAgents(ctx, fac.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("agents %+v", agents)
+	}
+	return fac.ID, agents[0].ID
+}
+
+func (h *harness) createRun(t *testing.T, factoryID, agentID, pool string, priority store.Priority) store.Run {
+	t.Helper()
+	run, err := h.st.CreateRun(context.Background(), store.NewRun{
+		FactoryID: factoryID,
+		AgentID:   agentID,
+		Pool:      pool,
+		Priority:  priority,
+		Prompt:    "say hello",
+		Title:     "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return run
+}
+
+func validDefinition() store.AppliedDefinition {
+	return store.AppliedDefinition{
+		SchemaVersion: "v1alpha1",
+		Alias:         "acme",
+		GitSHA:        "abc",
+		SpecJSON:      json.RawMessage(`{"name":"acme"}`),
+		Runners: []store.DefinedRunner{{
+			Name:              "local",
+			PlatformJSON:      json.RawMessage(`{"os":"linux"}`),
+			InstanceShapeJSON: json.RawMessage(`{"cpu":1}`),
+			SetupCommands:     json.RawMessage(`["true"]`),
+		}},
+		Agents: []store.DefinedAgent{{
+			Name:      "implementer",
+			AgentType: "IMPLEMENT",
+			Runner:    "local",
+			SpecJSON:  json.RawMessage(`{"model":"auto"}`),
+		}},
+	}
+}
+
+func withSearchPath(raw, schema string, pool bool) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("search_path", schema)
+	if pool {
+		q.Set("pool_max_conns", "8")
+	}
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+func eventBatch(start, n int) []json.RawMessage {
+	out := make([]json.RawMessage, n)
+	for i := range out {
+		out[i] = json.RawMessage(fmt.Sprintf(`{"type":"message.delta","text":"%d"}`, start+i))
+	}
+	return out
+}
+
+func tokenHash(label string) []byte {
+	sum := sha256.Sum256([]byte(label))
+	return sum[:]
+}
+
+func intPtr(n int) *int { return &n }
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func int64sEqual(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func assertNoSecretFields(t *testing.T, typ reflect.Type) {
+	t.Helper()
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if secretish(field.Name) {
+			t.Fatalf("%s.%s looks like a secret", typ.Name(), field.Name)
+		}
+	}
+}
+
+func secretish(name string) bool {
+	n := strings.ToLower(name)
+	return strings.Contains(n, "secret") || strings.Contains(n, "token") || strings.Contains(n, "password") || strings.Contains(n, "envvar") || strings.Contains(n, "api_key") || strings.Contains(n, "apikey")
+}
