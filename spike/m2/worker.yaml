@@ -1,0 +1,9 @@
+# Upstream worker config (oz-agent-worker 63dbb8a).
+# Docker's default image pull policy is Always, which cannot see the local
+# factory-m1-task:dev and factory-harness:dev tags.
+cleanup: true
+max_concurrent_tasks: 1
+idle_on_complete: 0s
+backend:
+  docker:
+    image_pull_policy: IfNotPresent

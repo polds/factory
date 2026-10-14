@@ -1,0 +1,9 @@
+schemaVersion: v1alpha1
+name: m2
+description: Minimal laptop factory for the M2 walking skeleton.
+secrets:
+  - GH_TOKEN
+agentDefaults:
+  model: m2-offline-stub
+  runner: local
+  pool: standard
