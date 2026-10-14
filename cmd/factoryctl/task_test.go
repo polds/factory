@@ -156,6 +156,8 @@ func TestTaskListGetCancelWatch(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"task_cli","stage":"reviewing","status":"complete","title":"Fix","runs":[{"id":"run_cli","status":"succeeded"}]}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/factory/acme/tasks/task_cli/cancel":
 			_, _ = w.Write([]byte(`{"id":"task_cli","status":"cancelled"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/factory/acme/runs":
+			_, _ = w.Write([]byte(`[]`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agent/runs/run_cli/events":
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = io.WriteString(w, "id: 1\nevent: terminal\ndata: {\"status\":\"succeeded\",\"summary\":\"done\"}\n\n")

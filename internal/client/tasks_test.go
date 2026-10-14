@@ -221,6 +221,7 @@ func TestListApprovals(t *testing.T) {
 
 func TestWatchTaskStagesAndChildTranscript(t *testing.T) {
 	var polls atomic.Int32
+	var events atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-key" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -238,7 +239,15 @@ func TestWatchTaskStagesAndChildTranscript(t *testing.T) {
 			default:
 				_, _ = w.Write([]byte(`{"id":"task_abc","stage":"reviewing","status":"complete","runs":[{"id":"run_child","status":"succeeded"}]}`))
 			}
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/factory/acme/runs":
+			w.Header().Set("Content-Type", "application/json")
+			if polls.Load() < 2 {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[{"id":"run_child","status":"succeeded","work_item_id":"task_abc"}]`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agent/runs/run_child/events":
+			events.Add(1)
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = io.WriteString(w, "id: 1\nevent: message.delta\ndata: {\"role\":\"assistant\",\"text\":\"hello\"}\n\n")
 			_, _ = io.WriteString(w, "id: 2\nevent: terminal\ndata: {\"status\":\"succeeded\",\"summary\":\"done\"}\n\n")
@@ -271,14 +280,108 @@ func TestWatchTaskStagesAndChildTranscript(t *testing.T) {
 	if triage >= planning || planning >= line || line >= term || term >= done {
 		t.Fatalf("order %q", text)
 	}
+	if strings.Count(text, "run=run_child message.delta role=assistant text=hello") != 1 {
+		t.Fatalf("transcript count in %q", text)
+	}
+	if events.Load() != 1 {
+		t.Fatalf("child event streams %d", events.Load())
+	}
 	if strings.Contains(text, "test-key") {
 		t.Fatal("api key leaked")
+	}
+}
+
+func TestWatchTaskListsRunsWhenTaskOmitsRuns(t *testing.T) {
+	const (
+		openTask = `{"id":"task_abc","factory_id":"fac_acme","source":"manual","title":"Fix the gate","stage":"triage","status":"open","revision_count":0,"created_at":"2026-10-14T15:00:00Z"}`
+		planTask = `{"id":"task_abc","factory_id":"fac_acme","source":"manual","title":"Fix the gate","stage":"planning","status":"awaiting_approval","revision_count":0,"created_at":"2026-10-14T15:00:00Z"}`
+		doneTask = `{"id":"task_abc","factory_id":"fac_acme","source":"manual","title":"Fix the gate","stage":"reviewing","status":"complete","revision_count":0,"created_at":"2026-10-14T15:00:00Z"}`
+	)
+	for _, body := range []string{openTask, planTask, doneTask} {
+		if strings.Contains(body, `"runs"`) || strings.Contains(body, `"pending_gate"`) {
+			t.Fatalf("task fixture must omit runs and pending_gate: %s", body)
+		}
+	}
+	var polls atomic.Int32
+	var events atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/factory/acme/tasks/task_abc":
+			n := polls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			switch n {
+			case 1:
+				_, _ = w.Write([]byte(openTask))
+			case 2:
+				_, _ = w.Write([]byte(planTask))
+			default:
+				_, _ = w.Write([]byte(doneTask))
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/factory/acme/runs":
+			w.Header().Set("Content-Type", "application/json")
+			if polls.Load() < 2 {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[
+				{"id":"run_other","status":"succeeded","work_item_id":"task_other"},
+				{"id":"run_child","status":"succeeded","work_item_id":"task_abc"}
+			]`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agent/runs/run_child/events":
+			events.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "id: 1\nevent: message.delta\ndata: {\"role\":\"assistant\",\"text\":\"from-list\"}\n\n")
+			_, _ = io.WriteString(w, "id: 2\nevent: terminal\ndata: {\"status\":\"succeeded\",\"summary\":\"done\"}\n\n")
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agent/runs/run_other/events":
+			t.Errorf("streamed a run for a different work item")
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out strings.Builder
+	c := &Client{BaseURL: srv.URL, APIKey: "test-key", PollInterval: time.Millisecond}
+	code, err := c.WatchTask(ctx, "acme", "task_abc", &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, out.String())
+	}
+	text := out.String()
+	planning := "stage=planning status=awaiting_approval"
+	if strings.Contains(text, "gate=") {
+		t.Fatalf("gate printed without pending_gate\n%s", text)
+	}
+	if !strings.Contains(text, "stage=triage status=open\n") || !strings.Contains(text, planning+"\n") {
+		t.Fatalf("stdout %q", text)
+	}
+	if !strings.Contains(text, "run=run_child message.delta role=assistant text=from-list") {
+		t.Fatalf("stdout %q", text)
+	}
+	if strings.Contains(text, "run_other") {
+		t.Fatalf("other work item leaked\n%s", text)
+	}
+	if events.Load() != 1 {
+		t.Fatalf("child event streams %d", events.Load())
 	}
 }
 
 func TestWatchTaskCancelled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/factory/acme/runs" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"id":"task_abc","stage":"building","status":"cancelled"}`))
 	}))
 	t.Cleanup(srv.Close)

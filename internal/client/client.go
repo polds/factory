@@ -39,9 +39,11 @@ type RunRequest struct {
 }
 
 // Run is the control-plane run object returned by start and cancel.
+// WorkItemID is set on factory run rows once the API emits it (T10).
 type Run struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID         string `json:"id"`
+	Status     string `json:"status"`
+	WorkItemID string `json:"work_item_id,omitempty"`
 }
 
 // StartRun creates a run. The API key is sent as a bearer token and is never copied into the body.

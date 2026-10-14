@@ -30,7 +30,8 @@ type TaskFilter struct {
 }
 
 // WorkItem is a control-plane work item.
-// Runs lists child runs so task watch can stream their transcripts.
+// Runs is an optional embedded child list. Watch also reads
+// GET /api/v1/factory/{uid}/runs and streams rows with a matching work_item_id.
 type WorkItem struct {
 	ID             string `json:"id"`
 	FactoryID      string `json:"factory_id,omitempty"`
@@ -162,10 +163,11 @@ func (c *Client) WatchTask(ctx context.Context, factory, taskID string, out io.W
 			}
 			last = line
 		}
-		for _, run := range item.Runs {
-			if run.ID == "" {
-				continue
-			}
+		runs, err := c.taskRuns(ctx, factory, taskID, item.Runs)
+		if err != nil {
+			return 1, err
+		}
+		for _, run := range runs {
 			if _, ok := seen[run.ID]; ok {
 				continue
 			}
@@ -185,6 +187,44 @@ func (c *Client) WatchTask(ctx context.Context, factory, taskID string, out io.W
 			return 1, err
 		}
 	}
+}
+
+// taskRuns unions an embedded runs array with factory runs for this task.
+// Embedded rows are kept even when they omit work_item_id. Listed rows
+// match on work_item_id. The same run id is returned once.
+func (c *Client) taskRuns(ctx context.Context, factory, taskID string, embedded []Run) ([]Run, error) {
+	listed, err := c.factoryRuns(ctx, factory)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Run, 0, len(embedded)+len(listed))
+	seen := map[string]struct{}{}
+	add := func(run Run) {
+		if run.ID == "" {
+			return
+		}
+		if _, ok := seen[run.ID]; ok {
+			return
+		}
+		seen[run.ID] = struct{}{}
+		out = append(out, run)
+	}
+	for _, run := range embedded {
+		add(run)
+	}
+	for _, run := range listed {
+		if run.WorkItemID != taskID {
+			continue
+		}
+		add(run)
+	}
+	return out, nil
+}
+
+func (c *Client) factoryRuns(ctx context.Context, factory string) ([]Run, error) {
+	var runs []Run
+	err := c.doJSON(ctx, http.MethodGet, factoryPath(factory, "runs"), nil, &runs, http.StatusOK)
+	return runs, err
 }
 
 func stageLine(item WorkItem) string {
