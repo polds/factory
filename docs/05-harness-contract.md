@@ -130,12 +130,13 @@ set, this harness also POSTs the same NDJSON to that URL, the control-plane
 ingest route `POST /api/v1/agent/runs/{runId}/events:ingest`. A batch goes
 out at 64 events or after 500ms, whichever comes first. Each request carries
 `Authorization: Bearer` set to the run token and `X-Factory-Event-Index` set to
-event in the batch. A failed batch is retried with backoff for at most 30s and
-resent with the same index. Pushing does not block the agent loop. Remaining
-events flush before exit, waiting at most 10s. `events.ndjson` is always
+the index of the first event in the batch. A failed batch is retried with
+backoff for at most 30s and resent with the same index. After that budget, later events are still pushed;
+`events.ndjson` keeps every event. Pushing does not block the agent loop.
+Remaining events flush before exit, waiting at most 10s. The file is always
 written. With either variable unset, the harness writes only that file, with
-the same bytes as a run that never pushes. Tool subprocesses do not receive
-these two variables.
+the same bytes as a run that never pushes. Tool and setup subprocesses do not
+receive these two variables.
 
 ## Exit codes
 
