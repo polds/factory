@@ -2,11 +2,9 @@ package handoff
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/polds/factory/internal/definition"
-	"github.com/polds/factory/internal/harness"
 )
 
 // Agent is the resolved stage agent. BuildPrompt reads its name, description,
@@ -34,18 +32,15 @@ type Context struct {
 	PriorStages        []StageOutput
 	AcceptanceCriteria string
 	// Env is the stage's resolved environment, including secret material.
-	// BuildPrompt never copies it. Values are redacted from included text.
-	// {{SECRET_NAME}} references are names, not material, and are left alone.
+	// BuildPrompt never copies these entries. Each value of 4 bytes or more
+	// is redacted from included text, including percent-encodings (both hex
+	// cases, + and %20, and path-style forms), JSON string encodings from
+	// harness.Redact, and base64. {{SECRET_NAME}} placeholders are kept, so a
+	// value such as TOKEN cannot rewrite {{GH_TOKEN}}.
 	// Values shorter than 4 bytes are not redacted from text that already
 	// contained them; they are still omitted as environment entries.
 	Env map[string]string
 }
-
-var (
-	secretRefExact = regexp.MustCompile(`^\{\{[A-Z][A-Z0-9_]*\}\}$`)
-	secretRefAuth  = regexp.MustCompile(`(?i)^(bearer|basic)\s+\{\{[A-Z][A-Z0-9_]*\}\}$`)
-	authValue      = regexp.MustCompile(`(?i)^(bearer|basic)\s+(\S+)\s*$`)
-)
 
 // BuildPrompt returns the deterministic FACTORY_TASK_PROMPT for agent and ctx.
 // Prior stage outputs stay in slice order. Secret values from ctx.Env and
@@ -103,7 +98,7 @@ func BuildPrompt(agent Agent, ctx Context) string {
 			}
 		}
 	}
-	return harness.Redact(b.String(), secretValues(agent, ctx))
+	return redactPrompt(b.String(), secretValues(agent, ctx))
 }
 
 func writeLine(b *strings.Builder, label, value string) {
@@ -122,35 +117,4 @@ func writeBody(b *strings.Builder, value string) {
 	if !strings.HasSuffix(value, "\n") {
 		b.WriteByte('\n')
 	}
-}
-
-func secretValues(agent Agent, ctx Context) []string {
-	var vals []string
-	for _, v := range ctx.Env {
-		vals = append(vals, secretMaterial(v)...)
-	}
-	for _, srv := range agent.MCPServers {
-		for _, v := range srv.Env {
-			vals = append(vals, secretMaterial(v)...)
-		}
-		for _, v := range srv.Headers {
-			vals = append(vals, secretMaterial(v)...)
-		}
-	}
-	return vals
-}
-
-func secretMaterial(v string) []string {
-	v = strings.TrimSpace(v)
-	if v == "" || secretRefExact.MatchString(v) || secretRefAuth.MatchString(v) {
-		return nil
-	}
-	out := []string{v}
-	if m := authValue.FindStringSubmatch(v); m != nil {
-		rest := m[2]
-		if rest != v && !secretRefExact.MatchString(rest) {
-			out = append(out, rest)
-		}
-	}
-	return out
 }

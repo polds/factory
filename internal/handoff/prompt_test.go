@@ -1,6 +1,7 @@
 package handoff
 
 import (
+	"encoding/base64"
 	"net/url"
 	"os"
 	"strings"
@@ -63,9 +64,8 @@ func TestBuildPromptOmitsSecretValues(t *testing.T) {
 		headerTok = "ghp_HeaderOnlyPlantedToken"
 	)
 	agent := definition.Agent{
-		Name:    "implementer",
-		Body:    "Use {{GH_TOKEN}} from the environment. Never print it.",
-		Secrets: []string{"GH_TOKEN", planted},
+		Name: "implementer",
+		Body: "Use {{GH_TOKEN}} from the environment. Never print it.",
 		MCPServers: map[string]definition.MCPServer{
 			"github": {
 				Env: map[string]string{
@@ -85,7 +85,6 @@ func TestBuildPromptOmitsSecretValues(t *testing.T) {
 		Env: map[string]string{
 			"GH_TOKEN":        planted,
 			"OPENAI_API_KEY":  "sk-plantedopenaikeyvalue",
-			"SHORT":           "xy",
 			"TEMPLATE":        "{{GH_TOKEN}}",
 			"TEMPLATE_BEARER": "Bearer {{NPM_TOKEN}}",
 		},
@@ -103,7 +102,6 @@ func TestBuildPromptOmitsSecretValues(t *testing.T) {
 		onlyMCP,
 		headerTok,
 		"sk-plantedopenaikeyvalue",
-		"xy",
 	}
 	for _, secret := range forbidden {
 		if strings.Contains(got, secret) {
@@ -122,6 +120,190 @@ func TestBuildPromptOmitsSecretValues(t *testing.T) {
 	if !strings.Contains(got, "Ship the fix") {
 		t.Fatal("title missing")
 	}
+}
+
+func TestBuildPromptRedactsEncodedSecrets(t *testing.T) {
+	t.Parallel()
+	t.Run("lowercase hex", func(t *testing.T) {
+		t.Parallel()
+		const secret = "ghp_Planted/SecretValue99"
+		const encoded = "ghp_Planted%2fSecretValue99"
+		got := promptWith(map[string]string{"GH_TOKEN": secret}, "mentions "+encoded, nil)
+		if strings.Contains(got, encoded) || strings.Contains(got, secret) {
+			t.Fatalf("lowercase percent-encoding leaked:\n%s", got)
+		}
+		if !strings.Contains(got, "mentions [REDACTED]") {
+			t.Fatalf("lowercase form was not redacted:\n%s", got)
+		}
+	})
+	t.Run("space as percent20", func(t *testing.T) {
+		t.Parallel()
+		const secret = "abcd secret/token"
+		plus := url.QueryEscape(secret) // abcd+secret%2Ftoken
+		path := "abcd%20secret%2Ftoken"
+		lower := "abcd%20secret%2ftoken"
+		got := promptWith(map[string]string{"GH_TOKEN": secret}, plus+" "+path+" "+lower, nil)
+		for _, form := range []string{secret, plus, path, lower} {
+			if strings.Contains(got, form) {
+				t.Errorf("form %q leaked:\n%s", form, got)
+			}
+		}
+	})
+	t.Run("path escape", func(t *testing.T) {
+		t.Parallel()
+		const secret = "user@host/secret"
+		query := url.QueryEscape(secret) // user%40host%2Fsecret
+		path := url.PathEscape(secret)   // user@host%2Fsecret
+		lower := "user@host%2fsecret"    // lowercase path form
+		got := promptWith(map[string]string{"GH_TOKEN": secret}, secret+" "+query+" "+path+" "+lower, nil)
+		for _, form := range []string{secret, query, path, lower} {
+			if strings.Contains(got, form) {
+				t.Errorf("form %q leaked:\n%s", form, got)
+			}
+		}
+	})
+	t.Run("short prefix does not punch a hole", func(t *testing.T) {
+		t.Parallel()
+		const secret = "ghp_Planted/SecretValue99"
+		const encoded = "ghp_Planted%2fSecretValue99"
+		got := promptWith(map[string]string{
+			"PREFIX":   "ghp_",
+			"GH_TOKEN": secret,
+		}, "mentions "+encoded, nil)
+		if strings.Contains(got, encoded) || strings.Contains(got, "Planted%2fSecretValue99") {
+			t.Fatalf("short prefix punched a hole:\n%s", got)
+		}
+		if !strings.Contains(got, "mentions [REDACTED]") {
+			t.Fatalf("encoded secret was not consumed:\n%s", got)
+		}
+	})
+}
+
+func TestBuildPromptExtractsBareCredentials(t *testing.T) {
+	t.Parallel()
+	const bare = "ghp_HeaderOnlyPlantedToken"
+	t.Run("token scheme", func(t *testing.T) {
+		t.Parallel()
+		got := promptWith(nil, "saw "+bare, map[string]string{
+			"Authorization": "token " + bare,
+		})
+		if strings.Contains(got, bare) {
+			t.Fatalf("bare token leaked:\n%s", got)
+		}
+	})
+	t.Run("quoted bearer", func(t *testing.T) {
+		t.Parallel()
+		got := promptWith(nil, "saw "+bare, map[string]string{
+			"Authorization": `Bearer "` + bare + `"`,
+		})
+		if strings.Contains(got, bare) {
+			t.Fatalf("quoted bearer leaked:\n%s", got)
+		}
+	})
+	t.Run("trailing punctuation", func(t *testing.T) {
+		t.Parallel()
+		got := promptWith(nil, "saw "+bare, map[string]string{
+			"Authorization": "Bearer " + bare + ",",
+		})
+		if strings.Contains(got, bare) {
+			t.Fatalf("trailing punctuation kept the comma on the needle:\n%s", got)
+		}
+	})
+	t.Run("url userinfo password", func(t *testing.T) {
+		t.Parallel()
+		const password = "SuperSecretValue99"
+		got := promptWith(map[string]string{
+			"DATABASE_URL": "postgres://user:" + password + "@db.internal/app",
+		}, "password "+password, nil)
+		if strings.Contains(got, password) {
+			t.Fatalf("userinfo password leaked:\n%s", got)
+		}
+		if !strings.Contains(got, "password [REDACTED]") {
+			t.Fatalf("password was not redacted:\n%s", got)
+		}
+	})
+}
+
+func TestBuildPromptProtectsSecretReferences(t *testing.T) {
+	t.Parallel()
+	agent := definition.Agent{
+		Name: "implementer",
+		Body: "Use {{GH_TOKEN}} and {{NPM_TOKEN}}.",
+	}
+	got := BuildPrompt(agent, Context{
+		Title: "T",
+		Body:  "TOKEN is not the placeholder {{GH_TOKEN}}.",
+		Env:   map[string]string{"LOW": "TOKEN"},
+	})
+	if !strings.Contains(got, "{{GH_TOKEN}}") || !strings.Contains(got, "{{NPM_TOKEN}}") {
+		t.Fatalf("placeholder rewritten:\n%s", got)
+	}
+	if strings.Contains(got, "TOKEN is not") {
+		t.Fatalf("bare TOKEN was not redacted:\n%s", got)
+	}
+}
+
+func TestBuildPromptShortSecretFloor(t *testing.T) {
+	t.Parallel()
+	// harness.Redact ignores secrets shorter than 4 bytes. A short value that
+	// already appears in included text stays. A short value that appears only
+	// in the environment is still omitted.
+	const inBody = "q7z"
+	const onlyEnv = "xy"
+	got := BuildPrompt(definition.Agent{Name: "implementer", Body: "Do the work."}, Context{
+		Title: "T",
+		Body:  "keep " + inBody + " visible",
+		Env:   map[string]string{"A": inBody, "B": onlyEnv},
+	})
+	if !strings.Contains(got, "keep q7z visible") {
+		t.Fatalf("short secret was redacted:\n%s", got)
+	}
+	if strings.Contains(got, onlyEnv) {
+		t.Fatalf("env-only short secret was copied:\n%s", got)
+	}
+}
+
+func TestBuildPromptDoesNotCopySecretNames(t *testing.T) {
+	t.Parallel()
+	const name = "NPM_TOKEN_NAME_ONLY"
+	got := BuildPrompt(definition.Agent{
+		Name:    "implementer",
+		Body:    "Do the work.",
+		Secrets: []string{name},
+	}, Context{Title: "T", Body: "B"})
+	if strings.Contains(got, name) {
+		t.Fatalf("secret name copied into the prompt:\n%s", got)
+	}
+}
+
+func TestBuildPromptRedactsBase64Secret(t *testing.T) {
+	t.Parallel()
+	const planted = "ghp_Planted/SecretValue99"
+	forms := []string{
+		base64.StdEncoding.EncodeToString([]byte(planted)),
+		base64.RawStdEncoding.EncodeToString([]byte(planted)),
+		base64.URLEncoding.EncodeToString([]byte(planted)),
+		base64.RawURLEncoding.EncodeToString([]byte(planted)),
+	}
+	got := promptWith(map[string]string{"GH_TOKEN": planted}, strings.Join(forms, " "), nil)
+	for _, form := range forms {
+		if strings.Contains(got, form) {
+			t.Errorf("base64 form %q leaked:\n%s", form, got)
+		}
+	}
+}
+
+func promptWith(env map[string]string, body string, headers map[string]string) string {
+	agent := definition.Agent{
+		Name: "implementer",
+		Body: "Use {{GH_TOKEN}}.",
+	}
+	if headers != nil {
+		agent.MCPServers = map[string]definition.MCPServer{
+			"github": {Headers: headers},
+		}
+	}
+	return BuildPrompt(agent, Context{Title: "T", Body: body, Env: env})
 }
 
 func TestBuildPromptHarnessOmitsAuthMaterial(t *testing.T) {
@@ -150,7 +332,6 @@ func goldenAgent() definition.Agent {
 		Description: "Makes the change and opens a pull request.",
 		Model:       "claude-5-opus-high",
 		Body:        "# Implement\n\nYou make the change described by the work item and the spec.",
-		Secrets:     []string{"NPM_TOKEN"},
 	}
 }
 
