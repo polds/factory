@@ -1,0 +1,1 @@
+agents/implementer/agent.md:5: runner is required

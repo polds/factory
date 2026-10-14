@@ -74,9 +74,7 @@ func checkExclusive(file, prefix string, raw map[string]any, lines map[string]in
 		}
 		m = nested
 	}
-	model, modelOK := m["model"]
-	harness, harnessOK := m["harness"]
-	if !modelOK || !harnessOK || model == nil || harness == nil {
+	if !nonBlankString(m["model"]) || !usableHarness(m["harness"]) {
 		return
 	}
 	modelPath := joinPath(prefix, "model")
@@ -86,6 +84,26 @@ func checkExclusive(file, prefix string, raw map[string]any, lines map[string]in
 		line = other
 	}
 	addDiag(diags, file, line, SeverityError, "model and harness are mutually exclusive")
+}
+
+// nonBlankString reports whether v is a string with non-whitespace text.
+// Null and blank values are unset so agentDefaults can be inherited.
+func nonBlankString(v any) bool {
+	s, ok := v.(string)
+	return ok && strings.TrimSpace(s) != ""
+}
+
+// usableHarness reports whether v is a harness mapping. Null is unset.
+func usableHarness(v any) bool {
+	return v != nil
+}
+
+func resolveRunner(raw map[string]any, fallback string) (name string, explicit bool) {
+	if v, ok := raw["runner"]; ok && nonBlankString(v) {
+		s, _ := v.(string)
+		return strings.TrimSpace(s), true
+	}
+	return strings.TrimSpace(fallback), false
 }
 
 func checkRunnerRef(file, name, path string, lines map[string]int, have map[string]Runner, diags *[]Diagnostic) {

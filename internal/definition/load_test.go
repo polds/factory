@@ -251,6 +251,70 @@ secrets: []
 	}
 }
 
+func TestBlankRunnerAndModelInheritDefaults(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "factory.yaml"), `
+schemaVersion: v1alpha1
+name: blanks
+agentDefaults:
+  model: auto
+  runner: local
+`)
+	writeFile(t, filepath.Join(dir, "runners", "local.yaml"), `
+description: local
+platform:
+  os: linux
+  linux:
+    dockerImage: factory-m1-task:dev
+`)
+	writeFile(t, filepath.Join(dir, "agents", "nulls", "agent.md"), `
+---
+description: Null keys inherit.
+agentType: IMPLEMENT
+model:
+runner:
+---
+
+# Nulls
+`)
+	writeFile(t, filepath.Join(dir, "agents", "spaces", "agent.md"), `
+---
+description: Blank strings inherit.
+agentType: IMPLEMENT
+model: ""
+runner: "   "
+---
+
+# Spaces
+`)
+	writeFile(t, filepath.Join(dir, "agents", "harness", "agent.md"), `
+---
+description: Blank model leaves the harness.
+agentType: IMPLEMENT
+model: ""
+harness:
+  type: claude-code
+  model: claude-5-opus-high
+---
+
+# Harness
+`)
+	tree, diags := LoadDir(dir)
+	if len(diags) != 0 {
+		t.Fatalf("diagnostics: %#v", diags)
+	}
+	for _, slug := range []string{"nulls", "spaces"} {
+		ag := tree.Agents[slug]
+		if ag.Runner != "local" || ag.Model != "auto" || ag.Harness != nil {
+			t.Fatalf("%s = %+v", slug, ag)
+		}
+	}
+	harness := tree.Agents["harness"]
+	if harness.Model != "" || harness.Harness == nil || harness.Harness.Type != "claude-code" || harness.Runner != "local" {
+		t.Fatalf("harness = %+v", harness)
+	}
+}
+
 func TestInlineCredentialInEnv(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "factory.yaml"), `

@@ -233,11 +233,15 @@ func loadAgents(root string, tree *Tree, diags *[]Diagnostic) {
 			addDiag(diags, rel, 1, SeverityError, "invalid YAML: "+err.Error())
 			continue
 		}
-		if _, set := raw["runner"]; set {
-			name, _ := raw["runner"].(string)
-			checkRunnerRef(rel, name, "runner", lines, tree.Runners, diags)
-		} else if strings.TrimSpace(tree.Factory.AgentDefaults.Runner) == "" {
-			addDiag(diags, rel, 1, SeverityError, "runner is required")
+		runnerName, runnerExplicit := resolveRunner(raw, tree.Factory.AgentDefaults.Runner)
+		if runnerExplicit {
+			checkRunnerRef(rel, runnerName, "runner", lines, tree.Runners, diags)
+		} else if runnerName == "" {
+			line := 1
+			if _, ok := raw["runner"]; ok {
+				line = lineAt(lines, "runner")
+			}
+			addDiag(diags, rel, line, SeverityError, "runner is required")
 		}
 		parsed = append(parsed, parsedAgent{
 			slug:  e.Name(),
@@ -250,7 +254,17 @@ func loadAgents(root string, tree *Tree, diags *[]Diagnostic) {
 	}
 	reportDuplicateAgents(parsed, diags)
 	for _, p := range parsed {
-		tree.Agents[p.slug] = p.agent(tree.Factory.AgentDefaults)
+		ag := p.agent(tree.Factory.AgentDefaults)
+		if strings.TrimSpace(ag.Model) == "" && ag.Harness == nil {
+			line := 1
+			if _, ok := p.raw["model"]; ok {
+				line = lineAt(p.lines, "model")
+			} else if _, ok := p.raw["harness"]; ok {
+				line = lineAt(p.lines, "harness")
+			}
+			addDiag(diags, p.file, line, SeverityError, "model or harness is required")
+		}
+		tree.Agents[p.slug] = ag
 	}
 }
 
@@ -292,25 +306,24 @@ func (p parsedAgent) agent(defaults AgentDefaults) Agent {
 		WorkerHost:         p.doc.WorkerHost,
 		Body:               p.body,
 	}
-	_, modelSet := p.raw["model"]
-	_, harnessSet := p.raw["harness"]
+	modelSet := nonBlankString(p.raw["model"])
+	harnessSet := false
+	if v, ok := p.raw["harness"]; ok {
+		harnessSet = usableHarness(v)
+	}
 	switch {
-	case modelSet || harnessSet:
-		if modelSet {
-			ag.Model = p.doc.Model
-		}
-		if harnessSet {
-			ag.Harness = cloneHarness(p.doc.Harness)
-		}
+	case modelSet && harnessSet:
+		ag.Model = strings.TrimSpace(p.doc.Model)
+		ag.Harness = cloneHarness(p.doc.Harness)
+	case modelSet:
+		ag.Model = strings.TrimSpace(p.doc.Model)
+	case harnessSet:
+		ag.Harness = cloneHarness(p.doc.Harness)
 	default:
-		ag.Model = defaults.Model
+		ag.Model = strings.TrimSpace(defaults.Model)
 		ag.Harness = cloneHarness(defaults.Harness)
 	}
-	if _, set := p.raw["runner"]; set {
-		ag.Runner = p.doc.Runner
-	} else {
-		ag.Runner = defaults.Runner
-	}
+	ag.Runner, _ = resolveRunner(p.raw, defaults.Runner)
 	if _, set := p.raw["secrets"]; set {
 		ag.Secrets = cloneStrings(p.doc.Secrets)
 	} else {
