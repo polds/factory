@@ -1,6 +1,11 @@
 # spike scratch: cloned upstream worker, built binaries, logs
 spike/*/.work/
 
+# local env. May contain tokens. .env matches every directory; deploy/.env
+# is listed so the compose file is obvious.
+.env
+deploy/.env
+
 # build output
 /bin/
 *.test

@@ -9,8 +9,13 @@
 # not the compose network, so factoryd is reached at
 # http://<gateway>:8080 (172.17.0.1 on a typical Linux engine).
 #
-# Requires: docker (running), go, git, curl, python3. Live also requires gh
-# and OPENAI_BASE_URL, M2_MODEL, GH_TOKEN. OPENAI_API_KEY is optional.
+# Requires: docker (running), go, git, curl, python3. Live also requires gh.
+# Live reads deploy/.env when that file exists (KEY=VALUE text, not executed).
+# A non-empty shell variable wins over the file. OPENAI_BASE_URL, M2_MODEL,
+# GH_TOKEN, and optional OPENAI_API_KEY are the shell names.
+# FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL, FACTORY_INFERENCE_OPENAI_API_KEY,
+# and FACTORY_SECRET_GH_TOKEN are the same values. Nothing in this script
+# prints those values.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,7 +45,8 @@ LEAK_ANNOUNCED=0
 # shellcheck disable=SC2317,SC2329 # invoked by the EXIT/INT/TERM trap
 cleanup() {
   local code=$?
-  trap - EXIT INT TERM
+  trap - EXIT INT TERM ERR
+  set +e
   if [[ -n "${MODEL_PID}" ]]; then
     kill "${MODEL_PID}" 2>/dev/null || true
   fi
@@ -58,23 +64,194 @@ cleanup() {
     COMPOSE_STARTED=0
   fi
   if ! scan_logs_for_secrets; then
-    rm -rf "$WORK/evidence" "$WORK/compose.log" "$WORK/watch-run.ts" "$WORK/watch-cancel.ts" \
-      "$WORK/factoryctl-run.err" "$WORK/factoryctl-cancel.err"
-    if [[ "$LEAK_ANNOUNCED" -eq 0 ]]; then
-      echo "M2 FAIL — a secret value appeared in the logs, watch output, or archived events; output withheld"
-      LEAK_ANNOUNCED=1
-    fi
+    announce_leak
     code=1
   fi
   exit "${code}"
 }
-trap cleanup EXIT INT TERM
-
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
 die() {
-  printf '%s\n' "$*" >&2
-  exit 1
+  fail "$*"
+}
+
+# on_err is the ERR trap. A non-zero command under errexit must still say why.
+on_err() {
+  local code="$1" line="$2"
+  trap - ERR
+  fail "command failed at line ${line} (exit ${code})"
+}
+
+# run_capture stores a command's status in a variable and returns 0.
+# Turning errexit back on before `return <nonzero>` aborts the whole script
+# (bash exits on that return), so the caller never reaches fail.
+run_capture() {
+  local __var="$1"
+  shift
+  local __errexit=0
+  case $- in
+    *e*) __errexit=1 ;;
+  esac
+  trap - ERR
+  set +e
+  "$@"
+  local __code=$?
+  if [[ "$__errexit" -eq 1 ]]; then
+    set -e
+  fi
+  trap 'on_err $? $LINENO' ERR
+  printf -v "$__var" '%s' "$__code"
+}
+
+# harness_contract_exit is true for the codes the harness returns on purpose.
+# 126, and busybox's 2, mean the file was not an executable for this platform.
+harness_contract_exit() {
+  case "$1" in
+    0 | 10 | 20 | 21 | 30) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# docker info prints aarch64/x86_64. Images and GOARCH use arm64/amd64.
+normalize_docker_platform() {
+  case "$1" in
+    linux/aarch64 | linux/arm64) printf '%s\n' linux/arm64 ;;
+    linux/x86_64 | linux/amd64) printf '%s\n' linux/amd64 ;;
+    *) return 1 ;;
+  esac
+}
+
+goarch_for_platform() {
+  case "$1" in
+    linux/arm64) printf '%s\n' arm64 ;;
+    linux/amd64) printf '%s\n' amd64 ;;
+    *) return 1 ;;
+  esac
+}
+
+uname_for_platform() {
+  case "$1" in
+    linux/arm64) printf '%s\n' aarch64 ;;
+    linux/amd64) printf '%s\n' x86_64 ;;
+    *) return 1 ;;
+  esac
+}
+
+# load_env_file reads KEY=VALUE lines. It does not expand or execute values.
+# Empty values are ignored. A variable that is already non-empty is kept.
+load_env_file() {
+  local file="$1" line="" n=0 key="" val=""
+  local -a keys=() vals=()
+  [[ -f "$file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$((n + 1))
+    line="${line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" == export\ * ]]; then
+      line="${line#export }"
+      line="${line#"${line%%[![:space:]]*}"}"
+    fi
+    if [[ ! "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      echo "deploy/.env:${n}: invalid line" >&2
+      return 1
+    fi
+    key="${BASH_REMATCH[1]}"
+    val="${BASH_REMATCH[2]}"
+    if [[ ${#val} -ge 2 && "$val" == \"*\" && "$val" == *\" ]]; then
+      val="${val:1:${#val}-2}"
+    elif [[ ${#val} -ge 2 && "$val" == \'*\' && "$val" == *\' ]]; then
+      val="${val:1:${#val}-2}"
+    fi
+    if [[ -z "$val" || -n "${!key:-}" ]]; then
+      continue
+    fi
+    keys+=("$key")
+    vals+=("$val")
+  done <"$file"
+  local i
+  for i in "${!keys[@]}"; do
+    printf -v "${keys[$i]}" '%s' "${vals[$i]}"
+    export "${keys[$i]}"
+  done
+}
+
+copy_if_empty() {
+  local dest="$1" src="$2"
+  if [[ -z "${!dest:-}" && -n "${!src:-}" ]]; then
+    printf -v "$dest" '%s' "${!src}"
+    export "${dest?}"
+  fi
+}
+
+apply_live_env_aliases() {
+  copy_if_empty OPENAI_BASE_URL FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL
+  copy_if_empty OPENAI_API_KEY FACTORY_INFERENCE_OPENAI_API_KEY
+  copy_if_empty GH_TOKEN FACTORY_SECRET_GH_TOKEN
+}
+
+# Hostname and port only. Userinfo in the URL is a secret and is not printed.
+url_log_host() {
+  RAW="$1" python3 - <<'PY'
+import os
+from urllib.parse import urlparse
+parts = urlparse(os.environ.get("RAW", ""))
+host = parts.hostname or ""
+if parts.port:
+    host = f"{host}:{parts.port}"
+print(host)
+PY
+}
+
+# GNU date accepts %N. macOS date does not; python3 is already required.
+unix_ns() {
+  local ts=""
+  if [[ -z "${M2_DATE_NS_MODE:-}" ]]; then
+    ts="$(date +%s%N 2>/dev/null || true)"
+    if [[ "$ts" =~ ^[0-9]{19}$ ]]; then
+      M2_DATE_NS_MODE=gnu
+    else
+      M2_DATE_NS_MODE=python
+    fi
+  fi
+  if [[ "$M2_DATE_NS_MODE" == gnu ]]; then
+    date +%s%N
+    return
+  fi
+  python3 -c 'import time; print(time.time_ns())'
+}
+
+# assert_linux_elf fails unless the file is a 64-bit little-endian Linux ELF
+# for arch (arm64 or amd64). A darwin binary is not an ELF.
+assert_linux_elf() {
+  local bin="$1" arch="$2"
+  python3 - "$bin" "$arch" <<'PY'
+import struct
+import sys
+
+path, arch = sys.argv[1], sys.argv[2]
+want = {"amd64": 62, "arm64": 183}
+data = open(path, "rb").read(20)
+if len(data) < 20 or data[:4] != b"\x7fELF":
+    sys.stderr.write("%s: not a linux ELF binary\n" % path)
+    sys.exit(1)
+if data[4] != 2 or data[5] != 1:
+    sys.stderr.write("%s: want a 64-bit little-endian ELF\n" % path)
+    sys.exit(1)
+machine = struct.unpack_from("<H", data, 18)[0]
+if arch not in want or machine != want[arch]:
+    sys.stderr.write("%s: ELF machine %s, want %s for %s\n" % (path, machine, want.get(arch), arch))
+    sys.exit(1)
+PY
+}
+
+assert_image_platform() {
+  local image="$1" want="$2" got=""
+  got="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image" 2>/dev/null || true)"
+  if [[ "$got" != "$want" ]]; then
+    echo "image ${image} platform is ${got:-unknown}, want ${want}" >&2
+    return 1
+  fi
 }
 
 compose() {
@@ -111,10 +288,30 @@ scan_logs_for_secrets() {
     "$WORK/watch-cancel.ts" \
     "$WORK/factoryctl-run.err" \
     "$WORK/factoryctl-cancel.err" \
+    "$WORK/image-exec.err" \
     "$WORK/model-stub.log" \
     "$WORK/git-daemon.log" \
     "$WORK/evidence/events.ndjson" \
     "$WORK/evidence/cancel-events.ndjson"
+}
+
+discard_captured_logs() {
+  rm -rf "$WORK/evidence"
+  rm -f \
+    "$WORK/compose.log" \
+    "$WORK/watch-run.ts" \
+    "$WORK/watch-cancel.ts" \
+    "$WORK/factoryctl-run.err" \
+    "$WORK/factoryctl-cancel.err" \
+    "$WORK/image-exec.err"
+}
+
+announce_leak() {
+  discard_captured_logs
+  if [[ "$LEAK_ANNOUNCED" -eq 0 ]]; then
+    echo "M2 FAIL — a secret value appeared in the logs, watch output, or archived events; output withheld"
+    LEAK_ANNOUNCED=1
+  fi
 }
 
 # prove_scanner plants a dummy and requires the scanner to reject it.
@@ -149,6 +346,8 @@ save_compose_logs() {
 }
 
 dump_failure() {
+  # A failing tail must not skip the M2 FAIL line under errexit.
+  set +e
   echo
   echo "── compose log (tail) ────────────────────────────────────────"
   if [[ -f "$WORK/compose.log" ]]; then
@@ -159,9 +358,22 @@ dump_failure() {
   echo "── factoryctl run (tail) ─────────────────────────────────────"
   if [[ -f "$WORK/watch-run.ts" ]]; then
     tail -n 40 "$WORK/watch-run.ts"
+  else
+    echo "(no watch transcript)"
   fi
+  echo "── factoryctl run stderr ─────────────────────────────────────"
   if [[ -f "$WORK/factoryctl-run.err" ]]; then
-    tail -n 40 "$WORK/factoryctl-run.err"
+    tail -n 80 "$WORK/factoryctl-run.err"
+  else
+    echo "(no factoryctl-run.err)"
+  fi
+  if [[ -f "$WORK/factoryctl-cancel.err" ]]; then
+    echo "── factoryctl cancel stderr ──────────────────────────────────"
+    tail -n 40 "$WORK/factoryctl-cancel.err"
+  fi
+  if [[ -f "$WORK/image-exec.err" ]]; then
+    echo "── image exec (tail) ─────────────────────────────────────────"
+    tail -n 40 "$WORK/image-exec.err"
   fi
   if [[ -f "$WORK/model-stub.log" ]]; then
     echo "── model stub (tail) ─────────────────────────────────────────"
@@ -171,22 +383,21 @@ dump_failure() {
     echo "── git daemon (tail) ─────────────────────────────────────────"
     tail -n 20 "$WORK/git-daemon.log"
   fi
+  return 0
 }
 
 fail() {
-  save_compose_logs || true
+  local reason="$*"
+  trap - ERR
+  set +e
+  save_compose_logs
   if ! scan_logs_for_secrets; then
-    rm -rf "$WORK/evidence" "$WORK/compose.log" "$WORK/watch-run.ts" "$WORK/watch-cancel.ts" \
-      "$WORK/factoryctl-run.err" "$WORK/factoryctl-cancel.err"
-    if [[ "$LEAK_ANNOUNCED" -eq 0 ]]; then
-      echo "M2 FAIL — a secret value appeared in the logs, watch output, or archived events; output withheld"
-      LEAK_ANNOUNCED=1
-    fi
+    announce_leak
     exit 1
   fi
   dump_failure
   echo
-  echo "M2 FAIL — $*"
+  echo "M2 FAIL — ${reason}"
   exit 1
 }
 
@@ -223,6 +434,9 @@ PY
 }
 
 # timestamped_run writes "<unix-ns>\t<line>" as factoryctl prints each line.
+# The caller must be in a context where a non-zero return is not fatal
+# (run_capture, or set +e). Re-enabling errexit before the return aborts
+# the script, and fail never prints.
 timestamped_run() {
   local out="$1"
   shift
@@ -231,17 +445,21 @@ timestamped_run() {
   mkfifo "$fifo"
   : >"$out"
   (
+    set -euo pipefail
     while IFS= read -r line || [[ -n "$line" ]]; do
-      printf '%s\t%s\n' "$(date +%s%N)" "$line"
+      printf '%s\t%s\n' "$(unix_ns)" "$line"
     done <"$fifo" >"$out"
   ) &
   local reader=$!
   set +e
   "$@" >"$fifo"
   local code=$?
-  set -e
   wait "$reader"
+  local wait_code=$?
   rm -f "$fifo"
+  if [[ "$code" -eq 0 && "$wait_code" -ne 0 ]]; then
+    code=$wait_code
+  fi
   return "$code"
 }
 
@@ -381,6 +599,14 @@ PY
   chmod -R a+rX "$dest"
 }
 
+# Sourced by spike/m2/run_test.sh. Executing the file runs the laptop stack.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
+
+trap cleanup EXIT INT TERM
+trap 'on_err $? $LINENO' ERR
+
 # ---------------------------------------------------------------------------
 say "Preflight"
 case "$MODE" in
@@ -405,15 +631,25 @@ case "$platform" in
     die "unsupported docker platform: $platform"
     ;;
 esac
+OCI_PLATFORM="$(normalize_docker_platform "$platform")" || die "unsupported docker platform: ${platform}"
+GOARCH_TARGET="$(goarch_for_platform "$OCI_PLATFORM")" || die "unsupported docker platform: ${platform}"
+# Builds and runs follow the daemon, not a leftover DOCKER_DEFAULT_PLATFORM.
+export DOCKER_DEFAULT_PLATFORM="$OCI_PLATFORM"
 echo "docker platform: $platform"
+echo "image platform: $OCI_PLATFORM"
 echo "go: $(go version)"
 echo "mode: $MODE"
 
+if [[ -f "$ROOT/deploy/.env" ]]; then
+  load_env_file "$ROOT/deploy/.env" || die "deploy/.env is invalid"
+fi
+apply_live_env_aliases
+
 if [[ "$MODE" == live ]]; then
   command -v gh >/dev/null || die "gh not found (required for MODE=live)"
-  [[ -n "${OPENAI_BASE_URL:-}" ]] || die "OPENAI_BASE_URL is required for MODE=live"
+  [[ -n "${OPENAI_BASE_URL:-}" ]] || die "OPENAI_BASE_URL or FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL is required for MODE=live"
   [[ -n "${M2_MODEL:-}" ]] || die "M2_MODEL is required for MODE=live"
-  [[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN is required for MODE=live"
+  [[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN or FACTORY_SECRET_GH_TOKEN is required for MODE=live"
   M2_REPO="${M2_REPO:-polds/factory}"
   echo "live repo: ${M2_REPO}"
 fi
@@ -437,6 +673,8 @@ SECRETS+=("$S3_SECRET_KEY" "$FACTORY_API_KEY" "$FACTORY_WORKER_API_KEY")
 
 DEF="$ROOT/deploy/m2-factory"
 if [[ "$MODE" == offline ]]; then
+  # A live token in deploy/.env must not stay in the environment for this mode.
+  unset GH_TOKEN OPENAI_API_KEY OPENAI_BASE_URL
   say "Serve the fixture and the model stub on ${GW}"
   rm -rf "$WORK/git"
   mkdir -p "$WORK/git"
@@ -475,14 +713,17 @@ if [[ "$MODE" == offline ]]; then
   export FACTORY_SECRET_GH_TOKEN="$OFFLINE_GH"
   SECRETS+=("$OFFLINE_DUMMY_KEY" "$OFFLINE_GH")
 else
-  TS="$(date -u +%Y%m%dT%H%M%SZ)"
+  TS="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || true)"
+  if [[ ! "$TS" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
+    TS="$(python3 -c 'from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))')"
+  fi
   BRANCH="m2/run-${TS}"
   say "Point the definition at ${M2_MODEL}"
   patch_model "$WORK/definition" "$M2_MODEL"
   DEF="$WORK/definition"
   export FACTORY_DEFINITION_HOST_PATH="$DEF"
   live_base="$(task_base_url "$OPENAI_BASE_URL" "$GW")"
-  echo "task OPENAI_BASE_URL host: $(printf '%s\n' "$live_base" | sed -E 's#^[a-z]+://##' | cut -d/ -f1)"
+  echo "task OPENAI_BASE_URL host: $(url_log_host "$live_base")"
   export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$live_base"
   export FACTORY_INFERENCE_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
   export FACTORY_SECRET_GH_TOKEN="$GH_TOKEN"
@@ -495,9 +736,36 @@ fi
 # ---------------------------------------------------------------------------
 say "Build factoryctl, the harness image, and the task image"
 (cd "$ROOT" && CGO_ENABLED=0 go build -o "$WORK/factoryctl" ./cmd/factoryctl)
-(cd "$ROOT" && CGO_ENABLED=0 go build -o harness/generic-openai/factory-harness ./cmd/factory-harness)
-docker build -q -t "$HARNESS_IMAGE" "$ROOT/harness/generic-openai" >/dev/null
-docker build -q -t "$TASK_IMAGE" "$ROOT/spike/m1/task-image" >/dev/null
+# The harness is copied into a Linux image and exec'd in the task container.
+# A host binary (darwin/arm64 on a Mac) is not a Linux ELF; bash exits 126.
+(cd "$ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH_TARGET" \
+  go build -o harness/generic-openai/factory-harness ./cmd/factory-harness)
+assert_linux_elf "$ROOT/harness/generic-openai/factory-harness" "$GOARCH_TARGET" ||
+  fail "harness binary is not a linux/${GOARCH_TARGET} ELF"
+docker build --platform "$OCI_PLATFORM" -q -t "$HARNESS_IMAGE" "$ROOT/harness/generic-openai" >/dev/null
+assert_image_platform "$HARNESS_IMAGE" "$OCI_PLATFORM" ||
+  fail "harness image platform does not match ${OCI_PLATFORM}"
+docker build --platform "$OCI_PLATFORM" -q -t "$TASK_IMAGE" "$ROOT/spike/m1/task-image" >/dev/null
+assert_image_platform "$TASK_IMAGE" "$OCI_PLATFORM" ||
+  fail "task image platform does not match ${OCI_PLATFORM}"
+HARNESS_EXEC_CODE=0
+run_capture HARNESS_EXEC_CODE docker run --rm --platform "$OCI_PLATFORM" \
+  --entrypoint /factory-harness "$HARNESS_IMAGE" \
+  >"$WORK/image-exec.out" 2>"$WORK/image-exec.err"
+if ! harness_contract_exit "$HARNESS_EXEC_CODE"; then
+  fail "harness image cannot execute on ${OCI_PLATFORM} (exit ${HARNESS_EXEC_CODE})"
+fi
+rm -f "$WORK/image-exec.out" "$WORK/image-exec.err"
+TASK_UNAME_CODE=0
+run_capture TASK_UNAME_CODE docker run --rm --platform "$OCI_PLATFORM" \
+  --entrypoint /bin/sh "$TASK_IMAGE" -c 'uname -m && git --version >/dev/null && go version >/dev/null && command -v gh >/dev/null' \
+  >"$WORK/task-uname.txt" 2>"$WORK/image-exec.err"
+TASK_UNAME="$(tr -d '[:space:]' <"$WORK/task-uname.txt" 2>/dev/null || true)"
+want_uname="$(uname_for_platform "$OCI_PLATFORM")"
+if [[ "$TASK_UNAME_CODE" -ne 0 || "$TASK_UNAME" != "$want_uname" ]]; then
+  fail "task image failed on ${OCI_PLATFORM} (uname ${TASK_UNAME:-empty}, exit ${TASK_UNAME_CODE}, want ${want_uname})"
+fi
+rm -f "$WORK/task-uname.txt" "$WORK/image-exec.err"
 FACTORYCTL="$WORK/factoryctl"
 "$FACTORYCTL" validate "$DEF"
 
@@ -530,6 +798,10 @@ fi
 say "Start the laptop stack"
 COMPOSE_STARTED=1
 compose build
+assert_image_platform factoryd:dev "$OCI_PLATFORM" ||
+  fail "factoryd image platform does not match ${OCI_PLATFORM}"
+assert_image_platform factory-upstream-worker:dev "$OCI_PLATFORM" ||
+  fail "worker image platform does not match ${OCI_PLATFORM}"
 compose up -d --wait postgres
 compose --profile migrate run --rm migrate
 # Exact laptop command, from the directory that holds the compose file.
@@ -562,14 +834,12 @@ else
 fi
 
 say "factoryctl run --watch"
-set +e
-timestamped_run "$WORK/watch-run.ts" \
+RUN_CODE=0
+run_capture RUN_CODE timestamped_run "$WORK/watch-run.ts" \
   "$FACTORYCTL" run --prompt "$PROMPT" --factory m2 --agent implementer --title "$TITLE" --watch \
   2>"$WORK/factoryctl-run.err"
-RUN_CODE=$?
-set -e
 if [[ "$RUN_CODE" -ne 0 ]]; then
-  fail "factoryctl run --watch exited ${RUN_CODE}" "$RUN_CODE"
+  fail "factoryctl run --watch exited ${RUN_CODE}"
 fi
 RUN_ID="$(awk -F '\t' 'NR==1 {print $2}' "$WORK/watch-run.ts")"
 if [[ ! "$RUN_ID" =~ ^run_ ]]; then
@@ -639,12 +909,15 @@ JSON
   fi
   echo "cancel run id: $CANCEL_ID"
 
+  # The background shell must not treat watch's exit 2 as a script failure.
+  trap - ERR
   set +e
   timestamped_run "$WORK/watch-cancel.ts" \
     "$FACTORYCTL" watch "$CANCEL_ID" \
     2>>"$WORK/factoryctl-cancel.err" &
   WATCH_PID=$!
   set -e
+  trap 'on_err $? $LINENO' ERR
   saw_tool=0
   for _ in $(seq 1 90); do
     if [[ -f "$WORK/watch-cancel.ts" ]] && grep -F -q $'tool.call' "$WORK/watch-cancel.ts"; then
@@ -662,10 +935,8 @@ JSON
     fail "cancel run did not stream a tool.call before cancellation"
   fi
   "$FACTORYCTL" cancel "$CANCEL_ID" >>"$WORK/factoryctl-cancel.err"
-  set +e
-  wait "$WATCH_PID"
-  WATCH_CODE=$?
-  set -e
+  WATCH_CODE=0
+  run_capture WATCH_CODE wait "$WATCH_PID"
   if [[ "$WATCH_CODE" -ne 2 ]]; then
     fail "factoryctl watch on the cancelled run exited ${WATCH_CODE}, want 2"
   fi
@@ -679,10 +950,7 @@ JSON
 
   save_compose_logs || true
   if ! scan_logs_for_secrets; then
-    rm -rf "$WORK/evidence" "$WORK/compose.log" "$WORK/watch-run.ts" "$WORK/watch-cancel.ts" \
-      "$WORK/factoryctl-run.err" "$WORK/factoryctl-cancel.err"
-    echo "M2 FAIL — a secret value appeared in the logs, watch output, or archived events; output withheld"
-    LEAK_ANNOUNCED=1
+    announce_leak
     exit 1
   fi
   echo
@@ -696,10 +964,7 @@ if [[ -z "$PR_URL" || "$PR_URL" == "null" ]]; then
 fi
 save_compose_logs || true
 if ! scan_logs_for_secrets; then
-  rm -rf "$WORK/evidence" "$WORK/compose.log" "$WORK/watch-run.ts" "$WORK/watch-cancel.ts" \
-    "$WORK/factoryctl-run.err" "$WORK/factoryctl-cancel.err"
-  echo "M2 FAIL — a secret value appeared in the logs, watch output, or archived events; output withheld"
-  LEAK_ANNOUNCED=1
+  announce_leak
   exit 1
 fi
 echo
