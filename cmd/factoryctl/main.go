@@ -24,6 +24,8 @@ func execute(args []string, stdout, stderr io.Writer, getenv func(string) string
 		return cmdWatch(args[1:], stdout, stderr, getenv)
 	case "cancel":
 		return cmdCancel(args[1:], stdout, stderr, getenv)
+	case "validate":
+		return cmdValidate(args[1:], stdout, stderr)
 	default:
 		usage(stderr)
 		return 2
@@ -42,6 +44,7 @@ Commands:
   run --prompt TEXT [--factory NAME] [--agent NAME] [--title TITLE] [--watch]
   watch RUN_ID [--from-seq N]
   cancel RUN_ID
+  validate PATH
 
 Environment:
   FACTORY_URL       control plane base URL (default http://localhost:8080)
