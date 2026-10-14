@@ -242,6 +242,24 @@ func TestWorkItemCreateRunParent(t *testing.T) {
 	if err == nil {
 		t.Fatal("accepted a work item from another factory")
 	}
+
+	betaRun, err := h.st.CreateRun(ctx, store.NewRun{
+		FactoryID: beta.ID,
+		Pool:      "default",
+		Priority:  store.PriorityBatch,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.st.CreateRun(ctx, store.NewRun{
+		FactoryID:   factoryID,
+		Pool:        "default",
+		Priority:    store.PriorityBatch,
+		ParentRunID: betaRun.ID,
+	})
+	if err == nil {
+		t.Fatal("accepted a parent run from another factory")
+	}
 }
 
 func TestApprovalRequestAndDecideIdempotent(t *testing.T) {
@@ -348,6 +366,48 @@ func TestApprovalRequestAndDecideIdempotent(t *testing.T) {
 	}
 	if len(pending) != 2 || !containsApproval(pending, handoff.ID) || !containsApproval(pending, reopened.ID) {
 		t.Fatalf("pending after re-request %+v", pending)
+	}
+}
+
+func TestApprovalDecideCommitsBeforeRequestReturns(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, _ := h.seed(t)
+	item := createWorkItem(t, h, factoryID, store.NewWorkItem{Source: store.SourceIssue, Title: "race"})
+	pending, err := h.st.RequestApproval(ctx, item.ID, "spec")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var decideErr error
+	h.st.SetPendingLookupHookForTest(func(hookCtx context.Context) {
+		_, decideErr = h.st.DecideApproval(hookCtx, pending.ID, store.DecisionApprove, "editor", "committed first")
+	})
+	t.Cleanup(func() { h.st.SetPendingLookupHookForTest(nil) })
+
+	got, err := h.st.RequestApproval(ctx, item.ID, "spec")
+	if decideErr != nil {
+		t.Fatal(decideErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := h.raw.QueryRow(ctx, `SELECT decision FROM approvals WHERE id = $1`, got.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if got.Decision != stored {
+		t.Fatalf("returned decision %q, stored decision %q for %s", got.Decision, stored, got.ID)
+	}
+	if got.ID == pending.ID || got.Decision != "" {
+		t.Fatalf("returned decided row %+v", got)
+	}
+	var original string
+	if err := h.raw.QueryRow(ctx, `SELECT decision FROM approvals WHERE id = $1`, pending.ID).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	if original != store.DecisionApprove {
+		t.Fatalf("original decision %q", original)
 	}
 }
 

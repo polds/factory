@@ -206,17 +206,32 @@ func (s *Store) RequestApproval(ctx context.Context, workItemID, gate string) (A
 	if err != nil {
 		return Approval{}, fmt.Errorf("store: request approval: %w", err)
 	}
-	pending, err := scanApproval(tx.QueryRow(ctx, `
-		SELECT `+approvalColumns+`
-		FROM approvals
-		WHERE work_item_id = $1 AND gate = $2 AND decision = ''`, workItemID, gate))
+	var pendingID string
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM approvals
+		WHERE work_item_id = $1 AND gate = $2 AND decision = ''
+		LIMIT 1`, workItemID, gate).Scan(&pendingID)
 	if err == nil {
-		if err := tx.Commit(ctx); err != nil {
+		if s.pendingLookupHook != nil {
+			s.pendingLookupHook(ctx)
+		}
+		// Lock the same row DecideApproval locks. A decision that committed
+		// after the id lookup is visible once this lock is held.
+		locked, err := scanApproval(tx.QueryRow(ctx, `
+			SELECT `+approvalColumns+`
+			FROM approvals
+			WHERE id = $1
+			FOR UPDATE`, pendingID))
+		if err != nil {
 			return Approval{}, fmt.Errorf("store: request approval: %w", err)
 		}
-		return pending, nil
-	}
-	if !errors.Is(err, ErrNotFound) {
+		if locked.Decision == "" {
+			if err := tx.Commit(ctx); err != nil {
+				return Approval{}, fmt.Errorf("store: request approval: %w", err)
+			}
+			return locked, nil
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return Approval{}, fmt.Errorf("store: request approval: %w", err)
 	}
 	id, err := NewID(PrefixApproval)
