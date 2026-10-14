@@ -443,24 +443,21 @@ loopback_task_host() {
   printf '%s\n' "$gateway"
 }
 
-# task_extra_host is the Docker extra_hosts entry a task container needs.
-# Empty when the chosen host is an IP, or when host.docker.internal already
-# resolves inside a container. resolves is yes or no.
-task_extra_host() {
+# loopback_reachable is false when the chosen host is host.docker.internal
+# and a container cannot resolve it. Docker Desktop resolves that name
+# natively. There is no extra_hosts fallback. resolves is yes or no.
+loopback_reachable() {
   local chosen="$1" resolves="$2"
   if [[ "$chosen" == host.docker.internal && "$resolves" != yes ]]; then
-    printf '%s\n' "host.docker.internal:host-gateway"
+    return 1
   fi
 }
 
-# container_resolves is true when a container can resolve name.
-# Extra docker run arguments (for example --add-host) are passed first.
+# container_resolves is true when a container can resolve name. nslookup
+# ignores /etc/hosts; Docker Desktop answers the name from its resolver.
 container_resolves() {
   local name="$1"
-  shift
-  # nslookup ignores /etc/hosts. --add-host writes /etc/hosts, and Docker
-  # Desktop answers the name from its resolver, so either one is enough.
-  docker run --rm --platform "$OCI_PLATFORM" "$@" busybox:1.36 \
+  docker run --rm --platform "$OCI_PLATFORM" busybox:1.36 \
     sh -c 'grep -w -- "$1" /etc/hosts >/dev/null 2>&1 || nslookup "$1" >/dev/null 2>&1' \
     sh "$name"
 }
@@ -761,9 +758,6 @@ if host_name_resolves host.docker.internal; then
   name_resolves=yes
 fi
 LOOPBACK_HOST="$(loopback_task_host "$DOCKER_OS" "$name_resolves" "$GW")"
-# A value left in the environment must not reach the worker unless this run
-# decided a task container needs it.
-unset FACTORY_TASK_EXTRA_HOSTS
 echo "loopback from a task container: ${LOOPBACK_HOST}"
 
 export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-factory}"
@@ -899,15 +893,8 @@ if [[ "$LOOPBACK_HOST" == host.docker.internal ]]; then
   if container_resolves host.docker.internal >/dev/null 2>&1; then
     container_ok=yes
   fi
-  extra="$(task_extra_host "$LOOPBACK_HOST" "$container_ok")"
-  if [[ -n "$extra" ]]; then
-    if ! container_resolves host.docker.internal --add-host="$extra" \
-      >"$WORK/image-exec.err" 2>&1; then
-      fail "host.docker.internal does not resolve in a task container"
-    fi
-    rm -f "$WORK/image-exec.err"
-    export FACTORY_TASK_EXTRA_HOSTS="$extra"
-    echo "task extra host: ${extra}"
+  if ! loopback_reachable "$LOOPBACK_HOST" "$container_ok"; then
+    fail "host.docker.internal does not resolve in a task container"
   fi
 fi
 

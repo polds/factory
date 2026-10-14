@@ -20,6 +20,7 @@
 #   workflows              actionlint
 #   vuln                   govulncheck
 #   harness image          sidecar image smoke
+#   worker image           unmodified oz-agent-worker, vcs.modified=false
 #   m0 protocol spike      unmodified oz-agent-worker against the M0 server
 #   m1 offline e2e         MODE=offline ./spike/m1/run.sh
 #   m2 offline e2e         MODE=offline ./spike/m2/run.sh
@@ -325,6 +326,21 @@ jobs:
       - name: Build the sidecar and run one invocation
         run: ./harness/generic-openai/smoke.sh
 
+  worker-image:
+    name: worker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build the unmodified worker and check vcs.modified=false
+        run: ./deploy/worker/smoke.sh
+
   protocol-spike:
     name: m0 protocol spike
     runs-on: ubuntu-latest
@@ -414,6 +430,7 @@ jobs:
       - actions
       - vuln
       - harness-image
+      - worker-image
       - protocol-spike
       - m1-offline
       - m2-offline
@@ -435,6 +452,7 @@ jobs:
           ACTIONS_LINT: ${{ needs.actions.result }}
           VULN: ${{ needs.vuln.result }}
           HARNESS_IMAGE: ${{ needs.harness-image.result }}
+          WORKER_IMAGE: ${{ needs.worker-image.result }}
           PROTOCOL_SPIKE: ${{ needs.protocol-spike.result }}
           M1_OFFLINE: ${{ needs.m1-offline.result }}
           M2_OFFLINE: ${{ needs.m2-offline.result }}
@@ -466,6 +484,7 @@ jobs:
           report "workflows" "${ACTIONS_LINT}"
           report "vuln" "${VULN}"
           report "harness image" "${HARNESS_IMAGE}"
+          report "worker image" "${WORKER_IMAGE}"
           report "m0 protocol spike" "${PROTOCOL_SPIKE}"
           report "m1 offline e2e" "${M1_OFFLINE}"
           report "m2 offline e2e" "${M2_OFFLINE}"

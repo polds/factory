@@ -188,9 +188,6 @@ services:
       - --log-level=info
     environment:
       WARP_API_KEY: ${FACTORY_WORKER_API_KEY:-m2-dev-worker-key}
-      # Empty on Linux. Docker Desktop sets host.docker.internal:host-gateway
-      # when a task container cannot already resolve that name.
-      FACTORY_TASK_EXTRA_HOSTS: ${FACTORY_TASK_EXTRA_HOSTS:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ../spike/m2/worker.yaml:/etc/factory/worker.yaml:ro

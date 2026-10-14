@@ -420,15 +420,14 @@ test_task_base_url_rewrites_loopback() {
   assert_eq "$got" "http://user:local-only@host.docker.internal:8317/v1" "userinfo" || return 1
 }
 
-test_task_extra_host() {
+test_loopback_reachable() {
   source_run
-  local got
-  got="$(task_extra_host host.docker.internal no)"
-  assert_eq "$got" "host.docker.internal:host-gateway" "needs extra host" || return 1
-  got="$(task_extra_host host.docker.internal yes)"
-  assert_eq "$got" "" "already resolves" || return 1
-  got="$(task_extra_host 172.17.0.1 no)"
-  assert_eq "$got" "" "gateway needs no name" || return 1
+  loopback_reachable host.docker.internal yes || return 1
+  loopback_reachable 172.17.0.1 no || return 1
+  if loopback_reachable host.docker.internal no; then
+    echo "unresolved host.docker.internal was accepted" >&2
+    return 1
+  fi
 }
 
 test_host_name_resolves() {
@@ -529,7 +528,7 @@ test_harness_contract_exit() {
 run_case platform_map test_platform_map
 run_case loopback_task_host test_loopback_task_host
 run_case task_base_url test_task_base_url_rewrites_loopback
-run_case task_extra_host test_task_extra_host
+run_case loopback_reachable test_loopback_reachable
 run_case host_name_resolves test_host_name_resolves
 run_case offline_secrets test_offline_secrets_replaced_before_children
 run_case reset_stale_logs test_reset_stale_host_logs

@@ -1,6 +1,4 @@
-# Image of upstream oz-agent-worker, pinned to 63dbb8a.
-# extra-hosts.patch is the only local change: task containers receive
-# FACTORY_TASK_EXTRA_HOSTS as Docker extra_hosts. Empty adds nothing.
+# Image of the unmodified upstream oz-agent-worker, pinned to 63dbb8a.
 #
 # The worker's Docker backend talks to the daemon with the Engine API
 # (github.com/moby/moby/client, client.New(client.FromEnv) in
@@ -18,16 +16,13 @@ RUN apk add --no-cache git=2.54.0-r0
 
 WORKDIR /src
 
-COPY extra-hosts.patch /tmp/extra-hosts.patch
-
-# Full clone, then the pinned commit, then a clean-tree check. The patch is
-# applied after that check. go build records vcs.revision / vcs.modified.
-# The binary is written outside the tree so the build itself cannot dirty it.
+# Full clone, then the pinned commit, then a clean-tree check. go build
+# records vcs.revision / vcs.modified from this checkout. The binary is
+# written outside the tree so the build itself cannot dirty it.
 RUN git clone https://github.com/warpdotdev/oz-agent-worker.git . \
     && git checkout 63dbb8a \
     && git status --porcelain \
     && test -z "$(git status --porcelain)" \
-    && git apply /tmp/extra-hosts.patch \
     && CGO_ENABLED=0 go build -buildvcs=true -o /oz-agent-worker .
 
 # ca-certificates for outbound TLS. openssl is pinned to the alpine 3.22
