@@ -55,7 +55,8 @@ func (s *Server) CreateTask(ctx context.Context, factoryID string, req api.TaskR
 			return api.Task{}, err
 		}
 	}
-	if err := s.openGates(ctx, item.ID, effects); err != nil {
+	item, err = s.commitStep(ctx, item, next, effects)
+	if err != nil {
 		return api.Task{}, err
 	}
 	if _, err := s.applyEffects(ctx, item, effects, "", ""); err != nil {
@@ -116,10 +117,7 @@ func (s *Server) CancelTask(ctx context.Context, factoryID, id string) (api.Task
 		if err != nil {
 			return orchErr(err)
 		}
-		if err := s.openGates(ctx, current.ID, effects); err != nil {
-			return err
-		}
-		updated, err := s.commitState(ctx, current, next)
+		updated, err := s.commitStep(ctx, current, next, effects)
 		if err != nil {
 			return err
 		}
@@ -216,11 +214,7 @@ func (s *Server) DecideApproval(ctx context.Context, id, decision, decidedBy, no
 		s.orchMu.Unlock()
 		return api.Approval{}, orchErr(err)
 	}
-	if err := s.openGates(ctx, item.ID, effects); err != nil {
-		s.orchMu.Unlock()
-		return api.Approval{}, err
-	}
-	updated, err := s.commitState(ctx, item, next)
+	updated, err := s.commitStep(ctx, item, next, effects)
 	if err != nil {
 		s.orchMu.Unlock()
 		return api.Approval{}, err
@@ -278,12 +272,7 @@ func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
 		s.log.Error("orchestrator", "work_item_id", item.ID, "run_id", runID, "err", err)
 		return
 	}
-	if err := s.openGates(ctx, item.ID, effects); err != nil {
-		s.orchMu.Unlock()
-		s.log.Error("approval", "work_item_id", item.ID, "err", err)
-		return
-	}
-	updated, err := s.commitState(ctx, item, next)
+	updated, err := s.commitStep(ctx, item, next, effects)
 	if err != nil {
 		s.orchMu.Unlock()
 		s.log.Error("work item stage", "work_item_id", item.ID, "err", err)
@@ -332,11 +321,7 @@ func (s *Server) onQuestion(ctx context.Context, runID string) {
 		s.log.Info("question ignored", "work_item_id", item.ID, "err", err)
 		return
 	}
-	if err := s.openGates(ctx, item.ID, effects); err != nil {
-		s.log.Error("question", "work_item_id", item.ID, "err", err)
-		return
-	}
-	updated, err := s.commitState(ctx, item, next)
+	updated, err := s.commitStep(ctx, item, next, effects)
 	if err != nil {
 		s.log.Error("question", "work_item_id", item.ID, "err", err)
 		return
@@ -412,19 +397,28 @@ func (s *Server) loadState(ctx context.Context, item store.WorkItem) (orchestrat
 	}, nil
 }
 
-// openGates inserts a pending approval before the work item status becomes
-// awaiting_approval. A reader then sees pending_gate with that status.
-func (s *Server) openGates(ctx context.Context, workItemID string, effects []orchestrator.Effect) error {
+// commitStep persists the orchestrator state. A RequestApproval effect is
+// inserted in the same transaction as the work-item update, so a crash cannot
+// leave a pending row without awaiting_approval, and a reader of that status
+// sees pending_gate.
+func (s *Server) commitStep(ctx context.Context, item store.WorkItem, next orchestrator.State, effects []orchestrator.Effect) (store.WorkItem, error) {
+	opened := false
 	for _, effect := range effects {
 		req, ok := effect.(orchestrator.RequestApproval)
 		if !ok {
 			continue
 		}
-		if _, err := s.store.RequestApproval(ctx, workItemID, req.Gate); err != nil {
-			return err
+		_, updated, err := s.store.OpenApprovalGate(ctx, item.ID, req.Gate, next.Stage, next.Status, next.RevisionCount)
+		if err != nil {
+			return store.WorkItem{}, err
 		}
+		item = updated
+		opened = true
 	}
-	return nil
+	if opened {
+		return item, nil
+	}
+	return s.commitState(ctx, item, next)
 }
 
 func (s *Server) commitState(ctx context.Context, item store.WorkItem, next orchestrator.State) (store.WorkItem, error) {

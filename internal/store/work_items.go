@@ -187,27 +187,82 @@ func (s *Store) SetWorkItemRevision(ctx context.Context, id string, count int) (
 
 // RequestApproval opens a gate, or returns the pending row when that gate is
 // already open. A decided gate can be requested again; that inserts a new row.
+// It does not change the work item. OpenApprovalGate does both in one transaction.
 func (s *Store) RequestApproval(ctx context.Context, workItemID, gate string) (Approval, error) {
+	approval, _, err := s.approvalWithStatus(ctx, workItemID, gate, "", "", 0, false)
+	return approval, err
+}
+
+// OpenApprovalGate inserts a pending approval and sets the work item's stage,
+// status, and revision in one transaction. A crash cannot leave a pending row
+// without that status, and a reader of awaiting_approval sees the gate.
+// Repeating an open gate returns the pending row and writes the status again.
+func (s *Store) OpenApprovalGate(ctx context.Context, workItemID, gate, stage, status string, revision int) (Approval, WorkItem, error) {
+	return s.approvalWithStatus(ctx, workItemID, gate, stage, status, revision, true)
+}
+
+func (s *Store) approvalWithStatus(ctx context.Context, workItemID, gate, stage, status string, revision int, updateItem bool) (Approval, WorkItem, error) {
 	gate = strings.TrimSpace(gate)
 	if workItemID == "" || gate == "" {
-		return Approval{}, fmt.Errorf("store: work item and gate are required")
+		return Approval{}, WorkItem{}, fmt.Errorf("store: work item and gate are required")
+	}
+	if updateItem {
+		if err := validStage(stage, false); err != nil {
+			return Approval{}, WorkItem{}, err
+		}
+		if err := validWorkItemStatus(status); err != nil {
+			return Approval{}, WorkItem{}, err
+		}
+		if revision < 0 {
+			return Approval{}, WorkItem{}, fmt.Errorf("store: revision count must be >= 0")
+		}
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return Approval{}, fmt.Errorf("store: request approval: %w", err)
+		return Approval{}, WorkItem{}, fmt.Errorf("store: request approval: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var exists int
 	err = tx.QueryRow(ctx, `SELECT 1 FROM work_items WHERE id = $1 FOR UPDATE`, workItemID).Scan(&exists)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Approval{}, ErrNotFound
+		return Approval{}, WorkItem{}, ErrNotFound
 	}
 	if err != nil {
-		return Approval{}, fmt.Errorf("store: request approval: %w", err)
+		return Approval{}, WorkItem{}, fmt.Errorf("store: request approval: %w", err)
 	}
+	created, err := s.pendingOrInsert(ctx, tx, workItemID, gate)
+	if err != nil {
+		return Approval{}, WorkItem{}, err
+	}
+	var item WorkItem
+	if updateItem {
+		item, err = scanWorkItem(tx.QueryRow(ctx, `
+			UPDATE work_items
+			SET stage = $2, status = $3, revision_count = $4
+			WHERE id = $1
+			RETURNING `+workItemColumns, workItemID, stage, status, revision))
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return Approval{}, WorkItem{}, err
+			}
+			return Approval{}, WorkItem{}, fmt.Errorf("store: open approval gate: %w", err)
+		}
+		if s.openGateHook != nil {
+			if err := s.openGateHook(ctx); err != nil {
+				return Approval{}, WorkItem{}, fmt.Errorf("store: open approval gate: %w", err)
+			}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Approval{}, WorkItem{}, fmt.Errorf("store: request approval: %w", err)
+	}
+	return created, item, nil
+}
+
+func (s *Store) pendingOrInsert(ctx context.Context, tx pgx.Tx, workItemID, gate string) (Approval, error) {
 	var pendingID string
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		SELECT id FROM approvals
 		WHERE work_item_id = $1 AND gate = $2 AND decision = ''
 		LIMIT 1`, workItemID, gate).Scan(&pendingID)
@@ -226,9 +281,6 @@ func (s *Store) RequestApproval(ctx context.Context, workItemID, gate string) (A
 			return Approval{}, fmt.Errorf("store: request approval: %w", err)
 		}
 		if locked.Decision == "" {
-			if err := tx.Commit(ctx); err != nil {
-				return Approval{}, fmt.Errorf("store: request approval: %w", err)
-			}
 			return locked, nil
 		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -243,9 +295,6 @@ func (s *Store) RequestApproval(ctx context.Context, workItemID, gate string) (A
 		VALUES ($1, $2, $3)
 		RETURNING `+approvalColumns, id, workItemID, gate))
 	if err != nil {
-		return Approval{}, fmt.Errorf("store: request approval: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return Approval{}, fmt.Errorf("store: request approval: %w", err)
 	}
 	return created, nil

@@ -438,6 +438,84 @@ func TestApprovalDecideUnknown(t *testing.T) {
 	}
 }
 
+func TestOpenApprovalGateCommitsWithStatus(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, _ := h.seed(t)
+	item := createWorkItem(t, h, factoryID, store.NewWorkItem{
+		Source: store.SourceManual,
+		Title:  "gate",
+		Stage:  store.StagePlanning,
+		Status: store.WorkItemOpen,
+	})
+
+	var duringStatus string
+	var duringPending int
+	h.st.SetOpenGateHookForTest(func(hookCtx context.Context) error {
+		if err := h.raw.QueryRow(hookCtx, `SELECT status FROM work_items WHERE id = $1`, item.ID).Scan(&duringStatus); err != nil {
+			return err
+		}
+		return h.raw.QueryRow(hookCtx, `
+			SELECT count(*) FROM approvals
+			WHERE work_item_id = $1 AND decision = ''`, item.ID).Scan(&duringPending)
+	})
+	t.Cleanup(func() { h.st.SetOpenGateHookForTest(nil) })
+
+	approval, updated, err := h.st.OpenApprovalGate(ctx, item.ID, "spec", store.StagePlanning, store.WorkItemAwaitingApproval, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duringStatus != store.WorkItemOpen || duringPending != 0 {
+		t.Fatalf("uncommitted gate was visible: status %q pending %d", duringStatus, duringPending)
+	}
+	if approval.Gate != "spec" || approval.Decision != "" || approval.WorkItemID != item.ID {
+		t.Fatalf("approval %+v", approval)
+	}
+	if updated.Status != store.WorkItemAwaitingApproval || updated.Stage != store.StagePlanning || updated.RevisionCount != 3 {
+		t.Fatalf("updated %+v", updated)
+	}
+	var status string
+	var pending int
+	if err := h.raw.QueryRow(ctx, `SELECT status FROM work_items WHERE id = $1`, item.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.raw.QueryRow(ctx, `SELECT count(*) FROM approvals WHERE work_item_id = $1 AND decision = ''`, item.ID).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if status != store.WorkItemAwaitingApproval || pending != 1 {
+		t.Fatalf("after commit status %q pending %d", status, pending)
+	}
+
+	again, still, err := h.st.OpenApprovalGate(ctx, item.ID, "spec", store.StagePlanning, store.WorkItemAwaitingApproval, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != approval.ID || still.Status != store.WorkItemAwaitingApproval {
+		t.Fatalf("second open approval %+v item %+v", again, still)
+	}
+	if err := h.raw.QueryRow(ctx, `SELECT count(*) FROM approvals WHERE work_item_id = $1`, item.ID).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 1 {
+		t.Fatalf("pending rows %d", pending)
+	}
+
+	other := createWorkItem(t, h, factoryID, store.NewWorkItem{Source: store.SourceManual, Title: "rollback"})
+	h.st.SetOpenGateHookForTest(func(context.Context) error { return errors.New("boom") })
+	if _, _, err := h.st.OpenApprovalGate(ctx, other.ID, "spec", store.StagePlanning, store.WorkItemAwaitingApproval, 0); err == nil {
+		t.Fatal("hook error committed")
+	}
+	if err := h.raw.QueryRow(ctx, `SELECT status FROM work_items WHERE id = $1`, other.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.raw.QueryRow(ctx, `SELECT count(*) FROM approvals WHERE work_item_id = $1`, other.ID).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if status != store.WorkItemOpen || pending != 0 {
+		t.Fatalf("rolled back status %q pending %d", status, pending)
+	}
+}
+
 func TestApprovalRequiresWorkItem(t *testing.T) {
 	h := newHarness(t, true)
 	ctx := context.Background()
