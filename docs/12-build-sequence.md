@@ -28,7 +28,7 @@ built on them: the flag is `--web-socket-url`, the heartbeat is a ping frame rat
 JSON message, and the harness argv begins with `agent run` positionals. See
 [`spike/m0/README.md`](../spike/m0/README.md).
 
-## M1 — Harness Contract v1 (in progress)
+## M1 — Harness Contract v1 ✅ **done**
 
 - `generic-openai` adapter: a real agent loop (bash, read, write, edit, grep, glob) against
   any OpenAI-compatible endpoint. No vendor dependency. **Landed** in
@@ -38,12 +38,18 @@ JSON message, and the harness argv begins with `agent run` positionals. See
   ([05](05-harness-contract.md#shipped-adapter)).
 - `claude-code` adapter. **Not in this build.** `--harness claude-code` exits 20.
 - A real agent run that clones a repo, changes a file, runs tests, and opens a PR,
-  driven by the unmodified upstream worker and the M0 stub server. **Not done.**
-  That run needs a model endpoint and a forge token the conformance suite does not have.
+  driven by the unmodified upstream worker and the M0 stub server. **Done.**
+  [PR #12](https://github.com/polds/factory/pull/12), upstream worker `63dbb8a`.
 
-**Exit criterion:** a real agent run — clone a repo, change a file, run tests, open a PR —
-driven by the unmodified upstream worker and the M0 stub server. At this point the hardest
-part is done and everything after it is plumbing.
+**Exit criterion met.** Upstream worker `63dbb8a`, clean tree, driven by `cmd/m0-spike`
+and the `generic-openai` harness: cloned `polds/factory`, changed
+`spike/m1/fixture/greet/greet.go` and `greet/greet_test.go` so `Hello` adds `!`,
+`go test` in the fixture passed, and opened draft
+[PR #12](https://github.com/polds/factory/pull/12) (`m1/run-20261013T222336`).
+Model `claude-sonnet-5-5`. Assignment `run_m1_20261013T222336` reached `task_completed`.
+The [live workflow run](https://github.com/polds/factory/actions/runs/38477354495)
+printed `M1 LIVE PASS`. At this point the hardest part is done and everything after it
+is plumbing.
 
 ## M2 — Walking skeleton control plane (weeks)
 
