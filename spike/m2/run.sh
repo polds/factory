@@ -53,7 +53,7 @@ cleanup() {
   wait 2>/dev/null || true
   if [[ "${COMPOSE_STARTED}" -eq 1 ]]; then
     save_compose_logs || true
-    docker compose -p "$PROJECT" -f "$COMPOSE_FILE" down -v --timeout 20 >/dev/null 2>&1 || \
+    docker compose -p "$PROJECT" -f "$COMPOSE_FILE" down -v --timeout 20 >/dev/null 2>&1 ||
       docker compose -p "$PROJECT" -f "$COMPOSE_FILE" down -v --timeout 20 || true
     COMPOSE_STARTED=0
   fi
@@ -317,13 +317,14 @@ archive_object() {
   local found=""
   local _
   for _ in $(seq 1 30); do
-    found="$(RUN_ID="$run_id" mc_sh <<'EOS'
+    found="$(
+      RUN_ID="$run_id" mc_sh <<'EOS'
 set -euo pipefail
 mkdir -p /tmp/mc
 mc --config-dir /tmp/mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
 mc --config-dir /tmp/mc find "local/factory/runs/${RUN_ID}" --name events.ndjson
 EOS
-)"
+    )"
     if printf '%s\n' "$found" | grep -F 'events.ndjson' >/dev/null; then
       break
     fi
@@ -673,7 +674,7 @@ JSON
     fail "cancel run status is ${CANCEL_STATUS:-unknown}, want cancelled"
   fi
   echo "run ${CANCEL_ID} cancelled"
-  archive_object "$CANCEL_ID" "$WORK/evidence/cancel-events.ndjson" || \
+  archive_object "$CANCEL_ID" "$WORK/evidence/cancel-events.ndjson" ||
     echo "cancel run archive not required"
 
   save_compose_logs || true
