@@ -40,6 +40,10 @@ func TestExportedStructsOmitSecrets(t *testing.T) {
 		reflect.TypeOf(store.DefinedRunner{}),
 		reflect.TypeOf(store.Terminal{}),
 		reflect.TypeOf(store.RunFilter{}),
+		reflect.TypeOf(store.WorkItem{}),
+		reflect.TypeOf(store.NewWorkItem{}),
+		reflect.TypeOf(store.WorkItemFilter{}),
+		reflect.TypeOf(store.Approval{}),
 	}
 	for _, typ := range types {
 		assertNoSecretFields(t, typ)
@@ -587,15 +591,28 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := h.raw.QueryRow(ctx, `SELECT count(*), count(DISTINCT filename) FROM schema_migrations`).Scan(&files, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if files != 1 || distinct != 1 {
+	if files != 2 || distinct != 2 {
 		t.Fatalf("schema_migrations rows %d distinct %d", files, distinct)
 	}
-	var filename string
-	if err := h.raw.QueryRow(ctx, `SELECT filename FROM schema_migrations`).Scan(&filename); err != nil {
+	nameRows, err := h.raw.Query(ctx, `SELECT filename FROM schema_migrations ORDER BY filename`)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if filename != "0001_init.sql" {
-		t.Fatalf("filename %s", filename)
+	defer nameRows.Close()
+	var filenames []string
+	for nameRows.Next() {
+		var filename string
+		if err := nameRows.Scan(&filename); err != nil {
+			t.Fatal(err)
+		}
+		filenames = append(filenames, filename)
+	}
+	if err := nameRows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	wantFiles := []string{"0001_init.sql", "0002_m3.sql"}
+	if strings.Join(filenames, ",") != strings.Join(wantFiles, ",") {
+		t.Fatalf("filenames %v", filenames)
 	}
 	var tables int
 	if err := h.raw.QueryRow(ctx, `
@@ -603,13 +620,44 @@ func TestMigrateIdempotent(t *testing.T) {
 		WHERE table_schema = current_schema()
 		  AND table_name IN (
 		    'factories', 'definitions', 'agents', 'runners', 'runs', 'executions',
-		    'run_events', 'workers', 'run_queue', 'schema_migrations'
+		    'run_events', 'workers', 'run_queue', 'schema_migrations',
+		    'work_items', 'approvals', 'routers', 'skills', 'automations',
+		    'scorers', 'webhooks'
 		  )`).Scan(&tables); err != nil {
 		t.Fatal(err)
 	}
-	if tables != 10 {
+	if tables != 17 {
 		t.Fatalf("tables %d", tables)
 	}
+	assertColumns(t, h, "runs", []string{
+		"work_item_id", "parent_run_id", "conversation_id", "stage", "model_id",
+	})
+	assertColumns(t, h, "work_items", []string{
+		"id", "factory_id", "source", "source_ref", "title", "body", "stage", "status",
+		"created_by", "conversation_id", "revision_count", "created_at",
+	})
+	assertColumns(t, h, "approvals", []string{
+		"id", "work_item_id", "gate", "requested_at", "decided_at", "decided_by",
+		"decision", "note",
+	})
+	assertColumns(t, h, "routers", []string{
+		"id", "definition_id", "factory_id", "name", "type", "default_model", "routing_json",
+	})
+	assertColumns(t, h, "skills", []string{
+		"id", "definition_id", "factory_id", "agent_id", "name", "path", "content_digest",
+	})
+	assertColumns(t, h, "automations", []string{
+		"id", "definition_id", "factory_id", "name", "enabled", "triggers_json", "prompt",
+		"overrides_json",
+	})
+	assertColumns(t, h, "scorers", []string{
+		"id", "definition_id", "factory_id", "name", "labels_json", "passing_score",
+		"sampling_rate", "model", "self_improve",
+	})
+	assertColumns(t, h, "webhooks", []string{
+		"id", "definition_id", "factory_id", "name", "auth_mode", "signature_scheme",
+		"delivery_id_header", "spec_json",
+	})
 }
 
 func TestNoSecretColumns(t *testing.T) {
@@ -935,6 +983,34 @@ func int64sEqual(a, b []int64) bool {
 		}
 	}
 	return true
+}
+
+func assertColumns(t *testing.T, h *harness, table string, want []string) {
+	t.Helper()
+	rows, err := h.raw.Query(context.Background(), `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = $1`, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		got[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Fatalf("%s missing column %s", table, name)
+		}
+	}
 }
 
 func assertNoSecretFields(t *testing.T, typ reflect.Type) {

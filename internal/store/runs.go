@@ -13,7 +13,9 @@ import (
 const runColumns = `
     id, factory_id, COALESCE(agent_id, ''), status, pool, priority, prompt, title, repo,
     COALESCE(worker_id, ''), COALESCE(failure_reason, ''), exit_code, cancel_requested,
-    created_at, started_at, ended_at`
+    created_at, started_at, ended_at,
+    COALESCE(work_item_id, ''), COALESCE(parent_run_id, ''), COALESCE(conversation_id, ''),
+    COALESCE(stage, ''), COALESCE(model_id, '')`
 
 func scanRun(row pgx.Row) (Run, error) {
 	var run Run
@@ -22,6 +24,7 @@ func scanRun(row pgx.Row) (Run, error) {
 		&run.ID, &run.FactoryID, &run.AgentID, &run.Status, &run.Pool, &priority,
 		&run.Prompt, &run.Title, &run.Repo, &run.WorkerID, &run.FailureReason,
 		&run.ExitCode, &run.CancelRequested, &run.CreatedAt, &run.StartedAt, &run.EndedAt,
+		&run.WorkItemID, &run.ParentRunID, &run.ConversationID, &run.Stage, &run.ModelID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Run{}, ErrNotFound
@@ -44,6 +47,9 @@ func (s *Store) CreateRun(ctx context.Context, r NewRun) (Run, error) {
 	default:
 		return Run{}, fmt.Errorf("store: priority %d is not valid", r.Priority)
 	}
+	if err := validStage(r.Stage, true); err != nil {
+		return Run{}, err
+	}
 	id, err := NewID(PrefixRun)
 	if err != nil {
 		return Run{}, err
@@ -59,10 +65,18 @@ func (s *Store) CreateRun(ctx context.Context, r NewRun) (Run, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := bindRunLinkage(ctx, tx, r); err != nil {
+		return Run{}, err
+	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO runs (id, factory_id, agent_id, status, priority, pool, prompt, title, repo)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		INSERT INTO runs (
+		    id, factory_id, agent_id, status, priority, pool, prompt, title, repo,
+		    work_item_id, parent_run_id, conversation_id, stage, model_id)
+		VALUES (
+		    $1, $2, $3, $4, $5, $6, $7, $8, $9,
+		    NULLIF($10, ''), NULLIF($11, ''), $12, $13, $14)`,
 		id, r.FactoryID, agentID, StatusQueued, int(r.Priority), r.Pool, r.Prompt, r.Title, r.Repo,
+		r.WorkItemID, r.ParentRunID, r.ConversationID, r.Stage, r.ModelID,
 	); err != nil {
 		return Run{}, fmt.Errorf("store: create run: %w", err)
 	}
@@ -80,6 +94,38 @@ func (s *Store) CreateRun(ctx context.Context, r NewRun) (Run, error) {
 		return Run{}, fmt.Errorf("store: create run: %w", err)
 	}
 	return s.GetRun(ctx, id)
+}
+
+// bindRunLinkage checks optional work-item and parent references before insert.
+// A work item or parent from another factory is rejected so a run cannot cross factories.
+func bindRunLinkage(ctx context.Context, tx pgx.Tx, r NewRun) error {
+	if r.WorkItemID != "" {
+		var factoryID string
+		err := tx.QueryRow(ctx, `SELECT factory_id FROM work_items WHERE id = $1`, r.WorkItemID).Scan(&factoryID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("store: create run: %w", err)
+		}
+		if factoryID != r.FactoryID {
+			return fmt.Errorf("store: work item %s belongs to another factory", r.WorkItemID)
+		}
+	}
+	if r.ParentRunID != "" {
+		var factoryID string
+		err := tx.QueryRow(ctx, `SELECT factory_id FROM runs WHERE id = $1`, r.ParentRunID).Scan(&factoryID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("store: create run: %w", err)
+		}
+		if factoryID != r.FactoryID {
+			return fmt.Errorf("store: parent run %s belongs to another factory", r.ParentRunID)
+		}
+	}
+	return nil
 }
 
 // GetRun returns the run or ErrNotFound.
