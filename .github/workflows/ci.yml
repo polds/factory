@@ -24,8 +24,11 @@
 #   m0 protocol spike      unmodified oz-agent-worker against the M0 server
 #   m1 offline e2e         MODE=offline ./spike/m1/run.sh
 #   m2 offline e2e         MODE=offline ./spike/m2/run.sh
+#   m3 offline e2e         MODE=offline ./spike/m3/run.sh
 #   task image platform    task and harness images built for linux/arm64
 #   upcoming languages     TypeScript, Python, SQL, Helm, JSON Schema
+#   factory/config         validate definition trees; succeed without
+#                          validating when those paths did not change
 #
 # Not required, and not workflows yet:
 #   markdownlint           docs are prose; a default ruleset fights the house style
@@ -37,6 +40,7 @@
 # Manual, not part of `required`:
 #   m1 live                .github/workflows/m1-live.yml (workflow_dispatch)
 #   m2 live                .github/workflows/m2-live.yml (workflow_dispatch)
+#   m3 live                .github/workflows/m3-live.yml (workflow_dispatch)
 name: ci
 
 on:
@@ -386,6 +390,31 @@ jobs:
       - name: Run the offline M2 driver
         run: MODE=offline ./spike/m2/run.sh
 
+  m3-offline:
+    name: m3 offline e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run the offline M3 driver
+        run: MODE=offline ./spike/m3/run.sh
+      # .work is a hidden directory, so the upload must opt in.
+      - name: Upload M3 evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: m3-offline-evidence
+          path: spike/m3/.work/evidence/
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: error
+
   task-image-arch:
     name: task image platform
     runs-on: ubuntu-latest
@@ -417,6 +446,126 @@ jobs:
       - name: Lint TypeScript, Python, SQL, Helm, and JSON Schema when present
         run: ./scripts/ci/lint-upcoming.sh
 
+  # The standalone factory-config workflow is path-filtered, so pulls
+  # that do not touch a definition never report it. This job always
+  # runs. It validates only when a definition path changed, and
+  # otherwise succeeds so an unrelated pull does not fail `required`.
+  # Path list matches .github/workflows/factory-config.yml.
+  factory-config:
+    name: factory/config
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Detect definition path changes
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          is_config_path() {
+            case "$1" in
+              examples/* | schemas/*) return 0 ;;
+              deploy/*-factory/*) return 0 ;;
+              .github/workflows/factory-config.yml) return 0 ;;
+              scripts/ci/factory-config.sh) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          changed=false
+          case "$EVENT_NAME" in
+            workflow_dispatch)
+              changed=true
+              ;;
+            pull_request | push) ;;
+            *)
+              echo "factory/config: unexpected event ${EVENT_NAME}" >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ "$changed" != true ]]; then
+            {
+              IFS= read -r mode
+              IFS= read -r base
+              IFS= read -r head
+            } < <(python3 - "$EVENT_NAME" "$GITHUB_EVENT_PATH" <<'PY'
+          import json
+          import sys
+
+          name, path = sys.argv[1], sys.argv[2]
+          with open(path, encoding="utf-8") as handle:
+              event = json.load(handle)
+          if name == "pull_request":
+              pull = event["pull_request"]
+              print("three")
+              print(pull["base"]["sha"])
+              print(pull["head"]["sha"])
+          elif name == "push":
+              print("two")
+              print(event["before"])
+              print(event["after"])
+          else:
+              raise SystemExit("unexpected event %s" % name)
+          PY
+            )
+            if [[ -z "${base}" || -z "${head}" || "${base}" == null || "${head}" == null ]]; then
+              echo "factory/config: missing revision range for ${EVENT_NAME}" >&2
+              exit 1
+            fi
+            if [[ "${base}" =~ ^0+$ ]]; then
+              changed=true
+            else
+              if ! git cat-file -e "${base}^{commit}" 2>/dev/null ||
+                ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
+                echo "factory/config: ${base}..${head} is not in the checkout" >&2
+                exit 1
+              fi
+              echo "factory/config: comparing ${base}..${head} (${mode})"
+              if [[ "$mode" == three ]]; then
+                files="$(git diff --name-only "${base}...${head}")"
+              elif [[ "$mode" == two ]]; then
+                files="$(git diff --name-only "${base}" "${head}")"
+              else
+                echo "factory/config: bad diff mode ${mode}" >&2
+                exit 1
+              fi
+              if [[ -n "$files" ]]; then
+                while IFS= read -r file; do
+                  if [[ -z "$file" ]]; then
+                    continue
+                  fi
+                  if is_config_path "$file"; then
+                    echo "factory config path: ${file}"
+                    changed=true
+                  fi
+                done <<< "$files"
+              fi
+            fi
+          fi
+
+          if [[ "$changed" == true ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "factory/config will validate definition trees." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "factory/config skipped; no definition paths changed."
+            echo "factory/config skipped; no definition paths changed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.filter.outputs.changed == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate factory definition trees
+        if: steps.filter.outputs.changed == 'true'
+        run: ./scripts/ci/factory-config.sh
+
   required:
     name: required
     needs:
@@ -434,8 +583,10 @@ jobs:
       - protocol-spike
       - m1-offline
       - m2-offline
+      - m3-offline
       - task-image-arch
       - upcoming-languages
+      - factory-config
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -456,8 +607,10 @@ jobs:
           PROTOCOL_SPIKE: ${{ needs.protocol-spike.result }}
           M1_OFFLINE: ${{ needs.m1-offline.result }}
           M2_OFFLINE: ${{ needs.m2-offline.result }}
+          M3_OFFLINE: ${{ needs.m3-offline.result }}
           TASK_IMAGE_ARCH: ${{ needs.task-image-arch.result }}
           UPCOMING: ${{ needs.upcoming-languages.result }}
+          FACTORY_CONFIG: ${{ needs.factory-config.result }}
         run: |
           set -euo pipefail
           fail=0
@@ -488,6 +641,8 @@ jobs:
           report "m0 protocol spike" "${PROTOCOL_SPIKE}"
           report "m1 offline e2e" "${M1_OFFLINE}"
           report "m2 offline e2e" "${M2_OFFLINE}"
+          report "m3 offline e2e" "${M3_OFFLINE}"
           report "task image platform" "${TASK_IMAGE_ARCH}"
           report "upcoming languages" "${UPCOMING}"
+          report "factory/config" "${FACTORY_CONFIG}"
           exit "${fail}"
