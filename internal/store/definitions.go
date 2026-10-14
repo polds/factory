@@ -85,7 +85,7 @@ func (s *Store) ApplyDefinition(ctx context.Context, factoryName string, d Appli
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE factories
-		SET current_definition_id = $2, production_ref = $2
+		SET current_definition_id = $2
 		WHERE id = $1`, factoryID, defID); err != nil {
 		return "", fmt.Errorf("store: apply definition: %w", err)
 	}

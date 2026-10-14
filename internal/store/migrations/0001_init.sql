@@ -3,8 +3,10 @@
 
 CREATE TABLE IF NOT EXISTS factories (
     id text PRIMARY KEY,
+    -- noqa: disable=RF04
     name text NOT NULL UNIQUE,
     alias text NOT NULL DEFAULT '',
+    -- noqa: enable=RF04
     schema_version text NOT NULL,
     definition_source text NOT NULL,
     production_ref text NOT NULL DEFAULT '',
@@ -22,13 +24,15 @@ CREATE TABLE IF NOT EXISTS definitions (
 );
 
 ALTER TABLE factories
-    ADD CONSTRAINT factories_current_definition_fk
-    FOREIGN KEY (current_definition_id) REFERENCES definitions (id);
+ADD CONSTRAINT factories_current_definition_fk
+FOREIGN KEY (current_definition_id) REFERENCES definitions (id);
 
 CREATE TABLE IF NOT EXISTS runners (
     definition_id text NOT NULL REFERENCES definitions (id),
     factory_id text NOT NULL REFERENCES factories (id),
+    -- noqa: disable=RF04
     name text NOT NULL,
+    -- noqa: enable=RF04
     platform_json jsonb NOT NULL,
     instance_shape_json jsonb NOT NULL,
     setup_commands jsonb NOT NULL,
@@ -39,19 +43,31 @@ CREATE TABLE IF NOT EXISTS agents (
     id text PRIMARY KEY,
     factory_id text NOT NULL REFERENCES factories (id),
     definition_id text NOT NULL REFERENCES definitions (id),
+    -- noqa: disable=RF04
     name text NOT NULL,
+    -- noqa: enable=RF04
     agent_type text NOT NULL DEFAULT '',
     spec_json jsonb NOT NULL,
     runner_name text NOT NULL,
     UNIQUE (definition_id, name),
-    FOREIGN KEY (definition_id, runner_name) REFERENCES runners (definition_id, name)
+    FOREIGN KEY (definition_id, runner_name)
+    REFERENCES runners (definition_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS runs (
     id text PRIMARY KEY,
     factory_id text NOT NULL REFERENCES factories (id),
     agent_id text REFERENCES agents (id),
-    status text NOT NULL CHECK (status IN ('queued', 'assigned', 'running', 'succeeded', 'failed', 'cancelled')),
+    status text NOT NULL CHECK (
+        status IN (
+            'queued',
+            'assigned',
+            'running',
+            'succeeded',
+            'failed',
+            'cancelled'
+        )
+    ),
     priority int NOT NULL CHECK (priority IN (1, 2, 3)),
     pool text NOT NULL,
     prompt text NOT NULL DEFAULT '',
@@ -71,7 +87,16 @@ CREATE TABLE IF NOT EXISTS executions (
     run_id text NOT NULL REFERENCES runs (id),
     attempt int NOT NULL CHECK (attempt > 0),
     worker_id text NOT NULL,
-    state text NOT NULL CHECK (state IN ('assigned', 'running', 'completed', 'failed', 'orphaned', 'cancelled')),
+    state text NOT NULL CHECK (
+        state IN (
+            'assigned',
+            'running',
+            'completed',
+            'failed',
+            'orphaned',
+            'cancelled'
+        )
+    ),
     failure_reason text,
     exit_code int,
     failure_details_json jsonb,
@@ -87,7 +112,9 @@ CREATE TABLE IF NOT EXISTS run_events (
     execution_id text NOT NULL REFERENCES executions (id),
     idx int NOT NULL,
     ts timestamptz NOT NULL,
+    -- noqa: disable=RF04
     type text NOT NULL,
+    -- noqa: enable=RF04
     payload_json jsonb NOT NULL,
     PRIMARY KEY (run_id, seq),
     UNIQUE (execution_id, idx)
@@ -114,4 +141,4 @@ CREATE TABLE IF NOT EXISTS run_queue (
 );
 
 CREATE INDEX IF NOT EXISTS run_queue_lease_idx
-    ON run_queue (pool, priority DESC, enqueued_at ASC, run_id ASC);
+ON run_queue (pool, priority DESC, enqueued_at ASC, run_id ASC);

@@ -265,6 +265,17 @@ func (s *Store) StartExecution(ctx context.Context, runID, workerID string, toke
 	if status != StatusAssigned && status != StatusRunning {
 		return Execution{}, fmt.Errorf("store: run %s is %s", runID, status)
 	}
+	var live int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM executions
+		WHERE run_id = $1 AND state IN ($2, $3)`,
+		runID, ExecAssigned, ExecRunning,
+	).Scan(&live); err != nil {
+		return Execution{}, fmt.Errorf("store: start execution: %w", err)
+	}
+	if live > 0 {
+		return Execution{}, fmt.Errorf("store: run %s already has a non-terminal execution", runID)
+	}
 
 	var attempt int
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(attempt), 0) + 1 FROM executions WHERE run_id = $1`, runID).Scan(&attempt); err != nil {

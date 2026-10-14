@@ -225,6 +225,39 @@ func TestRequeueOnReject(t *testing.T) {
 	}
 }
 
+func TestStartExecutionRejectsSecondLive(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+	run := h.createRun(t, factoryID, agentID, "default", store.PriorityBatch)
+	if _, err := h.st.Lease(ctx, "default", 30*time.Second, 1); err != nil {
+		t.Fatal(err)
+	}
+	first, err := h.st.StartExecution(ctx, run.ID, "worker-a", tokenHash("live-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.st.StartExecution(ctx, run.ID, "worker-b", tokenHash("live-2")); err == nil {
+		t.Fatal("second live execution was accepted")
+	}
+	var n int
+	var state, id string
+	if err := h.raw.QueryRow(ctx, `
+		SELECT count(*), min(state), min(id) FROM executions WHERE run_id = $1`, run.ID).Scan(&n, &state, &id); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || state != store.ExecRunning || id != first.ID {
+		t.Fatalf("executions %d state %s id %s", n, state, id)
+	}
+	got, err := h.st.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusRunning || got.WorkerID != "worker-a" {
+		t.Fatalf("run after rejected start %+v", got)
+	}
+}
+
 func TestExpireLeasesOrphans(t *testing.T) {
 	h := newHarness(t, true)
 	ctx := context.Background()
@@ -474,6 +507,9 @@ func TestApplyDefinitionAtomic(t *testing.T) {
 	}
 	if byID.ID != fac.ID || fac.Name != "acme" || fac.CurrentDefinitionID != defID || fac.Alias != "acme" {
 		t.Fatalf("factory %+v", fac)
+	}
+	if fac.ProductionRef != "" {
+		t.Fatalf("production_ref %q", fac.ProductionRef)
 	}
 	agents, err := h.st.ListAgents(ctx, fac.ID)
 	if err != nil {
