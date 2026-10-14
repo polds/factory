@@ -72,8 +72,16 @@ services:
       - "9001:9001"
     volumes:
       - miniodata:/bitnami/minio/data
+    # Bitnami's entrypoint answers /minio/health/live and /ready from a
+    # temporary setup process (pid 1 is still entrypoint.sh), then stops
+    # that process and execs the real server. A live-only check can report
+    # healthy across that restart, and minio-init exits on connection refused.
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null
+          && test "$$(cat /proc/1/comm)" = minio
       interval: 5s
       timeout: 5s
       retries: 20
@@ -81,7 +89,8 @@ services:
     logging: *logging
 
   # Creates the bucket, then stays up. An exited init container fails
-  # `up --wait`. The entrypoint is the image default.
+  # `up --wait`. The entrypoint is the image default. mc is retried
+  # because a single alias set races the setup-server restart.
   minio-init:
     image: bitnamilegacy/minio-client:2025.7.21-debian-12-r3@sha256:73bd39f7899a0cef12b8dd5df13aa93a3ed1aaa44236542442e9ac76819ac158
     depends_on:
@@ -95,9 +104,21 @@ services:
       - -ec
       - |
         mkdir -p /tmp/mc
-        mc --config-dir /tmp/mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
-        mc --config-dir /tmp/mc mb --ignore-existing local/factory
-        mc --config-dir /tmp/mc anonymous set none local/factory
+        ok=0
+        for _ in $$(seq 1 30); do
+          if mc --config-dir /tmp/mc alias set local http://minio:9000 \
+            "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" \
+            && mc --config-dir /tmp/mc mb --ignore-existing local/factory \
+            && mc --config-dir /tmp/mc anonymous set none local/factory; then
+            ok=1
+            break
+          fi
+          sleep 2
+        done
+        if [[ "$$ok" -ne 1 ]]; then
+          echo "minio did not accept bucket setup" >&2
+          exit 1
+        fi
         touch /tmp/bucket-ready
         sleep infinity
     healthcheck:
