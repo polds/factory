@@ -88,8 +88,8 @@ author identity; the next turn set `user.name` / `user.email` and opened the PR
 (`ok:true`). On that PR, `go test ./...` in the fixture reports
 `ok example.com/m1fixture/greet`. The
 [live workflow run](https://github.com/polds/factory/actions/runs/38512432518)
-printed `M2 LIVE PASS`. The job log and `events.ndjson` have no `ghp_`,
-`github_pat_`, `gho_`, `ghs_`, or `sk-` prefix.
+printed `M2 LIVE PASS`. The job log and `events.ndjson` contain no GitHub
+token and no model API key.
 
 **Laptop exit met.** Peter's Mac, `MODE=live ./spike/m2/run.sh` running
 `deploy/docker-compose.yml`. `main` at `8abb3ba`. Driven by `factoryd`:
@@ -102,7 +102,7 @@ terminal event. The agent cloned `polds/factory`, changed
 The run used a manual `host.docker.internal` workaround; automatic rewrite
 of that address is tracked in the pending fix PR.
 
-## M3 — Factory semantics (weeks)
+## M3 — Factory semantics ✅ **done**
 
 - Full definition schema: agents, runners, routers, skills; inheritance and sparse
   overrides; published JSON Schemas.
@@ -115,6 +115,40 @@ of that address is tracked in the pending fix PR.
 
 **Exit criterion:** an issue flows intake → triage → spec → **approval gate** → implement →
 review → PR, with each stage on a different model, and the gate actually blocking.
+
+**Exit met.** Peter's Apple Silicon Mac, Docker Desktop,
+`MODE=live APPROVAL_DECISION=approve ./spike/m3/run.sh`, `main` at `8fca87c`
+(2026-10-14, about 14:46 PT). T14's combined verify on that commit passed.
+Push CI for `8fca87c` is green, including `required` and `m3 offline e2e`:
+[run 38630469688](https://github.com/polds/factory/actions/runs/38630469688).
+`m3-live.yml` has no workflow runs. This environment has no live credentials,
+so `MODE=live` is not re-run here.
+
+`factoryctl task create` created `task_01M4Y5YQAPB6NJE1AXYQFZJRDK`
+(`Emphasize Hello`). Planning stopped at `status=awaiting_approval` with
+`gate=spec` and approval `apr_01M4Y5ZMYWFVX715GPC3TM4DA1`. The driver printed
+`no building run while the spec gate is open`, decided that approval because
+`APPROVAL_DECISION=approve`, then printed `building run was created after the
+spec gate decision`. That line is the script's check that the building run's
+`created_at` is after the approval's `decided_at`. The pasted log does not
+include those two timestamps.
+
+The building stage opened draft
+[PR #50](https://github.com/polds/factory/pull/50). Head
+`61afb3760459bd47f748ef2caf37996ec9d71724` on branch
+`m3/run-20261014T214242Z`, one commit `M3: emphasize Hello` by
+`Agent <agent@example.com>`. GitHub records the pull request as opened by
+`polds` because that account owns the live token. The diff is
+`spike/m1/fixture/greet/greet.go` and `greet_test.go`, the files and the title
+named in the building prompt (`agents/implementer`,
+`gh pr create --draft --title "M3: emphasize Hello"`). Triage and spec are
+instructed not to open a pull request. The driver printed the pull request URL
+after `Wait for implement and review`, then `M3 LIVE PASS`.
+
+The log line `four runs linked parent to child on distinct model ids` is the
+evidence that the four stage runs used different model ids and were linked
+parent to child. The laptop `factoryd` is not reachable from here, and the
+pasted log does not include the model id strings, so they are not repeated.
 
 ## M4 — Integrations (weeks)
 

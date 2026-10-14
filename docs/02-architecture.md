@@ -228,11 +228,19 @@ Backpressure: if no worker can accept, the run stays queued and the console show
 
 | Profile | Components | Store | Notes |
 | --- | --- | --- | --- |
-| **laptop** | `factoryd` + 1 worker (docker backend) | Postgres + MinIO | [`deploy/docker-compose.yml`](../deploy/docker-compose.yml); [spike/m2](../spike/m2/README.md); [06](06-execution-backends.md) |
+| **laptop** | `factoryd` + 1 worker (docker backend) | Postgres + MinIO | [`deploy/docker-compose.yml`](../deploy/docker-compose.yml); [spike/m2](../spike/m2/README.md); [spike/m3](../spike/m3/README.md); [06](06-execution-backends.md) |
 | **single VM** | same, systemd units | Postgres + MinIO/S3 | TLS via reverse proxy |
 | **k8s (chart)** | `factoryd` Deployment, worker Deployment(s) | managed PG + S3 | no CRDs needed |
 | **k8s (CRDs)** | + `factory-operator` | managed PG + S3 | cluster is source of truth; [10](10-kubernetes-and-helm.md) |
 | **hybrid** | `factoryd` central, workers in many networks | — | workers dial out only; no inbound port |
+
+On the laptop profile a work item is one request the orchestrator walks, not a
+bare `factoryctl run`. [`spike/m3`](../spike/m3/README.md) creates the item and
+runs triage, planning, a blocking spec approval, building, and reviewing.
+Docker Desktop sets `FACTORY_TASK_SERVER_URL` to
+`http://host.docker.internal:8080` and points `OPENAI_BASE_URL` at
+`host.docker.internal`. The script decides the spec gate only when
+`APPROVAL_DECISION=approve`.
 
 The hybrid profile is the one Warp's architecture makes awkward and ours makes natural:
 because the control plane is yours, a worker in a restricted network and a worker in a

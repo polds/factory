@@ -19,7 +19,7 @@ runners/
 routers/
   by-task.yaml
 scorers/
-  task-compliance/scorer.md
+  compliance/scorer.md
 skills/
   repository-conventions/SKILL.md
 webhooks/
@@ -150,6 +150,13 @@ cloudProviders:
     workloadIdentityFederationProviderId: factory-provider
     serviceAccountEmail: factory-runs@acme.iam.gserviceaccount.com
 ```
+
+**M3 applied.** The loader applies `pipeline:`, routers, and skills. It no
+longer warns that those keys are not applied in M2. Automations, scorers, and
+webhooks are loaded and validated; their engines are later milestones. Unknown
+keys are errors. The YAML JSON Schemas are in
+[`schemas/v1alpha1`](../schemas/v1alpha1), and `factoryd` serves them with no
+authentication.
 
 ### Inheritance
 
@@ -305,7 +312,7 @@ stages cheap and spend on implementation and review.
 
 ```markdown
 ---
-name: task-compliance
+name: compliance
 description: Did the run deliver what the work item asked for, and only that?
 agents:
   - name: foreman
