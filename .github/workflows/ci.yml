@@ -11,7 +11,8 @@
 #
 #   go lint and format     golangci-lint (includes gofmt and goimports)
 #   go build               go build -trimpath ./...
-#   go test                go test -race -count=1 -cover ./...
+#   go test                go test -race -count=1 -cover -v ./...
+#                          Postgres 16 and MinIO, so store/server/S3 tests run
 #   go module              go mod verify, go mod tidy -diff
 #   shell                  shfmt and shellcheck
 #   yaml                   yamllint
@@ -21,6 +22,7 @@
 #   harness image          sidecar image smoke
 #   m0 protocol spike      unmodified oz-agent-worker against the M0 server
 #   m1 offline e2e         MODE=offline ./spike/m1/run.sh
+#   m2 offline e2e         MODE=offline ./spike/m2/run.sh
 #   upcoming languages     TypeScript, Python, SQL, Helm, JSON Schema
 #
 # Not required, and not workflows yet:
@@ -32,6 +34,7 @@
 #   action SHA review      pins are updated by Dependabot, not by a status check
 # Manual, not part of `required`:
 #   m1 live                .github/workflows/m1-live.yml (workflow_dispatch)
+#   m2 live                .github/workflows/m2-live.yml (workflow_dispatch)
 name: ci
 
 on:
@@ -89,6 +92,47 @@ jobs:
     name: go test
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Store and server tests skip without FACTORY_TEST_DATABASE_URL (that
+    # left store coverage at 6.4%). The S3 round-trip skips without
+    # FACTORY_TEST_S3_ENDPOINT. Services are healthy before steps run.
+    # MinIO uses the image entrypoint and default command (no `server /data`).
+    # MINIO_ROOT_USER is factoryadmin, at least 3 characters, and matches
+    # FACTORY_TEST_S3_KEY. The client image creates the `factory` bucket;
+    # a service cannot override that image's command without replacing
+    # its entrypoint, and the default command exits.
+    env:
+      FACTORY_TEST_DATABASE_URL: "postgres://postgres:t@127.0.0.1:5432/factory?sslmode=disable"
+      FACTORY_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      FACTORY_TEST_S3_KEY: factoryadmin
+      FACTORY_TEST_S3_SECRET: factorysecret
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: t
+          POSTGRES_DB: factory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d factory"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      minio:
+        image: "bitnamilegacy/minio:2025.7.23-debian-12-r5\
+          @sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20"
+        env:
+          MINIO_ROOT_USER: factoryadmin
+          MINIO_ROOT_PASSWORD: factorysecret
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -fsS http://127.0.0.1:9000/minio/health/ready"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+          --health-start-period 10s
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -97,8 +141,37 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Create the MinIO test bucket
+        run: |
+          set -euo pipefail
+          mc_image='bitnamilegacy/minio-client:2025.7.21-debian-12-r3'
+          mc_image+='@sha256:73bd39f7899a0cef12b8dd5df13aa93a3ed1aaa44236542442e9ac76819ac158'
+          docker run --rm --network host \
+            -e HOME=/tmp \
+            -e MINIO_ROOT_USER="${FACTORY_TEST_S3_KEY}" \
+            -e MINIO_ROOT_PASSWORD="${FACTORY_TEST_S3_SECRET}" \
+            "$mc_image" \
+            /bin/bash -ec '
+              set -euo pipefail
+              mkdir -p /tmp/mc
+              ok=0
+              for _ in $(seq 1 30); do
+                if mc --config-dir /tmp/mc alias set local http://127.0.0.1:9000 \
+                  "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; then
+                  ok=1
+                  break
+                fi
+                sleep 2
+              done
+              if [[ "$ok" -ne 1 ]]; then
+                echo "minio did not accept the test credentials" >&2
+                exit 1
+              fi
+              mc --config-dir /tmp/mc mb --ignore-existing local/factory
+              mc --config-dir /tmp/mc anonymous set none local/factory
+            '
       - name: Test with the race detector
-        run: go test -race -count=1 -cover ./...
+        run: go test -race -count=1 -cover -v ./...
 
   go-module:
     name: go module
@@ -277,6 +350,21 @@ jobs:
       - name: Run the offline M1 driver
         run: MODE=offline ./spike/m1/run.sh
 
+  m2-offline:
+    name: m2 offline e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run the offline M2 driver
+        run: MODE=offline ./spike/m2/run.sh
+
   upcoming-languages:
     name: upcoming languages
     runs-on: ubuntu-latest
@@ -303,6 +391,7 @@ jobs:
       - harness-image
       - protocol-spike
       - m1-offline
+      - m2-offline
       - upcoming-languages
     if: always()
     runs-on: ubuntu-latest
@@ -322,6 +411,7 @@ jobs:
           HARNESS_IMAGE: ${{ needs.harness-image.result }}
           PROTOCOL_SPIKE: ${{ needs.protocol-spike.result }}
           M1_OFFLINE: ${{ needs.m1-offline.result }}
+          M2_OFFLINE: ${{ needs.m2-offline.result }}
           UPCOMING: ${{ needs.upcoming-languages.result }}
         run: |
           set -euo pipefail
@@ -351,5 +441,6 @@ jobs:
           report "harness image" "${HARNESS_IMAGE}"
           report "m0 protocol spike" "${PROTOCOL_SPIKE}"
           report "m1 offline e2e" "${M1_OFFLINE}"
+          report "m2 offline e2e" "${M2_OFFLINE}"
           report "upcoming languages" "${UPCOMING}"
           exit "${fail}"
