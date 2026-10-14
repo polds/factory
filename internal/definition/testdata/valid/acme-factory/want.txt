@@ -1,4 +1,0 @@
-automations/issue-labeled/automation.md:1: not applied in M2
-factory.yaml:48: key "pipeline" not applied in M2
-scorers/tests-run/scorer.md:1: not applied in M2
-webhooks/ci-failure.yaml:1: not applied in M2

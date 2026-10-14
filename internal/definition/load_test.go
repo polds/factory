@@ -53,36 +53,30 @@ func TestLoadDirExamples(t *testing.T) {
 	if tree == nil {
 		t.Fatal("nil tree")
 	}
-	var errs []Diagnostic
-	seen := map[string]bool{}
-	for _, d := range diags {
-		if d.Severity == "error" {
-			errs = append(errs, d)
-			continue
-		}
-		if d.Severity != "warning" {
-			t.Errorf("unexpected severity %q on %s:%d", d.Severity, d.File, d.Line)
-			continue
-		}
-		if !strings.Contains(d.Message, "not applied in M2") {
-			t.Errorf("warning %s:%d: %q", d.File, d.Line, d.Message)
-		}
-		for _, key := range []string{"pipeline", "automations", "scorers", "webhooks"} {
-			if strings.Contains(d.File, key) || strings.Contains(d.Message, key) {
-				seen[key] = true
-			}
-		}
-	}
-	if len(errs) != 0 {
-		t.Fatalf("errors: %#v", errs)
-	}
-	for _, key := range []string{"pipeline", "automations", "scorers", "webhooks"} {
-		if !seen[key] {
-			t.Errorf("missing M3 warning for %s", key)
-		}
+	if len(diags) != 0 {
+		t.Fatalf("acme-factory diagnostics:\n%s", formatDiags(diags))
 	}
 	if tree.Factory.Name != "acme-payments" || tree.Factory.SchemaVersion != "v1alpha1" {
 		t.Fatalf("factory = %+v", tree.Factory)
+	}
+	if tree.Factory.Pipeline == nil {
+		t.Fatal("pipeline not applied")
+	}
+	p := tree.Factory.Pipeline
+	if !reflect.DeepEqual(p.Stages, []string{"triage", "planning", "building", "reviewing"}) {
+		t.Fatalf("stages = %#v", p.Stages)
+	}
+	if p.Agents["building"] != "implementer" || p.Agents["reviewing"] != "reviewer" || p.RevisionLimit != 3 {
+		t.Fatalf("pipeline = %+v", p)
+	}
+	if !p.Approvals["spec"].Required || p.Approvals["spec"].Approvers != "role:editor" {
+		t.Fatalf("spec gate = %+v", p.Approvals["spec"])
+	}
+	if p.Approvals["merge"].Required || p.Approvals["merge"].Approvers != "" {
+		t.Fatalf("merge gate = %+v", p.Approvals["merge"])
+	}
+	if p.Skip["planning"] != "whenScopeClear" || p.Skip["triage"] != "whenIntakeHasScope" {
+		t.Fatalf("skip = %#v", p.Skip)
 	}
 	if len(tree.Agents) != 5 {
 		t.Fatalf("agents = %d", len(tree.Agents))
@@ -100,6 +94,33 @@ func TestLoadDirExamples(t *testing.T) {
 	}
 	if !strings.Contains(impl.Body, "You do not merge") {
 		t.Fatalf("body missing instructions: %q", impl.Body)
+	}
+	skill, ok := tree.Skills["repository-conventions"]
+	if !ok || !strings.Contains(skill.Body, "pnpm lint") {
+		t.Fatalf("skill = %+v ok=%v", skill, ok)
+	}
+	if tree.Routers == nil || len(tree.Routers) != 0 {
+		t.Fatalf("routers = %#v", tree.Routers)
+	}
+	if tree.AgentSkills == nil {
+		t.Fatal("nil agent skills")
+	}
+	auto, ok := tree.Automations["issue-labeled"]
+	if !ok || auto.Agent != "foreman" || !auto.Enabled || len(auto.Triggers) != 3 {
+		t.Fatalf("automation = %+v ok=%v", auto, ok)
+	}
+	scorer, ok := tree.Scorers["tests-run"]
+	if !ok || scorer.PassingScore != 1 || len(scorer.Labels) != 3 || len(scorer.Agents) != 1 || scorer.Agents[0].Name != "implementer" {
+		t.Fatalf("scorer = %+v ok=%v", scorer, ok)
+	}
+	hook, ok := tree.Webhooks["ci-failure"]
+	if !ok || hook.AuthMode != "token" || hook.SecretName != "CI_WEBHOOK_SECRET" || !hook.Enabled {
+		t.Fatalf("webhook = %+v ok=%v", hook, ok)
+	}
+	for _, d := range diags {
+		if strings.Contains(d.Message, "not applied in M2") {
+			t.Fatalf("M2 warning still present: %+v", d)
+		}
 	}
 }
 

@@ -1,5 +1,7 @@
 package definition
 
+import "encoding/json"
+
 // Severity values for Diagnostic.
 const (
 	SeverityError   = "error"
@@ -18,15 +20,24 @@ type Diagnostic struct {
 // Tree is a parsed definition. Digest is a SHA-256 hex digest of every file
 // in the directory. It is stable across runs and changes when any file's
 // path or contents change.
+//
+// Agents are resolved through Inherit. Routers and skills are applied.
+// Automations, scorers, and webhooks are loaded and validated; their
+// engines are later milestones.
 type Tree struct {
-	Factory Factory
-	Agents  map[string]Agent
-	Runners map[string]Runner
-	Digest  string
+	Factory     Factory
+	Agents      map[string]Agent
+	Runners     map[string]Runner
+	Routers     map[string]Router
+	Skills      map[string]Skill
+	AgentSkills map[string][]Skill
+	Automations map[string]Automation
+	Scorers     map[string]Scorer
+	Webhooks    map[string]Webhook
+	Digest      string
 }
 
-// Factory is the M2 view of factory.yaml. Pipeline and other M3-only
-// sections are not stored.
+// Factory is factory.yaml. Pipeline is applied when present.
 type Factory struct {
 	SchemaVersion      string                  `json:"schemaVersion,omitempty"`
 	Name               string                  `json:"name,omitempty"`
@@ -44,6 +55,143 @@ type Factory struct {
 	ScorerDefaults     *ScorerDefaults         `json:"scorerDefaults,omitempty"`
 	BenchmarkSubs      []BenchmarkSubstitution `json:"benchmarkRepoSubstitutions,omitempty"`
 	CloudProviders     *CloudProviders         `json:"cloudProviders,omitempty"`
+	Pipeline           *Pipeline               `json:"pipeline,omitempty"`
+}
+
+// Pipeline is the declarative stage machine in factory.yaml.
+type Pipeline struct {
+	Stages        []string                `json:"stages,omitempty"`
+	Agents        map[string]string       `json:"agents,omitempty"`
+	Skip          map[string]string       `json:"skip,omitempty"`
+	Approvals     map[string]ApprovalGate `json:"approvals,omitempty"`
+	RevisionLimit int                     `json:"revisionLimit,omitempty"`
+}
+
+// ApprovalGate is one pipeline.approvals entry. Approvers is required when
+// Required is true.
+type ApprovalGate struct {
+	Required  bool   `json:"required"`
+	Approvers string `json:"approvers,omitempty"`
+}
+
+// Router is one routers/<name>.yaml. Name is the file name without .yaml.
+// Targets must be concrete models.
+type Router struct {
+	Name        string
+	DisplayName string
+	Type        string
+	Default     string
+	Routes      []RouterRoute
+	Complexity  map[string]string
+}
+
+// RouterRoute is one prompt-router choice.
+type RouterRoute struct {
+	Description string
+	Model       string
+}
+
+// Skill is a SKILL.md. Name is the directory slug.
+type Skill struct {
+	Name        string
+	Description string
+	Body        string
+}
+
+// Automation is one automations/<name>/automation.md, with execution
+// settings resolved onto its target agent. RequiredRepos extends the agent.
+type Automation struct {
+	Name               string
+	Enabled            bool
+	Agent              string
+	DisplayName        string
+	Triggers           []Trigger
+	Model              string
+	Harness            *Harness
+	Runner             string
+	Pool               string
+	ComputerUseModel   string
+	Secrets            []string
+	MCPServers         map[string]MCPServer
+	RequiredRepos      []Repository
+	CredentialStrategy string
+	IdleTimeoutMinutes int
+	MaxTurns           int
+	WorkerHost         string
+	Body               string
+}
+
+// Trigger is one automation trigger.
+type Trigger struct {
+	Provider string         `json:"provider,omitempty"`
+	Event    string         `json:"event,omitempty"`
+	Filter   map[string]any `json:"filter,omitempty"`
+	Schedule *Schedule      `json:"schedule,omitempty"`
+}
+
+// Schedule is a cron trigger.
+type Schedule struct {
+	Name string `json:"name,omitempty"`
+	Cron string `json:"cron,omitempty"`
+}
+
+// Scorer is one scorers/<name>/scorer.md.
+type Scorer struct {
+	Name            string
+	Description     string
+	Agents          []ScorerAgent
+	Output          string
+	Labels          []ScorerLabel
+	PassingScore    float64
+	SamplingRate    int
+	Model           string
+	SelfImprovement bool
+	Body            string
+}
+
+// ScorerAgent is an agent a scorer samples. A YAML string is the name.
+type ScorerAgent struct {
+	Name               string `json:"name,omitempty"`
+	IncludeDescendants bool   `json:"includeDescendants,omitempty"`
+}
+
+// UnmarshalJSON accepts either an agent name or {name, includeDescendants}.
+func (a *ScorerAgent) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return nil
+	}
+	var name string
+	if err := json.Unmarshal(b, &name); err == nil {
+		a.Name = name
+		a.IncludeDescendants = false
+		return nil
+	}
+	var obj struct {
+		Name               string `json:"name"`
+		IncludeDescendants bool   `json:"includeDescendants"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return err
+	}
+	*a = ScorerAgent{Name: obj.Name, IncludeDescendants: obj.IncludeDescendants}
+	return nil
+}
+
+// ScorerLabel is one classification label.
+type ScorerLabel struct {
+	Value       string  `json:"value,omitempty"`
+	Description string  `json:"description,omitempty"`
+	Score       float64 `json:"score,omitempty"`
+}
+
+// Webhook is one webhooks/<name>.yaml. SecretName is a name, not material.
+type Webhook struct {
+	Name             string
+	AuthMode         string
+	SignatureScheme  string
+	SecretName       string
+	DeliveryIDHeader string
+	Enabled          bool
 }
 
 // Repository is a code forge repository reference.

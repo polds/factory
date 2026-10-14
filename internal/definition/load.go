@@ -2,7 +2,6 @@ package definition
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,12 +38,17 @@ func LoadDir(path string) (*Tree, []Diagnostic) {
 		}}
 	}
 	tree := &Tree{
-		Agents:  map[string]Agent{},
-		Runners: map[string]Runner{},
-		Digest:  sum,
+		Agents:      map[string]Agent{},
+		Runners:     map[string]Runner{},
+		Routers:     map[string]Router{},
+		Skills:      map[string]Skill{},
+		AgentSkills: map[string][]Skill{},
+		Automations: map[string]Automation{},
+		Scorers:     map[string]Scorer{},
+		Webhooks:    map[string]Webhook{},
+		Digest:      sum,
 	}
 	var diags []Diagnostic
-	warnM3(path, &diags)
 
 	factoryRaw, factoryLines := loadFactory(path, tree, &diags)
 	loadRunners(path, tree, &diags)
@@ -53,6 +57,14 @@ func LoadDir(path string) (*Tree, []Diagnostic) {
 		scanMCPCredentials("factory.yaml", "agentDefaults", childMap(factoryRaw, "agentDefaults"), factoryLines, &diags)
 	}
 	loadAgents(path, tree, &diags)
+	loadRouters(path, tree, &diags)
+	loadSkills(path, tree, &diags)
+	loadAgentSkills(path, tree, &diags)
+	loadAutomations(path, tree, &diags)
+	loadScorers(path, tree, &diags)
+	loadWebhooks(path, tree, &diags)
+	validatePipeline(tree, factoryLines, &diags)
+	validateScorerDefaults(tree, factoryLines, &diags)
 	sortDiags(diags)
 	return tree, diags
 }
@@ -253,8 +265,9 @@ func loadAgents(root string, tree *Tree, diags *[]Diagnostic) {
 		})
 	}
 	reportDuplicateAgents(parsed, diags)
+	reportForemen(parsed, diags)
 	for _, p := range parsed {
-		ag := p.agent(tree.Factory.AgentDefaults)
+		ag := p.agent(tree.Factory)
 		if strings.TrimSpace(ag.Model) == "" && ag.Harness == nil {
 			line := 1
 			if _, ok := p.raw["model"]; ok {
@@ -266,6 +279,7 @@ func loadAgents(root string, tree *Tree, diags *[]Diagnostic) {
 		}
 		tree.Agents[p.slug] = ag
 	}
+	warnSameModel(parsed, tree, diags)
 }
 
 func reportDuplicateAgents(parsed []parsedAgent, diags *[]Diagnostic) {
@@ -291,68 +305,43 @@ func reportDuplicateAgents(parsed []parsedAgent, diags *[]Diagnostic) {
 	}
 }
 
-func (p parsedAgent) agent(defaults AgentDefaults) Agent {
-	ag := Agent{
+func (p parsedAgent) agent(factory Factory) Agent {
+	sparse := Agent{
 		Name:               p.slug,
 		Description:        p.doc.Description,
 		AgentType:          p.doc.AgentType,
-		SpawnableBy:        p.doc.SpawnableBy,
+		SpawnableBy:        cloneStrings(p.doc.SpawnableBy),
 		CredentialStrategy: p.doc.CredentialStrategy,
 		IdleTimeoutMinutes: p.doc.IdleTimeoutMinutes,
-		RequiredRepos:      p.doc.RequiredRepos,
+		RequiredRepos:      cloneRepos(p.doc.RequiredRepos),
 		Pool:               p.doc.Pool,
 		ComputerUseModel:   p.doc.ComputerUseModel,
 		MaxTurns:           p.doc.MaxTurns,
 		WorkerHost:         p.doc.WorkerHost,
 		Body:               p.body,
 	}
-	modelSet := nonBlankString(p.raw["model"])
-	harnessSet := false
-	if v, ok := p.raw["harness"]; ok {
-		harnessSet = usableHarness(v)
+	if nonBlankString(p.raw["model"]) {
+		sparse.Model = strings.TrimSpace(p.doc.Model)
 	}
-	switch {
-	case modelSet && harnessSet:
-		ag.Model = strings.TrimSpace(p.doc.Model)
-		ag.Harness = cloneHarness(p.doc.Harness)
-	case modelSet:
-		ag.Model = strings.TrimSpace(p.doc.Model)
-	case harnessSet:
-		ag.Harness = cloneHarness(p.doc.Harness)
-	default:
-		ag.Model = strings.TrimSpace(defaults.Model)
-		ag.Harness = cloneHarness(defaults.Harness)
+	if v, ok := p.raw["harness"]; ok && usableHarness(v) {
+		sparse.Harness = cloneHarness(p.doc.Harness)
 	}
-	ag.Runner, _ = resolveRunner(p.raw, defaults.Runner)
+	if name, explicit := resolveRunner(p.raw, ""); explicit {
+		sparse.Runner = name
+	}
 	if _, set := p.raw["secrets"]; set {
-		ag.Secrets = cloneStrings(p.doc.Secrets)
-	} else {
-		ag.Secrets = cloneStrings(defaults.Secrets)
+		sparse.Secrets = cloneStrings(p.doc.Secrets)
+		if sparse.Secrets == nil {
+			sparse.Secrets = []string{}
+		}
 	}
 	if _, set := p.raw["mcpServers"]; set {
-		ag.MCPServers = cloneMCP(p.doc.MCPServers)
-	} else {
-		ag.MCPServers = cloneMCP(defaults.MCPServers)
+		sparse.MCPServers = cloneMCP(p.doc.MCPServers)
+		if sparse.MCPServers == nil {
+			sparse.MCPServers = map[string]MCPServer{}
+		}
 	}
-	if ag.Pool == "" {
-		ag.Pool = defaults.Pool
-	}
-	if ag.ComputerUseModel == "" {
-		ag.ComputerUseModel = defaults.ComputerUseModel
-	}
-	if ag.CredentialStrategy == "" {
-		ag.CredentialStrategy = defaults.CredentialStrategy
-	}
-	if ag.IdleTimeoutMinutes == 0 {
-		ag.IdleTimeoutMinutes = defaults.IdleTimeoutMinutes
-	}
-	if ag.MaxTurns == 0 {
-		ag.MaxTurns = defaults.MaxTurns
-	}
-	if ag.WorkerHost == "" {
-		ag.WorkerHost = defaults.WorkerHost
-	}
-	return ag
+	return Inherit(factory, factory.AgentDefaults, sparse)
 }
 
 func cloneStrings(in []string) []string {
@@ -400,44 +389,6 @@ func cloneHarness(h *Harness) *Harness {
 		c.Auth = &a
 	}
 	return &c
-}
-
-func warnM3(root string, diags *[]Diagnostic) {
-	for _, name := range m3Dirs {
-		dir := filepath.Join(root, name)
-		st, err := os.Stat(dir)
-		if err != nil || !st.IsDir() {
-			continue
-		}
-		rel, ok := firstFile(root, dir)
-		if !ok {
-			rel = name
-		}
-		addDiag(diags, rel, 1, SeverityWarning, "not applied in M2")
-	}
-}
-
-func firstFile(root, dir string) (string, bool) {
-	var files []string
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		files = append(files, filepath.ToSlash(rel))
-		return nil
-	})
-	if err != nil || len(files) == 0 {
-		return "", false
-	}
-	sort.Strings(files)
-	return files[0], true
 }
 
 func childMap(raw map[string]any, key string) map[string]any {
