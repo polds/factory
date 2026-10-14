@@ -137,22 +137,6 @@ func (s *Server) liveExecution(ctx context.Context, runID string) (string, error
 	return id, nil
 }
 
-func (s *Server) markCancelled(ctx context.Context, runID string) error {
-	s.leaseMu.Lock()
-	defer s.leaseMu.Unlock()
-	if _, err := s.db.Exec(ctx, `
-		UPDATE runs
-		SET status = 'cancelled',
-		    cancel_requested = true,
-		    ended_at = COALESCE(ended_at, clock_timestamp()),
-		    worker_id = NULL
-		WHERE id = $1 AND status NOT IN ('succeeded', 'failed', 'cancelled')`, runID); err != nil {
-		return err
-	}
-	_, err := s.db.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID)
-	return err
-}
-
 func (s *Server) executionForEvent(ctx context.Context, runID string) (string, error) {
 	var id string
 	err := s.db.QueryRow(ctx, `

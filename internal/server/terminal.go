@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/polds/factory/internal/events"
 	"github.com/polds/factory/internal/protocol"
@@ -34,7 +37,7 @@ func (s *Server) settleCancel(ctx context.Context, runID string) {
 		}
 		if execID != "" {
 			s.finish(ctx, runID, execID, store.ExecCancelled, "", "", nil, nil)
-		} else if err := s.markCancelled(ctx, runID); err != nil {
+		} else if err := s.commitBareCancel(ctx, runID); err != nil {
 			s.log.Error("mark cancelled", "run_id", runID, "err", err)
 			return
 		}
@@ -92,11 +95,10 @@ func (s *Server) finish(ctx context.Context, runID, execID, state, reason, summa
 	if run.CancelRequested || (taskState != nil && *taskState == protocol.TaskStateCancelled) {
 		state = store.ExecCancelled
 	}
-	applied, err := s.store.FinishExecution(ctx, execID, store.Terminal{
-		State:         state,
-		FailureReason: reason,
-		ExitCode:      exit,
-	})
+	// Status and run.terminal commit together. A reader that sees the terminal
+	// status already sees the event; FinishExecution and AppendEvents were
+	// separate commits, and a poll could land between them.
+	applied, err := s.commitFinish(ctx, runID, execID, state, reason, summary, exit)
 	if err != nil {
 		s.log.Error("finish execution", "run_id", runID, "execution_id", execID, "err", err)
 		return
@@ -106,17 +108,277 @@ func (s *Server) finish(ctx context.Context, runID, execID, state, reason, summa
 	if !applied {
 		return
 	}
-	status, err := runStatus(state)
-	if err != nil {
-		s.log.Error("terminal state", "run_id", runID, "err", err)
-		return
-	}
-	if err := s.appendServerEvent(ctx, runID, execID, serverEventBase, terminalPayload(s.now(), status, reason, summary, exit)); err != nil {
-		s.log.Error("terminal event", "run_id", runID, "err", err)
-	}
 	s.archive(ctx, runID, execID)
 	s.hub.Publish(runID)
 	s.nudge()
+}
+
+// commitFinish applies one terminal transition and inserts run.terminal
+// before it commits. A second call returns false and does not write another
+// event. An execution that is already terminal does not change the run.
+func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason, summary string, exit *int) (bool, error) {
+	status, err := runStatus(state)
+	if err != nil {
+		return false, err
+	}
+	s.leaseMu.Lock()
+	defer s.leaseMu.Unlock()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var gotRun string
+	err = tx.QueryRow(ctx, `
+		UPDATE executions
+		SET state = $2,
+		    failure_reason = NULLIF($3, ''),
+		    exit_code = $4,
+		    failure_details_json = NULL,
+		    ended_at = clock_timestamp()
+		WHERE id = $1 AND state IN ($5, $6)
+		RETURNING run_id`,
+		execID, state, reason, exit, store.ExecAssigned, store.ExecRunning,
+	).Scan(&gotRun)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var exists bool
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM executions WHERE id = $1)`, execID).Scan(&exists)
+		if err != nil {
+			return false, err
+		}
+		if !exists {
+			return false, store.ErrNotFound
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if gotRun != runID {
+		return false, fmt.Errorf("server: execution %s belongs to run %s", execID, gotRun)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE runs
+		SET status = $2,
+		    failure_reason = NULLIF($3, ''),
+		    exit_code = $4,
+		    ended_at = clock_timestamp()
+		WHERE id = $1 AND status IN ($5, $6)`,
+		runID, status, reason, exit, store.StatusAssigned, store.StatusRunning,
+	); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
+		return false, err
+	}
+	payload := terminalPayload(s.now(), status, reason, summary, exit)
+	if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// cancelRun flags a running run, or cancels a queued or assigned run and
+// writes run.terminal in that same transaction.
+func (s *Server) cancelRun(ctx context.Context, runID string) (store.Run, error) {
+	s.leaseMu.Lock()
+	defer s.leaseMu.Unlock()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return store.Run{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1 FOR UPDATE`, runID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Run{}, store.ErrNotFound
+	}
+	if err != nil {
+		return store.Run{}, err
+	}
+	switch status {
+	case store.StatusSucceeded, store.StatusFailed, store.StatusCancelled:
+		return store.Run{}, store.ErrAlreadyTerminal
+	case store.StatusQueued, store.StatusAssigned:
+		if _, err := tx.Exec(ctx, `
+			UPDATE runs
+			SET status = $2, cancel_requested = true, ended_at = clock_timestamp(), worker_id = NULL
+			WHERE id = $1`, runID, store.StatusCancelled); err != nil {
+			return store.Run{}, err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE executions
+			SET state = $2, ended_at = clock_timestamp()
+			WHERE run_id = $1 AND state IN ($3, $4)`,
+			runID, store.ExecCancelled, store.ExecAssigned, store.ExecRunning); err != nil {
+			return store.Run{}, err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
+			return store.Run{}, err
+		}
+		execID, err := executionInTx(ctx, tx, runID)
+		if err != nil {
+			return store.Run{}, err
+		}
+		payload := terminalPayload(s.now(), store.StatusCancelled, "", "", nil)
+		if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
+			return store.Run{}, err
+		}
+	case store.StatusRunning:
+		if _, err := tx.Exec(ctx, `UPDATE runs SET cancel_requested = true WHERE id = $1`, runID); err != nil {
+			return store.Run{}, err
+		}
+	default:
+		return store.Run{}, fmt.Errorf("server: cancel status %q", status)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.Run{}, err
+	}
+	return s.store.GetRun(ctx, runID)
+}
+
+// commitBareCancel cancels a run that has no live execution, and writes
+// run.terminal before that status is visible.
+func (s *Server) commitBareCancel(ctx context.Context, runID string) error {
+	s.leaseMu.Lock()
+	defer s.leaseMu.Unlock()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE runs
+		SET status = 'cancelled',
+		    cancel_requested = true,
+		    ended_at = COALESCE(ended_at, clock_timestamp()),
+		    worker_id = NULL
+		WHERE id = $1 AND status NOT IN ('succeeded', 'failed', 'cancelled')`, runID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
+		return err
+	}
+	execID, err := executionInTx(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
+	payload := terminalPayload(s.now(), store.StatusCancelled, "", "", nil)
+	if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func executionInTx(ctx context.Context, tx pgx.Tx, runID string) (string, error) {
+	var id string
+	err := tx.QueryRow(ctx, `
+		SELECT id FROM executions WHERE run_id = $1 ORDER BY attempt DESC LIMIT 1`, runID).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	id, err = store.NewID(store.PrefixExec)
+	if err != nil {
+		return "", err
+	}
+	var sum [32]byte
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO executions (id, run_id, attempt, worker_id, state, run_token_sha256, ended_at)
+		VALUES ($1, $2, 1, '', 'cancelled', $3, clock_timestamp())
+		ON CONFLICT (run_id, attempt) DO NOTHING`, id, runID, sum[:])
+	if err != nil {
+		return "", err
+	}
+	if tag.RowsAffected() == 1 {
+		return id, nil
+	}
+	err = tx.QueryRow(ctx, `SELECT id FROM executions WHERE run_id = $1 AND attempt = 1`, runID).Scan(&id)
+	return id, err
+}
+
+// insertTerminalEvent writes run.terminal on tx. The caller has already
+// updated the run status on tx and has not committed. The test hook runs
+// in that window: other connections still see the previous status.
+func (s *Server) insertTerminalEvent(ctx context.Context, tx pgx.Tx, runID, execID string, payload []byte) error {
+	s.mu.Lock()
+	pause := s.beforeTerminalEvent
+	s.mu.Unlock()
+	if pause != nil {
+		pause()
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 1))`, "events:"+runID); err != nil {
+		return fmt.Errorf("server: terminal event: %w", err)
+	}
+	var owner string
+	err := tx.QueryRow(ctx, `SELECT run_id FROM executions WHERE id = $1`, execID).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("server: terminal event: %w", store.ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("server: terminal event: %w", err)
+	}
+	if owner != runID {
+		return fmt.Errorf("server: execution %s belongs to run %s", execID, owner)
+	}
+	typ, ts, err := terminalMeta(payload)
+	if err != nil {
+		return err
+	}
+	var seq int64
+	err = tx.QueryRow(ctx, `
+		SELECT seq FROM run_events WHERE execution_id = $1 AND idx = $2`, execID, serverEventBase).Scan(&seq)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("server: terminal event: %w", err)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, `
+			INSERT INTO run_events (run_id, seq, execution_id, idx, ts, type, payload_json)
+			VALUES (
+			    $1,
+			    (SELECT COALESCE(MAX(seq), 0) + 1 FROM run_events WHERE run_id = $1),
+			    $2, $3, $4, $5, $6::jsonb
+			)
+			RETURNING seq`,
+			runID, execID, serverEventBase, ts, typ, payload).Scan(&seq)
+		if err != nil {
+			return fmt.Errorf("server: terminal event: %w", err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_notify('run_events', $1)`, runID); err != nil {
+		return fmt.Errorf("server: terminal event: %w", err)
+	}
+	return nil
+}
+
+func terminalMeta(payload []byte) (string, time.Time, error) {
+	var meta struct {
+		Type string `json:"type"`
+		TS   string `json:"ts"`
+	}
+	if err := json.Unmarshal(payload, &meta); err != nil {
+		return "", time.Time{}, fmt.Errorf("server: terminal event: %w", err)
+	}
+	if meta.Type == "" {
+		return "", time.Time{}, errors.New("server: terminal event type is required")
+	}
+	ts, err := time.Parse(time.RFC3339Nano, meta.TS)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("server: terminal event ts: %w", err)
+	}
+	return meta.Type, ts, nil
 }
 
 func terminalPayload(now time.Time, status, reason, summary string, exit *int) []byte {

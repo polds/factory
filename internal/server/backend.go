@@ -188,7 +188,7 @@ func (s *Server) ListRuns(ctx context.Context, f api.RunFilter) ([]api.Run, erro
 }
 
 func (s *Server) CancelRun(ctx context.Context, id string) (api.Run, error) {
-	run, err := s.store.RequestCancel(ctx, id)
+	run, err := s.cancelRun(ctx, id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return api.Run{}, api.ErrNotFound

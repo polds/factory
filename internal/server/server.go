@@ -74,6 +74,12 @@ type Server struct {
 	byRun     map[string]string
 	idleSince map[string]time.Time
 	grace     map[string]*time.Timer
+
+	// beforeTerminalEvent runs inside the transaction that publishes a
+	// terminal status, after that status is written and before run.terminal
+	// is inserted. Nil in production. Tests block here so a reader must not
+	// observe the new status until the event commits with it.
+	beforeTerminalEvent func()
 }
 
 var (

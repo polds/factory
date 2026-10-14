@@ -321,6 +321,85 @@ func TestE2E(t *testing.T) {
 		}
 	})
 
+	t.Run("cancel_then_disconnect_hides_status_until_terminal_event", func(t *testing.T) {
+		env := boot(t, bootOpts{cancelGrace: 200 * time.Millisecond})
+		entered, release := env.holdTerminalEvent(t)
+		w := dialWorker(t, env, "local-1")
+		runID := env.startRun(t, "cancel then drop")
+		asg := w.readAssignment(t)
+		env.cancel(t, runID)
+		w.close()
+		select {
+		case <-entered:
+		case <-time.After(8 * time.Second):
+			t.Fatal("terminal transaction did not pause before the event insert")
+		}
+		if env.status(t, runID) == "cancelled" {
+			t.Fatal("cancelled was visible before run.terminal committed")
+		}
+		if n := env.terminalCount(t, runID); n != 0 {
+			t.Fatalf("terminal rows %d before commit", n)
+		}
+		release()
+		env.waitStatus(t, runID, "cancelled")
+		if env.execState(t, asg.ExecutionID) != "cancelled" {
+			t.Fatalf("execution %s", env.execState(t, asg.ExecutionID))
+		}
+		env.requireOneTerminal(t, runID, "cancelled")
+		if n := env.queueRows(t, runID); n != 0 {
+			t.Fatalf("disconnect requeued the cancelled run (%d rows)", n)
+		}
+	})
+
+	t.Run("cancel_queued_hides_status_until_terminal_event", func(t *testing.T) {
+		env := boot(t, bootOpts{})
+		entered, release := env.holdTerminalEvent(t)
+		runID := env.startRun(t, "cancel before a worker")
+		env.waitStatus(t, runID, "queued")
+		done := make(chan int, 1)
+		go func() {
+			req, err := http.NewRequest(http.MethodPost, env.base+"/api/v1/agent/runs/"+runID+"/cancel", nil)
+			if err != nil {
+				done <- 0
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+env.apiKey)
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				done <- 0
+				return
+			}
+			defer func() { _ = res.Body.Close() }()
+			_, _ = io.Copy(io.Discard, res.Body)
+			done <- res.StatusCode
+		}()
+		select {
+		case <-entered:
+		case <-time.After(8 * time.Second):
+			t.Fatal("terminal transaction did not pause before the event insert")
+		}
+		if env.status(t, runID) == "cancelled" {
+			t.Fatal("cancelled was visible before run.terminal committed")
+		}
+		if n := env.terminalCount(t, runID); n != 0 {
+			t.Fatalf("terminal rows %d before commit", n)
+		}
+		release()
+		select {
+		case code := <-done:
+			if code != http.StatusOK {
+				t.Fatalf("cancel status %d", code)
+			}
+		case <-time.After(8 * time.Second):
+			t.Fatal("cancel did not return")
+		}
+		env.waitStatus(t, runID, "cancelled")
+		env.requireOneTerminal(t, runID, "cancelled")
+		if n := env.queueRows(t, runID); n != 0 {
+			t.Fatalf("queue rows %d", n)
+		}
+	})
+
 	t.Run("cancel_then_reject_stays_cancelled", func(t *testing.T) {
 		env := boot(t, bootOpts{cancelGrace: 200 * time.Millisecond})
 		w := dialWorker(t, env, "local-1")
@@ -808,6 +887,33 @@ func (e *env) eventRows(t *testing.T, runID string) []eventRow {
 		t.Fatal(err)
 	}
 	return out
+}
+
+func (e *env) holdTerminalEvent(t *testing.T) (<-chan struct{}, func()) {
+	t.Helper()
+	entered := make(chan struct{})
+	letGo := make(chan struct{})
+	var startOnce sync.Once
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(letGo) }) }
+	t.Cleanup(release)
+	e.srv.mu.Lock()
+	e.srv.beforeTerminalEvent = func() {
+		startOnce.Do(func() { close(entered) })
+		<-letGo
+	}
+	e.srv.mu.Unlock()
+	return entered, release
+}
+
+func (e *env) terminalCount(t *testing.T, runID string) int {
+	t.Helper()
+	var n int
+	err := e.raw.QueryRow(context.Background(), `SELECT count(*) FROM run_events WHERE run_id = $1 AND type = 'run.terminal'`, runID).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func (e *env) requireOneTerminal(t *testing.T, runID, status string) {
