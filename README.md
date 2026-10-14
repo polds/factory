@@ -35,10 +35,17 @@ line is set, not unset, so compose will not fill it. Before `up`, set:
 | `FACTORY_INFERENCE_OPENAI_API_KEY` | when the endpoint requires a key | Copied into the task as `OPENAI_API_KEY`. |
 | `FACTORY_TASK_SERVER_URL` | on Docker Desktop | `http://host.docker.internal:8080`. Linux default `http://172.17.0.1:8080` applies when this is empty. |
 
-`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `M2_MODEL`, `M2_REPO`, and `GH_TOKEN` in
-the example are read by `spike/m2/run.sh`, not by compose. The shipped model
-is `m2-offline-stub` (`deploy/m2-factory/factory.yaml`). `FACTORY_API_KEY`
+`spike/m2/run.sh` reads `deploy/.env` when that file exists. `MODE=live`
+accepts the shell names (`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `M2_MODEL`,
+`GH_TOKEN`) and the compose names in the table above. A non-empty shell
+variable wins. Empty assignments are ignored. Assignments are literal text,
+not shell commands. The script does not print those values. `M2_REPO` defaults to `polds/factory`. The shipped model is
+`m2-offline-stub` (`deploy/m2-factory/factory.yaml`). `FACTORY_API_KEY`
 empty still becomes `m2-dev-api-key`.
+
+The harness binary is executed inside a Linux task container. Build it for
+the Docker daemon's architecture (`linux/arm64` or `linux/amd64`), not the
+host OS. A macOS binary exits 126 there.
 
 ```bash
 cp deploy/.env.example deploy/.env
@@ -47,10 +54,16 @@ awk '
   { print }
 ' deploy/.env > deploy/.env.new && mv deploy/.env.new deploy/.env
 
-CGO_ENABLED=0 go build -o harness/generic-openai/factory-harness ./cmd/factory-harness
-docker build -t factory-harness:dev harness/generic-openai
-docker build -t factory-m1-task:dev spike/m1/task-image
-docker compose -f deploy/docker-compose.yml up -d --build --wait
+case "$(docker info --format '{{.Architecture}}')" in
+  aarch64 | arm64) arch=arm64 ;;
+  x86_64 | amd64) arch=amd64 ;;
+  *) echo "unsupported docker architecture" >&2; exit 1 ;;
+esac
+platform="linux/${arch}"
+CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -o harness/generic-openai/factory-harness ./cmd/factory-harness
+docker build --platform "$platform" -t factory-harness:dev harness/generic-openai
+docker build --platform "$platform" -t factory-m1-task:dev spike/m1/task-image
+DOCKER_DEFAULT_PLATFORM="$platform" docker compose -f deploy/docker-compose.yml up -d --build --wait
 go build -o bin/factoryctl ./cmd/factoryctl
 FACTORY_API_KEY=m2-dev-api-key ./bin/factoryctl run --prompt "…" --factory m2 --watch
 ```

@@ -23,6 +23,7 @@
 #   m0 protocol spike      unmodified oz-agent-worker against the M0 server
 #   m1 offline e2e         MODE=offline ./spike/m1/run.sh
 #   m2 offline e2e         MODE=offline ./spike/m2/run.sh
+#   task image platform    task and harness images built for linux/arm64
 #   upcoming languages     TypeScript, Python, SQL, Helm, JSON Schema
 #
 # Not required, and not workflows yet:
@@ -87,6 +88,8 @@ jobs:
           cache: true
       - name: Build every package
         run: go build -trimpath ./...
+      - name: M2 run.sh unit tests
+        run: M2_REQUIRE_GO=1 ./spike/m2/run_test.sh
 
   go-test:
     name: go test
@@ -225,6 +228,8 @@ jobs:
           # Printer flags override .editorconfig, so indent lives there.
           shfmt -d "${files[@]}"
           shellcheck -x "${files[@]}"
+      - name: M2 run.sh unit tests
+        run: ./spike/m2/run_test.sh
 
   yaml:
     name: yaml
@@ -365,6 +370,26 @@ jobs:
       - name: Run the offline M2 driver
         run: MODE=offline ./spike/m2/run.sh
 
+  task-image-arch:
+    name: task image platform
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Enable arm64 emulation
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static
+      - name: Build the task and harness images for linux/arm64
+        run: ./spike/m2/check-image-platform.sh linux/arm64
+
   upcoming-languages:
     name: upcoming languages
     runs-on: ubuntu-latest
@@ -392,6 +417,7 @@ jobs:
       - protocol-spike
       - m1-offline
       - m2-offline
+      - task-image-arch
       - upcoming-languages
     if: always()
     runs-on: ubuntu-latest
@@ -412,6 +438,7 @@ jobs:
           PROTOCOL_SPIKE: ${{ needs.protocol-spike.result }}
           M1_OFFLINE: ${{ needs.m1-offline.result }}
           M2_OFFLINE: ${{ needs.m2-offline.result }}
+          TASK_IMAGE_ARCH: ${{ needs.task-image-arch.result }}
           UPCOMING: ${{ needs.upcoming-languages.result }}
         run: |
           set -euo pipefail
@@ -442,5 +469,6 @@ jobs:
           report "m0 protocol spike" "${PROTOCOL_SPIKE}"
           report "m1 offline e2e" "${M1_OFFLINE}"
           report "m2 offline e2e" "${M2_OFFLINE}"
+          report "task image platform" "${TASK_IMAGE_ARCH}"
           report "upcoming languages" "${UPCOMING}"
           exit "${fail}"

@@ -7,23 +7,28 @@ MODE=offline ./spike/m2/run.sh   # default; ends with "M2 OFFLINE PASS"
 MODE=live    ./spike/m2/run.sh   # real model + GitHub; prints the PR URL
 ```
 
-Offline needs Docker, Go, git, and curl. Live also needs `gh` and:
+Offline needs Docker, Go, git, and curl. Live also needs `gh`. `run.sh`
+reads `deploy/.env` when that file exists. A non-empty shell variable wins
+over the file. Empty assignments are ignored. Values are assigned literally,
+not executed, and are not printed.
 
-| Variable | Required | Meaning |
-| --- | --- | --- |
-| `OPENAI_BASE_URL` | yes | OpenAI-compatible endpoint reachable from a task container |
-| `M2_MODEL` | yes | Model id written into the definition before factoryd boots |
-| `GH_TOKEN` | yes | Fine-grained token that can push and open PRs |
-| `OPENAI_API_KEY` | no | Sent only when set |
-| `M2_REPO` | no | Default `polds/factory` |
+| Shell name | Also accepted | Required | Meaning |
+| --- | --- | --- | --- |
+| `OPENAI_BASE_URL` | `FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL` | yes | OpenAI-compatible endpoint reachable from a task container |
+| `M2_MODEL` | | yes | Model id written into the definition before factoryd boots |
+| `GH_TOKEN` | `FACTORY_SECRET_GH_TOKEN` | yes | Fine-grained token that can push and open PRs |
+| `OPENAI_API_KEY` | `FACTORY_INFERENCE_OPENAI_API_KEY` | no | Sent only when set |
+| `M2_REPO` | | no | Default `polds/factory` |
 
 Scratch (logs, the bare repo, watch transcripts, the event archive) is
 `spike/m2/.work/`, which is gitignored.
 
 ## Laptop (`deploy/.env`)
 
-`run.sh` does not read `deploy/.env`. To boot the stack and drive it yourself,
-`run` needs `--factory m2` (the name in `deploy/m2-factory`).
+`run.sh` reads `deploy/.env` when the file exists, then accepts either the
+shell names or the `FACTORY_SECRET_GH_TOKEN` / `FACTORY_INFERENCE_*` names in
+the table above. To boot the stack and drive it yourself, `run` needs
+`--factory m2` (the name in `deploy/m2-factory`).
 
 Copying the example leaves values empty. An empty line is set, not unset, so
 compose does not substitute a default. Set these before `up`:
@@ -36,7 +41,9 @@ compose does not substitute a default. Set these before `up`:
 | `FACTORY_TASK_SERVER_URL` | on Docker Desktop | `http://host.docker.internal:8080`. Linux keeps the default `http://172.17.0.1:8080` when this stays empty. |
 
 `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `M2_MODEL`, `M2_REPO`, and `GH_TOKEN` in
-the example are for `run.sh` only. Compose does not interpolate them.
+the example are shell names for `run.sh`. Compose does not interpolate them.
+`run.sh` also reads the `FACTORY_INFERENCE_*` and `FACTORY_SECRET_GH_TOKEN`
+lines from the same file.
 `agentDefaults.model` ships as `m2-offline-stub`. An empty `FACTORY_API_KEY`
 still becomes `m2-dev-api-key`.
 
@@ -47,10 +54,16 @@ awk '
   { print }
 ' deploy/.env > deploy/.env.new && mv deploy/.env.new deploy/.env
 
-CGO_ENABLED=0 go build -o harness/generic-openai/factory-harness ./cmd/factory-harness
-docker build -t factory-harness:dev harness/generic-openai
-docker build -t factory-m1-task:dev spike/m1/task-image
-docker compose -f deploy/docker-compose.yml up -d --build --wait
+case "$(docker info --format '{{.Architecture}}')" in
+  aarch64 | arm64) arch=arm64 ;;
+  x86_64 | amd64) arch=amd64 ;;
+  *) echo "unsupported docker architecture" >&2; exit 1 ;;
+esac
+platform="linux/${arch}"
+CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -o harness/generic-openai/factory-harness ./cmd/factory-harness
+docker build --platform "$platform" -t factory-harness:dev harness/generic-openai
+docker build --platform "$platform" -t factory-m1-task:dev spike/m1/task-image
+DOCKER_DEFAULT_PLATFORM="$platform" docker compose -f deploy/docker-compose.yml up -d --build --wait
 go build -o bin/factoryctl ./cmd/factoryctl
 FACTORY_API_KEY=m2-dev-api-key ./bin/factoryctl run --prompt "…" --factory m2 --watch
 ```
