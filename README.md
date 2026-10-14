@@ -12,11 +12,29 @@ Target operating modes, all from one definition:
 | Self-hosted cloud | Helm chart: control plane + operator + worker pools |
 | Cloud-native | Kubernetes CRDs (`factory.dev/v1alpha1`) reconciled by an operator |
 
-**Status.** The design is in `docs/`. M0, the protocol spike, is done
-([`spike/m0`](spike/m0)). M1 has started: [`cmd/factory-harness`](cmd/factory-harness)
-is the `generic-openai` adapter, and `factoryctl harness verify` checks it.
-The `claude-code` adapter and a run that opens a pull request are still open.
+**Status.** The design is in `docs/`. M0, M1, and M2 are done: the protocol
+spike ([`spike/m0`](spike/m0)), the `generic-openai` harness
+([`cmd/factory-harness`](cmd/factory-harness)), and a laptop `factoryd` that
+opens a pull request. The `claude-code` adapter is not in this build.
 [`docs/12-build-sequence.md`](docs/12-build-sequence.md) is the order of work.
+
+## Quickstart
+
+Laptop profile: `factoryd`, Postgres, MinIO, and one unmodified Docker-backend
+worker.
+
+```bash
+cp deploy/.env.example deploy/.env
+docker compose -f deploy/docker-compose.yml up -d --build
+go build -o bin/factoryctl ./cmd/factoryctl
+FACTORY_API_KEY=m2-dev-api-key ./bin/factoryctl run --prompt "…" --watch
+```
+
+Compose reads `deploy/.env` (do not commit it). `m2-dev-api-key` is the compose
+default for `FACTORY_API_KEY`. The task and harness images are local tags that
+compose does not build, and `deploy/m2-factory` ships with model
+`m2-offline-stub`. Offline, live, and a laptop run that fills `deploy/.env`
+are in [`spike/m2/README.md`](spike/m2/README.md).
 
 ---
 

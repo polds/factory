@@ -20,6 +20,36 @@ Offline needs Docker, Go, git, and curl. Live also needs `gh` and:
 Scratch (logs, the bare repo, watch transcripts, the event archive) is
 `spike/m2/.work/`, which is gitignored.
 
+## Laptop (`deploy/.env`)
+
+`run.sh` does not read `deploy/.env`. To boot the stack and drive it yourself:
+
+```bash
+cp deploy/.env.example deploy/.env
+# Live agent: set FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL,
+# FACTORY_INFERENCE_OPENAI_API_KEY, and FACTORY_SECRET_GH_TOKEN.
+# deploy/m2-factory ships with model m2-offline-stub; point agentDefaults.model
+# at the model you want. Docker Desktop also needs
+# FACTORY_TASK_SERVER_URL=http://host.docker.internal:8080
+
+CGO_ENABLED=0 go build -o harness/generic-openai/factory-harness ./cmd/factory-harness
+docker build -t factory-harness:dev harness/generic-openai
+docker build -t factory-m1-task:dev spike/m1/task-image
+docker compose -f deploy/docker-compose.yml up -d --build
+go build -o bin/factoryctl ./cmd/factoryctl
+FACTORY_API_KEY=m2-dev-api-key ./bin/factoryctl run --prompt "…" --watch
+```
+
+Compose interpolates `deploy/.env` from the compose file's directory. Do not
+commit that file. `up --build` builds `factoryd` and the upstream worker. It
+does not build `factory-harness:dev` or `factory-m1-task:dev`; the worker
+pull policy is `IfNotPresent` and expects those local tags.
+
+`factoryd` sets `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`,
+and `GIT_COMMITTER_EMAIL` on every task (`Agent` / `agent@example.com`) unless
+an allowlisted secret already has that name. The recorded live run's first
+`git commit` failed without them ([docs/12](../../docs/12-build-sequence.md)).
+
 ## What the stack is
 
 `docker compose -p factory-m2 up -d --build --wait` from `deploy/` starts
@@ -67,7 +97,9 @@ ends it `cancelled` (the unmodified worker may answer `task_cancellation`
 itself, or factoryd's 60s grace will).
 
 **Live.** The prompt matches the M1 live task, on branch `m2/run-<utc>`.
-Success prints the PR URL from `gh pr list --head m2/run-<ts>`.
+Success prints the PR URL from `gh pr list --head m2/run-<ts>`. The recorded
+pass is [run 38512432518](https://github.com/polds/factory/actions/runs/38512432518),
+which opened [PR #30](https://github.com/polds/factory/pull/30).
 
 Both modes grep compose logs, the watch transcript, and the archived events
 for every injected secret. A match fails the run and withholds those files.

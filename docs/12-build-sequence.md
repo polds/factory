@@ -51,20 +51,43 @@ The [live workflow run](https://github.com/polds/factory/actions/runs/3847735449
 printed `M1 LIVE PASS`. At this point the hardest part is done and everything after it
 is plumbing.
 
-## M2 — Walking skeleton control plane (weeks)
+## M2 — Walking skeleton control plane ✅ **done**
 
 - Postgres schema and migrations; `run_queue` with `SKIP LOCKED` + `LISTEN/NOTIFY`.
+  **Landed** in [`internal/store`](../internal/store).
 - Worker gateway: full protocol including requeue-on-`task_rejected`, lease expiry,
-  orphaned executions.
+  orphaned executions. **Landed** in [`internal/gateway`](../internal/gateway) and
+  [`internal/server`](../internal/server).
 - Scheduler: pool + platform matching, concurrency caps, priority classes.
+  **Landed** in [`internal/scheduler`](../internal/scheduler).
 - Definition loader for a local directory: parse, validate, apply atomically.
-- REST: factories, agents, runs, `/agent/run`, cancel.
-- SSE event stream with `from_seq`.
-- `factoryctl`: `validate`, `run`, `watch`, `cancel`.
+  **Landed** in [`internal/definition`](../internal/definition).
+- REST: factories, agents, runs, `/agent/run`, cancel. **Landed** in
+  [`internal/api`](../internal/api).
+- SSE event stream with `from_seq`. **Landed** in [`internal/events`](../internal/events).
+- `factoryctl`: `validate`, `run`, `watch`, `cancel`. **Landed** in
+  [`cmd/factoryctl`](../cmd/factoryctl).
 - `docker compose up` works: `factoryd` + Postgres + MinIO + one Docker-backend worker.
+  **Landed** in [`deploy/docker-compose.yml`](../deploy/docker-compose.yml).
+  [`spike/m2`](../spike/m2) reproduces it offline and live.
 
-**Exit criterion:** `factoryctl run --prompt "…"` on a laptop produces a PR, and
-`factoryctl watch` streams the transcript live.
+**Exit criterion met.** `main` at `5a22262`. Upstream worker `63dbb8a`, clean tree,
+driven by `factoryd` on the laptop compose profile: `factoryctl run --prompt`
+created `run_01M4WBDKX75W4JT0G4VD94KW5M`, which succeeded. `factoryctl watch`
+streamed transcript lines 19.2s before the terminal event. The agent cloned
+`polds/factory`, changed `spike/m1/fixture/greet/greet.go` and `greet_test.go`,
+and opened draft [PR #30](https://github.com/polds/factory/pull/30)
+(`m2/run-20261014T043848Z`, one commit by `Agent <agent@example.com>`). Model
+`claude-sonnet-5-5`. Archived events for
+`exec_01M4WBDKXWNRTJB8FAPYEVK44B` (artifact `m2-harness-events`, id 11870378347)
+include `tool.call` `git clone` with `ok:true`. `go test` ran in the next
+chained command, recorded `ok:false` because the following `git commit` had no
+author identity; the next turn set `user.name` / `user.email` and opened the PR
+(`ok:true`). On that PR, `go test ./...` in the fixture reports
+`ok example.com/m1fixture/greet`. The
+[live workflow run](https://github.com/polds/factory/actions/runs/38512432518)
+printed `M2 LIVE PASS`. The job log and `events.ndjson` have no `ghp_`,
+`github_pat_`, `gho_`, `ghs_`, or `sk-` prefix.
 
 ## M3 — Factory semantics (weeks)
 
