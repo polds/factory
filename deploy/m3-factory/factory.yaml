@@ -1,0 +1,22 @@
+# M3 laptop factory. POST /factory/m3/tasks stands in for a labeled issue.
+# approvals.spec blocks building until an operator decides the gate.
+schemaVersion: v1alpha1
+name: m3
+description: Four-stage factory with a blocking spec gate.
+secrets:
+  - GH_TOKEN
+agentDefaults:
+  model: m3-triage
+  runner: local
+  pool: standard
+  maxTurns: 40
+pipeline:
+  stages: [triage, planning, building, reviewing]
+  agents:
+    triage: triage
+    planning: spec
+    building: implementer
+    reviewing: reviewer
+  approvals:
+    spec: { required: true, approvers: "role:editor" }
+  revisionLimit: 3

@@ -22,7 +22,13 @@
 # to http://172.17.0.1:8080 (the Linux bridge gateway). Docker Desktop
 # should set http://host.docker.internal:8080. spike/m2/run.sh detects the
 # bridge gateway and exports the URL it measured. A loopback model URL is
-# host.docker.internal on Docker Desktop and the gateway on Linux.
+# host.docker.internal on Docker Desktop and the gateway on Linux for that
+# script. spike/m3/run.sh does not rewrite a model URL. It keeps
+# FACTORY_TASK_SERVER_URL when set, and on Linux fills the gateway when
+# the variable is empty. Point the definition at deploy/m3-factory with
+# FACTORY_DEFINITION_HOST_PATH, FACTORY_DEFINITION_MOUNT, and
+# FACTORY_DEFINITION_PATH (see spike/m3/run.sh). The default tree is
+# deploy/m2-factory.
 #
 # Images are built locally (factoryd:dev, factory-upstream-worker:dev).
 # MinIO is Bitnami Legacy: default entrypoint, no `server /data` override.
@@ -136,7 +142,7 @@ services:
       FACTORY_S3_REGION: ${FACTORY_S3_REGION:-us-east-1}
       FACTORY_S3_FORCE_PATH_STYLE: "true"
 
-      FACTORY_DEFINITION_PATH: /definitions/m2-factory
+      FACTORY_DEFINITION_PATH: ${FACTORY_DEFINITION_PATH:-/definitions/m2-factory}
 
       FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL: ${FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL:-}
       FACTORY_INFERENCE_OPENAI_API_KEY: ${FACTORY_INFERENCE_OPENAI_API_KEY:-}
@@ -158,7 +164,7 @@ services:
       # FACTORY_AUTH_MODE: dev-single-user
       # FACTORY_DEV_USER_EMAIL: dev@localhost
     volumes:
-      - ${FACTORY_DEFINITION_HOST_PATH:-./m2-factory}:/definitions/m2-factory:ro
+      - ${FACTORY_DEFINITION_HOST_PATH:-./m2-factory}:${FACTORY_DEFINITION_MOUNT:-/definitions/m2-factory}:ro
     healthcheck:
       test: ["CMD", "/factoryd", "healthcheck"]
       interval: 5s
