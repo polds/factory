@@ -35,9 +35,11 @@ type Cloner interface {
 //
 // changed is true only when dest was replaced. The caller applies that tree.
 // changed is false, and dest is untouched, when the cloned SHA matches the
-// last SHA published to dest, when Ref is not the production ref, or when
-// LoadDir reports an error. Diagnostics from that LoadDir are returned in
-// the mismatch and validation-failure cases. Warnings do not block
+// last SHA published to dest, when Ref is not the production ref, when
+// LoadDir reports an error, or when Subdir resolves outside the clone.
+// Diagnostics from that LoadDir are returned in the mismatch and
+// validation-failure cases. An escaping subdir is its own error diagnostic,
+// returned before LoadDir or the tree copy. Warnings do not block
 // publication. An unchanged published SHA returns no diagnostics.
 //
 // The published SHA is recorded beside dest, not inside it, so the definition
@@ -82,6 +84,13 @@ func Sync(ctx context.Context, src Source, dest string, c Cloner) (string, bool,
 	}
 
 	treePath := subdirPath(cloneDir, src.Subdir)
+	escapes, err := subdirEscapes(cloneDir, treePath)
+	if err != nil {
+		return sha, false, nil, err
+	}
+	if escapes {
+		return sha, false, outsideCloneDiag(src.Subdir), nil
+	}
 	if err := rejectSymlinks(treePath); err != nil {
 		return sha, false, nil, err
 	}
@@ -121,6 +130,52 @@ func subdirPath(cloneDir, subdir string) string {
 		return cloneDir
 	}
 	return filepath.Join(cloneDir, filepath.Clean(subdir))
+}
+
+// subdirEscapes reports whether treePath, after resolving symlinks, sits
+// outside cloneDir. A missing final component still checks the deepest
+// existing ancestor, so LoadDir is not asked to walk out of the clone.
+func subdirEscapes(cloneDir, treePath string) (bool, error) {
+	cloneReal, err := filepath.EvalSymlinks(cloneDir)
+	if err != nil {
+		return false, fmt.Errorf("defsync: clone path: %w", err)
+	}
+	cur := treePath
+	for {
+		resolved, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			return !pathWithin(cloneReal, resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return false, fmt.Errorf("defsync: subdir path: %w", err)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return false, nil
+		}
+		cur = parent
+	}
+}
+
+func pathWithin(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func outsideCloneDiag(subdir string) []definition.Diagnostic {
+	file := filepath.ToSlash(subdir)
+	if file == "" {
+		file = "."
+	}
+	return []definition.Diagnostic{{
+		File:     file,
+		Line:     1,
+		Severity: definition.SeverityError,
+		Message:  fmt.Sprintf("subdir %q resolves outside the clone", subdir),
+	}}
 }
 
 func hasErrors(diags []definition.Diagnostic) bool {

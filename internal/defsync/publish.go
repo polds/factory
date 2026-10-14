@@ -46,11 +46,15 @@ func publish(src, dest string) error {
 		_ = os.RemoveAll(stage)
 		return fmt.Errorf("defsync: publish: %w", err)
 	}
-	if err := os.RemoveAll(backup); err != nil {
-		return fmt.Errorf("defsync: publish: %w", err)
-	}
+	// The new tree is already at dest. A leftover backup is the previous tree,
+	// not a failed publish, so Sync still records the SHA and reports changed.
+	_ = removeTree(backup)
 	return nil
 }
+
+// removeTree deletes a directory left behind after a successful swap.
+// Tests replace it to simulate a cleanup failure.
+var removeTree = os.RemoveAll
 
 func entryMode(path string, d fs.DirEntry) (fs.FileMode, error) {
 	mode := d.Type()

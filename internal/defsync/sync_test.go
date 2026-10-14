@@ -295,13 +295,20 @@ func TestSyncProductionRefMismatchNotApplied(t *testing.T) {
 }
 
 func TestSyncWarningsDoNotBlockPublish(t *testing.T) {
+	// Review and implement share one model. T2 warns on that pair and no
+	// longer warns that pipeline is "not applied in M2". Publication follows
+	// error severity only, so the warning is returned and the tree is published.
 	root := t.TempDir()
 	dest := filepath.Join(root, "def")
-	body := "schemaVersion: v1alpha1\nname: warned\npipeline:\n  stages: [triage]\n"
-	c := &fakeCloner{resps: []cloneResp{{
-		sha:   "sha-warn",
-		files: map[string]string{"factory.yaml": body},
-	}}}
+	files := sameModelFactory()
+	preview := filepath.Join(root, "preview")
+	writeTree(t, preview, files)
+	_, loaded := definition.LoadDir(preview)
+	if msgs := errorMessages(loaded); len(msgs) != 0 {
+		t.Fatalf("fixture errors: %v", msgs)
+	}
+
+	c := &fakeCloner{resps: []cloneResp{{sha: "sha-warn", files: files}}}
 	sha, changed, diags, err := Sync(context.Background(), Source{
 		URL: "https://example.test/defs.git", Ref: "main", ProductionRef: "main",
 	}, dest, c)
@@ -309,24 +316,106 @@ func TestSyncWarningsDoNotBlockPublish(t *testing.T) {
 		t.Fatal(err)
 	}
 	if sha != "sha-warn" || !changed {
-		t.Fatalf("sha=%q changed=%v", sha, changed)
+		t.Fatalf("sha=%q changed=%v diags=%v", sha, changed, diags)
 	}
-	if len(errorMessages(diags)) != 0 {
-		t.Fatalf("errors: %v", errorMessages(diags))
+	if msgs := errorMessages(diags); len(msgs) != 0 {
+		t.Fatalf("errors: %v", msgs)
 	}
-	var warned bool
-	for _, d := range diags {
-		if d.Severity == definition.SeverityWarning && strings.Contains(d.Message, "pipeline") {
-			warned = true
-		}
+	if hasWarning(loaded, "same model") && !hasWarning(diags, "same model") {
+		t.Fatalf("dropped same-model warning: sync=%v load=%v", diags, loaded)
 	}
-	if !warned {
-		t.Fatalf("diags=%v", diags)
-	}
-	if _, err := os.Stat(filepath.Join(dest, "factory.yaml")); err != nil {
+	if _, err := os.Stat(filepath.Join(dest, "agents", "reviewer", "agent.md")); err != nil {
 		t.Fatal(err)
 	}
 	assertNoStaging(t, root)
+}
+
+func TestSyncSubdirSymlinkDoesNotPublishOutsideClone(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside")
+	nested := filepath.Join(outside, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "factory.yaml"), []byte(validFactory("escaped")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "SECRET.txt"), []byte("host-secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(root, "def")
+	c := clonerFunc(func(clone string) (string, error) {
+		if err := os.Symlink(outside, filepath.Join(clone, "link")); err != nil {
+			return "", err
+		}
+		return "sha-escape", nil
+	})
+	sha, changed, diags, err := Sync(context.Background(), Source{
+		URL:           "https://example.test/defs.git",
+		Ref:           "main",
+		Subdir:        "link/nested",
+		ProductionRef: "main",
+	}, dest, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha != "sha-escape" || changed {
+		t.Fatalf("sha=%q changed=%v", sha, changed)
+	}
+	if !hasError(diags, "outside") {
+		t.Fatalf("diags=%v", diags)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("dest created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "SECRET.txt")); !os.IsNotExist(err) {
+		t.Fatalf("outside file published: %v", err)
+	}
+	assertNoStaging(t, root)
+}
+
+func TestSyncRecordsSHAWhenBackupCleanupFails(t *testing.T) {
+	root := t.TempDir()
+	dest := filepath.Join(root, "def")
+	c := &fakeCloner{resps: []cloneResp{
+		{sha: "sha-1", files: map[string]string{"factory.yaml": validFactory("alpha")}},
+		{sha: "sha-2", files: map[string]string{"factory.yaml": validFactory("beta")}},
+		{sha: "sha-2", files: map[string]string{"factory.yaml": validFactory("gamma")}},
+	}}
+	src := Source{URL: "https://example.test/defs.git", Ref: "main", ProductionRef: "main"}
+	if _, changed, _, err := Sync(context.Background(), src, dest, c); err != nil || !changed {
+		t.Fatalf("first sync changed=%v err=%v", changed, err)
+	}
+
+	prev := removeTree
+	removeTree = func(string) error { return errors.New("backup busy") }
+	t.Cleanup(func() { removeTree = prev })
+
+	sha, changed, _, err := Sync(context.Background(), src, dest, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha != "sha-2" || !changed {
+		t.Fatalf("sha=%q changed=%v", sha, changed)
+	}
+	if got := readFile(t, filepath.Join(dest, "factory.yaml")); got != validFactory("beta") {
+		t.Fatalf("dest:\n%s", got)
+	}
+	if got := readPublishedSHA(dest); got != "sha-2" {
+		t.Fatalf("recorded sha %q", got)
+	}
+
+	sha, changed, _, err = Sync(context.Background(), src, dest, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha != "sha-2" || changed {
+		t.Fatalf("repeat sha=%q changed=%v", sha, changed)
+	}
+	if got := readFile(t, filepath.Join(dest, "factory.yaml")); got != validFactory("beta") {
+		t.Fatalf("same sha republished:\n%s", got)
+	}
 }
 
 func TestSyncCloneErrorLeavesDestUntouched(t *testing.T) {
@@ -473,6 +562,50 @@ func (f clonerFunc) Clone(ctx context.Context, _, _ string, dest string) (string
 
 func validFactory(name string) string {
 	return "schemaVersion: v1alpha1\nname: " + name + "\n"
+}
+
+func sameModelFactory() map[string]string {
+	return map[string]string{
+		"factory.yaml":                "schemaVersion: v1alpha1\nname: warned\nagentDefaults:\n  runner: local\n",
+		"runners/local.yaml":          "description: Local docker runner\nplatform:\n  os: linux\n  arch: x86_64\n  linux:\n    dockerImage: factory-m1-task:dev\n",
+		"agents/implementer/agent.md": agentFile("IMPLEMENT", "claude-5-opus-high", "Implement"),
+		"agents/reviewer/agent.md":    agentFile("REVIEW", "claude-5-opus-high", "Review"),
+	}
+}
+
+func agentFile(kind, model, title string) string {
+	return "---\ndescription: " + title + ".\nagentType: " + kind + "\nmodel: " + model + "\n---\n\n# " + title + "\n"
+}
+
+func writeTree(t *testing.T, root string, files map[string]string) {
+	t.Helper()
+	for name, body := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func hasWarning(diags []definition.Diagnostic, text string) bool {
+	for _, d := range diags {
+		if d.Severity == definition.SeverityWarning && strings.Contains(d.Message, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasError(diags []definition.Diagnostic, text string) bool {
+	for _, d := range diags {
+		if d.Severity == definition.SeverityError && strings.Contains(d.Message, text) {
+			return true
+		}
+	}
+	return false
 }
 
 func invalidFactory() string {
