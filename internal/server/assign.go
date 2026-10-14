@@ -16,11 +16,15 @@ const (
 	defaultDockerImage  = "factory-m1-task:dev"
 	defaultSidecarImage = "factory-harness:dev"
 	defaultMaxTurns     = 40
+
+	// Same identity the M2 live agent used once it configured git itself.
+	defaultGitName  = "Agent"
+	defaultGitEmail = "agent@example.com"
 )
 
 func (s *Server) taskEnv(run store.Run, bound boundAgent) (map[string]string, error) {
 	allow := secretNames(s.snapshot().tree.Factory.Secrets, bound.agent.Secrets)
-	env := make(map[string]string, len(allow)+8)
+	env := make(map[string]string, len(allow)+12)
 	var values []string
 	for _, name := range allow {
 		value, ok := s.cfg.Secrets[name]
@@ -54,7 +58,20 @@ func (s *Server) taskEnv(run store.Run, bound boundAgent) (map[string]string, er
 		values = append(values, s.cfg.InferenceAPIKey)
 	}
 	env["FACTORY_SECRET_VALUES"] = strings.Join(values, "\n")
+	// The task image has no git user (arbitrary uid, empty global config).
+	// Git reads these instead of user.name, so the first commit can succeed.
+	// An allowlisted secret of the same name is already in env and wins.
+	setEnvDefault(env, "GIT_AUTHOR_NAME", defaultGitName)
+	setEnvDefault(env, "GIT_AUTHOR_EMAIL", defaultGitEmail)
+	setEnvDefault(env, "GIT_COMMITTER_NAME", defaultGitName)
+	setEnvDefault(env, "GIT_COMMITTER_EMAIL", defaultGitEmail)
 	return env, nil
+}
+
+func setEnvDefault(env map[string]string, key, value string) {
+	if env[key] == "" {
+		env[key] = value
+	}
 }
 
 func (s *Server) assignment(run store.Run, exec store.Execution, bound boundAgent, env map[string]string) protocol.TaskAssignment {
