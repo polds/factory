@@ -108,8 +108,10 @@ func (s *Server) finish(ctx context.Context, runID, execID, state, reason, summa
 	if !applied {
 		return
 	}
+	s.clearSuspended(runID)
 	s.archive(ctx, runID, execID)
 	s.hub.Publish(runID)
+	s.advanceAfterTerminal(ctx, runID)
 	s.nudge()
 }
 

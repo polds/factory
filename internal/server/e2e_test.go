@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/polds/factory/internal/artifacts"
+	"github.com/polds/factory/internal/defsync"
 	"github.com/polds/factory/internal/protocol"
 	"github.com/polds/factory/internal/scheduler"
 )
@@ -556,9 +557,15 @@ func TestE2E(t *testing.T) {
 }
 
 type bootOpts struct {
-	now         func() time.Time
-	cancelGrace time.Duration
-	s3          *artifacts.S3
+	now           func() time.Time
+	cancelGrace   time.Duration
+	s3            *artifacts.S3
+	definition    func(t *testing.T) string
+	maxConcurrent int
+	gitURL        string
+	gitRef        string
+	gitInterval   time.Duration
+	gitCloner     defsync.Cloner
 }
 
 type env struct {
@@ -608,23 +615,35 @@ func boot(t *testing.T, opts bootOpts) *env {
 		_ = admin.Close(context.Background())
 	})
 
-	def := writeDefinition(t)
+	var def string
+	if opts.definition != nil {
+		def = opts.definition(t)
+	} else {
+		def = writeDefinition(t)
+	}
 	var logs bytes.Buffer
 	cfg := Config{
-		DatabaseURL:         poolDSN,
-		APIKey:              "test-api-key",
-		WorkerAPIKey:        "test-worker-key",
-		DefinitionPath:      def,
-		TaskServerURL:       "http://127.0.0.1:1",
-		InferenceBaseURL:    "http://model.example/v1",
-		InferenceAPIKey:     plantedOpenAI,
-		Secrets:             map[string]string{"GH_TOKEN": plantedGH, "NPM_TOKEN": plantedNPM},
-		WorkerPool:          "standard",
-		WorkerPlatform:      "linux",
-		WorkerMaxConcurrent: 2,
-		CancelGrace:         opts.cancelGrace,
-		Now:                 opts.now,
-		Log:                 newTestLogger(&logs),
+		DatabaseURL:           poolDSN,
+		APIKey:                "test-api-key",
+		WorkerAPIKey:          "test-worker-key",
+		DefinitionPath:        def,
+		TaskServerURL:         "http://127.0.0.1:1",
+		InferenceBaseURL:      "http://model.example/v1",
+		InferenceAPIKey:       plantedOpenAI,
+		Secrets:               map[string]string{"GH_TOKEN": plantedGH, "NPM_TOKEN": plantedNPM},
+		WorkerPool:            "standard",
+		WorkerPlatform:        "linux",
+		WorkerMaxConcurrent:   2,
+		CancelGrace:           opts.cancelGrace,
+		DefinitionGitURL:      opts.gitURL,
+		DefinitionGitRef:      opts.gitRef,
+		DefinitionGitInterval: opts.gitInterval,
+		DefinitionGitCloner:   opts.gitCloner,
+		Now:                   opts.now,
+		Log:                   newTestLogger(&logs),
+	}
+	if opts.maxConcurrent > 0 {
+		cfg.WorkerMaxConcurrent = opts.maxConcurrent
 	}
 	var s3copy artifacts.S3
 	if opts.s3 != nil {

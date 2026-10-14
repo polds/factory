@@ -1,6 +1,11 @@
 // Package server wires factoryd: REST, SSE, the worker gateway, the scheduler,
 // and run lifecycle over the Postgres store.
 //
+// Work items advance through the orchestrator stage machine. Each stage is a
+// new run with a handoff prompt. An approval gate blocks the next run until
+// it is decided. A question event releases the worker slot and leaves that
+// run suspended.
+//
 // Task containers are attached to the host Docker bridge, not the compose
 // network, so they cannot use the compose service name. FACTORY_TASK_SERVER_URL
 // is the base URL those containers use for event push. It defaults to

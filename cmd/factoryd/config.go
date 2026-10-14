@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/polds/factory/internal/artifacts"
 	"github.com/polds/factory/internal/server"
@@ -58,6 +59,12 @@ func configFromEnv(getenv func(string) string, environ []string) processConfig {
 				Region:    s3Region(getenv),
 				PathStyle: parseBoolDefault(getenv("FACTORY_S3_FORCE_PATH_STYLE"), true),
 			},
+			SchemasPath:                strings.TrimSpace(getenv("FACTORY_SCHEMAS_PATH")),
+			DefinitionGitURL:           strings.TrimSpace(getenv("FACTORY_DEFINITION_GIT_URL")),
+			DefinitionGitRef:           strings.TrimSpace(getenv("FACTORY_DEFINITION_GIT_REF")),
+			DefinitionGitSubdir:        strings.TrimSpace(getenv("FACTORY_DEFINITION_GIT_SUBDIR")),
+			DefinitionGitProductionRef: strings.TrimSpace(getenv("FACTORY_DEFINITION_GIT_PRODUCTION_REF")),
+			DefinitionGitInterval:      parseDuration(getenv("FACTORY_DEFINITION_GIT_INTERVAL")),
 		},
 		addr:    httpAddr(getenv),
 		level:   logLevel(getenv("FACTORY_LOG_LEVEL")),
@@ -128,6 +135,18 @@ func parseBoolDefault(raw string, fallback bool) bool {
 		return fallback
 	}
 	return v
+}
+
+func parseDuration(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 func atoiPositive(raw string) int {

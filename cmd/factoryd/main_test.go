@@ -63,6 +63,44 @@ func TestTaskServerURLDefault(t *testing.T) {
 	}
 }
 
+func TestConfigReadsDefinitionGit(t *testing.T) {
+	cfg := configFromEnv(func(k string) string {
+		switch k {
+		case "FACTORY_DATABASE_URL":
+			return "postgres://example"
+		case "FACTORY_API_KEY":
+			return "api-key-value"
+		case "FACTORY_WORKER_API_KEY":
+			return "worker-key-value"
+		case "FACTORY_DEFINITION_PATH":
+			return "/definitions"
+		case "FACTORY_SCHEMAS_PATH":
+			return "/schemas"
+		case "FACTORY_DEFINITION_GIT_URL":
+			return "https://example.invalid/factory.git"
+		case "FACTORY_DEFINITION_GIT_REF":
+			return "release"
+		case "FACTORY_DEFINITION_GIT_SUBDIR":
+			return "deploy/m3-factory"
+		case "FACTORY_DEFINITION_GIT_PRODUCTION_REF":
+			return "release"
+		case "FACTORY_DEFINITION_GIT_INTERVAL":
+			return "45s"
+		default:
+			return ""
+		}
+	}, nil)
+	if cfg.server.SchemasPath != "/schemas" || cfg.server.DefinitionGitURL != "https://example.invalid/factory.git" {
+		t.Fatalf("schema %q git %q", cfg.server.SchemasPath, cfg.server.DefinitionGitURL)
+	}
+	if cfg.server.DefinitionGitRef != "release" || cfg.server.DefinitionGitSubdir != "deploy/m3-factory" {
+		t.Fatalf("ref %q subdir %q", cfg.server.DefinitionGitRef, cfg.server.DefinitionGitSubdir)
+	}
+	if cfg.server.DefinitionGitProductionRef != "release" || cfg.server.DefinitionGitInterval.String() != "45s" {
+		t.Fatalf("production %q interval %s", cfg.server.DefinitionGitProductionRef, cfg.server.DefinitionGitInterval)
+	}
+}
+
 func TestHealthcheck(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/healthz" {
