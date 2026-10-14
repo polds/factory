@@ -51,7 +51,7 @@ The [live workflow run](https://github.com/polds/factory/actions/runs/3847735449
 printed `M1 LIVE PASS`. At this point the hardest part is done and everything after it
 is plumbing.
 
-## M2 — Walking skeleton control plane ✅ **done**
+## M2 — Walking skeleton control plane
 
 - Postgres schema and migrations; `run_queue` with `SKIP LOCKED` + `LISTEN/NOTIFY`.
   **Landed** in [`internal/store`](../internal/store).
@@ -69,14 +69,16 @@ is plumbing.
   [`cmd/factoryctl`](../cmd/factoryctl).
 - `docker compose up` works: `factoryd` + Postgres + MinIO + one Docker-backend worker.
   **Landed** in [`deploy/docker-compose.yml`](../deploy/docker-compose.yml).
-  [`spike/m2`](../spike/m2) reproduces it offline and live.
+  [`spike/m2`](../spike/m2) reproduces it offline, and live on a GitHub-hosted runner.
 
-**Exit criterion met.** `main` at `5a22262`. Upstream worker `63dbb8a`, clean tree,
-driven by `factoryd` on the laptop compose profile: `factoryctl run --prompt`
-created `run_01M4WBDKX75W4JT0G4VD94KW5M`, which succeeded. `factoryctl watch`
-streamed transcript lines 19.2s before the terminal event. The agent cloned
-`polds/factory`, changed `spike/m1/fixture/greet/greet.go` and `greet_test.go`,
-and opened draft [PR #30](https://github.com/polds/factory/pull/30)
+**CI live exit met.** GitHub-hosted `ubuntu-latest` (`m2-live.yml`,
+`workflow_dispatch`) running `deploy/docker-compose.yml`.
+`main` at `5a22262`. Upstream worker `63dbb8a`, clean tree, driven by
+`factoryd`: `factoryctl run --prompt` created `run_01M4WBDKX75W4JT0G4VD94KW5M`,
+which succeeded. `factoryctl watch` streamed transcript lines 19.2s before the
+terminal event. The agent cloned `polds/factory`, changed
+`spike/m1/fixture/greet/greet.go` and `greet_test.go`, and opened draft
+[PR #30](https://github.com/polds/factory/pull/30)
 (`m2/run-20261014T043848Z`, one commit by `Agent <agent@example.com>`). Model
 `claude-sonnet-5-5`. Archived events for
 `exec_01M4WBDKXWNRTJB8FAPYEVK44B` (artifact `m2-harness-events`, id 11870378347)
@@ -88,6 +90,10 @@ author identity; the next turn set `user.name` / `user.email` and opened the PR
 [live workflow run](https://github.com/polds/factory/actions/runs/38512432518)
 printed `M2 LIVE PASS`. The job log and `events.ndjson` have no `ghp_`,
 `github_pat_`, `gho_`, `ghs_`, or `sk-` prefix.
+
+**Laptop exit pending.** The milestone exit is `factoryctl run --prompt "…"`
+on a laptop producing a PR, with `factoryctl watch` streaming the transcript.
+No `MODE=live ./spike/m2/run.sh` has been run on a laptop. Peter runs it.
 
 ## M3 — Factory semantics (weeks)
 
