@@ -177,6 +177,12 @@ func TestAuthRejected(t *testing.T) {
 		{http.MethodGet, "/api/v1/agent/runs/run_1"},
 		{http.MethodPost, "/api/v1/agent/runs/run_1/cancel"},
 		{http.MethodGet, "/api/v1/agent/runs/run_1/events"},
+		{http.MethodGet, "/api/v1/factory/fac_1/tasks"},
+		{http.MethodPost, "/api/v1/factory/fac_1/tasks"},
+		{http.MethodGet, "/api/v1/factory/fac_1/tasks/task_1"},
+		{http.MethodPost, "/api/v1/factory/fac_1/tasks/task_1/cancel"},
+		{http.MethodGet, "/api/v1/factory/fac_1/approvals"},
+		{http.MethodPost, "/api/v1/approvals/apr_1:decide"},
 	}
 	for _, tc := range paths {
 		for _, hdr := range []map[string]string{
@@ -344,6 +350,9 @@ func TestCancelTerminalRun(t *testing.T) {
 		t.Fatalf("status %d body %s", res.status, body)
 	}
 	assertProblem(t, res)
+	if !bytes.Contains(body, []byte("run is terminal")) {
+		t.Fatalf("detail %s", body)
+	}
 	if f.runs["run_done"].Status != "succeeded" {
 		t.Fatalf("status changed to %s", f.runs["run_done"].Status)
 	}
@@ -419,6 +428,12 @@ func TestResponseStructsExcludeSecretNames(t *testing.T) {
 		ApplyResponse{},
 		Problem{},
 		Health{},
+		Task{},
+		TaskRequest{},
+		TaskFilter{},
+		Approval{},
+		Effect{},
+		decideBody{},
 	}
 	seen := map[reflect.Type]bool{}
 	for _, v := range types {
