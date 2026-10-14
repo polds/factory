@@ -1,4 +1,5 @@
-// Package api is the factoryd REST surface for factories, agents, and runs.
+// Package api is the factoryd REST surface for factories, agents, runs,
+// work items, and approvals.
 package api
 
 import (
@@ -24,14 +25,19 @@ type handler struct {
 	mux     *http.ServeMux
 }
 
-// NewHandler serves the M2 REST API.
+// NewHandler serves the factoryd REST API.
 //
-// Every route requires Authorization: Bearer apiKey except GET /healthz and
-// POST /api/v1/agent/runs/{runId}/events:ingest. Ingest forwards its bearer
-// token to Backend.IngestEvents and does not compare it to apiKey.
+// Every route requires Authorization: Bearer apiKey except GET /healthz,
+// POST /api/v1/agent/runs/{runId}/events:ingest, and GET
+// /api/v1/factory-files/schemas/…. Ingest forwards its bearer token to
+// Backend.IngestEvents and does not compare it to apiKey.
 //
 // events serves GET /api/v1/agent/runs/{runId}/events after the API key is
 // accepted. A nil events handler responds 404 on that route.
+//
+// Work-item and approval routes call WorkBackend when b implements it, and
+// respond 404 otherwise. Schema routes are mounted by RegisterSchemaRoutes
+// and delegate to SchemaCatalog when b implements it.
 func NewHandler(b Backend, apiKey string, events http.Handler) http.Handler {
 	h := &handler{
 		backend: b,
@@ -58,6 +64,22 @@ func (h *handler) route() {
 	m.HandleFunc("POST /api/v1/agent/runs/{runId}/cancel", h.withAPIKey(h.handleCancel))
 	m.HandleFunc("GET /api/v1/agent/runs/{runId}/events", h.withAPIKey(h.handleEvents))
 	m.HandleFunc("POST /api/v1/agent/runs/{runId}/events:ingest", h.handleIngest)
+
+	// docs/04 work items and approvals. POST /approvals/{id}:decide is one
+	// path segment; ServeMux wildcards occupy the whole segment, so the
+	// handler requires the :decide suffix on {approvalID}.
+	m.HandleFunc("GET /api/v1/factory/{uid}/tasks", h.withAPIKey(h.handleListTasks))
+	m.HandleFunc("POST /api/v1/factory/{uid}/tasks", h.withAPIKey(h.handleCreateTask))
+	m.HandleFunc("GET /api/v1/factory/{uid}/tasks/{taskID}", h.withAPIKey(h.handleGetTask))
+	m.HandleFunc("POST /api/v1/factory/{uid}/tasks/{taskID}/cancel", h.withAPIKey(h.handleCancelTask))
+	m.HandleFunc("GET /api/v1/factory/{uid}/approvals", h.withAPIKey(h.handleListApprovals))
+	m.HandleFunc("POST /api/v1/approvals/{approvalID}", h.withAPIKey(h.handleDecideApproval))
+
+	var schemas http.Handler
+	if cat, ok := h.backend.(SchemaCatalog); ok {
+		schemas = cat.SchemaHandler()
+	}
+	RegisterSchemaRoutes(m, schemas)
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
