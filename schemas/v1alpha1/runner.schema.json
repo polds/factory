@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.internal/api/v1/factory-files/schemas/v1alpha1/runner.schema.json",
+  "title": "Runner",
+  "description": "runners/<name>.yaml. Unknown keys are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "description": {
+      "type": "string"
+    },
+    "setupCommands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "instanceShape": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "vcpus": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "memoryGb": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch"],
+      "properties": {
+        "os": {
+          "enum": ["linux", "macos", "windows"]
+        },
+        "arch": {
+          "enum": ["x86_64", "aarch64"]
+        },
+        "linux": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dockerImage": {
+              "type": "string"
+            },
+            "registryCredentialSecretName": {
+              "type": "string"
+            }
+          }
+        },
+        "macos": {
+          "type": "object"
+        },
+        "windows": {
+          "type": "object"
+        }
+      }
+    },
+    "failureSessionRetentionMinutes": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

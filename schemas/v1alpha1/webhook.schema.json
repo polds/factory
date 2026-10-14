@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.internal/api/v1/factory-files/schemas/v1alpha1/webhook.schema.json",
+  "title": "Webhook",
+  "description": "webhooks/<name>.yaml. signatureScheme is required if and only if authMode is signature. Unknown keys are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["authMode", "secretName"],
+  "properties": {
+    "authMode": {
+      "enum": ["token", "url_token", "signature"]
+    },
+    "signatureScheme": {
+      "enum": ["github", "gitlab", "stripe", "sentry", "pagerduty", "vercel", "standard_webhooks"]
+    },
+    "secretName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "deliveryIdHeader": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+    },
+    "enabled": {
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "required": ["authMode"],
+        "properties": {
+          "authMode": {
+            "const": "signature"
+          }
+        }
+      },
+      "then": {
+        "required": ["signatureScheme"]
+      },
+      "else": {
+        "not": {
+          "required": ["signatureScheme"]
+        }
+      }
+    }
+  ]
+}
