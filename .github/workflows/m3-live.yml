@@ -1,0 +1,94 @@
+# Manual M3 live run.
+#
+# One click (after filling the four model ids) starts the laptop profile
+# and drives one work item through triage, planning, the spec gate,
+# building, and reviewing. This workflow is not part of the required CI
+# check. Dispatch it from the orchestrator; do not run it on
+# pull_request or push.
+#
+# permissions is contents:read only. GITHUB_TOKEN cannot push or open
+# PRs. Live git and gh use the M1_GH_TOKEN secret.
+#
+# Repository secrets (values are masked; never printed by run.sh):
+#   M1_OPENAI_BASE_URL   OpenAI-compatible endpoint (OPENAI_BASE_URL)
+#   M1_OPENAI_API_KEY    optional; omit the secret to run without a key
+#   M1_GH_TOKEN          fine-grained PAT, fixture repo only (GH_TOKEN)
+#
+# The four model inputs must be distinct. Leave approval_decision empty
+# to wait for an operator. The only value that decides the gate is
+# approve (APPROVAL_DECISION).
+name: m3-live
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_triage:
+        description: Model id for triage (M3_MODEL_TRIAGE)
+        required: true
+        type: string
+      model_planning:
+        description: Model id for planning (M3_MODEL_PLANNING)
+        required: true
+        type: string
+      model_building:
+        description: Model id for building (M3_MODEL_BUILDING)
+        required: true
+        type: string
+      model_reviewing:
+        description: Model id for reviewing (M3_MODEL_REVIEWING)
+        required: true
+        type: string
+      repo:
+        description: Repository the implement stage opens a draft PR against (M3_REPO)
+        required: false
+        default: polds/factory
+        type: string
+      approval_decision:
+        description: Empty waits for an operator; approve decides the spec gate
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  live:
+    name: m3 live
+    runs-on: ubuntu-latest
+    # Image builds, up to 60 minutes waiting on the spec gate, then up
+    # to 40 minutes for implement and review.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run the live M3 driver
+        env:
+          OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          GH_TOKEN: ${{ secrets.M1_GH_TOKEN }}
+          M3_MODEL_TRIAGE: ${{ inputs.model_triage }}
+          M3_MODEL_PLANNING: ${{ inputs.model_planning }}
+          M3_MODEL_BUILDING: ${{ inputs.model_building }}
+          M3_MODEL_REVIEWING: ${{ inputs.model_reviewing }}
+          M3_REPO: ${{ inputs.repo }}
+          APPROVAL_DECISION: ${{ inputs.approval_decision }}
+        run: MODE=live ./spike/m3/run.sh
+      # .work is a hidden directory, so the upload must opt in.
+      - name: Upload M3 evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: m3-evidence
+          path: spike/m3/.work/evidence/
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: error
