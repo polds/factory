@@ -14,6 +14,11 @@
 # the docker bridge gateway is reachable from that container, so git daemon
 # and the model stub listen there. See spike/m1/README.md.
 #
+# The harness writes /var/run/factory/events.ndjson inside the task
+# container. The worker removes that container, so this script bind-mounts
+# spike/m1/.work/runtime there and copies the file to
+# spike/m1/.work/evidence/events.ndjson after the run.
+#
 # Requires: docker (running), go, git, curl. Live also requires gh and
 # OPENAI_BASE_URL, M1_MODEL, GH_TOKEN. OPENAI_API_KEY is optional.
 set -euo pipefail
@@ -70,12 +75,13 @@ die() {
 }
 
 # scan_logs_for_secrets fails when any non-empty secret is present in the
-# worker or server logs (and the offline helper logs, when they exist).
-# It prints nothing, so the secret is not copied into this script's output.
+# worker or server logs, the offline helper logs, or the archived
+# events.ndjson. It prints nothing, so the secret is not copied into this
+# script's output.
 scan_logs_for_secrets() {
   local files=()
   local f secret
-  for f in "$WORK/server.log" "$WORK/worker.log" "$WORK/model-stub.log" "$WORK/git-daemon.log"; do
+  for f in "$WORK/server.log" "$WORK/worker.log" "$WORK/model-stub.log" "$WORK/git-daemon.log" "$WORK/evidence/events.ndjson"; do
     if [[ -f "$f" ]]; then
       files+=("$f")
     fi
@@ -94,6 +100,32 @@ scan_logs_for_secrets() {
   return 0
 }
 
+# archive_events copies the harness NDJSON from the bind-mounted runtime
+# directory. The task container may have created it as mode 0600 owned by
+# another uid, so an unreadable file is copied through the task image.
+archive_events() {
+  local dest="$1"
+  local src="$WORK/runtime/events.ndjson"
+  mkdir -p "$(dirname "$dest")"
+  rm -f "$dest"
+  if [[ ! -e "$src" ]]; then
+    return 1
+  fi
+  if [[ -r "$src" ]]; then
+    cp "$src" "$dest" || return 1
+  elif ! docker run --rm --network none --user 0 --entrypoint cat \
+    -v "$WORK/runtime:/src:ro" \
+    "$TASK_IMAGE" /src/events.ndjson >"$dest"; then
+    rm -f "$dest"
+    return 1
+  fi
+  if [[ ! -s "$dest" ]] || ! grep -q '"type"' "$dest"; then
+    rm -f "$dest"
+    return 1
+  fi
+  return 0
+}
+
 dump_logs() {
   echo
   echo "── server log ────────────────────────────────────────────────"
@@ -107,6 +139,12 @@ dump_logs() {
     grep -a -E '\[harness\]|factory-harness:' "$WORK/worker.log" || echo "(no harness output captured)"
   else
     echo "(no worker log)"
+  fi
+  echo "── archived events ───────────────────────────────────────────"
+  if [[ -s "$WORK/evidence/events.ndjson" ]]; then
+    echo "spike/m1/.work/evidence/events.ndjson ($(wc -l <"$WORK/evidence/events.ndjson" | tr -d ' ') lines)"
+  else
+    echo "(events.ndjson was not archived)"
   fi
 }
 
@@ -194,12 +232,17 @@ say "Build m0-spike and the offline model stub"
 (cd "$ROOT" && CGO_ENABLED=0 go build -o "$WORK/model-stub" ./spike/m1/model-stub)
 echo "built m0-spike and model-stub"
 
+# The harness writes /var/run/factory/events.ndjson inside the task
+# container. cleanup: true removes that container, so bind-mount a host
+# directory there and copy the file out after the run.
 cat >"$WORK/worker.yaml" <<YAML
 cleanup: true
 max_concurrent_tasks: 1
 backend:
   docker:
     image_pull_policy: IfNotPresent
+    volumes:
+      - ${WORK}/runtime:/var/run/factory
 YAML
 
 # ---------------------------------------------------------------------------
@@ -343,6 +386,10 @@ echo "server healthy on :$PORT"
 
 # ---------------------------------------------------------------------------
 say "Run the worker against it"
+rm -rf "$WORK/runtime" "$WORK/evidence"
+mkdir -p "$WORK/runtime" "$WORK/evidence"
+# The worker may start the task container as an arbitrary uid.
+chmod 1777 "$WORK/runtime"
 WARP_API_KEY="$API_KEY" "$WORK/oz-agent-worker-bin" \
   --worker-id "$WORKER_ID" \
   --backend docker \
@@ -363,8 +410,14 @@ SERVER_PID=""
 kill "$WORKER_PID" 2>/dev/null || true
 WORKER_PID=""
 
+archived=0
+if archive_events "$WORK/evidence/events.ndjson"; then
+  archived=1
+fi
+
 if ! scan_logs_for_secrets "${SECRETS[@]}"; then
-  echo "M1 FAIL — a secret value appeared in the logs; logs withheld"
+  rm -rf "$WORK/evidence" "$WORK/runtime"
+  echo "M1 FAIL — a secret value appeared in the logs or archived events; output withheld"
   exit 1
 fi
 
@@ -376,6 +429,11 @@ if [[ "$VERDICT" -ne 0 ]]; then
 fi
 
 dump_logs
+
+if [[ "$archived" -ne 1 ]]; then
+  echo "M1 FAIL — events.ndjson was not archived to spike/m1/.work/evidence/events.ndjson"
+  exit 1
+fi
 
 if [[ "$MODE" == offline ]]; then
   greet="$(git --git-dir="$WORK/git/remote.git" show m1-run:greet/greet.go 2>/dev/null || true)"

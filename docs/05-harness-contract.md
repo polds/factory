@@ -124,6 +124,20 @@ Rules that matter:
 - **`question` suspends the run** without consuming a worker slot once emitted with
   `--idle-on-complete` still pending.
 
+**v1 workers: event push.** An unmodified v1 worker delivers harness events only
+when the run ends. When `FACTORY_EVENTS_URL` and `FACTORY_RUN_TOKEN` are both
+set, this harness also POSTs the same NDJSON to that URL, the control-plane
+ingest route `POST /api/v1/agent/runs/{runId}/events:ingest`. A batch goes
+out at 64 events or after 500ms, whichever comes first. Each request carries
+`Authorization: Bearer` set to the run token and `X-Factory-Event-Index` set to
+the index of the first event in the batch. A failed batch is retried with
+backoff for at most 30s and resent with the same index. After that budget, later events are still pushed;
+`events.ndjson` keeps every event. Pushing does not block the agent loop.
+Remaining events flush before exit, waiting at most 10s. The file is always
+written. With either variable unset, the harness writes only that file, with
+the same bytes as a run that never pushes. Tool and setup subprocesses do not
+receive these two variables.
+
 ## Exit codes
 
 | Code | Meaning | Control-plane treatment |
