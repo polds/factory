@@ -113,9 +113,13 @@ Docker Desktop does not publish the Linux bridge into task containers the
 same way. Set `FACTORY_TASK_SERVER_URL=http://host.docker.internal:8080`
 there.
 
-A loopback `OPENAI_BASE_URL` in live mode is rewritten to the same gateway,
-keeping the port. Any other host is left unchanged and must already be
-reachable from the task container.
+A loopback `OPENAI_BASE_URL` in live mode keeps its port. On Docker Desktop
+(`docker info` Operating System contains `Docker Desktop`, or this machine
+resolves `host.docker.internal`) the host becomes `host.docker.internal`.
+On a Linux engine it stays the bridge gateway. Any other host is left
+unchanged and must already be reachable from the task container. When a
+container cannot resolve `host.docker.internal`, the worker adds
+`extra_hosts: host.docker.internal:host-gateway`.
 
 ## What each mode checks
 

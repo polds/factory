@@ -142,11 +142,11 @@ func terminalExit(ev Event) (int, bool, error) {
 	switch p.Status {
 	case "succeeded":
 		return 0, true, nil
-	case "failed":
-		return 1, true, nil
 	case "cancelled":
 		return 2, true, nil
 	default:
-		return 0, true, fmt.Errorf("unknown terminal status %q", p.Status)
+		// failed, and harness statuses such as model_unavailable and
+		// config_invalid. The status line is already on stdout.
+		return 1, true, nil
 	}
 }
