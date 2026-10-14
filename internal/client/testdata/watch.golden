@@ -1,0 +1,5 @@
+message.delta role=assistant text=Reading the test…
+tool.call tool=bash redacted_input=pnpm test -- link
+tool.result tool=bash ok=true
+usage model_id=claude-5-sonnet-high input_tokens=18240 output_tokens=1120 cost_cents=31
+terminal status=succeeded summary=Opened PR #1182

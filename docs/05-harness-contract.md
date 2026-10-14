@@ -124,6 +124,20 @@ Rules that matter:
 - **`question` suspends the run** without consuming a worker slot once emitted with
   `--idle-on-complete` still pending.
 
+**v1 workers: event push.** An unmodified v1 worker delivers harness events only
+when the run ends. When `FACTORY_EVENTS_URL` and `FACTORY_RUN_TOKEN` are both
+set, this harness also POSTs the same NDJSON to that URL, the control-plane
+ingest route `POST /api/v1/agent/runs/{runId}/events:ingest`. A batch goes
+out at 64 events or after 500ms, whichever comes first. Each request carries
+`Authorization: Bearer` set to the run token and `X-Factory-Event-Index` set to
+the index of the first event in the batch. A failed batch is retried with
+backoff for at most 30s and resent with the same index. After that budget, later events are still pushed;
+`events.ndjson` keeps every event. Pushing does not block the agent loop.
+Remaining events flush before exit, waiting at most 10s. The file is always
+written. With either variable unset, the harness writes only that file, with
+the same bytes as a run that never pushes. Tool and setup subprocesses do not
+receive these two variables.
+
 ## Exit codes
 
 | Code | Meaning | Control-plane treatment |
@@ -234,6 +248,11 @@ OpenAI-compatible stub. They do not call a vendor.
 | Turn budget | FACTORY_MAX_TURNS, default 8, range 1..200. Invalid is code 20 |
 | Agent-reported failure | The whole assistant message is `{"status":"failed_by_agent","summary":"..."}`. Exit 10. Exhausting the turn budget uses the same code: the task did not finish, and the provider and the setup command did not fail |
 | Other `--harness` values | Exit 20. `claude-code` is not in this build |
+
+The M1 live run did not write `task.json`. `cmd/m0-spike` copied
+`FACTORY_TASK_PROMPT` and `FACTORY_SECRET_VALUES` into the assignment `env_vars`,
+and the harness read them from the process environment. That run used model
+`claude-sonnet-5-5` and opened [PR #12](https://github.com/polds/factory/pull/12).
 
 `bash`, `read`, `write`, `edit`, `grep`, and `glob` are the tool set. `write` and
 `edit` refuse a path outside the workspace. `bash` is not jailed by the process.
