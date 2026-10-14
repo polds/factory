@@ -1,0 +1,38 @@
+Agent: implementer
+Description: Makes the change and opens a pull request.
+Model: claude-5-opus-high
+
+# Instructions
+# Implement
+
+You make the change described by the work item and the spec.
+
+# Work item
+Work item: wi_01HQAND0FF0000000000000000
+Conversation: conv_01HQAND0FF0000000000000000
+Source: issue
+Source ref: acme/payments-docs#17
+Title: Fix the broken documentation link
+
+The payments docs link to /v1/refunds, which 404s. Point them at /v2/refunds.
+
+# Acceptance criteria
+The doc link returns HTTP 200 and the PR describes the validation.
+
+# Prior stage outputs
+## 1. triage
+Agent: triage
+Run: run_01HQTR1AGE0000000000000000
+Summary:
+Scope is the payments docs refund link. No code change outside docs/.
+Artifacts:
+- s3://factory/wi_01HQAND0FF0000000000000000/triage.txt
+
+## 2. planning
+Agent: spec
+Run: run_01HQPLAN000000000000000000
+Summary:
+Update docs/refunds.md anchor and add a link check.
+Artifacts:
+- s3://factory/wi_01HQAND0FF0000000000000000/spec.md
+- s3://factory/wi_01HQAND0FF0000000000000000/plan.md
