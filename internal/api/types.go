@@ -202,8 +202,14 @@ type Run struct {
 	Repo      string `json:"repo,omitempty"`
 	// WorkItemID links a stage run to its work item. factoryctl task watch
 	// matches child transcripts on this field. Empty for a bare run.
-	WorkItemID    string `json:"work_item_id,omitempty"`
-	FailureReason string `json:"failure_reason,omitempty"`
+	WorkItemID string `json:"work_item_id,omitempty"`
+	// ParentRunID, ConversationID, Stage, and ModelID are the stage-run
+	// columns already stored on runs. Empty for a bare run.
+	ParentRunID    string `json:"parent_run_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	Stage          string `json:"stage,omitempty"`
+	ModelID        string `json:"model_id,omitempty"`
+	FailureReason  string `json:"failure_reason,omitempty"`
 }
 
 // RunRequest is the POST /agent/run body.

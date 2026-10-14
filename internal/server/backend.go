@@ -321,14 +321,18 @@ func toAPIRun(run store.Run, snap loaded) api.Run {
 		agent = bound.name
 	}
 	return api.Run{
-		ID:            run.ID,
-		Status:        run.Status,
-		FactoryID:     run.FactoryID,
-		Agent:         agent,
-		Title:         run.Title,
-		Priority:      priorityName(run.Priority),
-		Repo:          run.Repo,
-		WorkItemID:    run.WorkItemID,
-		FailureReason: run.FailureReason,
+		ID:             run.ID,
+		Status:         run.Status,
+		FactoryID:      run.FactoryID,
+		Agent:          agent,
+		Title:          run.Title,
+		Priority:       priorityName(run.Priority),
+		Repo:           run.Repo,
+		WorkItemID:     run.WorkItemID,
+		ParentRunID:    run.ParentRunID,
+		ConversationID: run.ConversationID,
+		Stage:          run.Stage,
+		ModelID:        run.ModelID,
+		FailureReason:  run.FailureReason,
 	}
 }
