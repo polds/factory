@@ -13,6 +13,69 @@ import (
 	"github.com/polds/factory/internal/store"
 )
 
+// settleCancel makes a cancel-requested run terminal and records one
+// run.terminal. Disconnect and task_rejected must not requeue it.
+func (s *Server) settleCancel(ctx context.Context, runID string) {
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("cancel run", "run_id", runID, "err", err)
+		}
+		return
+	}
+	if !run.CancelRequested && !isTerminalStatus(run.Status) {
+		return
+	}
+	if !isTerminalStatus(run.Status) {
+		execID, err := s.liveExecution(ctx, runID)
+		if err != nil {
+			s.log.Error("cancel execution", "run_id", runID, "err", err)
+			return
+		}
+		if execID != "" {
+			s.finish(ctx, runID, execID, store.ExecCancelled, "", "", nil, nil)
+		} else if err := s.markCancelled(ctx, runID); err != nil {
+			s.log.Error("mark cancelled", "run_id", runID, "err", err)
+			return
+		}
+		run, err = s.store.GetRun(ctx, runID)
+		if err != nil {
+			if ctx.Err() == nil {
+				s.log.Error("cancel run", "run_id", runID, "err", err)
+			}
+			return
+		}
+	}
+	s.stopGrace(runID)
+	s.untrackRun(runID)
+	s.ensureTerminalEvent(ctx, run)
+}
+
+func (s *Server) ensureTerminalEvent(ctx context.Context, run store.Run) {
+	if !isTerminalStatus(run.Status) {
+		return
+	}
+	var n int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM run_events WHERE run_id = $1 AND type = 'run.terminal'`, run.ID).Scan(&n); err != nil {
+		s.log.Error("terminal event", "run_id", run.ID, "err", err)
+		return
+	}
+	if n > 0 {
+		s.hub.Publish(run.ID)
+		return
+	}
+	execID, err := s.executionForEvent(ctx, run.ID)
+	if err != nil {
+		s.log.Error("terminal execution", "run_id", run.ID, "err", err)
+		return
+	}
+	if err := s.appendServerEvent(ctx, run.ID, execID, serverEventBase, terminalPayload(s.now(), run.Status, run.FailureReason, "", run.ExitCode)); err != nil {
+		s.log.Error("terminal event", "run_id", run.ID, "err", err)
+		return
+	}
+	s.archive(ctx, run.ID, execID)
+}
+
 func (s *Server) finish(ctx context.Context, runID, execID, state, reason, summary string, exit *int, taskState *protocol.TaskState) {
 	if execID == "" {
 		execID = s.execForRun(runID)

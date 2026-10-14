@@ -218,6 +218,13 @@ func TestE2E(t *testing.T) {
 			t.Fatal("reject did not assign a new execution")
 		}
 		w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: runID, WorkerID: "local-1"})
+		var attempts int
+		if err := env.raw.QueryRow(context.Background(), `SELECT attempts FROM run_queue WHERE run_id = $1`, runID).Scan(&attempts); err != nil {
+			t.Fatal(err)
+		}
+		if attempts < 1 {
+			t.Fatalf("attempts %d", attempts)
+		}
 		w.send(t, protocol.TypeTaskCompleted, protocol.TaskCompleted{TaskID: runID, ExecutionID: second.ExecutionID, Message: "ok"})
 		env.waitStatus(t, runID, "succeeded")
 		states := env.execStates(t, runID)
@@ -228,9 +235,6 @@ func TestE2E(t *testing.T) {
 			if st == "failed" {
 				t.Fatalf("reject wrote a failure record: %+v", states)
 			}
-		}
-		if env.attempts(t, runID) < 1 {
-			t.Fatal("attempts were not incremented")
 		}
 	})
 
@@ -281,6 +285,73 @@ func TestE2E(t *testing.T) {
 		_ = w.readAssignment(t)
 		env.cancel(t, runID)
 		env.waitStatus(t, runID, "cancelled")
+	})
+
+	t.Run("cancel_queued_writes_run_terminal", func(t *testing.T) {
+		env := boot(t, bootOpts{})
+		runID := env.startRun(t, "cancel before a worker")
+		env.waitStatus(t, runID, "queued")
+		env.cancel(t, runID)
+		env.waitStatus(t, runID, "cancelled")
+		env.requireOneTerminal(t, runID, "cancelled")
+		if n := env.queueRows(t, runID); n != 0 {
+			t.Fatalf("queue rows %d", n)
+		}
+	})
+
+	t.Run("cancel_then_disconnect_stays_cancelled", func(t *testing.T) {
+		env := boot(t, bootOpts{cancelGrace: 200 * time.Millisecond})
+		w := dialWorker(t, env, "local-1")
+		runID := env.startRun(t, "cancel then drop")
+		asg := w.readAssignment(t)
+		env.cancel(t, runID)
+		w.close()
+		env.waitStatus(t, runID, "cancelled")
+		if env.execState(t, asg.ExecutionID) != "cancelled" {
+			t.Fatalf("execution %s", env.execState(t, asg.ExecutionID))
+		}
+		env.requireOneTerminal(t, runID, "cancelled")
+		if n := env.queueRows(t, runID); n != 0 {
+			t.Fatalf("disconnect requeued the cancelled run (%d rows)", n)
+		}
+		w2 := dialWorker(t, env, "local-2")
+		defer w2.close()
+		if _, ok := w2.readAssignmentWithin(t, 400*time.Millisecond); ok {
+			t.Fatal("cancelled run was assigned again")
+		}
+	})
+
+	t.Run("cancel_then_reject_stays_cancelled", func(t *testing.T) {
+		env := boot(t, bootOpts{cancelGrace: 200 * time.Millisecond})
+		w := dialWorker(t, env, "local-1")
+		defer w.close()
+		runID := env.startRun(t, "cancel then reject")
+		asg := w.readAssignment(t)
+		env.cancel(t, runID)
+		w.send(t, protocol.TypeTaskRejected, protocol.TaskRejected{TaskID: runID, Reason: "busy"})
+		env.waitStatus(t, runID, "cancelled")
+		if env.execState(t, asg.ExecutionID) != "cancelled" {
+			t.Fatalf("execution %s", env.execState(t, asg.ExecutionID))
+		}
+		env.requireOneTerminal(t, runID, "cancelled")
+		if n := env.queueRows(t, runID); n != 0 {
+			t.Fatalf("reject requeued the cancelled run (%d rows)", n)
+		}
+	})
+
+	t.Run("cancel_grace_without_tracked_execution", func(t *testing.T) {
+		env := boot(t, bootOpts{cancelGrace: 200 * time.Millisecond})
+		w := dialWorker(t, env, "local-1")
+		defer w.close()
+		runID := env.startRun(t, "grace without memory")
+		asg := w.readAssignment(t)
+		env.cancel(t, runID)
+		env.srv.untrackRun(runID)
+		env.waitStatus(t, runID, "cancelled")
+		if env.execState(t, asg.ExecutionID) != "cancelled" {
+			t.Fatalf("execution %s", env.execState(t, asg.ExecutionID))
+		}
+		env.requireOneTerminal(t, runID, "cancelled")
 	})
 
 	t.Run("wrong_run_token_unauthorized", func(t *testing.T) {
@@ -739,6 +810,44 @@ func (e *env) eventRows(t *testing.T, runID string) []eventRow {
 	return out
 }
 
+func (e *env) requireOneTerminal(t *testing.T, runID, status string) {
+	t.Helper()
+	rows, err := e.raw.Query(context.Background(), `SELECT payload_json::text FROM run_events WHERE run_id = $1 AND type = 'run.terminal' ORDER BY seq`, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var payloads []string
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatal(err)
+		}
+		payloads = append(payloads, payload)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(payloads) != 1 {
+		t.Fatalf("run.terminal payloads %+v", payloads)
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(payloads[0]), &body); err != nil || body.Status != status {
+		t.Fatalf("run.terminal payloads %+v", payloads)
+	}
+}
+
+func (e *env) queueRows(t *testing.T, runID string) int {
+	t.Helper()
+	var n int
+	if err := e.raw.QueryRow(context.Background(), `SELECT count(*) FROM run_queue WHERE run_id = $1`, runID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 func (e *env) hasEventType(t *testing.T, runID, typ string) bool {
 	t.Helper()
 	for _, row := range e.eventRows(t, runID) {
@@ -777,19 +886,6 @@ func (e *env) execState(t *testing.T, execID string) string {
 		t.Fatal(err)
 	}
 	return st
-}
-
-func (e *env) attempts(t *testing.T, runID string) int {
-	t.Helper()
-	var n int
-	err := e.raw.QueryRow(context.Background(), `SELECT attempts FROM run_queue WHERE run_id = $1`, runID).Scan(&n)
-	if err != nil {
-		// A succeeded run has left the queue. The reject test completes, so the
-		// attempts value must be read from the orphan path before finish deletes
-		// the row. Fall back to counting orphaned executions.
-		return len(e.execStates(t, runID)) - 1
-	}
-	return n
 }
 
 func (e *env) archived(t *testing.T, runID, execID string) []byte {
@@ -854,6 +950,24 @@ func (w *wsWorker) readEnvelope(t *testing.T) (string, json.RawMessage) {
 		t.Fatal(err)
 	}
 	return env.Type, env.Data
+}
+
+func (w *wsWorker) readAssignmentWithin(t *testing.T, d time.Duration) (protocol.TaskAssignment, bool) {
+	t.Helper()
+	_ = w.conn.SetReadDeadline(time.Now().Add(d))
+	_, raw, err := w.conn.ReadMessage()
+	if err != nil {
+		return protocol.TaskAssignment{}, false
+	}
+	var env protocol.Envelope
+	if err := json.Unmarshal(raw, &env); err != nil || env.Type != protocol.TypeTaskAssignment {
+		t.Fatalf("message %s %v", env.Type, err)
+	}
+	var asg protocol.TaskAssignment
+	if err := json.Unmarshal(env.Data, &asg); err != nil {
+		t.Fatal(err)
+	}
+	return asg, true
 }
 
 func (w *wsWorker) readAssignment(t *testing.T) protocol.TaskAssignment {

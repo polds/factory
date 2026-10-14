@@ -199,9 +199,7 @@ func (s *Server) CancelRun(ctx context.Context, id string) (api.Run, error) {
 		return api.Run{}, err
 	}
 	if isTerminalStatus(run.Status) {
-		s.untrackRun(id)
-		s.stopGrace(id)
-		s.hub.Publish(id)
+		s.settleCancel(ctx, id)
 		return toAPIRun(run, s.snapshot()), nil
 	}
 	workerID := run.WorkerID

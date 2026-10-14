@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/polds/factory/internal/store"
 )
 
 func (s *Server) claim(ctx context.Context, runID string, ttl time.Duration) (bool, error) {
@@ -107,6 +109,78 @@ func (s *Server) renewLease(ctx context.Context, runID string, ttl time.Duration
 		SET lease_until = clock_timestamp() + ($2::bigint * interval '1 millisecond')
 		WHERE run_id = $1 AND lease_until IS NOT NULL`, runID, ttl.Milliseconds())
 	return err
+}
+
+func (s *Server) liveExecution(ctx context.Context, runID string) (string, error) {
+	if id := s.execForRun(runID); id != "" {
+		var state string
+		err := s.db.QueryRow(ctx, `SELECT state FROM executions WHERE id = $1`, id).Scan(&state)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return "", err
+		}
+		if state == store.ExecAssigned || state == store.ExecRunning {
+			return id, nil
+		}
+	}
+	var id string
+	err := s.db.QueryRow(ctx, `
+		SELECT id FROM executions
+		WHERE run_id = $1 AND state IN ('assigned', 'running')
+		ORDER BY attempt DESC
+		LIMIT 1`, runID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func (s *Server) markCancelled(ctx context.Context, runID string) error {
+	s.leaseMu.Lock()
+	defer s.leaseMu.Unlock()
+	if _, err := s.db.Exec(ctx, `
+		UPDATE runs
+		SET status = 'cancelled',
+		    cancel_requested = true,
+		    ended_at = COALESCE(ended_at, clock_timestamp()),
+		    worker_id = NULL
+		WHERE id = $1 AND status NOT IN ('succeeded', 'failed', 'cancelled')`, runID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID)
+	return err
+}
+
+func (s *Server) executionForEvent(ctx context.Context, runID string) (string, error) {
+	var id string
+	err := s.db.QueryRow(ctx, `
+		SELECT id FROM executions WHERE run_id = $1 ORDER BY attempt DESC LIMIT 1`, runID).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	id, err = store.NewID(store.PrefixExec)
+	if err != nil {
+		return "", err
+	}
+	// Not a run token. The column is NOT NULL and this execution never runs.
+	var sum [32]byte
+	tag, err := s.db.Exec(ctx, `
+		INSERT INTO executions (id, run_id, attempt, worker_id, state, run_token_sha256, ended_at)
+		VALUES ($1, $2, 1, '', 'cancelled', $3, clock_timestamp())
+		ON CONFLICT (run_id, attempt) DO NOTHING`, id, runID, sum[:])
+	if err != nil {
+		return "", err
+	}
+	if tag.RowsAffected() == 1 {
+		return id, nil
+	}
+	err = s.db.QueryRow(ctx, `SELECT id FROM executions WHERE run_id = $1 AND attempt = 1`, runID).Scan(&id)
+	return id, err
 }
 
 func (s *Server) forceExpire(ctx context.Context, runID string) error {

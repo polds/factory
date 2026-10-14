@@ -76,6 +76,15 @@ func (s *Server) Rejected(ctx context.Context, m protocol.TaskRejected) error {
 	s.countersMu.Lock()
 	s.counters.RecordReject()
 	s.countersMu.Unlock()
+	run, err := s.store.GetRun(ctx, m.TaskID)
+	if err != nil {
+		s.log.Error("reject run", "task_id", m.TaskID, "err", err)
+		return err
+	}
+	if run.CancelRequested || isTerminalStatus(run.Status) {
+		s.settleCancel(ctx, m.TaskID)
+		return nil
+	}
 	if err := s.prepareRequeue(ctx, m.TaskID); err != nil {
 		s.log.Error("prepare requeue", "task_id", m.TaskID, "err", err)
 		return err
@@ -113,12 +122,24 @@ func (s *Server) WorkerGone(ctx context.Context, connID string) {
 		runs = append(runs, rec.runID)
 	}
 	s.mu.Unlock()
+	requeued := false
 	for _, id := range runs {
+		run, err := s.store.GetRun(ctx, id)
+		if err != nil {
+			s.log.Error("disconnect run", "run_id", id, "conn_id", connID, "err", err)
+			continue
+		}
+		if run.CancelRequested || isTerminalStatus(run.Status) {
+			s.settleCancel(ctx, id)
+			continue
+		}
 		if err := s.forceExpire(ctx, id); err != nil {
 			s.log.Error("expire on disconnect", "run_id", id, "conn_id", connID, "err", err)
+			continue
 		}
+		requeued = true
 	}
-	if len(runs) > 0 {
+	if requeued {
 		s.nudge()
 	}
 }

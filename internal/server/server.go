@@ -325,13 +325,5 @@ func (s *Server) stopGrace(runID string) {
 func (s *Server) graceExpired(runID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	run, err := s.store.GetRun(ctx, runID)
-	if err != nil || isTerminalStatus(run.Status) {
-		return
-	}
-	execID := s.execForRun(runID)
-	if execID == "" {
-		return
-	}
-	s.finish(ctx, runID, execID, store.ExecCancelled, "cancel_grace", "", nil, nil)
+	s.settleCancel(ctx, runID)
 }
