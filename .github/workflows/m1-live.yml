@@ -9,9 +9,6 @@
 #   M1_OPENAI_BASE_URL   OpenAI-compatible endpoint (OPENAI_BASE_URL)
 #   M1_OPENAI_API_KEY    optional; omit the secret to run without a key
 #   M1_GH_TOKEN          fine-grained PAT, fixture repo only (GH_TOKEN)
-#
-# actions: write lets this workflow upload spike/m1/.work/evidence/.
-# contents stays read-only; this workflow does not push.
 name: m1-live
 
 on:
@@ -29,7 +26,6 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 defaults:
   run:
