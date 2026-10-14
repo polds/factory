@@ -34,6 +34,34 @@ const (
 var (
 	ErrNotFound        = errors.New("store: not found")
 	ErrAlreadyTerminal = errors.New("store: already terminal")
+	// ErrAlreadyDecided is returned when DecideApproval is asked to change a
+	// decision that was already recorded. Repeating the same decision is not an error.
+	ErrAlreadyDecided = errors.New("store: approval already decided")
+)
+
+const (
+	WorkItemOpen             = "open"
+	WorkItemAwaitingApproval = "awaiting_approval"
+	WorkItemAwaitingInput    = "awaiting_input"
+	WorkItemComplete         = "complete"
+	WorkItemCancelled        = "cancelled"
+
+	StageTriage       = "triage"
+	StagePlanning     = "planning"
+	StageBuilding     = "building"
+	StageReviewing    = "reviewing"
+	StageHumanHandoff = "human_handoff"
+
+	DecisionApprove = "approve"
+	DecisionReject  = "reject"
+
+	SourceIssue    = "issue"
+	SourceManual   = "manual"
+	SourceAPI      = "api"
+	SourceWebhook  = "webhook"
+	SourceChat     = "chat"
+	SourceSchedule = "schedule"
+	SourceMCP      = "mcp"
 )
 
 // Run is one logical task. Tokens and env values are never fields of Run.
@@ -54,17 +82,28 @@ type Run struct {
 	CreatedAt       time.Time
 	StartedAt       *time.Time
 	EndedAt         *time.Time
+	// Linkage is empty when the run was started on its own, without a work item.
+	WorkItemID     string
+	ParentRunID    string
+	ConversationID string
+	Stage          string
+	ModelID        string
 }
 
 // NewRun is the input to CreateRun. The store enqueues it in the same transaction.
 type NewRun struct {
-	FactoryID string
-	AgentID   string
-	Pool      string
-	Priority  Priority
-	Prompt    string
-	Title     string
-	Repo      string
+	FactoryID      string
+	AgentID        string
+	Pool           string
+	Priority       Priority
+	Prompt         string
+	Title          string
+	Repo           string
+	WorkItemID     string
+	ParentRunID    string
+	ConversationID string
+	Stage          string
+	ModelID        string
 }
 
 // RunFilter narrows ListRuns. Zero values are unconstrained. Limit <= 0 uses 100.
@@ -173,6 +212,61 @@ type DefinedRunner struct {
 	PlatformJSON      json.RawMessage
 	InstanceShapeJSON json.RawMessage
 	SetupCommands     json.RawMessage
+}
+
+// WorkItem is one request kept from intake through handoff.
+// Secret values are not fields of WorkItem.
+type WorkItem struct {
+	ID             string
+	FactoryID      string
+	Source         string
+	SourceRef      string
+	Title          string
+	Body           string
+	Stage          string
+	Status         string
+	CreatedBy      string
+	ConversationID string
+	RevisionCount  int
+	CreatedAt      time.Time
+}
+
+// NewWorkItem is the input to CreateWorkItem.
+// Empty Stage defaults to triage, empty Status to open, and empty
+// ConversationID is assigned a conv_ id.
+type NewWorkItem struct {
+	FactoryID      string
+	Source         string
+	SourceRef      string
+	Title          string
+	Body           string
+	Stage          string
+	Status         string
+	CreatedBy      string
+	ConversationID string
+	RevisionCount  int
+}
+
+// WorkItemFilter narrows ListWorkItems. Zero values are unconstrained.
+// Limit <= 0 uses 100.
+type WorkItemFilter struct {
+	FactoryID string
+	Stage     string
+	Status    string
+	Source    string
+	Limit     int
+}
+
+// Approval is one gate request on a work item. Decision is empty until decided.
+type Approval struct {
+	ID          string
+	WorkItemID  string
+	Gate        string
+	RequestedAt time.Time
+	DecidedAt   *time.Time
+	DecidedBy   string
+	Decision    string
+	Note        string
 }
 
 // Worker is a connected worker row. Upsert replaces mutable fields.

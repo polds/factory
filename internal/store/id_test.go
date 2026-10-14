@@ -66,7 +66,10 @@ func TestFormatIDRejectsBadInput(t *testing.T) {
 
 func TestNewIDShapeAndUniqueness(t *testing.T) {
 	t.Parallel()
-	prefixes := []string{PrefixRun, PrefixExec, PrefixFactory, PrefixAgent, PrefixDefinition}
+	prefixes := []string{
+		PrefixRun, PrefixExec, PrefixFactory, PrefixAgent, PrefixDefinition,
+		PrefixWorkItem, PrefixApproval, PrefixConversation,
+	}
 	seen := map[string]bool{}
 	for _, prefix := range prefixes {
 		id, err := NewID(prefix)

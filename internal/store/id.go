@@ -8,11 +8,14 @@ import (
 )
 
 const (
-	PrefixRun        = "run_"
-	PrefixExec       = "exec_"
-	PrefixFactory    = "fac_"
-	PrefixAgent      = "agt_"
-	PrefixDefinition = "def_"
+	PrefixRun          = "run_"
+	PrefixExec         = "exec_"
+	PrefixFactory      = "fac_"
+	PrefixAgent        = "agt_"
+	PrefixDefinition   = "def_"
+	PrefixWorkItem     = "task_"
+	PrefixApproval     = "apr_"
+	PrefixConversation = "conv_"
 )
 
 // crockfordAlphabet is Crockford base32 (no I, L, O, or U).
@@ -56,7 +59,8 @@ func FormatID(prefix string, ms uint64, entropy []byte) (string, error) {
 
 func knownPrefix(prefix string) bool {
 	switch prefix {
-	case PrefixRun, PrefixExec, PrefixFactory, PrefixAgent, PrefixDefinition:
+	case PrefixRun, PrefixExec, PrefixFactory, PrefixAgent, PrefixDefinition,
+		PrefixWorkItem, PrefixApproval, PrefixConversation:
 		return true
 	default:
 		return false
