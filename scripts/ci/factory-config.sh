@@ -18,10 +18,48 @@
 # is the proof that an invalid tree fails the job. The workflow does not
 # pass --dry-run.
 #
+# --is-config-path <path> exits 0 when <path> is a factory/config input
+# and 1 when it is not. It does not build or validate. The deploy rule
+# is only a top-level deploy/<name>-factory/... path. A case pattern
+# deploy/*-factory/* also matches deploy/nested/<name>-factory/...
+# because * matches slashes.
+#
 # Portable to macOS bash 3.2 and Linux bash: no GNU-only flags, no
 # mapfile, no associative arrays. The factoryctl binary is built for the
 # host (it is not copied into a container).
 set -euo pipefail
+
+# Match the path list in .github/workflows/factory-config.yml.
+# examples/* and schemas/* are prefix rules; * may cross slashes there.
+is_config_path() {
+  case "$1" in
+    examples/* | schemas/*) return 0 ;;
+    .github/workflows/factory-config.yml) return 0 ;;
+    scripts/ci/factory-config.sh) return 0 ;;
+  esac
+  case "$1" in
+    deploy/*/*) ;;
+    *) return 1 ;;
+  esac
+  local rest name
+  rest="${1#deploy/}"
+  name="${rest%%/*}"
+  case "$name" in
+    *-factory) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if [[ "${1:-}" == "--is-config-path" ]]; then
+  if [[ $# -ne 2 || -z "${2}" ]]; then
+    echo "usage: scripts/ci/factory-config.sh --is-config-path <path>" >&2
+    exit 2
+  fi
+  if is_config_path "${2}"; then
+    exit 0
+  fi
+  exit 1
+fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${root}"

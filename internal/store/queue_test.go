@@ -483,15 +483,33 @@ func TestNotifyOnEnqueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := h.createRun(t, factoryID, agentID, "default", store.PriorityInteractive)
-	select {
-	case got := <-ch:
-		if got != run.ID {
-			t.Fatalf("notify %q want %s", got, run.ID)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Listen did not receive the run id within 2s")
+	// run_queue is database-wide. Other tests NOTIFY their own run ids on
+	// this channel. Wait for this test's payload and ignore the rest.
+	const other = "run_other"
+	if _, err := h.raw.Exec(ctx, `SELECT pg_notify('run_queue', $1)`, other); err != nil {
+		t.Fatal(err)
 	}
+	waitNotify := func(want string) {
+		t.Helper()
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case got, ok := <-ch:
+				if !ok {
+					t.Fatalf("Listen closed while waiting for %s", want)
+				}
+				if got == want {
+					return
+				}
+			case <-timer.C:
+				t.Fatalf("Listen did not receive %s within 2s", want)
+			}
+		}
+	}
+	waitNotify(other)
+	run := h.createRun(t, factoryID, agentID, "default", store.PriorityInteractive)
+	waitNotify(run.ID)
 }
 
 func TestApplyDefinitionAtomic(t *testing.T) {

@@ -109,9 +109,10 @@ of that address is tracked in the pending fix PR.
 - Orchestrator: work items, the stage machine, `pipeline:` evaluation, `skip` predicates,
   `revisionLimit`.
 - Approval gates: `approvals` table, API, blocking semantics.
-- Multi-agent dispatch: foreman → stage agents, parent/child runs, context handoff,
-  conversation continuity.
-- Git-backed definitions: clone, poll/webhook, pre-merge config check.
+- Multi-agent dispatch: four stage agents (triage, planning, building, reviewing),
+  parent/child runs, context handoff, conversation continuity.
+- Git-backed definitions: clone and poll sync, with an optional Waker. Webhook
+  ingress is M4. Pre-merge config check.
 
 **Exit criterion:** an issue flows intake → triage → spec → **approval gate** → implement →
 review → PR, with each stage on a different model, and the gate actually blocking.

@@ -20,7 +20,7 @@ Task containers are not on the compose network. On Docker Desktop, including an 
 | `OPENAI_BASE_URL` | An OpenAI-compatible base URL whose host is `host.docker.internal`, the host a task container uses to reach a model proxy on the Mac. `FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL` is the same value. |
 | `APPROVAL_DECISION` | `approve` decides the spec gate. Unset prints the approval id and waits. Any other value is refused. |
 
-`GH_TOKEN` and four distinct model ids (`M3_MODEL_TRIAGE`, `M3_MODEL_PLANNING`, `M3_MODEL_BUILDING`, `M3_MODEL_REVIEWING`) are also required. The script does not print them. On Linux, an empty `FACTORY_TASK_SERVER_URL` becomes the bridge gateway.
+`GH_TOKEN` and four distinct model ids (`M3_MODEL_TRIAGE`, `M3_MODEL_PLANNING`, `M3_MODEL_BUILDING`, `M3_MODEL_REVIEWING`) are also required. The script prints those ids as `models: triage=…`. `GH_TOKEN` stays out of the log. On Linux, an empty `FACTORY_TASK_SERVER_URL` becomes the bridge gateway.
 
 Peter ran this on an Apple Silicon Mac with Docker Desktop on 2026-10-14. `FACTORY_TASK_SERVER_URL` and `OPENAI_BASE_URL` were already set as above. The command was:
 
@@ -28,7 +28,7 @@ Peter ran this on an Apple Silicon Mac with Docker Desktop on 2026-10-14. `FACTO
 MODE=live APPROVAL_DECISION=approve ./spike/m3/run.sh
 ```
 
-That command needs the live credentials in `deploy/.env` or the shell. CI and this environment do not have them, so it is not re-run here. The laptop result is in [`docs/12-build-sequence.md`](../../docs/12-build-sequence.md). It ends with `M3 LIVE PASS` and the pull request URL. The driver log asserts `four runs linked parent to child on distinct model ids` and does not include the four id strings.
+That command needs the live credentials in `deploy/.env` or the shell. CI and this environment do not have them, so it is not re-run here. The laptop result is in [`docs/12-build-sequence.md`](../../docs/12-build-sequence.md). It ends with `M3 LIVE PASS` and the pull request URL. The driver log asserts `four runs linked parent to child on distinct model ids` and prints the four ids on the `models: triage=…` line.
 
 ## Live variables
 

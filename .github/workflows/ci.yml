@@ -451,6 +451,7 @@ jobs:
   # runs. It validates only when a definition path changed, and
   # otherwise succeeds so an unrelated pull does not fail `required`.
   # Path list matches .github/workflows/factory-config.yml.
+  # deploy/<name>-factory matching is in scripts/ci/factory-config.sh.
   factory-config:
     name: factory/config
     runs-on: ubuntu-latest
@@ -467,13 +468,19 @@ jobs:
         run: |
           set -euo pipefail
 
+          # 0 = config path, 1 = not. Any other status fails the step.
+          # The script rejects deploy/*-factory/* because that glob
+          # matches through / and would select nested trees.
           is_config_path() {
-            case "$1" in
-              examples/* | schemas/*) return 0 ;;
-              deploy/*-factory/*) return 0 ;;
-              .github/workflows/factory-config.yml) return 0 ;;
-              scripts/ci/factory-config.sh) return 0 ;;
-              *) return 1 ;;
+            local status=0
+            scripts/ci/factory-config.sh --is-config-path "$1" || status=$?
+            case "$status" in
+              0) return 0 ;;
+              1) return 1 ;;
+              *)
+                echo "factory/config: path check failed for ${1} (status ${status})" >&2
+                exit 1
+                ;;
             esac
           }
 
