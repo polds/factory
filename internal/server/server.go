@@ -97,7 +97,12 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		st.Close()
 		return nil, err
 	}
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		st.Close()
+		return nil, fmt.Errorf("server: db: %w", err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		st.Close()
 		return nil, fmt.Errorf("server: db: %w", err)
@@ -107,7 +112,9 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		st.Close()
 		return nil, fmt.Errorf("server: db: %w", err)
 	}
-	leader, err := pgx.Connect(ctx, cfg.DatabaseURL)
+	// pgx.Connect treats pool_max_conns as a server parameter. The pool parser
+	// already removed it from ConnConfig.
+	leader, err := pgx.ConnectConfig(ctx, poolCfg.ConnConfig.Copy())
 	if err != nil {
 		pool.Close()
 		st.Close()
@@ -134,7 +141,7 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 	s.gw = gateway.New(s.authenticate, s, s.log)
 	s.api = api.NewHandler(s, cfg.APIKey, problemSSE(events.Handler(logSource{s: s}, s.hub)))
 	if err := s.applyBoot(runCtx); err != nil {
-		s.Close()
+		_ = s.Close()
 		return nil, err
 	}
 	s.wg.Add(3)

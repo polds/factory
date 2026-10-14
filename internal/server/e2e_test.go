@@ -440,11 +440,15 @@ func boot(t *testing.T, opts bootOpts) *env {
 		_ = admin.Close(ctx)
 		t.Fatal(err)
 	}
-	dsn, err := withSearchPath(base, schema)
+	rawDSN, err := withSearchPath(base, schema, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := pgx.Connect(ctx, dsn)
+	poolDSN, err := withSearchPath(base, schema, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pgx.Connect(ctx, rawDSN)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +461,7 @@ func boot(t *testing.T, opts bootOpts) *env {
 	def := writeDefinition(t)
 	var logs bytes.Buffer
 	cfg := Config{
-		DatabaseURL:         dsn,
+		DatabaseURL:         poolDSN,
 		APIKey:              "test-api-key",
 		WorkerAPIKey:        "test-worker-key",
 		DefinitionPath:      def,
@@ -494,12 +498,15 @@ func boot(t *testing.T, opts bootOpts) *env {
 	t.Cleanup(func() { _ = srv.Close() })
 
 	var handler http.Handler
+	ready := make(chan struct{})
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-ready
 		handler.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
 	srv.cfg.TaskServerURL = ts.URL
 	handler = srv.Handler()
+	close(ready)
 
 	e := &env{t: t, srv: srv, base: ts.URL, apiKey: cfg.APIKey, workerKey: cfg.WorkerAPIKey, logs: &logs, raw: raw}
 	if cfg.S3.Endpoint != "" {
@@ -896,7 +903,7 @@ func (w *wsWorker) ping(t *testing.T) {
 		}
 	}()
 	t.Cleanup(func() {
-		_ = w.conn.Close()
+		w.close()
 		<-done
 	})
 	w.mu.Lock()
@@ -947,14 +954,16 @@ func jsonNumber(n int) string {
 	return string(b)
 }
 
-func withSearchPath(raw, schema string) (string, error) {
+func withSearchPath(raw, schema string, pool bool) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", err
 	}
 	q := u.Query()
 	q.Set("search_path", schema)
-	q.Set("pool_max_conns", "8")
+	if pool {
+		q.Set("pool_max_conns", "8")
+	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
