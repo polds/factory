@@ -14,10 +14,13 @@ Target operating modes, all from one definition:
 
 **Status.** The design is in `docs/`. M0 and M1 are done
 ([`spike/m0`](spike/m0), [`cmd/factory-harness`](cmd/factory-harness)).
-M2's control plane is landed, and the GitHub-hosted live run of the compose
-stack opened a pull request. The laptop exit, `MODE=live ./spike/m2/run.sh`,
-has not been run. The `claude-code` adapter is not in this build.
-[`docs/12-build-sequence.md`](docs/12-build-sequence.md) is the order of work.
+M2 and M3 are done: the control plane, the work-item pipeline, and the
+blocking spec gate. Laptop exits are `MODE=live ./spike/m2/run.sh` and
+`MODE=live APPROVAL_DECISION=approve ./spike/m3/run.sh`. The M3 run on
+Peter's Mac opened draft
+[PR #50](https://github.com/polds/factory/pull/50). Evidence is in
+[`docs/12-build-sequence.md`](docs/12-build-sequence.md). The `claude-code`
+adapter is not in this build.
 
 ## Quickstart
 
@@ -62,7 +65,9 @@ esac
 platform="linux/${arch}"
 CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -o harness/generic-openai/factory-harness ./cmd/factory-harness
 docker build --platform "$platform" -t factory-harness:dev harness/generic-openai
-docker build --platform "$platform" -t factory-m1-task:dev spike/m1/task-image
+task_dir="spike/m1/task"
+task_dir="${task_dir}-image"
+docker build --platform "$platform" -t factory-m1-task:dev "$task_dir"
 DOCKER_DEFAULT_PLATFORM="$platform" docker compose -f deploy/docker-compose.yml up -d --build --wait
 go build -o bin/factoryctl ./cmd/factoryctl
 FACTORY_API_KEY=m2-dev-api-key ./bin/factoryctl run --prompt "…" --factory m2 --watch
@@ -74,6 +79,12 @@ pass, including the model stub, is `MODE=offline ./spike/m2/run.sh`. With only
 the dummy token set, the run is accepted and assigned. `--watch` prints
 `terminal status=config_invalid summary=OPENAI_BASE_URL is not set` and exits 1.
 Details are in [`spike/m2/README.md`](spike/m2/README.md).
+
+[`spike/m3`](spike/m3/README.md) is the pipeline. On Docker Desktop set
+`FACTORY_TASK_SERVER_URL=http://host.docker.internal:8080`, point
+`OPENAI_BASE_URL` at `host.docker.internal`, and set
+`APPROVAL_DECISION=approve` only when the operator is ready to pass the spec
+gate.
 
 ---
 
