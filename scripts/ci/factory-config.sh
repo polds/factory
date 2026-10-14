@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Pre-merge factory/config check (docs/03 layer 3).
+#
+# Builds factoryctl and runs `factoryctl validate` on the definition
+# trees this workflow guards:
+#
+#   examples/acme-factory     required
+#   deploy/m2-factory         required
+#   deploy/m3-factory         when that directory is present
+#
+# factoryctl prints "file:line: message" and exits 1 when any diagnostic
+# is an error. Warnings stay on stdout and do not fail the run. With
+# set -e, a rejected tree fails this script and therefore the Actions job.
+#
+# --dry-run copies examples/acme-factory, appends an unknown factory.yaml
+# key, and validates that copy instead of the real trees. validate must
+# reject it; the script then exits with validate's non-zero status, which
+# is the proof that an invalid tree fails the job. The workflow does not
+# pass --dry-run.
+#
+# Portable to macOS bash 3.2 and Linux bash: no GNU-only flags, no
+# mapfile, no associative arrays. The factoryctl binary is built for the
+# host (it is not copied into a container).
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "${root}"
+
+dry_run=0
+if [[ $# -gt 1 ]]; then
+  echo "usage: scripts/ci/factory-config.sh [--dry-run]" >&2
+  exit 2
+fi
+if [[ $# -eq 1 ]]; then
+  case "${1}" in
+    --dry-run)
+      dry_run=1
+      ;;
+    *)
+      echo "usage: scripts/ci/factory-config.sh [--dry-run]" >&2
+      exit 2
+      ;;
+  esac
+fi
+
+# BSD mktemp (macOS) requires a template; GNU accepts the same form.
+work="$(mktemp -d "${TMPDIR:-/tmp}/factory-config.XXXXXX")"
+# shellcheck disable=SC2329 # invoked by the EXIT trap
+cleanup() {
+  rm -rf "${work}"
+}
+trap cleanup EXIT
+
+factoryctl="${work}/factoryctl"
+echo "building factoryctl"
+go build -o "${factoryctl}" ./cmd/factoryctl
+
+validate_tree() {
+  local label="$1"
+  local path="$2"
+  echo "validate ${label} (${path})"
+  "${factoryctl}" validate "${path}"
+}
+
+if [[ "${dry_run}" -eq 1 ]]; then
+  planted="${work}/planted-factory"
+  cp -R "${root}/examples/acme-factory" "${planted}"
+  printf '\nnotAValidFactoryKey: planted\n' >>"${planted}/factory.yaml"
+  echo "dry-run: planted unknown key notAValidFactoryKey in ${planted}/factory.yaml"
+  validate_tree "planted-invalid" "${planted}"
+  echo "factory/config: dry-run expected factoryctl validate to reject the planted tree" >&2
+  exit 1
+fi
+
+if [[ ! -f examples/acme-factory/factory.yaml ]]; then
+  echo "factory/config: examples/acme-factory/factory.yaml is missing" >&2
+  exit 1
+fi
+validate_tree "acme-factory" "examples/acme-factory"
+
+if [[ ! -f deploy/m2-factory/factory.yaml ]]; then
+  echo "factory/config: deploy/m2-factory/factory.yaml is missing" >&2
+  exit 1
+fi
+validate_tree "m2-factory" "deploy/m2-factory"
+
+if [[ -d deploy/m3-factory ]]; then
+  validate_tree "m3-factory" "deploy/m3-factory"
+else
+  echo "deploy/m3-factory is not present; skipped"
+fi

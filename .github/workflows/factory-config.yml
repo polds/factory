@@ -1,0 +1,47 @@
+# Pre-merge factory/config check (docs/03 layer 3, D6).
+#
+# Pull requests that edit a definition tree or a published schema build
+# factoryctl and validate the checked-in factories. This is an Actions
+# job, not a GitHub App check-run. Branch protection can require the
+# check named factory/config (the job name below).
+#
+# The workflow file and the script are on the path list so a change to
+# the check itself runs the job. Pulls that touch none of these paths
+# skip this workflow. It is not part of the ci.yml `required` aggregate.
+name: factory-config
+
+on:
+  pull_request:
+    paths:
+      - "examples/**"
+      - "deploy/*-factory/**"
+      - "schemas/**"
+      - ".github/workflows/factory-config.yml"
+      - "scripts/ci/factory-config.sh"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-config-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  config:
+    name: factory/config
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate factory definition trees
+        run: ./scripts/ci/factory-config.sh
