@@ -39,10 +39,13 @@ func (s *Server) schedule(ctx context.Context) {
 		return
 	}
 	snap := s.snapshot()
+	held := s.suspendedSnapshot()
 	pending, byID := s.pending(queued, snap)
 	var inflight []scheduler.Pending
-	inflight = append(inflight, s.asPending(running, snap)...)
-	inflight = append(inflight, s.asPending(assigned, snap)...)
+	// A suspended run keeps its execution and stays out of the worker slot
+	// and the factory and agent caps.
+	inflight = append(inflight, s.asPending(withoutSuspended(running, held), snap)...)
+	inflight = append(inflight, s.asPending(withoutSuspended(assigned, held), snap)...)
 	workers := s.candidates(now)
 	for _, asg := range scheduler.Plan(now, pending, workers, inflight, defaultCaps()) {
 		run, ok := byID[asg.RunID]
@@ -149,13 +152,25 @@ func (s *Server) candidates(now time.Time) []scheduler.Candidate {
 			idle = now
 			s.idleSince[id] = idle
 		}
+		inflight := row.inflight
+		for _, rec := range s.live {
+			if rec.workerID != id {
+				continue
+			}
+			if _, ok := s.suspended[rec.runID]; ok {
+				inflight--
+			}
+		}
+		if inflight < 0 {
+			inflight = 0
+		}
 		out = append(out, scheduler.Candidate{
 			WorkerID:      id,
 			Pool:          s.cfg.WorkerPool,
 			Platform:      s.cfg.WorkerPlatform,
 			LastHeartbeat: hb,
 			IdleSince:     idle,
-			InFlight:      row.inflight,
+			InFlight:      inflight,
 			MaxConcurrent: s.cfg.WorkerMaxConcurrent,
 		})
 	}

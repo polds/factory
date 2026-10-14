@@ -118,18 +118,21 @@ const (
 
 // Task is a work item. It carries no secrets and no run token.
 type Task struct {
-	ID             string    `json:"id"`
-	FactoryID      string    `json:"factory_id"`
-	Source         string    `json:"source"`
-	SourceRef      string    `json:"source_ref,omitempty"`
-	Title          string    `json:"title"`
-	Body           string    `json:"body,omitempty"`
-	Stage          string    `json:"stage"`
-	Status         string    `json:"status"`
-	CreatedBy      string    `json:"created_by,omitempty"`
-	ConversationID string    `json:"conversation_id,omitempty"`
-	RevisionCount  int       `json:"revision_count"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             string `json:"id"`
+	FactoryID      string `json:"factory_id"`
+	Source         string `json:"source"`
+	SourceRef      string `json:"source_ref,omitempty"`
+	Title          string `json:"title"`
+	Body           string `json:"body,omitempty"`
+	Stage          string `json:"stage"`
+	Status         string `json:"status"`
+	CreatedBy      string `json:"created_by,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	RevisionCount  int    `json:"revision_count"`
+	// PendingGate is the gate blocking this work item. factoryctl task watch
+	// prints it. Empty when no gate is pending.
+	PendingGate string    `json:"pending_gate,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // TaskRequest is the POST /factory/{uid}/tasks body.
@@ -190,13 +193,16 @@ type DefinitionRef struct {
 
 // Run is a run record. It carries no execution material.
 type Run struct {
-	ID            string `json:"id"`
-	Status        string `json:"status"`
-	FactoryID     string `json:"factory_id,omitempty"`
-	Agent         string `json:"agent,omitempty"`
-	Title         string `json:"title,omitempty"`
-	Priority      string `json:"priority,omitempty"`
-	Repo          string `json:"repo,omitempty"`
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	FactoryID string `json:"factory_id,omitempty"`
+	Agent     string `json:"agent,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Priority  string `json:"priority,omitempty"`
+	Repo      string `json:"repo,omitempty"`
+	// WorkItemID links a stage run to its work item. factoryctl task watch
+	// matches child transcripts on this field. Empty for a bare run.
+	WorkItemID    string `json:"work_item_id,omitempty"`
 	FailureReason string `json:"failure_reason,omitempty"`
 }
 

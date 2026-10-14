@@ -41,6 +41,15 @@ func (s *Server) taskEnv(run store.Run, bound boundAgent) (map[string]string, er
 	if run.Prompt != "" {
 		env["FACTORY_TASK_PROMPT"] = run.Prompt
 	}
+	if run.WorkItemID != "" {
+		env["FACTORY_WORK_ITEM_ID"] = run.WorkItemID
+	}
+	if run.ConversationID != "" {
+		env["FACTORY_CONVERSATION_ID"] = run.ConversationID
+	}
+	if run.Stage != "" {
+		env["FACTORY_STAGE"] = run.Stage
+	}
 	turns := bound.agent.MaxTurns
 	if turns <= 0 {
 		turns = defaultMaxTurns
@@ -80,7 +89,10 @@ func (s *Server) assignment(run store.Run, exec store.Execution, bound boundAgen
 		now = s.now()
 	}
 	now = now.UTC()
-	model := bound.agent.Model
+	model := run.ModelID
+	if model == "" {
+		model = bound.agent.Model
+	}
 	if model == "" {
 		if snap := s.snapshot(); snap.tree != nil {
 			model = snap.tree.Factory.AgentDefaults.Model

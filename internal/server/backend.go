@@ -240,6 +240,9 @@ func (s *Server) IngestEvents(ctx context.Context, runID, bearer string, startId
 		return err
 	}
 	s.hub.Publish(runID)
+	if sawQuestion(lines) {
+		s.onQuestion(ctx, runID)
+	}
 	return nil
 }
 
@@ -325,6 +328,7 @@ func toAPIRun(run store.Run, snap loaded) api.Run {
 		Title:         run.Title,
 		Priority:      priorityName(run.Priority),
 		Repo:          run.Repo,
+		WorkItemID:    run.WorkItemID,
 		FailureReason: run.FailureReason,
 	}
 }

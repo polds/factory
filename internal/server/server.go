@@ -16,6 +16,7 @@ import (
 
 	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/artifacts"
+	"github.com/polds/factory/internal/defsync"
 	"github.com/polds/factory/internal/events"
 	"github.com/polds/factory/internal/gateway"
 	"github.com/polds/factory/internal/scheduler"
@@ -43,19 +44,32 @@ type Config struct {
 	LeaseTTL            time.Duration
 	Now                 func() time.Time
 	Log                 *slog.Logger
+	// SchemasPath is the directory of schemas/<version>/*.json. Empty
+	// searches upward from the working directory and the executable.
+	SchemasPath string
+	// DefinitionGitURL enables the defsync poller. The local
+	// DefinitionPath is still loaded at boot and remains the published tree.
+	DefinitionGitURL           string
+	DefinitionGitRef           string
+	DefinitionGitSubdir        string
+	DefinitionGitProductionRef string
+	DefinitionGitInterval      time.Duration
+	// DefinitionGitCloner overrides the git cloner. Tests set it.
+	DefinitionGitCloner defsync.Cloner
 }
 
 // Server is one factoryd process: REST, SSE, the worker gateway, and the
 // scheduler leader loop.
 type Server struct {
-	cfg    Config
-	log    *slog.Logger
-	store  *store.Store
-	db     *pgxpool.Pool
-	leader *pgx.Conn
-	gw     *gateway.Gateway
-	hub    *events.Hub
-	api    http.Handler
+	cfg     Config
+	log     *slog.Logger
+	store   *store.Store
+	db      *pgxpool.Pool
+	leader  *pgx.Conn
+	gw      *gateway.Gateway
+	hub     *events.Hub
+	api     http.Handler
+	schemas http.Handler
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -74,6 +88,9 @@ type Server struct {
 	byRun     map[string]string
 	idleSince map[string]time.Time
 	grace     map[string]*time.Timer
+	// suspended runs still occupy an execution, but not a worker slot.
+	suspended map[string]struct{}
+	orchMu    sync.Mutex
 
 	// beforeTerminalEvent runs inside the transaction that publishes a
 	// terminal status, after that status is written and before run.terminal
@@ -83,9 +100,11 @@ type Server struct {
 }
 
 var (
-	_ gateway.Sessions = (*Server)(nil)
-	_ api.Backend      = (*Server)(nil)
-	_ events.Source    = logSource{}
+	_ gateway.Sessions  = (*Server)(nil)
+	_ api.Backend       = (*Server)(nil)
+	_ api.WorkBackend   = (*Server)(nil)
+	_ api.SchemaCatalog = (*Server)(nil)
+	_ events.Source     = logSource{}
 )
 
 // Open migrates the database, applies the local definition, and starts the
@@ -143,6 +162,8 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		byRun:     map[string]string{},
 		idleSince: map[string]time.Time{},
 		grace:     map[string]*time.Timer{},
+		suspended: map[string]struct{}{},
+		schemas:   schemaHandler(cfg.SchemasPath),
 	}
 	s.gw = gateway.New(s.authenticate, s, s.log)
 	s.api = api.NewHandler(s, cfg.APIKey, problemSSE(events.Handler(logSource{s: s}, s.hub)))
@@ -150,10 +171,17 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		_ = s.Close()
 		return nil, err
 	}
-	s.wg.Add(3)
+	loops := 3
+	if cfg.DefinitionGitURL != "" {
+		loops++
+	}
+	s.wg.Add(loops)
 	go s.loop()
 	go s.listenQueue()
 	go s.pingLoop()
+	if cfg.DefinitionGitURL != "" {
+		go s.defsyncLoop()
+	}
 	return s, nil
 }
 
@@ -193,6 +221,14 @@ func normalize(cfg Config) (Config, error) {
 	}
 	if cfg.Secrets == nil {
 		cfg.Secrets = map[string]string{}
+	}
+	if cfg.DefinitionGitURL != "" {
+		if cfg.DefinitionGitRef == "" {
+			cfg.DefinitionGitRef = "main"
+		}
+		if cfg.DefinitionGitInterval <= 0 {
+			cfg.DefinitionGitInterval = time.Minute
+		}
 	}
 	if strings.TrimSpace(cfg.S3.Endpoint) != "" {
 		if cfg.S3.Region == "" {

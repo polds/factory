@@ -159,6 +159,17 @@ Environment:
   FACTORY_API_KEY
   FACTORY_WORKER_API_KEY
   FACTORY_DEFINITION_PATH
+  FACTORY_SCHEMAS_PATH
+      Directory of schemas/<version>/*.json served without authentication.
+      When unset, factoryd searches upward from its working directory.
+  FACTORY_DEFINITION_GIT_URL
+      Optional git remote. When set, factoryd polls it and applies a clean
+      tree on the production ref. The local definition path stays the default
+      and the last good tree is kept when validation fails.
+  FACTORY_DEFINITION_GIT_REF (default main)
+  FACTORY_DEFINITION_GIT_SUBDIR
+  FACTORY_DEFINITION_GIT_PRODUCTION_REF
+  FACTORY_DEFINITION_GIT_INTERVAL (default 1m)
   FACTORY_EXTERNAL_URL
   FACTORY_TASK_SERVER_URL
       Base URL task containers use to push events. Task containers are on

@@ -30,6 +30,7 @@
 // open, emits Escalate, and does not start a run.
 //
 // AskInput moves an open work item to awaiting_input and emits Noop. The
-// caller keeps the worker slot. ResumeInput returns to open and does not
-// start a run. Cancel from any non-terminal status emits MarkCancelled.
+// caller releases the worker slot and keeps the logical run suspended
+// (docs/02, docs/05). ResumeInput returns to open and does not start a
+// run. Cancel from any non-terminal status emits MarkCancelled.
 package orchestrator
