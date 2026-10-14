@@ -13,7 +13,61 @@ import (
 
 	"github.com/polds/factory/internal/defsync"
 	"github.com/polds/factory/internal/protocol"
+	"github.com/polds/factory/internal/store"
 )
+
+func TestApprovalGateHiddenUntilStatusCommits(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	defer w.close()
+
+	task := env.createTask(t, "Ship the gate", "body")
+	observed := make(chan struct {
+		status  string
+		pending int
+	}, 1)
+	env.srv.store.SetOpenGateHookForTest(func(ctx context.Context) error {
+		var status string
+		var pending int
+		if err := env.raw.QueryRow(ctx, `SELECT status FROM work_items WHERE id = $1`, task.ID).Scan(&status); err != nil {
+			return err
+		}
+		if err := env.raw.QueryRow(ctx, `
+			SELECT count(*) FROM approvals
+			WHERE work_item_id = $1 AND decision = ''`, task.ID).Scan(&pending); err != nil {
+			return err
+		}
+		select {
+		case observed <- struct {
+			status  string
+			pending int
+		}{status, pending}:
+		default:
+		}
+		return nil
+	})
+	t.Cleanup(func() { env.srv.store.SetOpenGateHookForTest(nil) })
+
+	finishStage(t, w, "triage-done")
+	finishStage(t, w, "planning-done")
+	blocked := env.waitTask(t, task.ID, "awaiting_approval", "planning")
+	if blocked.PendingGate != "spec" {
+		t.Fatalf("pending_gate %q", blocked.PendingGate)
+	}
+	select {
+	case obs := <-observed:
+		if obs.status != store.WorkItemOpen || obs.pending != 0 {
+			t.Fatalf("gate visible before commit: status %q pending %d", obs.status, obs.pending)
+		}
+	default:
+		t.Fatal("approval row and awaiting_approval were not written in one transaction")
+	}
+}
 
 func TestE2EWorkItemApprovalPipeline(t *testing.T) {
 	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
@@ -553,10 +607,7 @@ func (e *env) assertRunLinkage(t *testing.T, task taskJSON) {
 	if code != http.StatusOK {
 		t.Fatalf("factory runs %d %s", code, raw)
 	}
-	var runs []struct {
-		ID         string `json:"id"`
-		WorkItemID string `json:"work_item_id"`
-	}
+	var runs []runAPI
 	if err := json.Unmarshal(raw, &runs); err != nil {
 		t.Fatal(err)
 	}
@@ -564,14 +615,39 @@ func (e *env) assertRunLinkage(t *testing.T, task taskJSON) {
 		t.Fatal("factory runs empty")
 	}
 	for _, run := range runs {
-		if run.WorkItemID != task.ID {
+		link := e.runLink(t, run.ID)
+		if run.WorkItemID != task.ID || run.WorkItemID != link.WorkItem {
 			t.Fatalf("run %s work_item_id %q", run.ID, run.WorkItemID)
 		}
+		if run.ParentRunID != link.Parent || run.ConversationID != link.Conversation || run.Stage != link.Stage || run.ModelID != link.Model {
+			t.Fatalf("run %s api parent=%q conversation=%q stage=%q model=%q db parent=%q conversation=%q stage=%q model=%q",
+				run.ID, run.ParentRunID, run.ConversationID, run.Stage, run.ModelID,
+				link.Parent, link.Conversation, link.Stage, link.Model)
+		}
+		if run.Stage == "" || run.ModelID == "" || run.ConversationID == "" {
+			t.Fatalf("run %s missing stage linkage %+v", run.ID, run)
+		}
 		one, oneRaw := e.authed(t, http.MethodGet, "/api/v1/agent/runs/"+run.ID, "")
-		if one != http.StatusOK || !strings.Contains(string(oneRaw), `"work_item_id":"`+task.ID+`"`) {
+		if one != http.StatusOK {
 			t.Fatalf("run object %d %s", one, oneRaw)
 		}
+		var got runAPI
+		if err := json.Unmarshal(oneRaw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got != run {
+			t.Fatalf("get %+v list %+v", got, run)
+		}
 	}
+}
+
+type runAPI struct {
+	ID             string `json:"id"`
+	WorkItemID     string `json:"work_item_id"`
+	ParentRunID    string `json:"parent_run_id"`
+	ConversationID string `json:"conversation_id"`
+	Stage          string `json:"stage"`
+	ModelID        string `json:"model_id"`
 }
 
 func (e *env) countStage(t *testing.T, workItemID, stage string) int {

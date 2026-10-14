@@ -14,11 +14,20 @@ type Store struct {
 	// id and before it locks that row. Tests use it to commit a decision in
 	// that window. Production leaves it nil.
 	pendingLookupHook func(context.Context)
+	// openGateHook runs inside OpenApprovalGate after the approval row and
+	// the work-item update are written and before commit. A non-nil error
+	// rolls the transaction back. Production leaves it nil.
+	openGateHook func(context.Context) error
 }
 
 // SetPendingLookupHookForTest sets pendingLookupHook. Pass nil to clear it.
 func (s *Store) SetPendingLookupHookForTest(fn func(context.Context)) {
 	s.pendingLookupHook = fn
+}
+
+// SetOpenGateHookForTest sets openGateHook. Pass nil to clear it.
+func (s *Store) SetOpenGateHookForTest(fn func(context.Context) error) {
+	s.openGateHook = fn
 }
 
 // Open connects to url and checks the connection. Call Migrate before use.

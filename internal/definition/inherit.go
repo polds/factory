@@ -52,7 +52,14 @@ func Inherit(factory Factory, defaults AgentDefaults, agent Agent) Agent {
 		out.MCPServers = cloneMCP(out.MCPServers)
 	}
 	out.RequiredRepos = cloneRepos(out.RequiredRepos)
-	out.SpawnableBy = cloneStrings(out.SpawnableBy)
+	// An omitted spawnableBy means foreman only. An explicit empty list
+	// means nobody, so a nil slice is the only unset signal.
+	if out.SpawnableBy == nil {
+		out.SpawnableBy = []string{"foreman"}
+	} else {
+		// append onto a non-nil slice so an explicit empty list stays empty.
+		out.SpawnableBy = append([]string{}, out.SpawnableBy...)
+	}
 	return out
 }
 

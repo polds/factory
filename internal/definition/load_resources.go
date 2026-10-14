@@ -453,6 +453,15 @@ func parseScorer(rel, name string, body []byte, tree *Tree, diags *[]Diagnostic)
 		addDiag(diags, rel, 1, SeverityError, "invalid YAML: "+err.Error())
 		return Scorer{}, false
 	}
+	// docs/03 does not give a scorer harness, runner, or secrets. docs/08 runs
+	// the judge on scorerDefaults.runner with the scorer model and no execution
+	// secrets. Accepting the keys and dropping them hid that mistake.
+	for _, key := range []string{"harness", "runner", "secrets"} {
+		if _, set := raw[key]; !set {
+			continue
+		}
+		addDiag(diags, rel, lineAt(lines, key), SeverityError, fmt.Sprintf("scorer cannot set %q", key))
+	}
 	model := strings.TrimSpace(doc.Model)
 	if model == "" && tree.Factory.ScorerDefaults != nil {
 		model = strings.TrimSpace(tree.Factory.ScorerDefaults.Model)
