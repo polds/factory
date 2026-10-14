@@ -1,4 +1,4 @@
-// Package client is the factoryctl REST and SSE client for the M2 control plane.
+// Package client is the factoryctl REST and SSE client for the control plane.
 package client
 
 import (
@@ -23,6 +23,9 @@ type Client struct {
 	HTTP    *http.Client
 	// Backoff is the delay before a watch reconnect. Nil uses a short exponential delay.
 	Backoff func(attempt int) time.Duration
+	// PollInterval is the delay between work-item polls in WatchTask.
+	// Zero uses a short default. Run watch reconnects keep using Backoff.
+	PollInterval time.Duration
 }
 
 // RunRequest is the POST /agent/run body.
@@ -36,9 +39,11 @@ type RunRequest struct {
 }
 
 // Run is the control-plane run object returned by start and cancel.
+// WorkItemID is set on factory run rows once the API emits it (T10).
 type Run struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID         string `json:"id"`
+	Status     string `json:"status"`
+	WorkItemID string `json:"work_item_id,omitempty"`
 }
 
 // StartRun creates a run. The API key is sent as a bearer token and is never copied into the body.
@@ -57,6 +62,10 @@ func (c *Client) CancelRun(ctx context.Context, runID string) (Run, error) {
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, in any, out any, okStatus int) error {
+	return c.doJSONQuery(ctx, method, path, nil, in, out, okStatus)
+}
+
+func (c *Client) doJSONQuery(ctx context.Context, method, path string, q url.Values, in any, out any, okStatus int) error {
 	if err := c.requireKey(); err != nil {
 		return err
 	}
@@ -68,7 +77,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, in any, out an
 		}
 		body = bytes.NewReader(b)
 	}
-	endpoint, err := c.endpoint(path, nil)
+	endpoint, err := c.endpoint(path, q)
 	if err != nil {
 		return err
 	}

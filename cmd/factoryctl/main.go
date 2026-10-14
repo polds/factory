@@ -26,6 +26,10 @@ func execute(args []string, stdout, stderr io.Writer, getenv func(string) string
 		return cmdCancel(args[1:], stdout, stderr, getenv)
 	case "validate":
 		return cmdValidate(args[1:], stdout, stderr)
+	case "task":
+		return cmdTask(args[1:], stdout, stderr, getenv)
+	case "approvals":
+		return cmdApprovals(args[1:], stdout, stderr, getenv)
 	default:
 		usage(stderr)
 		return 2
@@ -45,6 +49,13 @@ Commands:
   watch RUN_ID [--from-seq N]
   cancel RUN_ID
   validate PATH
+  task create --factory NAME --title TEXT [--body TEXT] [--source issue|manual|api] [--ref REF]
+  task list --factory NAME [--stage STAGE] [--status STATUS]
+  task get --factory NAME TASK_ID
+  task cancel --factory NAME TASK_ID
+  task watch --factory NAME TASK_ID
+  approvals list --factory NAME
+  approvals decide APPROVAL_ID --decision approve|reject [--note TEXT]
 
 Environment:
   FACTORY_URL       control plane base URL (default http://localhost:8080)
