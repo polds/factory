@@ -116,6 +116,105 @@ func checkRunnerRef(file, name, path string, lines map[string]int, have map[stri
 	addDiag(diags, file, lineAt(lines, path), SeverityError, fmt.Sprintf("runner %q not found", name))
 }
 
+func reportForemen(parsed []parsedAgent, diags *[]Diagnostic) {
+	var found []parsedAgent
+	for _, p := range parsed {
+		if p.doc.AgentType == "FOREMAN" {
+			found = append(found, p)
+		}
+	}
+	if len(found) < 2 {
+		return
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].file < found[j].file })
+	for _, extra := range found[1:] {
+		addDiag(diags, extra.file, 1, SeverityError, "more than one agent has agentType FOREMAN")
+	}
+}
+
+func warnSameModel(parsed []parsedAgent, tree *Tree, diags *[]Diagnostic) {
+	var implementers, reviewers []parsedAgent
+	for _, p := range parsed {
+		switch p.doc.AgentType {
+		case "IMPLEMENT":
+			implementers = append(implementers, p)
+		case "REVIEW":
+			reviewers = append(reviewers, p)
+		}
+	}
+	sort.Slice(implementers, func(i, j int) bool { return implementers[i].file < implementers[j].file })
+	sort.Slice(reviewers, func(i, j int) bool { return reviewers[i].file < reviewers[j].file })
+	for _, rev := range reviewers {
+		reviewModel := CanonicalModel(tree.Agents[rev.slug])
+		if reviewModel == "" {
+			continue
+		}
+		line := lineAt(rev.lines, "model")
+		if strings.TrimSpace(rev.doc.Model) == "" && rev.doc.Harness != nil {
+			line = lineAt(rev.lines, "harness")
+		}
+		for _, impl := range implementers {
+			if CanonicalModel(tree.Agents[impl.slug]) != reviewModel {
+				continue
+			}
+			addDiag(diags, rev.file, line, SeverityWarning, fmt.Sprintf("review agent %q uses the same model as implement agent %q", rev.slug, impl.slug))
+		}
+	}
+}
+
+func validatePipeline(tree *Tree, lines map[string]int, diags *[]Diagnostic) {
+	p := tree.Factory.Pipeline
+	if p == nil {
+		return
+	}
+	const file = "factory.yaml"
+	if len(p.Stages) == 0 {
+		addDiag(diags, file, lineAt(lines, "pipeline.stages"), SeverityError, "pipeline.stages is required")
+	}
+	stages := map[string]bool{}
+	for _, stage := range p.Stages {
+		if stages[stage] {
+			addDiag(diags, file, lineAt(lines, "pipeline.stages"), SeverityError, fmt.Sprintf("duplicate pipeline stage %q", stage))
+		}
+		stages[stage] = true
+		agentName, ok := p.Agents[stage]
+		if !ok || strings.TrimSpace(agentName) == "" {
+			addDiag(diags, file, lineAt(lines, "pipeline.agents."+stage), SeverityError, fmt.Sprintf("pipeline stage %q has no agent", stage))
+			continue
+		}
+		if _, exists := tree.Agents[agentName]; !exists {
+			addDiag(diags, file, lineAt(lines, "pipeline.agents."+stage), SeverityError, fmt.Sprintf("agent %q not found", agentName))
+		}
+	}
+	for stage := range p.Agents {
+		if stages[stage] {
+			continue
+		}
+		addDiag(diags, file, lineAt(lines, "pipeline.agents."+stage), SeverityError, fmt.Sprintf("pipeline agent stage %q is not in stages", stage))
+	}
+	for stage := range p.Skip {
+		if stages[stage] {
+			continue
+		}
+		addDiag(diags, file, lineAt(lines, "pipeline.skip."+stage), SeverityError, fmt.Sprintf("pipeline skip stage %q is not in stages", stage))
+	}
+	if p.RevisionLimit < 0 {
+		addDiag(diags, file, lineAt(lines, "pipeline.revisionLimit"), SeverityError, "pipeline.revisionLimit must be >= 0")
+	}
+	for name, gate := range p.Approvals {
+		if gate.Required && strings.TrimSpace(gate.Approvers) == "" {
+			addDiag(diags, file, lineAt(lines, "pipeline.approvals."+name), SeverityError, fmt.Sprintf("approval %q requires approvers", name))
+		}
+	}
+}
+
+func validateScorerDefaults(tree *Tree, lines map[string]int, diags *[]Diagnostic) {
+	if tree.Factory.ScorerDefaults == nil {
+		return
+	}
+	checkRunnerRef("factory.yaml", tree.Factory.ScorerDefaults.Runner, "scorerDefaults.runner", lines, tree.Runners, diags)
+}
+
 func sortDiags(diags []Diagnostic) {
 	sort.Slice(diags, func(i, j int) bool {
 		if diags[i].File != diags[j].File {
@@ -130,5 +229,3 @@ func sortDiags(diags []Diagnostic) {
 		return diags[i].Message < diags[j].Message
 	})
 }
-
-var m3Dirs = []string{"automations", "routers", "scorers", "webhooks"}

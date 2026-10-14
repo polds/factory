@@ -87,7 +87,7 @@ var (
 			}},
 			"providers": {free: true, elem: providerSpec},
 		}},
-		"pipeline": {warn: `key "pipeline" not applied in M2`},
+		"pipeline": pipelineSpec,
 		"selfImprovement": {children: map[string]*keySpec{
 			"failedRunThreshold": leaf(),
 			"staleFailureDays":   leaf(),
@@ -155,4 +155,109 @@ var (
 		}},
 		"failureSessionRetentionMinutes": leaf(),
 	}}
+
+	filterSpec = newDeepFree()
+
+	pipelineSpec = &keySpec{children: map[string]*keySpec{
+		"stages": leaf(),
+		"agents": {free: true},
+		"skip":   {free: true},
+		"approvals": {free: true, elem: &keySpec{children: map[string]*keySpec{
+			"required":  leaf(),
+			"approvers": leaf(),
+		}}},
+		"revisionLimit": leaf(),
+	}}
+
+	triggerSpec = &keySpec{children: map[string]*keySpec{
+		"provider": leaf(),
+		"event":    leaf(),
+		"filter":   filterSpec,
+		"schedule": {children: map[string]*keySpec{
+			"name": leaf(),
+			"cron": leaf(),
+		}},
+	}}
+
+	automationSchema = &keySpec{children: map[string]*keySpec{
+		"enabled":            leaf(),
+		"agent":              leaf(),
+		"displayName":        leaf(),
+		"triggers":           {elem: triggerSpec},
+		"model":              leaf(),
+		"harness":            harnessSpec,
+		"spawnableBy":        leaf(),
+		"credentialStrategy": leaf(),
+		"idleTimeoutMinutes": leaf(),
+		"required_repos":     {elem: repoSpec},
+		"secrets":            leaf(),
+		"mcpServers":         mcpMapSpec,
+		"runner":             leaf(),
+		"pool":               leaf(),
+		"computerUseModel":   leaf(),
+		"maxTurns":           leaf(),
+		"workerHost":         leaf(),
+		"description":        leaf(),
+	}}
+
+	routerSchema = &keySpec{children: map[string]*keySpec{
+		"name":    leaf(),
+		"type":    leaf(),
+		"default": leaf(),
+		"routing": {
+			children: map[string]*keySpec{
+				"easy":   leaf(),
+				"medium": leaf(),
+				"hard":   leaf(),
+			},
+			elem: &keySpec{children: map[string]*keySpec{
+				"description": leaf(),
+				"model":       leaf(),
+			}},
+		},
+	}}
+
+	scorerAgentSpec = &keySpec{children: map[string]*keySpec{
+		"name":               leaf(),
+		"includeDescendants": leaf(),
+	}}
+
+	scorerSchema = &keySpec{children: map[string]*keySpec{
+		"name":        leaf(),
+		"description": leaf(),
+		"agents":      {elem: scorerAgentSpec},
+		"output":      leaf(),
+		"labels": {elem: &keySpec{children: map[string]*keySpec{
+			"value":       leaf(),
+			"description": leaf(),
+			"score":       leaf(),
+		}}},
+		"passingScore":    leaf(),
+		"samplingRate":    leaf(),
+		"model":           leaf(),
+		"harness":         harnessSpec,
+		"runner":          leaf(),
+		"secrets":         leaf(),
+		"mcpServers":      mcpMapSpec,
+		"selfImprovement": leaf(),
+	}}
+
+	skillSchema = &keySpec{children: map[string]*keySpec{
+		"name":        leaf(),
+		"description": leaf(),
+	}}
+
+	webhookSchema = &keySpec{children: map[string]*keySpec{
+		"authMode":         leaf(),
+		"signatureScheme":  leaf(),
+		"secretName":       leaf(),
+		"deliveryIdHeader": leaf(),
+		"enabled":          leaf(),
+	}}
 )
+
+func newDeepFree() *keySpec {
+	s := &keySpec{free: true}
+	s.elem = s
+	return s
+}
