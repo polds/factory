@@ -1,0 +1,5 @@
+schemaVersion: v0
+name: old
+agentDefaults:
+  model: auto
+  runner: local

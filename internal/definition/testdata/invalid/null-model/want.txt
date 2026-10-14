@@ -1,0 +1,1 @@
+agents/implementer/agent.md:4: model or harness is required

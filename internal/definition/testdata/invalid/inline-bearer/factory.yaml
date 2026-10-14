@@ -1,0 +1,10 @@
+schemaVersion: v1alpha1
+name: leak
+agentDefaults:
+  model: auto
+  runner: local
+mcpServers:
+  sentry:
+    url: https://mcp.example/sse
+    headers:
+      Authorization: "Bearer sk-live-abcdefghijklmnopqrstuvwxyz"

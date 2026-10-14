@@ -1,0 +1,8 @@
+schemaVersion: v1alpha1
+name: m2
+description: Minimal M2 factory
+secrets:
+  - GH_TOKEN
+agentDefaults:
+  model: auto
+  runner: local

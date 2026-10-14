@@ -1,0 +1,71 @@
+# yaml-language-server: $schema=http://localhost:8080/api/v1/factory-files/schemas/v1alpha1/factory.schema.json
+schemaVersion: v1alpha1
+name: acme-payments
+description: >-
+  Standing engineering factory for the payments service. Intake from GitHub
+  labels, Slack, and CI webhooks; triage, optional spec, implementation,
+  adversarial review, human merge.
+alias: acme
+
+codeForges: [GITHUB]
+repositories:
+  - { codeForge: GITHUB, owner: acme, name: payments-service }
+  - { codeForge: GITHUB, owner: acme, name: payments-docs, deferred: true }
+
+credentialStrategy: EXECUTOR
+
+integrations:
+  - type: slack
+    slack:
+      autoRespondToThreadReplies: true
+
+secrets: []                      # default empty; agents opt in individually
+
+mcpServers:
+  sentry:
+    url: https://mcp.sentry.internal/sse
+    headers:
+      Authorization: "Bearer {{SENTRY_MCP_TOKEN}}"
+
+agentDefaults:
+  model: auto
+  runner: linux-standard
+  pool: standard
+  computerUseModel: computer-use-agent-auto
+
+inference:
+  default:
+    provider: anthropic
+    credentialRef: ANTHROPIC_API_KEY
+  providers:
+    anthropic:
+      kind: anthropic
+      credentialRef: ANTHROPIC_API_KEY
+    local:
+      kind: openai-compatible
+      baseUrl: http://vllm.internal:8000/v1
+
+pipeline:
+  stages: [triage, planning, building, reviewing]
+  agents:
+    triage: triage
+    planning: spec
+    building: implementer
+    reviewing: reviewer
+  skip:
+    triage: whenIntakeHasScope
+    planning: whenScopeClear
+  approvals:
+    spec:    { required: true,  approvers: "role:editor" }
+    handoff: { required: true,  approvers: "role:user" }
+    merge:   { required: false }        # enforced by branch protection
+  revisionLimit: 3
+
+selfImprovement:
+  failedRunThreshold: 25
+  staleFailureDays: 7
+  reviewerType: admins
+
+scorerDefaults:
+  runner: linux-standard
+  model: claude-4-5-haiku

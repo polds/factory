@@ -1,0 +1,5 @@
+schemaVersion: v1alpha1
+name: missing-runner
+agentDefaults:
+  model: auto
+  runner: local

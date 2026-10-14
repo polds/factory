@@ -1,0 +1,5 @@
+schemaVersion: v1alpha1
+name: both
+agentDefaults:
+  model: auto
+  runner: local

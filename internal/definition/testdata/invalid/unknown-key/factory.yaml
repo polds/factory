@@ -1,0 +1,6 @@
+schemaVersion: v1alpha1
+name: bad-key
+agentDefaults:
+  model: auto
+  runner: local
+surprise: true
