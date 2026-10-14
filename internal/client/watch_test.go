@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -87,29 +86,44 @@ func TestWatchReconnectsWithLastEventID(t *testing.T) {
 
 func TestWatchExitCodes(t *testing.T) {
 	cases := []struct {
-		status string
-		want   int
+		status  string
+		summary string
+		want    int
 	}{
-		{"succeeded", 0},
-		{"failed", 1},
-		{"cancelled", 2},
+		{status: "succeeded", want: 0},
+		{status: "failed", want: 1},
+		{status: "cancelled", want: 2},
+		{status: "model_unavailable", summary: `Post "http://127.0.0.1:8317/chat/completions": connection refused`, want: 1},
+		{status: "config_invalid", summary: "OPENAI_BASE_URL is not set", want: 1},
+		{status: "environment_setup_failed", want: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.status, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
-				writeSSE(t, w, "1", "terminal", fmt.Sprintf(`{"status":%q}`, tc.status))
+				writeSSE(t, w, "1", "terminal", fmt.Sprintf(`{"status":%q,"summary":%q}`, tc.status, tc.summary))
 			}))
 			t.Cleanup(srv.Close)
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
+			var out strings.Builder
 			c := &Client{BaseURL: srv.URL, APIKey: "test-key", Backoff: func(int) time.Duration { return 0 }}
-			code, err := c.Watch(ctx, "run_x", nil, io.Discard)
+			code, err := c.Watch(ctx, "run_x", nil, &out)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if code != tc.want {
 				t.Fatalf("exit %d want %d", code, tc.want)
+			}
+			text := out.String()
+			if !strings.Contains(text, "terminal status="+tc.status) {
+				t.Fatalf("status not printed in %q", text)
+			}
+			if tc.summary != "" && !strings.Contains(text, tc.summary) {
+				t.Fatalf("summary not printed in %q", text)
+			}
+			if strings.Contains(text, "unknown terminal status") {
+				t.Fatalf("unknown status error in %q", text)
 			}
 		})
 	}

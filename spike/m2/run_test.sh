@@ -390,6 +390,126 @@ test_elf_arch() {
   fi
 }
 
+test_loopback_task_host() {
+  source_run
+  local got
+  got="$(loopback_task_host "Docker Desktop" no 172.17.0.1)"
+  assert_eq "$got" host.docker.internal "desktop os" || return 1
+  got="$(loopback_task_host "Docker Desktop 4.41.2" no 192.168.215.1)"
+  assert_eq "$got" host.docker.internal "desktop version" || return 1
+  got="$(loopback_task_host "Ubuntu 24.04.3 LTS" no 172.17.0.1)"
+  assert_eq "$got" 172.17.0.1 "linux gateway" || return 1
+  got="$(loopback_task_host "Ubuntu 24.04.3 LTS" yes 172.17.0.1)"
+  assert_eq "$got" host.docker.internal "resolved name" || return 1
+  got="$(loopback_task_host "linux" no 192.168.215.1)"
+  assert_eq "$got" 192.168.215.1 "desktop-looking gateway stays an address" || return 1
+}
+
+test_task_base_url_rewrites_loopback() {
+  source_run
+  local got
+  got="$(task_base_url 'http://127.0.0.1:8317/chat/completions' host.docker.internal)"
+  assert_eq "$got" "http://host.docker.internal:8317/chat/completions" "ipv4 loopback" || return 1
+  got="$(task_base_url 'http://localhost:8317/v1' 172.17.0.1)"
+  assert_eq "$got" "http://172.17.0.1:8317/v1" "localhost gateway" || return 1
+  got="$(task_base_url 'http://[::1]:8317/v1' host.docker.internal)"
+  assert_eq "$got" "http://host.docker.internal:8317/v1" "ipv6 loopback" || return 1
+  got="$(task_base_url 'https://api.example.test/v1' host.docker.internal)"
+  assert_eq "$got" "https://api.example.test/v1" "other host" || return 1
+  got="$(task_base_url 'http://user:local-only@127.0.0.1:8317/v1' host.docker.internal)"
+  assert_eq "$got" "http://user:local-only@host.docker.internal:8317/v1" "userinfo" || return 1
+}
+
+test_loopback_reachable() {
+  source_run
+  loopback_reachable host.docker.internal yes || return 1
+  loopback_reachable 172.17.0.1 no || return 1
+  if loopback_reachable host.docker.internal no; then
+    echo "unresolved host.docker.internal was accepted" >&2
+    return 1
+  fi
+}
+
+test_host_name_resolves() {
+  source_run
+  if ! host_name_resolves localhost; then
+    echo "localhost did not resolve" >&2
+    return 1
+  fi
+  if host_name_resolves no-such-host.invalid; then
+    echo "missing name resolved" >&2
+    return 1
+  fi
+}
+
+test_offline_secrets_replaced_before_children() {
+  local out
+  out="$(
+    source_run
+    SECRETS=()
+    FACTORY_SECRET_GH_TOKEN='live-gh-token-7f3c9a'
+    FACTORY_INFERENCE_OPENAI_API_KEY='live-api-key-7f3c9a'
+    FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL='http://127.0.0.1:8317/v1'
+    GH_TOKEN='live-gh-token-7f3c9a'
+    OPENAI_API_KEY='live-api-key-7f3c9a'
+    export FACTORY_SECRET_GH_TOKEN FACTORY_INFERENCE_OPENAI_API_KEY \
+      FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL GH_TOKEN OPENAI_API_KEY
+    apply_offline_secrets 172.17.0.1
+    [[ "$FACTORY_SECRET_GH_TOKEN" == "$OFFLINE_GH" ]] || {
+      echo "github token was not replaced" >&2
+      exit 1
+    }
+    [[ "$FACTORY_INFERENCE_OPENAI_API_KEY" == "$OFFLINE_DUMMY_KEY" ]] || {
+      echo "api key was not replaced" >&2
+      exit 1
+    }
+    [[ "$FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL" == "http://172.17.0.1:9090" ]] || {
+      echo "base url was not replaced" >&2
+      exit 1
+    }
+    [[ -z "${GH_TOKEN:-}" && -z "${OPENAI_API_KEY:-}" ]] || {
+      echo "shell aliases were not cleared" >&2
+      exit 1
+    }
+    child="$(bash -c 'printf %s "${FACTORY_SECRET_GH_TOKEN:-}"')"
+    [[ "$child" == "$OFFLINE_GH" ]] || {
+      echo "child did not see the dummy token" >&2
+      exit 1
+    }
+    dir="$(mktemp -d)"
+    printf '%s\n' 'live-gh-token-7f3c9a' >"$dir/proof"
+    if scan_files "$dir/proof"; then
+      echo "replaced token was not redacted" >&2
+      exit 1
+    fi
+    printf '%s\n' 'live-api-key-7f3c9a' >"$dir/proof"
+    if scan_files "$dir/proof"; then
+      echo "replaced api key was not redacted" >&2
+      exit 1
+    fi
+  )"
+  if printf '%s\n' "$out" | grep -F -q -e 'live-gh-token-7f3c9a' -e 'live-api-key-7f3c9a'; then
+    echo "offline secret replacement printed a live value" >&2
+    return 1
+  fi
+}
+
+test_reset_stale_host_logs() {
+  local work
+  work="$(mktemp -d)"
+  (
+    source_run
+    WORK="$work"
+    printf 'old offline model\n' >"$WORK/model-stub.log"
+    printf 'old offline git\n' >"$WORK/git-daemon.log"
+    reset_stale_host_logs
+    if [[ -e "$WORK/model-stub.log" || -e "$WORK/git-daemon.log" ]]; then
+      echo "stale host logs were kept" >&2
+      exit 1
+    fi
+  ) || return 1
+}
+
 test_harness_contract_exit() {
   source_run
   harness_contract_exit 0 || return 1
@@ -406,6 +526,12 @@ test_harness_contract_exit() {
 }
 
 run_case platform_map test_platform_map
+run_case loopback_task_host test_loopback_task_host
+run_case task_base_url test_task_base_url_rewrites_loopback
+run_case loopback_reachable test_loopback_reachable
+run_case host_name_resolves test_host_name_resolves
+run_case offline_secrets test_offline_secrets_replaced_before_children
+run_case reset_stale_logs test_reset_stale_host_logs
 run_case harness_contract_exit test_harness_contract_exit
 run_case env_aliases test_env_file_aliases_and_precedence
 run_case env_no_exec test_env_file_does_not_execute_or_echo

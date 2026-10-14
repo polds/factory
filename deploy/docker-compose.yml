@@ -21,7 +21,8 @@
 # factoryd publishes 8080 on the host, and FACTORY_TASK_SERVER_URL defaults
 # to http://172.17.0.1:8080 (the Linux bridge gateway). Docker Desktop
 # should set http://host.docker.internal:8080. spike/m2/run.sh detects the
-# bridge gateway and exports the URL it measured.
+# bridge gateway and exports the URL it measured. A loopback model URL is
+# host.docker.internal on Docker Desktop and the gateway on Linux.
 #
 # Images are built locally (factoryd:dev, factory-upstream-worker:dev).
 # MinIO is Bitnami Legacy: default entrypoint, no `server /data` override.

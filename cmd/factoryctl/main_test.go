@@ -59,6 +59,47 @@ func TestRunWatchPrintsIDThenTranscript(t *testing.T) {
 	}
 }
 
+func TestWatchHarnessStatusExitsFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer cli-key" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path != "/api/v1/agent/runs/run_cli/events" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "id: 1\nevent: terminal\ndata: {\"status\":\"model_unavailable\",\"summary\":\"Post \\\"http://127.0.0.1:8317/chat/completions\\\": connection refused\"}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	var stdout, stderr strings.Builder
+	getenv := func(k string) string {
+		switch k {
+		case "FACTORY_URL":
+			return srv.URL
+		case "FACTORY_API_KEY":
+			return "cli-key"
+		default:
+			return ""
+		}
+	}
+	code := execute([]string{"watch", "run_cli"}, &stdout, &stderr, getenv)
+	if code != 1 {
+		t.Fatalf("exit %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "terminal status=model_unavailable") {
+		t.Fatalf("stdout %q", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "unknown terminal status") || strings.Contains(stdout.String(), "unknown terminal status") {
+		t.Fatalf("unknown status error stdout %q stderr %q", stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "cli-key") || strings.Contains(stderr.String(), "cli-key") {
+		t.Fatal("api key leaked")
+	}
+}
+
 func TestRunForwardsFlags(t *testing.T) {
 	var body map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -410,15 +410,68 @@ bridge_gateway() {
   printf '%s\n' "$gw"
 }
 
-# task_base_url rewrites a loopback host to the bridge gateway. Other hosts
-# are returned unchanged. The value is a URL, not a secret.
+# host_name_resolves is true when this machine can resolve name. Docker Desktop
+# installs host.docker.internal on the host. A Linux engine does not.
+host_name_resolves() {
+  python3 - "$1" <<'PY'
+import socket
+import sys
+try:
+    socket.getaddrinfo(sys.argv[1], None)
+except socket.gaierror:
+    sys.exit(1)
+PY
+}
+
+# loopback_task_host is where a task container reaches a service bound to the
+# host's loopback. Docker Desktop provides host.docker.internal. A Linux
+# engine uses the bridge gateway. resolved is yes or no.
+loopback_task_host() {
+  local os="$1" resolved="$2" gateway="$3"
+  case "$os" in
+    *Docker\ Desktop*)
+      printf '%s\n' host.docker.internal
+      return 0
+      ;;
+    *)
+      ;;
+  esac
+  if [[ "$resolved" == yes ]]; then
+    printf '%s\n' host.docker.internal
+    return 0
+  fi
+  printf '%s\n' "$gateway"
+}
+
+# loopback_reachable is false when the chosen host is host.docker.internal
+# and a container cannot resolve it. Docker Desktop resolves that name
+# natively. There is no extra_hosts fallback. resolves is yes or no.
+loopback_reachable() {
+  local chosen="$1" resolves="$2"
+  if [[ "$chosen" == host.docker.internal && "$resolves" != yes ]]; then
+    return 1
+  fi
+}
+
+# container_resolves is true when a container can resolve name. nslookup
+# ignores /etc/hosts; Docker Desktop answers the name from its resolver.
+container_resolves() {
+  local name="$1"
+  docker run --rm --platform "$OCI_PLATFORM" busybox:1.36 \
+    sh -c 'grep -w -- "$1" /etc/hosts >/dev/null 2>&1 || nslookup "$1" >/dev/null 2>&1' \
+    sh "$name"
+}
+
+# task_base_url rewrites a loopback host to replacement. Other hosts are
+# unchanged. replacement is host.docker.internal or the bridge gateway.
+# The value is a URL, not a secret.
 task_base_url() {
-  local raw="$1" gw="$2"
-  RAW="$raw" GW="$gw" python3 - <<'PY'
+  local raw="$1" replacement="$2"
+  RAW="$raw" HOST="$replacement" python3 - <<'PY'
 import os
 from urllib.parse import urlparse, urlunparse
 raw = os.environ["RAW"]
-gw = os.environ["GW"]
+replacement = os.environ["HOST"]
 parts = urlparse(raw)
 host = parts.hostname or ""
 if host in {"127.0.0.1", "localhost", "::1"}:
@@ -428,9 +481,47 @@ if host in {"127.0.0.1", "localhost", "::1"}:
         user = f"{user}:{parts.password}"
     if user:
         user = user + "@"
-    parts = parts._replace(netloc=user + gw + port)
+    parts = parts._replace(netloc=user + replacement + port)
 print(urlunparse(parts))
 PY
+}
+
+# reset_stale_host_logs drops model-stub and git-daemon output from a previous
+# run. Live mode does not start those processes, and a failure dump would
+# otherwise print the old offline log.
+reset_stale_host_logs() {
+  rm -f "$WORK/model-stub.log" "$WORK/git-daemon.log"
+}
+
+# redact_if_live keeps a replaced secret on the redact list. The replacement
+# and an empty value are not added.
+redact_if_live() {
+  local value="$1" replacement="$2"
+  if [[ -n "$value" && "$value" != "$replacement" ]]; then
+    SECRETS+=("$value")
+  fi
+}
+
+# apply_offline_secrets overwrites live inference and GitHub values before any
+# offline child is forked. The previous values stay on the redact list.
+apply_offline_secrets() {
+  local gw="$1"
+  local live_gh="${FACTORY_SECRET_GH_TOKEN:-}"
+  local live_key="${FACTORY_INFERENCE_OPENAI_API_KEY:-}"
+  local live_url="${FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL:-}"
+  local live_shell_gh="${GH_TOKEN:-}"
+  local live_shell_key="${OPENAI_API_KEY:-}"
+  local stub_url="http://${gw}:9090"
+  unset GH_TOKEN OPENAI_API_KEY OPENAI_BASE_URL
+  export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$stub_url"
+  export FACTORY_INFERENCE_OPENAI_API_KEY="$OFFLINE_DUMMY_KEY"
+  export FACTORY_SECRET_GH_TOKEN="$OFFLINE_GH"
+  redact_if_live "$live_gh" "$OFFLINE_GH"
+  redact_if_live "$live_key" "$OFFLINE_DUMMY_KEY"
+  redact_if_live "$live_url" "$stub_url"
+  redact_if_live "$live_shell_gh" "$OFFLINE_GH"
+  redact_if_live "$live_shell_key" "$OFFLINE_DUMMY_KEY"
+  SECRETS+=("$OFFLINE_DUMMY_KEY" "$OFFLINE_GH")
 }
 
 # timestamped_run writes "<unix-ns>\t<line>" as factoryctl prints each line.
@@ -655,11 +746,19 @@ if [[ "$MODE" == live ]]; then
 fi
 
 mkdir -p "$WORK" "$WORK/evidence"
+reset_stale_host_logs
 prove_scanner
 
 GW="$(bridge_gateway)"
 echo "docker bridge gateway: $GW"
 echo "task containers reach factoryd at http://${GW}:8080"
+DOCKER_OS="$(docker info --format '{{.OperatingSystem}}' 2>/dev/null || true)"
+name_resolves=no
+if host_name_resolves host.docker.internal; then
+  name_resolves=yes
+fi
+LOOPBACK_HOST="$(loopback_task_host "$DOCKER_OS" "$name_resolves" "$GW")"
+echo "loopback from a task container: ${LOOPBACK_HOST}"
 
 export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-factory}"
 export S3_ACCESS_KEY="${S3_ACCESS_KEY:-factoryadmin}"
@@ -673,8 +772,8 @@ SECRETS+=("$S3_SECRET_KEY" "$FACTORY_API_KEY" "$FACTORY_WORKER_API_KEY")
 
 DEF="$ROOT/deploy/m2-factory"
 if [[ "$MODE" == offline ]]; then
-  # A live token in deploy/.env must not stay in the environment for this mode.
-  unset GH_TOKEN OPENAI_API_KEY OPENAI_BASE_URL
+  # Replace live tokens before git daemon and the model stub are forked.
+  apply_offline_secrets "$GW"
   say "Serve the fixture and the model stub on ${GW}"
   rm -rf "$WORK/git"
   mkdir -p "$WORK/git"
@@ -707,11 +806,6 @@ if [[ "$MODE" == offline ]]; then
   "$WORK/model-stub" -addr "${GW}:9090" -script "$WORK/offline-script.json" \
     >"$WORK/model-stub.log" 2>&1 &
   MODEL_PID=$!
-
-  export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="http://${GW}:9090"
-  export FACTORY_INFERENCE_OPENAI_API_KEY="$OFFLINE_DUMMY_KEY"
-  export FACTORY_SECRET_GH_TOKEN="$OFFLINE_GH"
-  SECRETS+=("$OFFLINE_DUMMY_KEY" "$OFFLINE_GH")
 else
   TS="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || true)"
   if [[ ! "$TS" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
@@ -722,7 +816,7 @@ else
   patch_model "$WORK/definition" "$M2_MODEL"
   DEF="$WORK/definition"
   export FACTORY_DEFINITION_HOST_PATH="$DEF"
-  live_base="$(task_base_url "$OPENAI_BASE_URL" "$GW")"
+  live_base="$(task_base_url "$OPENAI_BASE_URL" "$LOOPBACK_HOST")"
   echo "task OPENAI_BASE_URL host: $(url_log_host "$live_base")"
   export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$live_base"
   export FACTORY_INFERENCE_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
@@ -792,6 +886,16 @@ if [[ "$MODE" == offline ]]; then
   docker run --rm --network bridge --entrypoint curl "$TASK_IMAGE" \
     -fsS "http://${GW}:9090/healthz" >/dev/null
   echo "fixture and model stub reachable from a bridge container"
+fi
+
+if [[ "$LOOPBACK_HOST" == host.docker.internal ]]; then
+  container_ok=no
+  if container_resolves host.docker.internal >/dev/null 2>&1; then
+    container_ok=yes
+  fi
+  if ! loopback_reachable "$LOOPBACK_HOST" "$container_ok"; then
+    fail "host.docker.internal does not resolve in a task container"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
