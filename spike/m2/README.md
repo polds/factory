@@ -20,6 +20,56 @@ Offline needs Docker, Go, git, and curl. Live also needs `gh` and:
 Scratch (logs, the bare repo, watch transcripts, the event archive) is
 `spike/m2/.work/`, which is gitignored.
 
+## Laptop (`deploy/.env`)
+
+`run.sh` does not read `deploy/.env`. To boot the stack and drive it yourself,
+`run` needs `--factory m2` (the name in `deploy/m2-factory`).
+
+Copying the example leaves values empty. An empty line is set, not unset, so
+compose does not substitute a default. Set these before `up`:
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `FACTORY_SECRET_GH_TOKEN` | yes | Allowlisted as `GH_TOKEN`. Empty fails assignment with `secret GH_TOKEN is not configured`. A dummy assigns a run. Offline `run.sh` exports a dummy; a live push needs a real token. |
+| `FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL` | for a model call | Copied into the task as `OPENAI_BASE_URL`. Empty: the harness exits `config_invalid`. Must be reachable from the task container. |
+| `FACTORY_INFERENCE_OPENAI_API_KEY` | when the endpoint requires a key | Copied into the task as `OPENAI_API_KEY`. |
+| `FACTORY_TASK_SERVER_URL` | on Docker Desktop | `http://host.docker.internal:8080`. Linux keeps the default `http://172.17.0.1:8080` when this stays empty. |
+
+`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `M2_MODEL`, `M2_REPO`, and `GH_TOKEN` in
+the example are for `run.sh` only. Compose does not interpolate them.
+`agentDefaults.model` ships as `m2-offline-stub`. An empty `FACTORY_API_KEY`
+still becomes `m2-dev-api-key`.
+
+```bash
+cp deploy/.env.example deploy/.env
+awk '
+  $0 == "FACTORY_SECRET_GH_TOKEN=" { print "FACTORY_SECRET_GH_TOKEN=m2-offline-dummy"; next }
+  { print }
+' deploy/.env > deploy/.env.new && mv deploy/.env.new deploy/.env
+
+CGO_ENABLED=0 go build -o harness/generic-openai/factory-harness ./cmd/factory-harness
+docker build -t factory-harness:dev harness/generic-openai
+docker build -t factory-m1-task:dev spike/m1/task-image
+docker compose -f deploy/docker-compose.yml up -d --build --wait
+go build -o bin/factoryctl ./cmd/factoryctl
+FACTORY_API_KEY=m2-dev-api-key ./bin/factoryctl run --prompt "…" --factory m2 --watch
+```
+
+Compose interpolates `deploy/.env` from the compose file's directory. Do not
+commit that file. `--wait` returns after factoryd is healthy. `up --build`
+builds `factoryd` and the upstream worker. It does not build
+`factory-harness:dev` or `factory-m1-task:dev`; the worker pull policy is
+`IfNotPresent` and expects those local tags. With only the dummy token set,
+the run is accepted and assigned. `--watch` prints
+`terminal status=config_invalid summary=OPENAI_BASE_URL is not set` and exits 1.
+Replace the dummy and set the inference variables before expecting a pull
+request. The full offline pass is `MODE=offline ./spike/m2/run.sh`.
+
+`factoryd` sets `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`,
+and `GIT_COMMITTER_EMAIL` on every task (`Agent` / `agent@example.com`) unless
+an allowlisted secret already has that name. The GitHub-hosted live run's first
+`git commit` failed without them ([docs/12](../../docs/12-build-sequence.md)).
+
 ## What the stack is
 
 `docker compose -p factory-m2 up -d --build --wait` from `deploy/` starts
@@ -67,7 +117,11 @@ ends it `cancelled` (the unmodified worker may answer `task_cancellation`
 itself, or factoryd's 60s grace will).
 
 **Live.** The prompt matches the M1 live task, on branch `m2/run-<utc>`.
-Success prints the PR URL from `gh pr list --head m2/run-<ts>`.
+Success prints the PR URL from `gh pr list --head m2/run-<ts>`. The recorded
+pass is the GitHub-hosted
+[run 38512432518](https://github.com/polds/factory/actions/runs/38512432518)
+(`ubuntu-latest`), which opened [PR #30](https://github.com/polds/factory/pull/30).
+A laptop `MODE=live ./spike/m2/run.sh` has not been run.
 
 Both modes grep compose logs, the watch transcript, and the archived events
 for every injected secret. A match fails the run and withholds those files.

@@ -228,7 +228,7 @@ Backpressure: if no worker can accept, the run stays queued and the console show
 
 | Profile | Components | Store | Notes |
 | --- | --- | --- | --- |
-| **laptop** | `factoryd` + 1 worker (docker backend) | Postgres + MinIO | `docker compose up`; [06](06-execution-backends.md) |
+| **laptop** | `factoryd` + 1 worker (docker backend) | Postgres + MinIO | [`deploy/docker-compose.yml`](../deploy/docker-compose.yml); [spike/m2](../spike/m2/README.md); [06](06-execution-backends.md) |
 | **single VM** | same, systemd units | Postgres + MinIO/S3 | TLS via reverse proxy |
 | **k8s (chart)** | `factoryd` Deployment, worker Deployment(s) | managed PG + S3 | no CRDs needed |
 | **k8s (CRDs)** | + `factory-operator` | managed PG + S3 | cluster is source of truth; [10](10-kubernetes-and-helm.md) |

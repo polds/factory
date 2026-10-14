@@ -12,11 +12,55 @@ Target operating modes, all from one definition:
 | Self-hosted cloud | Helm chart: control plane + operator + worker pools |
 | Cloud-native | Kubernetes CRDs (`factory.dev/v1alpha1`) reconciled by an operator |
 
-**Status.** The design is in `docs/`. M0, the protocol spike, is done
-([`spike/m0`](spike/m0)). M1 has started: [`cmd/factory-harness`](cmd/factory-harness)
-is the `generic-openai` adapter, and `factoryctl harness verify` checks it.
-The `claude-code` adapter and a run that opens a pull request are still open.
+**Status.** The design is in `docs/`. M0 and M1 are done
+([`spike/m0`](spike/m0), [`cmd/factory-harness`](cmd/factory-harness)).
+M2's control plane is landed, and the GitHub-hosted live run of the compose
+stack opened a pull request. The laptop exit, `MODE=live ./spike/m2/run.sh`,
+has not been run. The `claude-code` adapter is not in this build.
 [`docs/12-build-sequence.md`](docs/12-build-sequence.md) is the order of work.
+
+## Quickstart
+
+Laptop profile: `factoryd`, Postgres, MinIO, and one unmodified Docker-backend
+worker. `deploy/m2-factory` is factory `m2` with one agent, so `run` needs
+`--factory m2`.
+
+`cp deploy/.env.example deploy/.env` leaves several values empty. An empty
+line is set, not unset, so compose will not fill it. Before `up`, set:
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `FACTORY_SECRET_GH_TOKEN` | yes | Allowlisted as `GH_TOKEN`. Empty fails assignment (`secret GH_TOKEN is not configured`). A dummy is enough to assign a run. A push needs a real token. |
+| `FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL` | for a model call | Copied into the task as `OPENAI_BASE_URL`. Empty: the harness exits `config_invalid`. |
+| `FACTORY_INFERENCE_OPENAI_API_KEY` | when the endpoint requires a key | Copied into the task as `OPENAI_API_KEY`. |
+| `FACTORY_TASK_SERVER_URL` | on Docker Desktop | `http://host.docker.internal:8080`. Linux default `http://172.17.0.1:8080` applies when this is empty. |
+
+`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `M2_MODEL`, `M2_REPO`, and `GH_TOKEN` in
+the example are read by `spike/m2/run.sh`, not by compose. The shipped model
+is `m2-offline-stub` (`deploy/m2-factory/factory.yaml`). `FACTORY_API_KEY`
+empty still becomes `m2-dev-api-key`.
+
+```bash
+cp deploy/.env.example deploy/.env
+awk '
+  $0 == "FACTORY_SECRET_GH_TOKEN=" { print "FACTORY_SECRET_GH_TOKEN=m2-offline-dummy"; next }
+  { print }
+' deploy/.env > deploy/.env.new && mv deploy/.env.new deploy/.env
+
+CGO_ENABLED=0 go build -o harness/generic-openai/factory-harness ./cmd/factory-harness
+docker build -t factory-harness:dev harness/generic-openai
+docker build -t factory-m1-task:dev spike/m1/task-image
+docker compose -f deploy/docker-compose.yml up -d --build --wait
+go build -o bin/factoryctl ./cmd/factoryctl
+FACTORY_API_KEY=m2-dev-api-key ./bin/factoryctl run --prompt "…" --factory m2 --watch
+```
+
+Do not commit `deploy/.env`. `--wait` returns after factoryd is healthy.
+`up --build` builds factoryd and the upstream worker only. The full offline
+pass, including the model stub, is `MODE=offline ./spike/m2/run.sh`. With only
+the dummy token set, the run is accepted and assigned. `--watch` prints
+`terminal status=config_invalid summary=OPENAI_BASE_URL is not set` and exits 1.
+Details are in [`spike/m2/README.md`](spike/m2/README.md).
 
 ---
 
