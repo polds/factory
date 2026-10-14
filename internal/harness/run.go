@@ -62,7 +62,12 @@ func Run(ctx context.Context, opt Options) int {
 		return ExitEnvironment
 	}
 	defer func() { _ = ef.Close() }()
-	log := NewLog(ef, opt.Now)
+	eventOut := io.Writer(ef)
+	if rep := startEventReporter(opt.Env); rep != nil {
+		eventOut = reportWriter{w: ef, push: rep.push}
+		defer rep.flush()
+	}
+	log := NewLog(eventOut, opt.Now)
 
 	var secrets []string
 	finish := func(code int, status, summary string) int {
@@ -102,6 +107,9 @@ func Run(ctx context.Context, opt Options) int {
 	}
 
 	secrets = secretList(task, opt.Env)
+	if tok := lookupEnv(opt.Env, "FACTORY_RUN_TOKEN"); tok != "" {
+		secrets = append(secrets, tok)
+	}
 
 	turns, err := maxTurnsFrom(opt.Env)
 	if err != nil {
@@ -111,7 +119,7 @@ func Run(ctx context.Context, opt Options) int {
 	if task.SetupCommand != "" {
 		cmd := exec.CommandContext(ctx, "sh", "-c", task.SetupCommand)
 		cmd.Dir = opt.Workspace
-		cmd.Env = scrubEnv(opt.Env, task.HarnessAuthEnv)
+		cmd.Env = scrubEnv(opt.Env, toolEnvDeny(task.HarnessAuthEnv))
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			msg := strings.TrimSpace(string(out))
@@ -123,7 +131,7 @@ func Run(ctx context.Context, opt Options) int {
 	}
 
 	apiKey := lookupEnv(opt.Env, "OPENAI_API_KEY")
-	box := toolbox{workspace: opt.Workspace, env: scrubEnv(opt.Env, task.HarnessAuthEnv)}
+	box := toolbox{workspace: opt.Workspace, env: scrubEnv(opt.Env, toolEnvDeny(task.HarnessAuthEnv))}
 
 	summary := "skipped initial turn"
 	if !inv.SkipInitialTurn() {
@@ -321,4 +329,11 @@ func agentFailure(content string) (string, bool) {
 // warnf reports a diagnostic. A failed write must not change the contract exit code.
 func warnf(w io.Writer, format string, args ...any) {
 	_, _ = fmt.Fprintf(w, format, args...)
+}
+
+func toolEnvDeny(extra []string) []string {
+	out := make([]string, 0, len(extra)+2)
+	out = append(out, extra...)
+	out = append(out, "FACTORY_RUN_TOKEN", "FACTORY_EVENTS_URL")
+	return out
 }
