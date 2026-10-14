@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.internal/api/v1/factory-files/schemas/v1alpha1/router.schema.json",
+  "title": "Router",
+  "description": "routers/<name>.yaml. type prompt uses a routing array; type complexity uses routing.easy, routing.medium, and routing.hard. Unknown keys are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "default", "routing"],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "type": {
+      "enum": ["prompt", "complexity"]
+    },
+    "default": {
+      "type": "string",
+      "minLength": 1
+    },
+    "routing": {}
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "const": "complexity"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "routing": {
+            "$ref": "#/$defs/complexityRouting"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "routing": {
+            "$ref": "#/$defs/promptRouting"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "promptRouting": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model"],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "complexityRouting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["easy", "medium", "hard"],
+      "properties": {
+        "easy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "medium": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hard": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
