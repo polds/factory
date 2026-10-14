@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/polds/factory/internal/definition"
+	"github.com/polds/factory/internal/harness"
 )
 
 func TestBuildPromptGoldenTwoStage(t *testing.T) {
@@ -273,6 +274,126 @@ func TestBuildPromptDoesNotCopySecretNames(t *testing.T) {
 	}, Context{Title: "T", Body: "B"})
 	if strings.Contains(got, name) {
 		t.Fatalf("secret name copied into the prompt:\n%s", got)
+	}
+}
+
+func TestBuildPromptRedactionEdgeCases(t *testing.T) {
+	t.Parallel()
+	const basicUser = "alice:SuperSecretValue99"
+	basicStd := base64.StdEncoding.EncodeToString([]byte(basicUser))
+	basicRaw := base64.RawStdEncoding.EncodeToString([]byte(basicUser))
+	tests := []struct {
+		name      string
+		env       map[string]string
+		headers   map[string]string
+		body      string
+		forbidden []string
+		want      string
+	}{
+		{
+			name: "placeholder split across chunks",
+			env:  map[string]string{"GH_TOKEN": "ghp_supersecret{{GH_TOKEN}}"},
+			body: "val ghp_supersecret{{GH_TOKEN}}",
+			forbidden: []string{
+				"ghp_supersecret",
+				"ghp_supersecret{{GH_TOKEN}}",
+			},
+			want: "val [REDACTED]",
+		},
+		{
+			name: "mixed-case hex tokens",
+			env:  map[string]string{"GH_TOKEN": "a/b/c"},
+			body: "tok a%2Fb%2fc end",
+			forbidden: []string{
+				"a%2Fb%2fc",
+				"a/b/c",
+			},
+			want: "tok [REDACTED] end",
+		},
+		{
+			name: "schemeless userinfo",
+			env:  map[string]string{"DATABASE_URL": "user:SuperSecretValue99@db.internal"},
+			body: "password SuperSecretValue99 at db.internal",
+			forbidden: []string{
+				"SuperSecretValue99",
+				"user:SuperSecretValue99@db.internal",
+			},
+			want: "password [REDACTED] at db.internal",
+		},
+		{
+			name: "secrets split by newlines",
+			env: map[string]string{
+				"MULTI": "ghp_PlantedSecretOne99\r\nsk-PlantedSecretTwo99",
+			},
+			body: "saw ghp_PlantedSecretOne99 and sk-PlantedSecretTwo99",
+			forbidden: []string{
+				"ghp_PlantedSecretOne99",
+				"sk-PlantedSecretTwo99",
+			},
+			want: "saw [REDACTED] and [REDACTED]",
+		},
+		{
+			name:    "decoded HTTP Basic credentials",
+			headers: map[string]string{"Authorization": "Basic " + basicStd},
+			body:    "user alice:SuperSecretValue99 and SuperSecretValue99",
+			forbidden: []string{
+				"alice:SuperSecretValue99",
+				"SuperSecretValue99",
+				basicStd,
+			},
+			want: "user [REDACTED] and [REDACTED]",
+		},
+		{
+			name:    "decoded HTTP Basic credentials without padding",
+			headers: map[string]string{"Authorization": "Basic " + basicRaw},
+			body:    "user alice:SuperSecretValue99 and SuperSecretValue99",
+			forbidden: []string{
+				"alice:SuperSecretValue99",
+				"SuperSecretValue99",
+				basicRaw,
+			},
+			want: "user [REDACTED] and [REDACTED]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := promptWith(tt.env, tt.body, tt.headers)
+			for _, secret := range tt.forbidden {
+				if strings.Contains(got, secret) {
+					t.Errorf("leaked %q\n%s", secret, got)
+				}
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("missing %q\n%s", tt.want, got)
+			}
+			if strings.Count(got, "{{GH_TOKEN}}") != 1 {
+				t.Fatalf("placeholder count = %d\n%s", strings.Count(got, "{{GH_TOKEN}}"), got)
+			}
+		})
+	}
+}
+
+func TestRedactPromptMatchesHarnessWithoutPlaceholders(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in      string
+		secrets []string
+	}{
+		{"mentions ghp_Planted%2fSecretValue99", []string{"ghp_Planted/SecretValue99"}},
+		{"abcd+secret%2Ftoken abcd%20secret%2Ftoken", []string{"abcd secret/token"}},
+		{
+			base64.StdEncoding.EncodeToString([]byte("ghp_Planted/SecretValue99")),
+			[]string{"ghp_Planted/SecretValue99"},
+		},
+		{`xxaaaa\"bbbbxx`, []string{`aaaa"bbbb`}},
+	}
+	for _, tc := range cases {
+		got := redactPrompt(tc.in, tc.secrets)
+		want := harness.Redact(tc.in, expandSecrets(tc.secrets))
+		if got != want {
+			t.Fatalf("got %q\nwant %q", got, want)
+		}
 	}
 }
 

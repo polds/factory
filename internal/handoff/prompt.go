@@ -33,10 +33,13 @@ type Context struct {
 	AcceptanceCriteria string
 	// Env is the stage's resolved environment, including secret material.
 	// BuildPrompt never copies these entries. Each value of 4 bytes or more
-	// is redacted from included text, including percent-encodings (both hex
-	// cases, + and %20, and path-style forms), JSON string encodings from
-	// harness.Redact, and base64. {{SECRET_NAME}} placeholders are kept, so a
-	// value such as TOKEN cannot rewrite {{GH_TOKEN}}.
+	// is redacted from included text, including percent-encodings (hex A-F
+	// in any case, + and %20, and path-style forms), JSON string encodings,
+	// and base64. Newline-separated values are redacted one line at a time.
+	// {{SECRET_NAME}} placeholders are kept when a match would sit inside
+	// them, and a secret that contains a placeholder is still redacted.
+	// URL userinfo passwords, with or without a scheme, and decoded HTTP
+	// Basic credentials are redacted too.
 	// Values shorter than 4 bytes are not redacted from text that already
 	// contained them; they are still omitted as environment entries.
 	Env map[string]string
