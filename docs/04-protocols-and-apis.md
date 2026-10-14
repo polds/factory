@@ -268,7 +268,10 @@ than imitated.)
 
 Events are an **append-only, monotonically sequenced** log per run, persisted in
 `run_events`. `from_seq` makes reconnection exact: a console that drops its connection
-resumes without gaps or duplicates. Polling a transcript endpoint cannot give that.
+resumes without gaps or duplicates. `from_seq` and `Last-Event-ID` are **exclusive**
+cursors — the stream emits events with `seq` **greater than** the cursor (the event
+at the cursor was already delivered); when both are present, `Last-Event-ID` wins.
+Polling a transcript endpoint cannot give that.
 
 ```
 event: run.status      {seq, status: queued|assigned|running|…, worker_id}

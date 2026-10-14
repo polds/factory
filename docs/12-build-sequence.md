@@ -51,7 +51,7 @@ The [live workflow run](https://github.com/polds/factory/actions/runs/3847735449
 printed `M1 LIVE PASS`. At this point the hardest part is done and everything after it
 is plumbing.
 
-## M2 — Walking skeleton control plane
+## M2 — Walking skeleton control plane ✅ **done**
 
 - Postgres schema and migrations; `run_queue` with `SKIP LOCKED` + `LISTEN/NOTIFY`.
   **Landed** in [`internal/store`](../internal/store).
@@ -91,9 +91,16 @@ author identity; the next turn set `user.name` / `user.email` and opened the PR
 printed `M2 LIVE PASS`. The job log and `events.ndjson` have no `ghp_`,
 `github_pat_`, `gho_`, `ghs_`, or `sk-` prefix.
 
-**Laptop exit pending.** The milestone exit is `factoryctl run --prompt "…"`
-on a laptop producing a PR, with `factoryctl watch` streaming the transcript.
-No `MODE=live ./spike/m2/run.sh` has been run on a laptop. Peter runs it.
+**Laptop exit met.** Peter's Mac, `MODE=live ./spike/m2/run.sh` running
+`deploy/docker-compose.yml`. `main` at `8abb3ba`. Driven by `factoryd`:
+`factoryctl run --prompt` created `run_01M4XFFHXQBVXQRW7Y3S4PRK1T`, which
+succeeded. `factoryctl watch` streamed transcript lines ~28.7s before the
+terminal event. The agent cloned `polds/factory`, changed
+`spike/m1/fixture/greet/greet.go` and `greet_test.go`, and opened draft
+[PR #33](https://github.com/polds/factory/pull/33)
+(`m2/run-20261014T151017Z`, one commit by `Agent <agent@example.com>`).
+The run used a manual `host.docker.internal` workaround; automatic rewrite
+of that address is tracked in the pending fix PR.
 
 ## M3 — Factory semantics (weeks)
 
