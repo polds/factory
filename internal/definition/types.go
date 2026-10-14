@@ -239,16 +239,19 @@ type AgentDefaults struct {
 //
 // MaxTurns is the agent's maxTurns value, or 0 when unset (callers use 40).
 type Agent struct {
-	Name               string
-	Description        string
-	AgentType          string
-	Model              string
-	Harness            *Harness
-	Runner             string
-	Pool               string
-	ComputerUseModel   string
-	Secrets            []string
-	MCPServers         map[string]MCPServer
+	Name             string
+	Description      string
+	AgentType        string
+	Model            string
+	Harness          *Harness
+	Runner           string
+	Pool             string
+	ComputerUseModel string
+	Secrets          []string
+	MCPServers       map[string]MCPServer
+	// SpawnableBy is who may spawn this agent. After load, an omitted key is
+	// [foreman] and an explicit empty list is empty. Nil is only the
+	// pre-inherit signal that the key was omitted.
 	SpawnableBy        []string
 	CredentialStrategy string
 	IdleTimeoutMinutes int

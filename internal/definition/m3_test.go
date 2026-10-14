@@ -259,6 +259,81 @@ Judge.
 	}
 }
 
+func TestSpawnableByUnsetIsForemanOnly(t *testing.T) {
+	dir := baseTree(t)
+	tree, diags := LoadDir(dir)
+	if len(diags) != 0 {
+		t.Fatalf("diagnostics:\n%s", formatDiags(diags))
+	}
+	got := tree.Agents["impl"].SpawnableBy
+	if !reflect.DeepEqual(got, []string{"foreman"}) {
+		t.Fatalf("omitted spawnableBy = %#v", got)
+	}
+}
+
+func TestSpawnableByEmptyIsNone(t *testing.T) {
+	dir := baseTree(t)
+	writeFile(t, filepath.Join(dir, "agents", "impl", "agent.md"), agentMD("IMPLEMENT", "model: claude-x\nspawnableBy: []\n"))
+	tree, diags := LoadDir(dir)
+	if len(diags) != 0 {
+		t.Fatalf("diagnostics:\n%s", formatDiags(diags))
+	}
+	got := tree.Agents["impl"].SpawnableBy
+	if got == nil || len(got) != 0 {
+		t.Fatalf("empty spawnableBy = %#v", got)
+	}
+}
+
+func TestSpawnableByExplicitList(t *testing.T) {
+	dir := baseTree(t)
+	writeFile(t, filepath.Join(dir, "agents", "impl", "agent.md"), agentMD("IMPLEMENT", "model: claude-x\nspawnableBy: [foreman, reviewer]\n"))
+	tree, diags := LoadDir(dir)
+	if len(diags) != 0 {
+		t.Fatalf("diagnostics:\n%s", formatDiags(diags))
+	}
+	got := tree.Agents["impl"].SpawnableBy
+	if !reflect.DeepEqual(got, []string{"foreman", "reviewer"}) {
+		t.Fatalf("spawnableBy = %#v", got)
+	}
+}
+
+func TestScorerRejectsExecutionKeys(t *testing.T) {
+	cases := []struct {
+		key  string
+		yaml string
+	}{
+		{key: "harness", yaml: "harness:\n  type: claude-code\n  model: claude-x\n"},
+		{key: "runner", yaml: "runner: local\n"},
+		{key: "secrets", yaml: "secrets: [SONAR_TOKEN]\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			dir := baseTree(t)
+			writeFile(t, filepath.Join(dir, "scorers", "scope", "scorer.md"), scorerMD(tc.yaml))
+			_, diags := LoadDir(dir)
+			if !diagHas(diags, `scorer cannot set "`+tc.key+`"`) {
+				t.Fatalf("diagnostics:\n%s", formatDiags(diags))
+			}
+		})
+	}
+}
+
+func scorerMD(extra string) string {
+	return `---
+description: scope
+agents:
+  - impl
+output: classification
+labels:
+  - { value: ok, description: ok, score: 1 }
+  - { value: no, description: no, score: 0 }
+passingScore: 1
+` + extra + `---
+
+Judge.
+`
+}
+
 func TestScorerPassingScore(t *testing.T) {
 	dir := baseTree(t)
 	writeFile(t, filepath.Join(dir, "scorers", "always", "scorer.md"), `---

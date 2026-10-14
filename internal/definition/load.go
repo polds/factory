@@ -310,7 +310,7 @@ func (p parsedAgent) agent(factory Factory) Agent {
 		Name:               p.slug,
 		Description:        p.doc.Description,
 		AgentType:          p.doc.AgentType,
-		SpawnableBy:        cloneStrings(p.doc.SpawnableBy),
+		SpawnableBy:        spawnableBy(p.raw, p.doc.SpawnableBy),
 		CredentialStrategy: p.doc.CredentialStrategy,
 		IdleTimeoutMinutes: p.doc.IdleTimeoutMinutes,
 		RequiredRepos:      cloneRepos(p.doc.RequiredRepos),
@@ -342,6 +342,19 @@ func (p parsedAgent) agent(factory Factory) Agent {
 		}
 	}
 	return Inherit(factory, factory.AgentDefaults, sparse)
+}
+
+// spawnableBy keeps an explicit empty list distinct from an omitted key.
+// The omitted key is nil so Inherit can default it to foreman only.
+func spawnableBy(raw map[string]any, parsed []string) []string {
+	if _, set := raw["spawnableBy"]; !set {
+		return nil
+	}
+	out := cloneStrings(parsed)
+	if out == nil {
+		out = []string{}
+	}
+	return out
 }
 
 func cloneStrings(in []string) []string {
