@@ -14,7 +14,8 @@ type Sim struct {
 }
 
 // Run advances the simulation steps times. A non-nil error names the seed.
-func (s Sim) Run(steps int) error {
+// The pointer receiver keeps Assignments and Rejects on the caller's Sim.
+func (s *Sim) Run(steps int) error {
 	if steps < 0 {
 		steps = 0
 	}

@@ -13,10 +13,20 @@ func TestSim(t *testing.T) {
 	}
 	const steps = 200
 	for seed := int64(0); seed < int64(seeds); seed++ {
-		err := (Sim{Seed: seed}).Run(steps)
-		if err != nil {
+		sim := Sim{Seed: seed}
+		if err := sim.Run(steps); err != nil {
 			t.Fatalf("seed %d: %v", seed, err)
 		}
+	}
+}
+
+func TestSimCountersPersist(t *testing.T) {
+	sim := Sim{Seed: 1}
+	if err := sim.Run(50); err != nil {
+		t.Fatal(err)
+	}
+	if sim.Counters.Assignments == 0 || sim.Counters.Rejects == 0 {
+		t.Fatalf("counters = %+v, want assignments and rejects on sim", sim.Counters)
 	}
 }
 

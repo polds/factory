@@ -173,6 +173,52 @@ func TestPlan(t *testing.T) {
 		}
 	})
 
+	t.Run("busy factory yields the one slot", func(t *testing.T) {
+		running := []Pending{pending("a-live", "fac-a", "agent-a", Batch, now.Add(-3*time.Hour))}
+		queued := []Pending{
+			pending("a-next", "fac-a", "agent-a2", Batch, now.Add(-2*time.Hour)),
+			pending("b-next", "fac-b", "agent-b", Batch, now.Add(-time.Minute)),
+		}
+		got := Plan(now, queued, []Candidate{fresh("w", 0, 1, now)}, running, open)
+		assertAssigned(t, got, "b-next", "w")
+	})
+
+	t.Run("busy factory alternates across calls", func(t *testing.T) {
+		running := []Pending{pending("a-live", "fac-a", "agent-a", Batch, now.Add(-3*time.Hour))}
+		var queued []Pending
+		for i := 0; i < 8; i++ {
+			queued = append(queued,
+				pending("a"+strconv.Itoa(i), "fac-a", "agent-a2", Batch, now.Add(-time.Duration(100-i)*time.Minute)),
+				pending("b"+strconv.Itoa(i), "fac-b", "agent-b", Batch, now.Add(-time.Duration(10-i)*time.Minute)),
+			)
+		}
+		var got []string
+		for call := 0; call < 8; call++ {
+			plan := Plan(now, queued, []Candidate{fresh("w", 0, 1, now)}, running, open)
+			if len(plan) != 1 {
+				t.Fatalf("call %d plan = %#v, want 1 assignment", call, plan)
+			}
+			fac := "fac-b"
+			if plan[0].RunID[0] == 'a' {
+				fac = "fac-a"
+			}
+			got = append(got, fac)
+			var rest []Pending
+			for _, p := range queued {
+				if p.RunID == plan[0].RunID {
+					running = append(running, p)
+					continue
+				}
+				rest = append(rest, p)
+			}
+			queued = rest
+		}
+		want := []string{"fac-b", "fac-a", "fac-b", "fac-a", "fac-b", "fac-a", "fac-b", "fac-a"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("factories = %v, want %v", got, want)
+		}
+	})
+
 	t.Run("no capacity stays queued", func(t *testing.T) {
 		queued := []Pending{pending("r1", "fac", "agt", Interactive, now.Add(-time.Hour))}
 		full := fresh("w", 1, 1, now)

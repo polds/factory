@@ -70,9 +70,10 @@ type Assignment struct {
 //
 // Higher priority classes are placed before lower ones. Inside a class,
 // factories share slots by weighted round-robin. The weight is that
-// factory's concurrency cap, so equal caps split slots evenly and one
-// factory cannot take every slot while another factory in the same class
-// is still waiting. Runs that fit nowhere are left queued.
+// factory's concurrency cap. Virtual time starts at the in-flight count
+// times one bump, so a factory that already holds runs does not win the
+// next one-slot tick merely because its queue is older. Equal caps still
+// split a two-slot tick one each. Runs that fit nowhere are left queued.
 func Plan(now time.Time, pending []Pending, workers []Candidate, running []Pending, caps Caps) []Assignment {
 	if len(pending) == 0 || len(workers) == 0 {
 		return nil
@@ -150,7 +151,12 @@ func scheduleClass(now time.Time, runs []Pending, workers []Candidate, facN, agN
 			return rr[i].RunID < rr[j].RunID
 		})
 		limit := capFor(caps.PerFactory, id, caps.DefaultPerFactory)
-		qs = append(qs, &factoryQueue{id: id, runs: rr, limit: limit})
+		qs = append(qs, &factoryQueue{
+			id:    id,
+			runs:  rr,
+			limit: limit,
+			vt:    facN[id] * virtualTimeBump(limit),
+		})
 	}
 
 	var out []Assignment
