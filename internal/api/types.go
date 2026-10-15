@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"time"
@@ -245,6 +246,75 @@ type ApplyResponse struct {
 // Health is the GET /healthz body.
 type Health struct {
 	Status string `json:"status"`
+}
+
+// Delivery is one persisted ingress payload returned by the deliveries API.
+// Body is set only when the caller passed include=body. It is the raw JSON
+// value when the stored payload is JSON, and a JSON string otherwise.
+// Headers are an allowlist; credential and signature headers are removed
+// again before the response is written.
+type Delivery struct {
+	ID                 string            `json:"id"`
+	FactoryID          string            `json:"factory_id,omitempty"`
+	Provider           string            `json:"provider"`
+	WebhookUID         string            `json:"webhook_uid,omitempty"`
+	DeliveryID         string            `json:"delivery_id"`
+	ReceivedAt         time.Time         `json:"received_at"`
+	Headers            map[string]string `json:"headers,omitempty"`
+	Body               json.RawMessage   `json:"body,omitempty"`
+	Truncated          bool              `json:"truncated"`
+	Status             string            `json:"status"`
+	MatchedAutomations []string          `json:"matched_automations"`
+}
+
+// Schedule is one cron schedule. Paused is always present so false is visible.
+type Schedule struct {
+	ID          string     `json:"id"`
+	FactoryID   string     `json:"factory_id"`
+	Automation  string     `json:"automation"`
+	Name        string     `json:"name,omitempty"`
+	Cron        string     `json:"cron"`
+	LastFiredAt *time.Time `json:"last_fired_at,omitempty"`
+	NextFireAt  time.Time  `json:"next_fire_at,omitempty"`
+	Paused      bool       `json:"paused"`
+}
+
+// ScheduleRequest is the POST /agent/schedules body.
+type ScheduleRequest struct {
+	FactoryID  string `json:"factory_id"`
+	Automation string `json:"automation"`
+	Name       string `json:"name,omitempty"`
+	Cron       string `json:"cron"`
+	Paused     bool   `json:"paused"`
+}
+
+// SchedulePatch is the PATCH /agent/schedules/{id} body.
+// A nil field is left unchanged. A name change replaces the schedule.
+// A cron change updates it in place.
+type SchedulePatch struct {
+	Automation *string `json:"automation,omitempty"`
+	Name       *string `json:"name,omitempty"`
+	Cron       *string `json:"cron,omitempty"`
+	Paused     *bool   `json:"paused,omitempty"`
+}
+
+// ExternalRun is the GET /agent/run-by-external-reference body.
+// Run is the latest run for the bound conversation, when one exists.
+type ExternalRun struct {
+	Provider       string `json:"provider"`
+	ExternalRef    string `json:"external_ref"`
+	WorkItemID     string `json:"work_item_id"`
+	ConversationID string `json:"conversation_id"`
+	Run            *Run   `json:"run,omitempty"`
+}
+
+// InputAnswer is the POST /work-items/{id}/input body.
+// AnsweredBy is the API-key principal, never a value from the request.
+type InputAnswer struct {
+	ID         string `json:"id"`
+	WorkItemID string `json:"work_item_id"`
+	Answer     string `json:"answer"`
+	AnsweredBy string `json:"answered_by"`
 }
 
 // Problem is an RFC 9457 error body.

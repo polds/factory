@@ -434,6 +434,13 @@ func TestResponseStructsExcludeSecretNames(t *testing.T) {
 		Approval{},
 		Effect{},
 		decideBody{},
+		Delivery{},
+		Schedule{},
+		ScheduleRequest{},
+		SchedulePatch{},
+		ExternalRun{},
+		InputAnswer{},
+		inputBody{},
 	}
 	seen := map[reflect.Type]bool{}
 	for _, v := range types {
