@@ -46,7 +46,6 @@ func (s *Server) wire() error {
 	s.integ.holder = holder
 	s.integ.dispatchWake = make(chan struct{}, 1)
 	s.integ.defWake = make(chan struct{}, 1)
-	s.integ.overlay = map[string]runOverlay{}
 	s.integ.started = map[string]struct{}{}
 	s.integ.githubBase = strings.TrimRight(strings.TrimSpace(s.cfg.GitHubAPIBase), "/")
 
@@ -217,12 +216,15 @@ func (s *Server) dispatchLoop() {
 }
 
 func (s *Server) pollDeliveries() {
-	if s.integ.dispatcher == nil {
+	s.integ.mu.Lock()
+	d := s.integ.dispatcher
+	s.integ.mu.Unlock()
+	if d == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
-	if _, err := s.integ.dispatcher.Poll(ctx); err != nil && s.ctx.Err() == nil {
+	if _, err := d.Poll(ctx); err != nil && s.ctx.Err() == nil {
 		s.log.Error("dispatch", "err", s.redact(err.Error()))
 	}
 }
@@ -361,8 +363,8 @@ func (s *Server) tokenRepos(ctx context.Context, run store.Run) []string {
 		seen[repo] = struct{}{}
 		repos = append(repos, repo)
 	}
-	if ov, ok := s.overlayOf(run.ID); ok {
-		for _, repo := range ov.Repos {
+	if auto, ok := s.intakeAutomation(ctx, run.ID); ok {
+		for _, repo := range auto.RequiredRepos {
 			if repo.Owner == "" || repo.Name == "" {
 				continue
 			}

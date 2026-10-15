@@ -270,7 +270,7 @@ func (s *Server) linkPullRequest(ctx context.Context, ev event.Event) {
 	if itemID == "" {
 		return
 	}
-	s.recordPullURL(ctx, itemID, prURL)
+	s.recordPullURL(ctx, itemID, prURL, pullHeadSHA(ev.Raw))
 }
 
 func (s *Server) workItemForPullRequest(ctx context.Context, ev event.Event) string {
@@ -317,7 +317,7 @@ func issueMentions(text string) []int {
 	return out
 }
 
-func (s *Server) recordPullURL(ctx context.Context, workItemID, prURL string) {
+func (s *Server) recordPullURL(ctx context.Context, workItemID, prURL, headSHA string) {
 	if workItemID == "" || prURL == "" || s.store == nil {
 		return
 	}
@@ -338,7 +338,7 @@ func (s *Server) recordPullURL(ctx context.Context, workItemID, prURL string) {
 		s.log.Error("pull request", "work_item_id", workItemID, "err", err)
 		return
 	}
-	s.notify(ctx, outbound.KindPROpened, item, "", "", prURL)
+	s.notify(ctx, outbound.KindPROpened, item, "", "", prURL, headSHA)
 }
 
 // resumingAnswerer adapts Server.AnswerInput to automation.ResumingAnswerer.

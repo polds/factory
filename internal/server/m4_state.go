@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"github.com/polds/factory/internal/automation"
-	"github.com/polds/factory/internal/definition"
 	"github.com/polds/factory/internal/forge/github"
 	"github.com/polds/factory/internal/ingress"
 	"github.com/polds/factory/internal/outbound"
@@ -30,16 +29,7 @@ type m4State struct {
 	defWake      defWaker
 	holder       string
 
-	overlay map[string]runOverlay
 	started map[string]struct{}
-}
-
-// runOverlay is the automation runner, secrets, and repos for one queued
-// run. The runs table has no columns for them.
-type runOverlay struct {
-	Runner  string
-	Secrets []string
-	Repos   []definition.Repository
 }
 
 // defWaker is the non-blocking poke defsync polls.

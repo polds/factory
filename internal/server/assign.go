@@ -29,8 +29,8 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 		factorySecrets = tree.Factory.Secrets
 	}
 	agentSecrets := bound.agent.Secrets
-	if ov, ok := s.overlayOf(run.ID); ok && ov.Secrets != nil {
-		agentSecrets = ov.Secrets
+	if auto, ok := s.intakeAutomation(ctx, run.ID); ok {
+		agentSecrets = auto.Secrets
 	}
 	allow := secretNames(factorySecrets, agentSecrets)
 	env := make(map[string]string, len(allow)+12)

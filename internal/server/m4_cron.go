@@ -60,7 +60,12 @@ func (c cronDB) MarkFired(ctx context.Context, sch cron.Schedule) error {
 
 func (c cronDB) Emit(ctx context.Context, ev cron.Event) error {
 	if ev.Event != cron.EventCronFired {
-		c.s.log.Info("schedule missed", "factory", ev.FactoryID, "automation", ev.Automation, "name", ev.Name)
+		c.s.log.Info("schedule missed",
+			"factory", ev.FactoryID,
+			"automation", ev.Automation,
+			"name", ev.Name,
+			"due", ev.DueAt.UTC().Format(time.RFC3339Nano),
+		)
 		return nil
 	}
 	occurred := ev.OccurredAt

@@ -53,4 +53,19 @@ func TestIssueMentionsAndRef(t *testing.T) {
 	if !ok || repo != "acme/payments-service" || n != 412 {
 		t.Fatalf("%s %d %v", repo, n, ok)
 	}
+	if _, _, ok := parseIssueRef("linear:lin_issue_1"); ok {
+		t.Fatal("linear ref parsed as a github issue")
+	}
+	if id, ok := linearIssueID("linear:lin_issue_1"); !ok || id != "lin_issue_1" {
+		t.Fatalf("linear id %s %v", id, ok)
+	}
+	if _, ok := linearIssueID("acme/payments-service#412"); ok {
+		t.Fatal("github ref parsed as a linear issue")
+	}
+	if sha := pullHeadSHA([]byte(`{"pull_request":{"head":{"sha":"abc123"}}}`)); sha != "abc123" {
+		t.Fatalf("sha %s", sha)
+	}
+	if sha := pullHeadSHA([]byte(`{"issue":{"id":1}}`)); sha != "" {
+		t.Fatalf("sha %s", sha)
+	}
 }

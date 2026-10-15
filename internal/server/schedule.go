@@ -40,19 +40,19 @@ func (s *Server) schedule(ctx context.Context) {
 	}
 	snap := s.snapshot()
 	held := s.suspendedSnapshot()
-	pending, byID := s.pending(queued, snap)
+	pending, byID := s.pending(ctx, queued, snap)
 	var inflight []scheduler.Pending
 	// A suspended run keeps its execution and stays out of the worker slot
 	// and the factory and agent caps.
-	inflight = append(inflight, s.asPending(withoutSuspended(running, held), snap)...)
-	inflight = append(inflight, s.asPending(withoutSuspended(assigned, held), snap)...)
+	inflight = append(inflight, s.asPending(ctx, withoutSuspended(running, held), snap)...)
+	inflight = append(inflight, s.asPending(ctx, withoutSuspended(assigned, held), snap)...)
 	workers := s.candidates(now)
 	for _, asg := range scheduler.Plan(now, pending, workers, inflight, defaultCaps()) {
 		run, ok := byID[asg.RunID]
 		if !ok {
 			continue
 		}
-		bound, ok := snap.byID[run.AgentID]
+		bound, ok := s.resolveBound(ctx, snap, run.AgentID)
 		if !ok {
 			continue
 		}
@@ -60,14 +60,14 @@ func (s *Server) schedule(ctx context.Context) {
 	}
 }
 
-func (s *Server) pending(runs []store.Run, snap loaded) ([]scheduler.Pending, map[string]store.Run) {
+func (s *Server) pending(ctx context.Context, runs []store.Run, snap loaded) ([]scheduler.Pending, map[string]store.Run) {
 	out := make([]scheduler.Pending, 0, len(runs))
 	byID := make(map[string]store.Run, len(runs))
 	for _, run := range runs {
 		if run.CancelRequested {
 			continue
 		}
-		item, ok := s.toPending(run, snap)
+		item, ok := s.toPending(ctx, run, snap)
 		if !ok {
 			continue
 		}
@@ -77,10 +77,10 @@ func (s *Server) pending(runs []store.Run, snap loaded) ([]scheduler.Pending, ma
 	return out, byID
 }
 
-func (s *Server) asPending(runs []store.Run, snap loaded) []scheduler.Pending {
+func (s *Server) asPending(ctx context.Context, runs []store.Run, snap loaded) []scheduler.Pending {
 	out := make([]scheduler.Pending, 0, len(runs))
 	for _, run := range runs {
-		item, ok := s.toPending(run, snap)
+		item, ok := s.toPending(ctx, run, snap)
 		if ok {
 			out = append(out, item)
 		}
@@ -88,8 +88,32 @@ func (s *Server) asPending(runs []store.Run, snap loaded) []scheduler.Pending {
 	return out
 }
 
-func (s *Server) toPending(run store.Run, snap loaded) (scheduler.Pending, bool) {
-	bound, ok := snap.byID[run.AgentID]
+// resolveBound returns the agent bound for agentID. A restarted process
+// applies the definition again, which stores a new agent row. A queued run
+// can still point at the previous row. The name on that row selects the
+// current agent.
+func (s *Server) resolveBound(ctx context.Context, snap loaded, agentID string) (boundAgent, bool) {
+	if bound, ok := snap.byID[agentID]; ok {
+		return bound, true
+	}
+	if agentID == "" || s.db == nil {
+		return boundAgent{}, false
+	}
+	var name string
+	err := s.db.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, agentID).Scan(&name)
+	if err != nil || name == "" {
+		return boundAgent{}, false
+	}
+	id, ok := snap.byName[name]
+	if !ok {
+		return boundAgent{}, false
+	}
+	bound, ok := snap.byID[id]
+	return bound, ok
+}
+
+func (s *Server) toPending(ctx context.Context, run store.Run, snap loaded) (scheduler.Pending, bool) {
+	bound, ok := s.resolveBound(ctx, snap, run.AgentID)
 	if !ok {
 		return scheduler.Pending{}, false
 	}
@@ -186,7 +210,7 @@ func (s *Server) assignOne(ctx context.Context, run store.Run, workerID string, 
 	if !ok {
 		return
 	}
-	bound = s.boundForRun(run, bound)
+	bound = s.boundForRun(ctx, run, bound)
 	env, err := s.taskEnv(ctx, run, bound)
 	if err != nil {
 		s.failConfig(ctx, run.ID, workerID, err)
