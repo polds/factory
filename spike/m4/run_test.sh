@@ -6,9 +6,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 SCRIPT="$HERE/run.sh"
 
-# shellcheck source=spike/m4/run.sh
-source "$SCRIPT"
-
 pass=0
 fail=0
 
@@ -92,6 +89,13 @@ case_no_gnu_flags() {
     return 1
   fi
 }
+
+source_run() {
+  # shellcheck source=spike/m4/run.sh
+  source "$SCRIPT"
+}
+
+source_run
 
 run_case hourly_disabled case_hourly_disabled
 run_case sign_github case_sign_github
