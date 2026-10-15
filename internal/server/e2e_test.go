@@ -575,7 +575,7 @@ type env struct {
 	base      string
 	apiKey    string
 	workerKey string
-	logs      *bytes.Buffer
+	logs      *syncLog
 	raw       *pgx.Conn
 	s3        *artifacts.S3
 }
@@ -622,7 +622,7 @@ func boot(t *testing.T, opts bootOpts) *env {
 	} else {
 		def = writeDefinition(t)
 	}
-	var logs bytes.Buffer
+	logs := &syncLog{}
 	cfg := Config{
 		DatabaseURL:           poolDSN,
 		APIKey:                "test-api-key",
@@ -641,7 +641,7 @@ func boot(t *testing.T, opts bootOpts) *env {
 		DefinitionGitInterval: opts.gitInterval,
 		DefinitionGitCloner:   opts.gitCloner,
 		Now:                   opts.now,
-		Log:                   newTestLogger(&logs),
+		Log:                   newTestLogger(logs),
 	}
 	if opts.maxConcurrent > 0 {
 		cfg.WorkerMaxConcurrent = opts.maxConcurrent
@@ -681,7 +681,7 @@ func boot(t *testing.T, opts bootOpts) *env {
 	handler = srv.Handler()
 	close(ready)
 
-	e := &env{t: t, srv: srv, base: ts.URL, apiKey: cfg.APIKey, workerKey: cfg.WorkerAPIKey, logs: &logs, raw: raw}
+	e := &env{t: t, srv: srv, base: ts.URL, apiKey: cfg.APIKey, workerKey: cfg.WorkerAPIKey, logs: logs, raw: raw}
 	if cfg.S3.Endpoint != "" {
 		held := cfg.S3
 		e.s3 = &held
@@ -1215,6 +1215,28 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func newTestLogger(buf *bytes.Buffer) *slog.Logger {
+// syncLog is the test log sink. Server goroutines write it through slog
+// (failConfig, for example) while the test reads it. bytes.Buffer is not
+// safe for that pair of operations.
+type syncLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncLog) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncLog) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Buffer.String shares its backing array. Copy before unlock so a
+	// later Write cannot change the text the caller is scanning.
+	return strings.Clone(s.buf.String())
+}
+
+func newTestLogger(buf io.Writer) *slog.Logger {
 	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }

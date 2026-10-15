@@ -348,8 +348,8 @@ Take the labeled issue through the factory.
 func openPeer(t *testing.T, src *env) *env {
 	t.Helper()
 	cfg := src.srv.cfg
-	var logs bytes.Buffer
-	cfg.Log = newTestLogger(&logs)
+	logs := &syncLog{}
+	cfg.Log = newTestLogger(logs)
 	srv, err := Open(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -358,7 +358,7 @@ func openPeer(t *testing.T, src *env) *env {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	srv.cfg.TaskServerURL = ts.URL
-	return &env{t: t, srv: srv, base: ts.URL, apiKey: cfg.APIKey, workerKey: cfg.WorkerAPIKey, logs: &logs, raw: src.raw}
+	return &env{t: t, srv: srv, base: ts.URL, apiKey: cfg.APIKey, workerKey: cfg.WorkerAPIKey, logs: logs, raw: src.raw}
 }
 
 func silenceDispatch(s *Server) {
