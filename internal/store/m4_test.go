@@ -485,6 +485,93 @@ func TestScheduleUpsertReplaceDueAndFire(t *testing.T) {
 	}
 }
 
+func TestScheduleDelete(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, _ := h.seed(t)
+	start := time.Date(2026, 5, 1, 6, 0, 0, 0, time.UTC)
+	weekly, err := h.st.UpsertSchedule(ctx, store.Schedule{
+		FactoryID:  factoryID,
+		Automation: "audit",
+		Name:       "weekly",
+		Cron:       "0 6 * * 1",
+		NextFireAt: start,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unnamed, err := h.st.UpsertSchedule(ctx, store.Schedule{
+		FactoryID:  factoryID,
+		Automation: "audit",
+		Name:       "",
+		Cron:       "@daily",
+		NextFireAt: start,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := h.st.UpsertSchedule(ctx, store.Schedule{
+		FactoryID:  factoryID,
+		Automation: "report",
+		Name:       "weekly",
+		Cron:       "@hourly",
+		NextFireAt: start,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.st.DeleteSchedule(ctx, factoryID, "audit", "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing name %v", err)
+	}
+	if err := h.st.DeleteScheduleByID(ctx, "sch_missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing id %v", err)
+	}
+	if _, err := h.st.GetSchedule(ctx, weekly.ID); err != nil {
+		t.Fatalf("missing delete removed weekly: %v", err)
+	}
+
+	if err := h.st.DeleteScheduleByID(ctx, weekly.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.st.GetSchedule(ctx, weekly.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("deleted id err %v", err)
+	}
+	if err := h.st.DeleteScheduleByID(ctx, weekly.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("second id delete %v", err)
+	}
+	if _, err := h.st.GetSchedule(ctx, other.ID); err != nil {
+		t.Fatalf("id delete removed other schedule: %v", err)
+	}
+
+	if err := h.st.DeleteSchedule(ctx, "fac_other", "audit", ""); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("wrong factory %v", err)
+	}
+	if err := h.st.DeleteSchedule(ctx, factoryID, "audit", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.st.GetSchedule(ctx, unnamed.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("deleted unnamed err %v", err)
+	}
+	if err := h.st.DeleteSchedule(ctx, factoryID, "audit", ""); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("second name delete %v", err)
+	}
+	if _, err := h.st.GetSchedule(ctx, other.ID); err != nil {
+		t.Fatalf("name delete removed other automation: %v", err)
+	}
+
+	if err := h.st.DeleteSchedule(ctx, factoryID, "report", "weekly"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := h.st.ListSchedules(ctx, factoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("schedules left %+v", rows)
+	}
+}
+
 func TestLeaseAcquireOnEmptyTable(t *testing.T) {
 	h := newHarness(t, true)
 	ctx := context.Background()

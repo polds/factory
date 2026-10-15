@@ -223,3 +223,35 @@ func (s *Store) SetSchedulePaused(ctx context.Context, id string, paused bool) e
 	}
 	return nil
 }
+
+// DeleteSchedule removes the schedule for factoryID, automation, and name.
+// Name may be empty. A missing row returns ErrNotFound.
+// This is cron.Catalog.DeleteSchedule.
+func (s *Store) DeleteSchedule(ctx context.Context, factoryID, automation, name string) error {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM schedules
+		WHERE factory_id = $1 AND automation = $2 AND name = $3`,
+		factoryID, automation, name)
+	if err != nil {
+		return fmt.Errorf("store: delete schedule: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteScheduleByID removes the schedule with id.
+// A missing row returns ErrNotFound.
+// DELETE /api/v1/agent/schedules/{id} deletes by id. cron.Catalog uses
+// DeleteSchedule for the factory, automation, and name key.
+func (s *Store) DeleteScheduleByID(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM schedules WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("store: delete schedule: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
