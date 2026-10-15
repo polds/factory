@@ -25,6 +25,7 @@
 #   m1 offline e2e         MODE=offline ./spike/m1/run.sh
 #   m2 offline e2e         MODE=offline ./spike/m2/run.sh
 #   m3 offline e2e         MODE=offline ./spike/m3/run.sh
+#   m4 offline e2e         MODE=offline ./spike/m4/run.sh
 #   task image platform    task and harness images built for linux/arm64
 #   upcoming languages     TypeScript, Python, SQL, Helm, JSON Schema
 #   factory/config         validate definition trees; succeed without
@@ -41,6 +42,7 @@
 #   m1 live                .github/workflows/m1-live.yml (workflow_dispatch)
 #   m2 live                .github/workflows/m2-live.yml (workflow_dispatch)
 #   m3 live                .github/workflows/m3-live.yml (workflow_dispatch)
+#   m4 live                .github/workflows/m4-live.yml (workflow_dispatch)
 name: ci
 
 on:
@@ -235,6 +237,8 @@ jobs:
           shellcheck -x "${files[@]}"
       - name: M2 run.sh unit tests
         run: ./spike/m2/run_test.sh
+      - name: M4 run.sh unit tests
+        run: ./spike/m4/run_test.sh
 
   yaml:
     name: yaml
@@ -415,6 +419,23 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  m4-offline:
+    name: m4 offline e2e
+    runs-on: ubuntu-latest
+    # Image builds plus the offline driver. That driver waits up to 15
+    # minutes for handoff and 10 minutes for the Slack reply.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run the offline M4 driver
+        run: MODE=offline ./spike/m4/run.sh
+
   task-image-arch:
     name: task image platform
     runs-on: ubuntu-latest
@@ -591,6 +612,7 @@ jobs:
       - m1-offline
       - m2-offline
       - m3-offline
+      - m4-offline
       - task-image-arch
       - upcoming-languages
       - factory-config
@@ -615,6 +637,7 @@ jobs:
           M1_OFFLINE: ${{ needs.m1-offline.result }}
           M2_OFFLINE: ${{ needs.m2-offline.result }}
           M3_OFFLINE: ${{ needs.m3-offline.result }}
+          M4_OFFLINE: ${{ needs.m4-offline.result }}
           TASK_IMAGE_ARCH: ${{ needs.task-image-arch.result }}
           UPCOMING: ${{ needs.upcoming-languages.result }}
           FACTORY_CONFIG: ${{ needs.factory-config.result }}
@@ -649,6 +672,7 @@ jobs:
           report "m1 offline e2e" "${M1_OFFLINE}"
           report "m2 offline e2e" "${M2_OFFLINE}"
           report "m3 offline e2e" "${M3_OFFLINE}"
+          report "m4 offline e2e" "${M4_OFFLINE}"
           report "task image platform" "${TASK_IMAGE_ARCH}"
           report "upcoming languages" "${UPCOMING}"
           report "factory/config" "${FACTORY_CONFIG}"

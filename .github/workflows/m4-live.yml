@@ -1,0 +1,86 @@
+# Manual M4 CI live run.
+#
+# workflow_dispatch only. This workflow is not part of the required CI
+# check. Dispatch it from the orchestrator; do not run it on
+# pull_request or push.
+#
+# permissions is contents:read only. GITHUB_TOKEN cannot push or open
+# PRs. The driver mints one GitHub App installation token from
+# M4_GITHUB_APP_ID and M4_GITHUB_APP_PRIVATE_KEY (PEM text). It writes
+# that PEM to spike/m4/.work/live-ci/github-app.pem at mode 644 and does
+# not print it. MODE=live-ci does not start an inbound tunnel. It signs
+# a synthetic issues.labeled delivery with FACTORY_GITHUB_WEBHOOK_SECRET
+# and posts that delivery to the local ingress. When
+# FACTORY_GITHUB_WEBHOOK_SECRET is empty, the driver generates one value
+# and configures factoryd with it. The synthetic sender is
+# M4_LIVE_CI_SENDER (a human login, type User). An empty sender uses the
+# owner of inputs.repo. The issue title includes GITHUB_RUN_ID. On exit
+# the driver closes the issue, closes the draft pull request, and
+# deletes that pull request branch. The run asserts a pull request and
+# a Slack thread post, then writes spike/m4/.work/evidence/.
+#
+# Repository secrets (values are masked; never printed):
+#   M4_GITHUB_APP_ID            GitHub App id
+#   M4_GITHUB_APP_PRIVATE_KEY   unencrypted PEM text
+#   M4_SLACK_BOT_TOKEN          Slack bot token
+#   M4_SLACK_CHANNEL            Slack channel id
+#   M1_OPENAI_BASE_URL          OpenAI-compatible endpoint
+#   M1_OPENAI_API_KEY           optional; omit the secret to run without a key
+name: m4-live
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: Repository the run opens a draft PR against (M4_REPO)
+        required: false
+        default: polds/factory
+        type: string
+      sender:
+        description: Human GitHub login for the synthetic sender (M4_LIVE_CI_SENDER). Empty uses the repo owner.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  live:
+    name: m4 live
+    runs-on: ubuntu-latest
+    # Image builds plus four model stages. The spec gate is not required.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run the CI live M4 driver
+        env:
+          M4_REPO: ${{ inputs.repo }}
+          M4_LIVE_CI_SENDER: ${{ inputs.sender }}
+          M4_GITHUB_APP_ID: ${{ secrets.M4_GITHUB_APP_ID }}
+          M4_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M4_GITHUB_APP_PRIVATE_KEY }}
+          M4_SLACK_BOT_TOKEN: ${{ secrets.M4_SLACK_BOT_TOKEN }}
+          M4_SLACK_CHANNEL: ${{ secrets.M4_SLACK_CHANNEL }}
+          M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+        run: MODE=live-ci ./spike/m4/run.sh
+      # .work is a hidden directory, so the upload must opt in.
+      - name: Upload M4 evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: m4-evidence
+          path: spike/m4/.work/evidence/
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: error
