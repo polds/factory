@@ -305,6 +305,7 @@ func TestScorerRejectsExecutionKeys(t *testing.T) {
 		{key: "harness", yaml: "harness:\n  type: claude-code\n  model: claude-x\n"},
 		{key: "runner", yaml: "runner: local\n"},
 		{key: "secrets", yaml: "secrets: [SONAR_TOKEN]\n"},
+		{key: "mcpServers", yaml: "mcpServers:\n  tools:\n    command: echo\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {
