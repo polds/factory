@@ -1,0 +1,31 @@
+# M4 laptop factory. A factory-ready label starts the M3 pipeline.
+# approvals.spec is not required (D12) so the run is unattended.
+# The Slack channel id is D5. Offline uses C0M4FACTORY. Live patches it
+# from M4_SLACK_ALLOWED_USER and M4_SLACK_CHANNEL.
+schemaVersion: v1alpha1
+name: m4
+description: Label intake, Slack progress, and a reply that continues the work.
+secrets:
+  - GH_TOKEN
+agentDefaults:
+  model: m4-triage
+  runner: local
+  pool: standard
+  maxTurns: 40
+integrations:
+  - type: slack
+    slack:
+      autoRespondToThreadReplies: true
+      channel: C0M4FACTORY
+      allowedUserIds:
+        - U0M4HUMAN
+pipeline:
+  stages: [triage, planning, building, reviewing]
+  agents:
+    triage: triage
+    planning: spec
+    building: implementer
+    reviewing: reviewer
+  approvals:
+    spec: { required: false }
+  revisionLimit: 3

@@ -30,6 +30,15 @@
 # FACTORY_DEFINITION_PATH (see spike/m3/run.sh). The default tree is
 # deploy/m2-factory.
 #
+# Profile m4 adds fake-github and fake-slack for spike/m4/run.sh. That
+# script also passes spike/m4/compose.yml, which injects the M4 environment
+# into factoryd and mounts the App private key. The default project does
+# not start the fakes. The mounted binaries are linux ELFs built for the
+# Docker architecture and are not committed. Profile tunnel runs
+# cloudflared at host.docker.internal:8080. A quick-tunnel URL changes on
+# every start. spike/m4 does not start that profile; Peter runs cloudflared
+# on the host, or opts in.
+#
 # Images are built locally (factoryd:dev, factory-upstream-worker:dev).
 # MinIO is Bitnami Legacy: default entrypoint, no `server /data` override.
 # MINIO_ROOT_USER must be at least 3 characters.
@@ -240,6 +249,50 @@ services:
       - ./otel/config.yaml:/etc/otelcol-contrib/config.yaml:ro
     ports:
       - "4318:4318"
+    logging: *logging
+
+  # Offline GitHub App. spike/m4 builds the binary and publishes it on the
+  # host so task containers can record commits. factoryd uses the compose
+  # DNS name via FACTORY_GITHUB_API_BASE.
+  fake-github:
+    profiles: ["m4"]
+    image: gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+    entrypoint: ["/fake-github"]
+    command: ["-addr", ":8080"]
+    ports:
+      - "${M4_FAKE_GITHUB_PORT:-18080}:8080"
+    volumes:
+      - ${M4_FAKE_GITHUB_BIN:-../spike/m4/.work/fake-github}:/fake-github:ro
+    restart: "no"
+    logging: *logging
+
+  # Offline Slack Web API. The token file is the bot token factoryd sends.
+  # The process does not log it.
+  fake-slack:
+    profiles: ["m4"]
+    image: gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+    entrypoint: ["/fake-slack"]
+    command: ["-addr", ":8080", "-token-file", "/run/secrets/slack-bot-token"]
+    ports:
+      - "${M4_FAKE_SLACK_PORT:-18081}:8080"
+    volumes:
+      - ${M4_FAKE_SLACK_BIN:-../spike/m4/.work/fake-slack}:/fake-slack:ro
+      - ${M4_SLACK_TOKEN_FILE:-../spike/m4/.work/slack-bot-token}:/run/secrets/slack-bot-token:ro
+    restart: "no"
+    logging: *logging
+
+  # Optional public ingress. Not part of MODE=offline. The URL is not stable.
+  tunnel:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --url
+      - http://host.docker.internal:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     logging: *logging
 
 volumes:
