@@ -84,6 +84,7 @@ func loadFactory(root string, tree *Tree, diags *[]Diagnostic) (map[string]any, 
 	}
 	lines := indexKeys(string(body))
 	walkKeys(file, raw, factorySchema, "", lines, diags)
+	checkSlackChannels(file, raw, lines, diags)
 	checkSchemaVersion(file, raw, lines, diags)
 	checkName(file, raw, lines, diags)
 	checkExclusive(file, "agentDefaults", raw, lines, diags)

@@ -53,4 +53,16 @@ integrations:
 	if !diagHas(diags, `unknown key "surprise"`) {
 		t.Fatalf("diagnostics:\n%s", formatDiags(diags))
 	}
+
+	dir = baseTree(t)
+	writeFile(t, filepath.Join(dir, "factory.yaml"), baseFactory()+`
+integrations:
+  - type: slack
+    slack:
+      channel: ""
+`)
+	_, diags = LoadDir(dir)
+	if !diagHas(diags, "slack.channel must be a non-empty string") {
+		t.Fatalf("diagnostics:\n%s", formatDiags(diags))
+	}
 }
