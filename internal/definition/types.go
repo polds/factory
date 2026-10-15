@@ -218,6 +218,7 @@ type Integration struct {
 type SlackIntegration struct {
 	AutoRespondToThreadReplies bool     `json:"autoRespondToThreadReplies,omitempty"`
 	AllowedUserIDs             []string `json:"allowedUserIds,omitempty"`
+	Channel                    string   `json:"channel,omitempty"`
 }
 
 // AgentDefaults are factory-wide defaults. An agent's model and harness

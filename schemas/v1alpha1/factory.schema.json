@@ -125,6 +125,11 @@
                 "type": "string",
                 "minLength": 1
               }
+            },
+            "channel": {
+              "description": "Slack channel id that outbound threads post to.",
+              "type": "string",
+              "minLength": 1
             }
           }
         },

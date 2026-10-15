@@ -88,6 +88,7 @@ integrations:
     slack:
       autoRespondToThreadReplies: true
       allowedUserIds: [U0123ABCDEF] # Slack user ids. Empty or absent denies every Slack user (fail-closed).
+      channel: C0123ABCDEF          # Slack channel id outbound threads post to. Optional.
   - type: linear                    # linear and jira are mutually exclusive
 
 secrets: [SENTRY_AUTH_TOKEN]        # granted to every agent
@@ -154,7 +155,8 @@ cloudProviders:
 
 `integrations[].slack.allowedUserIds` lists the Slack user ids that may continue
 work by replying in a factory thread. An empty list, and omitting the key, both
-deny every Slack user (fail-closed).
+deny every Slack user (fail-closed). `integrations[].slack.channel` is the Slack
+channel id that outbound threads post to. Omit it when there is no default channel.
 
 **M3 applied.** The loader applies `pipeline:`, routers, and skills. It no
 longer warns that those keys are not applied in M2. Automations, scorers, and
