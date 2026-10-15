@@ -453,10 +453,11 @@ func parseScorer(rel, name string, body []byte, tree *Tree, diags *[]Diagnostic)
 		addDiag(diags, rel, 1, SeverityError, "invalid YAML: "+err.Error())
 		return Scorer{}, false
 	}
-	// docs/03 does not give a scorer harness, runner, or secrets. docs/08 runs
-	// the judge on scorerDefaults.runner with the scorer model and no execution
-	// secrets. Accepting the keys and dropping them hid that mistake.
-	for _, key := range []string{"harness", "runner", "secrets"} {
+	// docs/03 does not give a scorer harness, runner, secrets, or mcpServers.
+	// docs/08 runs the judge on scorerDefaults.runner with the scorer model
+	// and no execution secrets. Accepting the keys and dropping them hid
+	// that mistake.
+	for _, key := range []string{"harness", "runner", "secrets", "mcpServers"} {
 		if _, set := raw[key]; !set {
 			continue
 		}

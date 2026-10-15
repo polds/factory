@@ -92,12 +92,29 @@ func hexFoldEqual(got, pat string) bool {
 	return true
 }
 
-// hexDigitOfEscape reports whether pat[i] is a hex digit of a %HH escape.
+// hexDigitOfEscape reports whether pat[i] is a hex digit of a %HH escape,
+// including the inner hex digits of a double-encoded escape. QueryEscape
+// turns %HH into %25HH, so those two digits are no longer part of a %HH
+// in the pattern and a mixed-case form such as %252f would not match %252F.
 func hexDigitOfEscape(pat string, i int) bool {
+	if hexDigitOfSingleEscape(pat, i) || hexDigitOfDoubleEncodedEscape(pat, i) {
+		return true
+	}
+	return false
+}
+
+func hexDigitOfSingleEscape(pat string, i int) bool {
 	if i+1 < len(pat) && i >= 1 && pat[i-1] == '%' && isHex(pat[i]) && isHex(pat[i+1]) {
 		return true
 	}
 	return i >= 2 && pat[i-2] == '%' && isHex(pat[i-1]) && isHex(pat[i])
+}
+
+func hexDigitOfDoubleEncodedEscape(pat string, i int) bool {
+	if i >= 3 && i+1 < len(pat) && pat[i-3:i] == "%25" && isHex(pat[i]) && isHex(pat[i+1]) {
+		return true
+	}
+	return i >= 4 && pat[i-4:i-1] == "%25" && isHex(pat[i-1]) && isHex(pat[i])
 }
 
 func foldHex(c byte) byte {
@@ -276,10 +293,39 @@ func userinfoPasswords(v string) []string {
 		return out
 	}
 	// user:pass@host has no scheme, so url.Parse treats the user as the scheme.
-	if strings.Contains(v, "://") || !strings.Contains(v, "@") {
+	// Prepending "//" also drops a password that contains '/', '#', '?', or a
+	// space, and it invents one for a scheme-opaque value such as mailto:.
+	if strings.Contains(v, "://") || !strings.Contains(v, "@") || mailtoScheme(v) {
 		return nil
 	}
-	return passwordsFromURL("//" + v)
+	return splitSchemelessPassword(v)
+}
+
+func mailtoScheme(v string) bool {
+	u, err := url.Parse(v)
+	return err == nil && strings.EqualFold(u.Scheme, "mailto")
+}
+
+// splitSchemelessPassword splits user:pass@host on the last '@' and the first
+// ':'. Reserved characters stay in the password. The raw userinfo password
+// and its percent-decoded form are both returned.
+func splitSchemelessPassword(v string) []string {
+	at := strings.LastIndex(v, "@")
+	if at <= 0 {
+		return nil
+	}
+	info := v[:at]
+	colon := strings.IndexByte(info, ':')
+	if colon < 0 || colon == len(info)-1 {
+		return nil
+	}
+	raw := info[colon+1:]
+	out := []string{raw}
+	dec, err := url.PathUnescape(raw)
+	if err == nil && dec != "" && dec != raw {
+		out = append(out, dec)
+	}
+	return out
 }
 
 func passwordsFromURL(v string) []string {
@@ -332,12 +378,39 @@ func expandSecrets(secrets []string) []string {
 
 func encodingForms(secret string) []string {
 	query := url.QueryEscape(secret)
-	return []string{
+	forms := []string{
 		secret,
 		query,
 		strings.ReplaceAll(query, "+", "%20"),
 		url.PathEscape(secret),
 	}
+	return append(forms, encodingBesidePlaceholders(secret)...)
+}
+
+// encodingBesidePlaceholders percent-encodes the bytes outside a
+// {{SECRET_NAME}} span and leaves the span literal. QueryEscape of the
+// whole secret encodes the braces, so a%2Fb{{GH_TOKEN}} matches neither
+// the raw secret nor that fully encoded form.
+func encodingBesidePlaceholders(secret string) []string {
+	spans := secretRefAny.FindAllStringIndex(secret, -1)
+	if len(spans) == 0 {
+		return nil
+	}
+	query := encodeOutsidePlaceholders(secret, spans, url.QueryEscape)
+	path := encodeOutsidePlaceholders(secret, spans, url.PathEscape)
+	return []string{query, path, strings.ReplaceAll(query, "+", "%20")}
+}
+
+func encodeOutsidePlaceholders(secret string, spans [][]int, esc func(string) string) string {
+	var b strings.Builder
+	prev := 0
+	for _, sp := range spans {
+		b.WriteString(esc(secret[prev:sp[0]]))
+		b.WriteString(secret[sp[0]:sp[1]])
+		prev = sp[1]
+	}
+	b.WriteString(esc(secret[prev:]))
+	return b.String()
 }
 
 func base64Forms(secret string) []string {

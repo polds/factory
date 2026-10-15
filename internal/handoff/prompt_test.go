@@ -414,6 +414,138 @@ func TestBuildPromptRedactsBase64Secret(t *testing.T) {
 	}
 }
 
+func TestBuildPromptM4CarryIn(t *testing.T) {
+	t.Parallel()
+	const cafe = "caf\u00e9"
+	tests := []struct {
+		name      string
+		env       map[string]string
+		body      string
+		forbidden []string
+		want      string
+	}{
+		{
+			name: "schemeless password with slash",
+			env:  map[string]string{"DATABASE_URL": "user:a/b/c@host"},
+			body: "pw a/b/c at host",
+			forbidden: []string{
+				"a/b/c",
+				"user:a/b/c@host",
+			},
+			want: "pw [REDACTED] at host",
+		},
+		{
+			name: "schemeless password with hash",
+			env:  map[string]string{"DATABASE_URL": "user:Super#Secret99@host"},
+			body: "pw Super#Secret99 at host",
+			forbidden: []string{
+				"Super#Secret99",
+			},
+			want: "pw [REDACTED] at host",
+		},
+		{
+			name: "schemeless password with question mark",
+			env:  map[string]string{"DATABASE_URL": "user:what?secret@host"},
+			body: "pw what?secret at host",
+			forbidden: []string{
+				"what?secret",
+			},
+			want: "pw [REDACTED] at host",
+		},
+		{
+			name: "schemeless password with space",
+			env:  map[string]string{"DATABASE_URL": "user:my secret@host"},
+			body: "pw my secret at host",
+			forbidden: []string{
+				"my secret",
+			},
+			want: "pw [REDACTED] at host",
+		},
+		{
+			name: "mailto is not a password",
+			env:  map[string]string{"CONTACT": "mailto:someone@host"},
+			body: "tell someone named filename",
+			want: "tell someone named filename",
+		},
+		{
+			name: "double-encoded mixed-case hex",
+			env:  map[string]string{"GH_TOKEN": "a/b/c"},
+			body: "tok a%252fb%252Fc end",
+			forbidden: []string{
+				"a%252fb%252Fc",
+				"a/b/c",
+			},
+			want: "tok [REDACTED] end",
+		},
+		{
+			name: "double-encoded mixed-case leading hex digit",
+			env:  map[string]string{"GH_TOKEN": cafe},
+			body: "tok caf%25c3%25A9 end",
+			forbidden: []string{
+				"caf%25c3%25A9",
+				cafe,
+			},
+			want: "tok [REDACTED] end",
+		},
+		{
+			name: "percent-encoded bytes before a placeholder",
+			env:  map[string]string{"GH_TOKEN": "a/b/c{{GH_TOKEN}}"},
+			body: "saw a%2Fb%2fc{{GH_TOKEN}} end",
+			forbidden: []string{
+				"a%2Fb%2fc{{GH_TOKEN}}",
+				"a/b/c{{GH_TOKEN}}",
+			},
+			want: "saw [REDACTED] end",
+		},
+		{
+			name: "percent-encoded bytes after a placeholder",
+			env:  map[string]string{"GH_TOKEN": "{{GH_TOKEN}}/tail99"},
+			body: "saw {{GH_TOKEN}}%2Ftail99 end",
+			forbidden: []string{
+				"{{GH_TOKEN}}%2Ftail99",
+				"{{GH_TOKEN}}/tail99",
+			},
+			want: "saw [REDACTED] end",
+		},
+		{
+			name: "encoded schemeless password still redacts",
+			env:  map[string]string{"DATABASE_URL": "user:a%2Fb%2Fc@host"},
+			body: "pw a/b/c and a%2fb%2Fc at host",
+			forbidden: []string{
+				"a/b/c",
+				"a%2fb%2Fc",
+			},
+			want: "pw [REDACTED] and [REDACTED] at host",
+		},
+		{
+			name: "at sign inside schemeless password",
+			env:  map[string]string{"DATABASE_URL": "user:p@ssword99@host"},
+			body: "pw p@ssword99 at host",
+			forbidden: []string{
+				"p@ssword99",
+			},
+			want: "pw [REDACTED] at host",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := promptWith(tt.env, tt.body, nil)
+			for _, secret := range tt.forbidden {
+				if strings.Contains(got, secret) {
+					t.Errorf("leaked %q\n%s", secret, got)
+				}
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("missing %q\n%s", tt.want, got)
+			}
+			if !strings.Contains(got, "Use {{GH_TOKEN}}.") {
+				t.Fatalf("instruction placeholder rewritten:\n%s", got)
+			}
+		})
+	}
+}
+
 func promptWith(env map[string]string, body string, headers map[string]string) string {
 	agent := definition.Agent{
 		Name: "implementer",

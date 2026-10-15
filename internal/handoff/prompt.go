@@ -38,8 +38,12 @@ type Context struct {
 	// and base64. Newline-separated values are redacted one line at a time.
 	// {{SECRET_NAME}} placeholders are kept when a match would sit inside
 	// them, and a secret that contains a placeholder is still redacted.
-	// URL userinfo passwords, with or without a scheme, and decoded HTTP
-	// Basic credentials are redacted too.
+	// URL userinfo passwords, with or without a scheme, are redacted,
+	// including a schemeless password that contains '/', '#', '?', or a
+	// space. A scheme-opaque value such as mailto: is not a password.
+	// Decoded HTTP Basic credentials are redacted too. Percent-encoded
+	// forms include double-encoding with mixed hex case, and encodings
+	// of the bytes beside a {{SECRET_NAME}} placeholder.
 	// Values shorter than 4 bytes are not redacted from text that already
 	// contained them; they are still omitted as environment entries.
 	Env map[string]string

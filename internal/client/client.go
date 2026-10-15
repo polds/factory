@@ -40,10 +40,16 @@ type RunRequest struct {
 
 // Run is the control-plane run object returned by start and cancel.
 // WorkItemID is set on factory run rows once the API emits it (T10).
+// ParentRunID, ConversationID, Stage, and ModelID are the stage-run
+// columns. Empty for a bare run.
 type Run struct {
-	ID         string `json:"id"`
-	Status     string `json:"status"`
-	WorkItemID string `json:"work_item_id,omitempty"`
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	WorkItemID     string `json:"work_item_id,omitempty"`
+	ParentRunID    string `json:"parent_run_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	Stage          string `json:"stage,omitempty"`
+	ModelID        string `json:"model_id,omitempty"`
 }
 
 // StartRun creates a run. The API key is sent as a bearer token and is never copied into the body.
