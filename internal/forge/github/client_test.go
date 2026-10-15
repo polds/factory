@@ -257,6 +257,7 @@ func TestCheckRunLifecycle(t *testing.T) {
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	fake := &fakeGH{installationID: testInst, token: testToken, expires: now.Add(time.Hour)}
 	c := newTestClient(t, key, fake, now)
+	c.now = func() time.Time { return now }
 	ctx := context.Background()
 	tok, err := c.InstallationToken(ctx, testInst, []string{"factory"}, nil)
 	if err != nil {
@@ -276,9 +277,12 @@ func TestCheckRunLifecycle(t *testing.T) {
 	}
 	cr.Status = CheckInProgress
 	cr.Summary = "building"
+	startedAt := now.UTC().Format(time.RFC3339)
 	if err := c.UpdateCheckRun(ctx, tok, "polds/factory", id, cr); err != nil {
 		t.Fatal(err)
 	}
+	now = now.Add(2 * time.Minute)
+	completedAt := now.UTC().Format(time.RFC3339)
 	cr.Status = CheckCompleted
 	cr.Conclusion = "success"
 	cr.Summary = "done"
@@ -310,11 +314,20 @@ func TestCheckRunLifecycle(t *testing.T) {
 			if _, ok := body["conclusion"]; ok {
 				t.Fatalf("in_progress has conclusion %#v", body)
 			}
+			if body["started_at"] != startedAt {
+				t.Fatalf("started_at %#v", body["started_at"])
+			}
+			if _, ok := body["completed_at"]; ok {
+				t.Fatal("in_progress has completed_at")
+			}
 			assertDetails(t, body, "building")
 		case "PATCH completed":
 			sawDone = true
 			if body["conclusion"] != "success" {
 				t.Fatalf("conclusion %#v", body["conclusion"])
+			}
+			if body["started_at"] != startedAt || body["completed_at"] != completedAt {
+				t.Fatalf("times started=%#v completed=%#v", body["started_at"], body["completed_at"])
 			}
 			assertDetails(t, body, "done")
 		default:
@@ -513,6 +526,57 @@ func TestConcurrentTokenMint(t *testing.T) {
 	for err := range errCh {
 		t.Error(err)
 	}
+}
+
+func TestEvictsStaleInstallationTokens(t *testing.T) {
+	key := testKey(t)
+	start := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	now := start
+	fake := &fakeGH{installationID: testInst, token: testToken, expires: start.Add(time.Hour)}
+	c := newTestClient(t, key, fake, now)
+	c.now = func() time.Time { return now }
+	ctx := context.Background()
+	if _, err := c.InstallationToken(ctx, testInst, []string{"alpha"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	now = start.Add(30 * time.Minute)
+	fake.mu.Lock()
+	fake.expires = now.Add(time.Hour)
+	fake.token = testToken + "_b"
+	fake.mu.Unlock()
+	if _, err := c.InstallationToken(ctx, testInst, []string{"beta"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := cacheLen(c); n != 2 {
+		t.Fatalf("cache %d", n)
+	}
+
+	now = start.Add(56 * time.Minute)
+	if _, err := c.InstallationToken(ctx, testInst, []string{"beta"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	n := len(c.cache)
+	var kept string
+	for _, tok := range c.cache {
+		kept = tok.Value()
+	}
+	c.mu.Unlock()
+	if n != 1 || kept != testToken+"_b" {
+		t.Fatalf("after eviction cache %d kept %q", n, kept)
+	}
+	fake.mu.Lock()
+	mints := fake.mints
+	fake.mu.Unlock()
+	if mints != 2 {
+		t.Fatalf("mints %d", mints)
+	}
+}
+
+func cacheLen(c *Client) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.cache)
 }
 
 func TestRejectsUnscopedTokenAndBadRepo(t *testing.T) {

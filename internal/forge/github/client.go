@@ -83,8 +83,9 @@ type Client struct {
 	now     func() time.Time
 	log     *slog.Logger
 
-	mu    sync.Mutex
-	cache map[string]Token
+	mu           sync.Mutex
+	cache        map[string]Token
+	checkStarted map[int64]time.Time
 }
 
 var _ App = (*Client)(nil)
@@ -114,14 +115,42 @@ func New(cfg Config) (*Client, error) {
 		ht = &http.Client{Timeout: 15 * time.Second}
 	}
 	return &Client{
-		appID:   cfg.AppID,
-		key:     cfg.Key,
-		baseURL: base,
-		http:    ht,
-		now:     now,
-		log:     log,
-		cache:   map[string]Token{},
+		appID:        cfg.AppID,
+		key:          cfg.Key,
+		baseURL:      base,
+		http:         ht,
+		now:          now,
+		log:          log,
+		cache:        map[string]Token{},
+		checkStarted: map[int64]time.Time{},
 	}, nil
+}
+
+// Format prints the app id, base URL, and cache size. It does not walk fields,
+// so fmt cannot reach cached tokens or the private key through an unexported field.
+func (c *Client) Format(s fmt.State, verb rune) {
+	_, _ = io.WriteString(s, c.redacted(verb == 'v' && s.Flag('#')))
+}
+
+// String is the redacted client description.
+func (c *Client) String() string { return c.redacted(false) }
+
+// GoString is the redacted Go-syntax client description.
+func (c *Client) GoString() string { return c.redacted(true) }
+
+func (c *Client) redacted(sharp bool) string {
+	if c == nil {
+		return "<nil>"
+	}
+	c.mu.Lock()
+	appID := c.appID
+	base := c.baseURL
+	cached := len(c.cache)
+	c.mu.Unlock()
+	if sharp {
+		return fmt.Sprintf("github.Client{appID:%d, baseURL:%q, cached:%d}", appID, base, cached)
+	}
+	return fmt.Sprintf("github.Client{appID:%d base:%s cached:%d}", appID, base, cached)
 }
 
 func (c *Client) appJWT() (string, error) {

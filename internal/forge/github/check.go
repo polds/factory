@@ -56,7 +56,8 @@ func (c *Client) CreateCheckRun(ctx context.Context, tok Token, repo, headSHA st
 	if strings.TrimSpace(headSHA) == "" {
 		return 0, errors.New("github: head sha is required")
 	}
-	body, err := c.checkBody(cr, true, headSHA)
+	now := c.now()
+	body, err := c.checkBody(cr, true, headSHA, 0, now)
 	if err != nil {
 		return 0, err
 	}
@@ -69,6 +70,9 @@ func (c *Client) CreateCheckRun(ctx context.Context, tok Token, repo, headSHA st
 	}
 	if out.ID == 0 {
 		return 0, errors.New("github: check run id missing")
+	}
+	if cr.Status == CheckInProgress {
+		c.noteStart(out.ID, now)
 	}
 	c.log.Info("github check run created", "repo", owner+"/"+name, "id", out.ID, "status", string(cr.Status))
 	return out.ID, nil
@@ -83,7 +87,7 @@ func (c *Client) UpdateCheckRun(ctx context.Context, tok Token, repo string, id 
 	if id <= 0 {
 		return errors.New("github: check run id is required")
 	}
-	body, err := c.checkBody(cr, false, "")
+	body, err := c.checkBody(cr, false, "", id, c.now())
 	if err != nil {
 		return err
 	}
@@ -95,7 +99,7 @@ func (c *Client) UpdateCheckRun(ctx context.Context, tok Token, repo string, id 
 	return nil
 }
 
-func (c *Client) checkBody(cr CheckRun, create bool, headSHA string) (checkBody, error) {
+func (c *Client) checkBody(cr CheckRun, create bool, headSHA string, id int64, now time.Time) (checkBody, error) {
 	if err := cr.Status.valid(); err != nil {
 		return checkBody{}, err
 	}
@@ -117,14 +121,15 @@ func (c *Client) checkBody(cr CheckRun, create bool, headSHA string) (checkBody,
 			Summary: cr.Summary,
 		},
 	}
-	stamp := c.now().UTC().Format(time.RFC3339)
 	switch cr.Status {
 	case CheckQueued:
 	case CheckInProgress:
-		body.StartedAt = stamp
+		body.StartedAt = c.noteStart(id, now).UTC().Format(time.RFC3339)
 	case CheckCompleted:
-		body.StartedAt = stamp
-		body.CompletedAt = stamp
+		if started, ok := c.takeStart(id); ok {
+			body.StartedAt = started.UTC().Format(time.RFC3339)
+		}
+		body.CompletedAt = now.UTC().Format(time.RFC3339)
 		body.Conclusion = cr.Conclusion
 	default:
 		return checkBody{}, fmt.Errorf("github: unsupported check status %q", string(neverStatus(cr.Status)))
@@ -146,3 +151,29 @@ func (s CheckStatus) valid() error {
 }
 
 func neverStatus(s CheckStatus) CheckStatus { return s }
+
+// noteStart records the first in_progress time for a check run.
+// id 0 means the create response has not assigned an id yet.
+func (c *Client) noteStart(id int64, started time.Time) time.Time {
+	if id <= 0 {
+		return started
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if prev, ok := c.checkStarted[id]; ok {
+		return prev
+	}
+	c.checkStarted[id] = started
+	return started
+}
+
+func (c *Client) takeStart(id int64) (time.Time, bool) {
+	if id <= 0 {
+		return time.Time{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	started, ok := c.checkStarted[id]
+	delete(c.checkStarted, id)
+	return started, ok
+}

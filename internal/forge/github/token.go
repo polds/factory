@@ -149,8 +149,11 @@ func (c *Client) InstallationToken(ctx context.Context, installationID int64, re
 func (c *Client) cached(key string) (Token, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := c.now()
+	c.evictExpiredLocked(now)
 	tok, ok := c.cache[key]
-	if !ok || !tok.fresh(c.now()) {
+	if !ok || !tok.fresh(now) {
+		delete(c.cache, key)
 		return Token{}, false
 	}
 	return tok, true
@@ -159,7 +162,20 @@ func (c *Client) cached(key string) (Token, bool) {
 func (c *Client) store(key string, tok Token) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := c.now()
+	c.evictExpiredLocked(now)
+	if !tok.fresh(now) {
+		return
+	}
 	c.cache[key] = tok
+}
+
+func (c *Client) evictExpiredLocked(now time.Time) {
+	for key, tok := range c.cache {
+		if !tok.fresh(now) {
+			delete(c.cache, key)
+		}
+	}
 }
 
 func (c *Client) parseToken(resp accessTokenResponse) (Token, error) {
