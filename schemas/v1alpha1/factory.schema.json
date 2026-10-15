@@ -117,6 +117,19 @@
           "properties": {
             "autoRespondToThreadReplies": {
               "type": "boolean"
+            },
+            "allowedUserIds": {
+              "description": "Slack user ids permitted to continue work by replying in a factory thread. Empty or absent denies every Slack user (fail-closed).",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "channel": {
+              "description": "Slack channel id that outbound threads post to.",
+              "type": "string",
+              "minLength": 1
             }
           }
         },

@@ -45,6 +45,34 @@ func walkKeys(file string, v any, spec *keySpec, path string, lines map[string]i
 	}
 }
 
+// checkSlackChannels rejects a present channel that is empty or not a string.
+// Omitting the key is allowed, matching the published schema.
+func checkSlackChannels(file string, raw map[string]any, lines map[string]int, diags *[]Diagnostic) {
+	items, ok := raw["integrations"].([]any)
+	if !ok {
+		return
+	}
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		slack, ok := obj["slack"].(map[string]any)
+		if !ok {
+			continue
+		}
+		ch, present := slack["channel"]
+		if !present {
+			continue
+		}
+		s, isStr := ch.(string)
+		if isStr && s != "" {
+			continue
+		}
+		addDiag(diags, file, lineAt(lines, "integrations.slack.channel"), SeverityError, "slack.channel must be a non-empty string")
+	}
+}
+
 func checkSchemaVersion(file string, raw map[string]any, lines map[string]int, diags *[]Diagnostic) {
 	v, ok := raw["schemaVersion"]
 	line := lineAt(lines, "schemaVersion")

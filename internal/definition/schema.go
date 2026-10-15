@@ -62,6 +62,7 @@ var (
 				"autoRespondToThreadReplies": leaf(),
 				// Absent or empty denies every Slack user (D12).
 				"allowedUserIds": leaf(),
+				"channel":        leaf(),
 			}},
 			"linear": {free: true},
 			"jira":   {free: true},
