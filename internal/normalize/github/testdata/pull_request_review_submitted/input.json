@@ -1,0 +1,43 @@
+{
+  "delivery_id": "dlv_pull_request_review_submitted",
+  "headers": {
+    "X-GitHub-Event": "pull_request_review"
+  },
+  "body": {
+    "action": "submitted",
+    "review": {
+      "id": 55,
+      "body": "Ship it.",
+      "state": "approved",
+      "html_url": "https://github.com/acme/payments-service/pull/77#pullrequestreview-55",
+      "submitted_at": "2026-01-02T06:00:00Z"
+    },
+    "pull_request": {
+      "id": 7700,
+      "number": 77,
+      "title": "Refunds",
+      "html_url": "https://github.com/acme/payments-service/pull/77",
+      "head": {
+        "ref": "refunds"
+      },
+      "base": {
+        "ref": "main"
+      }
+    },
+    "repository": {
+      "id": 100,
+      "name": "payments-service",
+      "full_name": "acme/payments-service",
+      "owner": {
+        "login": "acme",
+        "id": 10,
+        "type": "Organization"
+      }
+    },
+    "sender": {
+      "login": "octocat",
+      "id": 1,
+      "type": "User"
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "delivery_id": "dlv_issue_commented",
+  "headers": {
+    "X-GitHub-Event": "issue_comment"
+  },
+  "body": {
+    "action": "created",
+    "issue": {
+      "id": 4120,
+      "number": 412,
+      "title": "Add refunds",
+      "html_url": "https://github.com/acme/payments-service/issues/412"
+    },
+    "comment": {
+      "id": 900,
+      "body": "Looks good.",
+      "html_url": "https://github.com/acme/payments-service/issues/412#issuecomment-900",
+      "created_at": "2026-01-02T04:00:00Z",
+      "user": {
+        "login": "octocat",
+        "id": 1,
+        "type": "User"
+      }
+    },
+    "repository": {
+      "id": 100,
+      "name": "payments-service",
+      "full_name": "acme/payments-service",
+      "owner": {
+        "login": "acme",
+        "id": 10,
+        "type": "Organization"
+      }
+    },
+    "sender": {
+      "login": "octocat",
+      "id": 1,
+      "type": "User"
+    }
+  }
+}

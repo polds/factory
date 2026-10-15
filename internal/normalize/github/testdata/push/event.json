@@ -1,0 +1,76 @@
+[
+  {
+    "provider": "github",
+    "event": "push",
+    "delivery_id": "dlv_push",
+    "occurred_at": "2026-01-02T07:00:00Z",
+    "actor": {
+      "provider_id": "1",
+      "handle": "octocat",
+      "factory_user_id": null
+    },
+    "subject": {
+      "kind": "push",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "url": "https://github.com/acme/payments-service/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "repo": {
+        "code_forge": "GITHUB",
+        "owner": "acme",
+        "name": "payments-service"
+      },
+      "branch": "main",
+      "base_branch": null,
+      "paths": [
+        "a.go",
+        "b.go",
+        "c.go"
+      ],
+      "text": "fix refunds"
+    },
+    "thread": {
+      "kind": "github_push",
+      "external_ref": "acme/payments-service@refs/heads/main"
+    },
+    "raw": {
+      "ref": "refs/heads/main",
+      "after": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "before": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "repository": {
+        "id": 100,
+        "name": "payments-service",
+        "full_name": "acme/payments-service",
+        "owner": {
+          "login": "acme",
+          "id": 10,
+          "type": "Organization"
+        }
+      },
+      "sender": {
+        "login": "octocat",
+        "id": 1,
+        "type": "User"
+      },
+      "head_commit": {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "message": "fix refunds",
+        "timestamp": "2026-01-02T07:00:00Z",
+        "url": "https://github.com/acme/payments-service/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "commits": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "added": [
+            "a.go"
+          ],
+          "removed": [
+            "b.go"
+          ],
+          "modified": [
+            "c.go",
+            "a.go"
+          ]
+        }
+      ]
+    }
+  }
+]

@@ -1,0 +1,32 @@
+{
+  "delivery_id": "dlv_check_suite_rerequested",
+  "headers": {
+    "X-GitHub-Event": "check_suite"
+  },
+  "body": {
+    "action": "rerequested",
+    "check_suite": {
+      "id": 654,
+      "head_branch": "main",
+      "head_sha": "abc123",
+      "conclusion": "success",
+      "updated_at": "2026-01-02T09:00:00Z",
+      "pull_requests": []
+    },
+    "repository": {
+      "id": 100,
+      "name": "payments-service",
+      "full_name": "acme/payments-service",
+      "owner": {
+        "login": "acme",
+        "id": 10,
+        "type": "Organization"
+      }
+    },
+    "sender": {
+      "login": "octocat",
+      "id": 1,
+      "type": "User"
+    }
+  }
+}

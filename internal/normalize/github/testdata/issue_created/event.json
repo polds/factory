@@ -1,0 +1,73 @@
+[
+  {
+    "provider": "github",
+    "event": "issue_created",
+    "delivery_id": "dlv_issue_created",
+    "occurred_at": "2026-01-02T03:05:06Z",
+    "actor": {
+      "provider_id": "1",
+      "handle": "octocat",
+      "factory_user_id": null
+    },
+    "subject": {
+      "kind": "issue",
+      "id": "4120",
+      "number": 412,
+      "title": "Add refunds",
+      "url": "https://github.com/acme/payments-service/issues/412",
+      "repo": {
+        "code_forge": "GITHUB",
+        "owner": "acme",
+        "name": "payments-service"
+      },
+      "labels": [
+        "bug",
+        "factory-ready"
+      ],
+      "branch": null,
+      "base_branch": null,
+      "text": "Please refund."
+    },
+    "thread": {
+      "kind": "github_issue",
+      "external_ref": "acme/payments-service#412"
+    },
+    "raw": {
+      "action": "opened",
+      "label": {
+        "name": "factory-ready"
+      },
+      "issue": {
+        "id": 4120,
+        "number": 412,
+        "title": "Add refunds",
+        "body": "Please refund.",
+        "html_url": "https://github.com/acme/payments-service/issues/412",
+        "updated_at": "2026-01-02T03:05:06Z",
+        "labels": [
+          {
+            "name": "bug"
+          },
+          {
+            "name": "factory-ready"
+          }
+        ]
+      },
+      "repository": {
+        "id": 100,
+        "name": "payments-service",
+        "full_name": "acme/payments-service",
+        "owner": {
+          "login": "acme",
+          "id": 10,
+          "type": "Organization"
+        }
+      },
+      "sender": {
+        "login": "octocat",
+        "id": 1,
+        "type": "User"
+      }
+    }
+  }
+]

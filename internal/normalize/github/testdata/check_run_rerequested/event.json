@@ -1,0 +1,72 @@
+[
+  {
+    "provider": "github",
+    "event": "check_run_rerequested",
+    "delivery_id": "dlv_check_run_rerequested",
+    "occurred_at": "2026-01-02T08:00:00Z",
+    "actor": {
+      "provider_id": "41898282",
+      "handle": "github-actions[bot]",
+      "factory_user_id": null
+    },
+    "subject": {
+      "kind": "check_run",
+      "id": "321",
+      "title": "ci",
+      "url": "https://github.com/acme/payments-service/runs/321",
+      "repo": {
+        "code_forge": "GITHUB",
+        "owner": "acme",
+        "name": "payments-service"
+      },
+      "branch": "refunds",
+      "base_branch": "main"
+    },
+    "thread": {
+      "kind": "github_issue",
+      "external_ref": "acme/payments-service#77"
+    },
+    "raw": {
+      "action": "rerequested",
+      "check_run": {
+        "id": 321,
+        "name": "ci",
+        "head_sha": "abc123",
+        "html_url": "https://github.com/acme/payments-service/runs/321",
+        "status": "queued",
+        "started_at": "2026-01-02T08:00:00Z",
+        "pull_requests": [
+          {
+            "number": 77,
+            "head": {
+              "ref": "refunds",
+              "sha": "abc123"
+            },
+            "base": {
+              "ref": "main"
+            }
+          }
+        ],
+        "check_suite": {
+          "head_branch": "refunds",
+          "head_sha": "abc123"
+        }
+      },
+      "repository": {
+        "id": 100,
+        "name": "payments-service",
+        "full_name": "acme/payments-service",
+        "owner": {
+          "login": "acme",
+          "id": 10,
+          "type": "Organization"
+        }
+      },
+      "sender": {
+        "login": "github-actions[bot]",
+        "id": 41898282,
+        "type": "Bot"
+      }
+    }
+  }
+]

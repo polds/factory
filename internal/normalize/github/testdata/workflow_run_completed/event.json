@@ -1,0 +1,62 @@
+[
+  {
+    "provider": "github",
+    "event": "workflow_run_completed",
+    "delivery_id": "dlv_workflow_run_completed",
+    "occurred_at": "2026-01-02T10:00:00Z",
+    "actor": {
+      "provider_id": "1",
+      "handle": "octocat",
+      "factory_user_id": null
+    },
+    "subject": {
+      "kind": "workflow_run",
+      "id": "888",
+      "title": "CI",
+      "url": "https://github.com/acme/payments-service/actions/runs/888",
+      "repo": {
+        "code_forge": "GITHUB",
+        "owner": "acme",
+        "name": "payments-service"
+      },
+      "branch": "main",
+      "base_branch": null
+    },
+    "thread": {
+      "kind": "github_workflow",
+      "external_ref": "acme/payments-service@abc123"
+    },
+    "raw": {
+      "action": "completed",
+      "workflow": {
+        "name": "CI",
+        "path": ".github/workflows/ci.yml"
+      },
+      "workflow_run": {
+        "id": 888,
+        "name": "CI",
+        "head_branch": "main",
+        "head_sha": "abc123",
+        "conclusion": "success",
+        "html_url": "https://github.com/acme/payments-service/actions/runs/888",
+        "updated_at": "2026-01-02T10:00:00Z",
+        "pull_requests": []
+      },
+      "repository": {
+        "id": 100,
+        "name": "payments-service",
+        "full_name": "acme/payments-service",
+        "owner": {
+          "login": "acme",
+          "id": 10,
+          "type": "Organization"
+        }
+      },
+      "sender": {
+        "login": "octocat",
+        "id": 1,
+        "type": "User"
+      }
+    }
+  }
+]
