@@ -87,6 +87,7 @@ integrations:
   - type: slack
     slack:
       autoRespondToThreadReplies: true
+      allowedUserIds: [U0123ABCDEF] # Slack user ids. Empty or absent denies every Slack user (fail-closed).
   - type: linear                    # linear and jira are mutually exclusive
 
 secrets: [SENTRY_AUTH_TOKEN]        # granted to every agent
@@ -150,6 +151,10 @@ cloudProviders:
     workloadIdentityFederationProviderId: factory-provider
     serviceAccountEmail: factory-runs@acme.iam.gserviceaccount.com
 ```
+
+`integrations[].slack.allowedUserIds` lists the Slack user ids that may continue
+work by replying in a factory thread. An empty list, and omitting the key, both
+deny every Slack user (fail-closed).
 
 **M3 applied.** The loader applies `pipeline:`, routers, and skills. It no
 longer warns that those keys are not applied in M2. Automations, scorers, and
