@@ -1,0 +1,24 @@
+{
+  "provider": "slack",
+  "event": "member_joined_channel",
+  "delivery_id": "EvJOIN",
+  "occurred_at": "2020-09-13T12:26:46Z",
+  "actor": {"provider_id": "U0HUMAN"},
+  "subject": {
+    "kind": "member",
+    "id": "1600000006.000400"
+  },
+  "thread": {
+    "kind": "slack_thread",
+    "external_ref": "slack:T0FACTORY/C0FACTORY/1600000006.000400"
+  },
+  "raw": {
+    "type": "member_joined_channel",
+    "user": "U0HUMAN",
+    "channel": "C0FACTORY",
+    "channel_type": "C",
+    "team": "T0FACTORY",
+    "inviter": "U0OTHER",
+    "event_ts": "1600000006.000400"
+  }
+}

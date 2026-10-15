@@ -1,0 +1,25 @@
+{
+  "provider": "slack",
+  "event": "message_mpim",
+  "delivery_id": "EvMSGMPIM",
+  "occurred_at": "2020-09-13T12:26:40Z",
+  "actor": {"provider_id": "U0HUMAN"},
+  "subject": {
+    "kind": "message",
+    "id": "1600000000.000100",
+    "text": "Hello group DM"
+  },
+  "thread": {
+    "kind": "slack_thread",
+    "external_ref": "slack:T0FACTORY/G0MPIM/1600000000.000100"
+  },
+  "raw": {
+    "type": "message",
+    "user": "U0HUMAN",
+    "text": "Hello group DM",
+    "ts": "1600000000.000100",
+    "channel": "G0MPIM",
+    "channel_type": "mpim",
+    "event_ts": "1600000000.000100"
+  }
+}

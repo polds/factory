@@ -1,0 +1,19 @@
+{
+  "type": "event_callback",
+  "team_id": "T0FACTORY",
+  "api_app_id": "A0FACTORY",
+  "event_id": "EvMSGDM",
+  "event_time": 1600000000,
+  "authorizations": [
+    {"team_id": "T0FACTORY", "user_id": "U0BOT", "is_bot": true}
+  ],
+  "event": {
+    "type": "message",
+    "user": "U0HUMAN",
+    "text": "Hello app home",
+    "ts": "1600000000.000100",
+    "channel": "D0HOME",
+    "channel_type": "app_home",
+    "event_ts": "1600000000.000100"
+  }
+}

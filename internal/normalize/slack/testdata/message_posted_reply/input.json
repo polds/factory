@@ -1,0 +1,21 @@
+{
+  "type": "event_callback",
+  "team_id": "T0FACTORY",
+  "api_app_id": "A0FACTORY",
+  "event_id": "EvMSGREPLY",
+  "event_time": 1600000001,
+  "authorizations": [
+    {"team_id": "T0FACTORY", "user_id": "U0BOT", "is_bot": true}
+  ],
+  "event": {
+    "type": "message",
+    "user": "U0HUMAN",
+    "text": "A reply in the thread",
+    "ts": "1600000001.000200",
+    "thread_ts": "1600000000.000100",
+    "channel": "C0FACTORY",
+    "channel_type": "channel",
+    "event_ts": "1600000001.000200",
+    "client_msg_id": "msg-reply-1"
+  }
+}

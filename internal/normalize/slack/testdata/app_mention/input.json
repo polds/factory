@@ -1,0 +1,18 @@
+{
+  "type": "event_callback",
+  "team_id": "T0FACTORY",
+  "api_app_id": "A0FACTORY",
+  "event_id": "EvAPPMENTION",
+  "event_time": 1600000002,
+  "authorizations": [
+    {"team_id": "T0FACTORY", "user_id": "U0BOT", "is_bot": true}
+  ],
+  "event": {
+    "type": "app_mention",
+    "user": "U0HUMAN",
+    "text": "<@U0BOT> please look at the payments bug",
+    "ts": "1600000002.000150",
+    "channel": "C0FACTORY",
+    "event_ts": "1600000002.000150"
+  }
+}
