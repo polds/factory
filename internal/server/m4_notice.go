@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"regexp"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -12,8 +12,6 @@ import (
 	"github.com/polds/factory/internal/outbound"
 	"github.com/polds/factory/internal/store"
 )
-
-var pullURLRe = regexp.MustCompile(`https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+`)
 
 func (s *Server) overlayOf(id string) (runOverlay, bool) {
 	if id == "" {
@@ -183,8 +181,8 @@ func (s *Server) noteIngest(ctx context.Context, runID string, lines [][]byte) {
 		if ev.Type == "findings" || ev.Type == "review.findings" {
 			s.notify(ctx, outbound.KindFindings, item, run.ID, ev.Text, "")
 		}
-		if pr := pullURLRe.Find(line); pr != nil {
-			s.recordPullURL(ctx, item.ID, string(pr))
+		if pr := githubPullURL(line); pr != "" {
+			s.recordPullURL(ctx, item.ID, pr)
 		}
 	}
 }
@@ -260,4 +258,82 @@ func parseIssueRef(ref string) (repo string, number int, ok bool) {
 		return "", 0, false
 	}
 	return owner + "/" + name, n, true
+}
+
+// githubPullURL returns the first https://github.com/{owner}/{repo}/pull/{n}
+// URL embedded in line. The host comes from the parsed URL.
+func githubPullURL(line []byte) string {
+	const prefix = "https://"
+	s := string(line)
+	for from := 0; from < len(s); {
+		rel := strings.Index(s[from:], prefix)
+		if rel < 0 {
+			return ""
+		}
+		start := from + rel
+		end := start + len(prefix)
+		for end < len(s) && pullURLByte(s[end]) {
+			end++
+		}
+		if got, ok := canonicalGitHubPull(s[start:end]); ok {
+			return got
+		}
+		from = start + len(prefix)
+	}
+	return ""
+}
+
+func pullURLByte(b byte) bool {
+	if b <= ' ' || b == 0x7f {
+		return false
+	}
+	switch b {
+	case '"', '\'', '<', '>', '\\', ',', ';', ')', ']':
+		return false
+	default:
+		return true
+	}
+}
+
+func canonicalGitHubPull(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Hostname(), "github.com") || u.User != nil {
+		return "", false
+	}
+	parts := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
+	if len(parts) < 4 || parts[2] != "pull" {
+		return "", false
+	}
+	owner, name, num := parts[0], parts[1], parts[3]
+	if !githubPathSegment(owner) || !githubPathSegment(name) || !decimalID(num) {
+		return "", false
+	}
+	return "https://github.com/" + owner + "/" + name + "/pull/" + num, true
+}
+
+func githubPathSegment(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '.', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func decimalID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
