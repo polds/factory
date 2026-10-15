@@ -748,9 +748,18 @@ sys.exit(1)
 PY
 }
 
+filter_task_lines() {
+  python3 -c 'import re,sys
+pat = re.compile(r"^task_[0-9A-Z]{26}$")
+for line in sys.stdin:
+    field = line.split(" ", 1)[0].strip()
+    if pat.fullmatch(field):
+        print(field)'
+}
+
 task_ids() {
   "$FACTORYCTL" task list --factory "$FACTORY_NAME" 2>>"$WORK/factoryctl-list.err" |
-    awk '/^task_[0-9A-Z]{26}( |$)/ { print $1 }'
+    filter_task_lines
 }
 
 one_task_id() {
@@ -892,9 +901,9 @@ import sys
 path, url = sys.argv[1], sys.argv[2]
 
 
-def curl(message, dest):
+def curl(message, dest, pause):
     payload = json.dumps({"message": message})
-    return (
+    command = (
         "curl -fsS -m 20 -o "
         + dest
         + " -X POST "
@@ -904,12 +913,18 @@ def curl(message, dest):
         + " -d "
         + json.dumps(payload)
     )
+    if pause:
+        # The intake run uses this model too. The pause keeps the first
+        # commit visible until the driver posts the pull_request delivery.
+        command += " && sleep 5"
+    return command
 
 
 steps = [
-    {"tool": "bash", "args": {"command": curl("m4 commit", "/tmp/m4-commit.json")}},
+    {"final": "intake: scope recorded"},
+    {"tool": "bash", "args": {"command": curl("m4 commit", "/tmp/m4-commit.json", True)}},
     {"final": "building: first change recorded"},
-    {"tool": "bash", "args": {"command": curl("m4 follow-up", "/tmp/m4-follow.json")}},
+    {"tool": "bash", "args": {"command": curl("m4 follow-up", "/tmp/m4-follow.json", False)}},
     {"final": "building: follow-up recorded"},
 ]
 with open(path, "w", encoding="utf-8") as fh:

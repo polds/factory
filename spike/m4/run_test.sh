@@ -70,6 +70,21 @@ case_host_linux() {
   assert_eq "$(host_for_tasks "Ubuntu 24.04.1 LTS" "172.17.0.1")" "172.17.0.1"
 }
 
+case_task_lines() {
+  local got=""
+  got="$(printf '%s\n' 'task_01M4Z4NA6FBSV8SZHVTA2P8NAT stage=building status=open title=Hello' 'noise' | filter_task_lines)"
+  assert_eq "$got" "task_01M4Z4NA6FBSV8SZHVTA2P8NAT"
+}
+
+case_building_script() {
+  local tmp="" first=""
+  tmp="$(mktemp)"
+  write_building_script "$tmp" "http://172.17.0.1:18080/_spike/commits"
+  first="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[0]["final"])' "$tmp")"
+  rm -f "$tmp"
+  assert_eq "$first" "intake: scope recorded"
+}
+
 case_no_gnu_flags() {
   if grep -n -E '(grep[[:space:]]+-P|sed[[:space:]]+-i|[[:space:]]mapfile[[:space:]]|^mapfile[[:space:]]|(^|[[:space:]])timeout[[:space:]])' \
     "$SCRIPT" "$HERE/run_test.sh"; then
@@ -83,6 +98,8 @@ run_case sign_github case_sign_github
 run_case sign_slack case_sign_slack
 run_case host_desktop case_host_desktop
 run_case host_linux case_host_linux
+run_case task_lines case_task_lines
+run_case building_script case_building_script
 run_case no_gnu_flags case_no_gnu_flags
 
 echo
