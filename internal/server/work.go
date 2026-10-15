@@ -59,7 +59,7 @@ func (s *Server) CreateTask(ctx context.Context, factoryID string, req api.TaskR
 	if err != nil {
 		return api.Task{}, err
 	}
-	if _, err := s.applyEffects(ctx, item, effects, "", ""); err != nil {
+	if _, err := s.applyEffects(ctx, item, effects, ""); err != nil {
 		return api.Task{}, err
 	}
 	return s.taskView(ctx, item)
@@ -121,7 +121,7 @@ func (s *Server) CancelTask(ctx context.Context, factoryID, id string) (api.Task
 		if err != nil {
 			return err
 		}
-		cancel, err := s.applyEffects(ctx, updated, effects, "", "")
+		cancel, err := s.applyEffects(ctx, updated, effects, "")
 		if err != nil {
 			return err
 		}
@@ -219,7 +219,7 @@ func (s *Server) DecideApproval(ctx context.Context, id, decision, decidedBy, no
 		s.orchMu.Unlock()
 		return api.Approval{}, err
 	}
-	if _, err := s.applyEffects(ctx, updated, effects, "", ""); err != nil {
+	if _, err := s.applyEffects(ctx, updated, effects, ""); err != nil {
 		s.orchMu.Unlock()
 		return api.Approval{}, err
 	}
@@ -278,7 +278,7 @@ func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
 		s.log.Error("work item stage", "work_item_id", item.ID, "err", err)
 		return
 	}
-	cancel, err := s.applyEffects(ctx, updated, effects, run.ID, "")
+	cancel, err := s.applyEffects(ctx, updated, effects, run.ID)
 	s.orchMu.Unlock()
 	if err != nil {
 		s.log.Error("orchestrator effect", "work_item_id", item.ID, "run_id", runID, "err", err)
@@ -289,8 +289,9 @@ func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
 	}
 }
 
-// onQuestion suspends the work item and releases the worker slot. The run
-// stays assigned so the logical execution is not retried or finished.
+// onQuestion suspends the work item and releases the worker slot. The input
+// request and awaiting_input status commit together. The execution ends and
+// the run leaves the queue, so it is not failed and not requeued.
 func (s *Server) onQuestion(ctx context.Context, runID string) {
 	run, err := s.store.GetRun(ctx, runID)
 	if err != nil || run.WorkItemID == "" {
@@ -301,6 +302,14 @@ func (s *Server) onQuestion(ctx context.Context, runID string) {
 	item, err := s.store.GetWorkItem(ctx, run.WorkItemID)
 	if err != nil {
 		s.log.Error("question", "run_id", runID, "err", err)
+		return
+	}
+	if item.Status == store.WorkItemAwaitingInput && item.SuspendedRunID == run.ID {
+		if err := s.parkSuspendedRun(ctx, run.ID); err != nil {
+			s.log.Error("question", "work_item_id", item.ID, "err", err)
+			return
+		}
+		s.releaseWorkerSlot(run.ID)
 		return
 	}
 	if item.Status != store.WorkItemOpen {
@@ -316,19 +325,91 @@ func (s *Server) onQuestion(ctx context.Context, runID string) {
 		s.log.Error("question", "work_item_id", item.ID, "err", err)
 		return
 	}
-	next, effects, err := step(def, state, orchestrator.AskInput{})
+	next, _, err := step(def, state, orchestrator.AskInput{})
 	if err != nil {
 		s.log.Info("question ignored", "work_item_id", item.ID, "err", err)
 		return
 	}
-	updated, err := s.commitStep(ctx, item, next, effects)
+	if next.Status != orchestrator.StatusAwaitingInput {
+		s.log.Error("question", "work_item_id", item.ID, "status", next.Status)
+		return
+	}
+	question, err := s.latestQuestion(ctx, run.ID)
 	if err != nil {
 		s.log.Error("question", "work_item_id", item.ID, "err", err)
 		return
 	}
-	if _, err := s.applyEffects(ctx, updated, effects, "", run.ID); err != nil {
-		s.log.Error("question", "work_item_id", item.ID, "err", err)
+	if question == "" {
+		s.log.Info("question ignored", "work_item_id", item.ID, "err", "empty question")
+		return
 	}
+	execID, err := s.liveExecution(ctx, run.ID)
+	if err != nil {
+		s.log.Error("question", "work_item_id", item.ID, "err", err)
+		return
+	}
+	if execID == "" {
+		s.log.Error("question", "work_item_id", item.ID, "err", "no live execution")
+		return
+	}
+	if _, err := s.store.CreateInputRequest(ctx, item.ID, run.ID, execID, question); err != nil {
+		s.log.Error("question", "work_item_id", item.ID, "err", err)
+		return
+	}
+	if err := s.parkSuspendedRun(ctx, run.ID); err != nil {
+		s.log.Error("question", "work_item_id", item.ID, "err", err)
+		return
+	}
+	s.releaseWorkerSlot(run.ID)
+	s.log.Info("work item awaiting input", "work_item_id", item.ID, "run_id", run.ID)
+}
+
+// AnswerInput records an answer and resumes the parked run. The same answer
+// returns the stored row and does not start another execution. A different
+// answer returns api.ErrConflict. The stage agent is resolved before the
+// answer is stored, so a missing agent leaves the request pending.
+func (s *Server) AnswerInput(ctx context.Context, workItemID, answer, answeredBy string) (store.InputRequest, error) {
+	s.orchMu.Lock()
+	defer s.orchMu.Unlock()
+	item, err := s.store.GetWorkItem(ctx, workItemID)
+	if err != nil {
+		return store.InputRequest{}, orchErr(err)
+	}
+	pending, pendErr := s.store.PendingInputRequest(ctx, workItemID)
+	if pendErr != nil && !errors.Is(pendErr, store.ErrNotFound) {
+		return store.InputRequest{}, pendErr
+	}
+	agentID := ""
+	if pendErr == nil {
+		agentID, err = s.stageAgentID(item, item.FactoryID)
+		if err != nil {
+			return store.InputRequest{}, err
+		}
+		def, err := s.pipelineDef()
+		if err != nil {
+			return store.InputRequest{}, err
+		}
+		state, err := s.loadState(ctx, item)
+		if err != nil {
+			return store.InputRequest{}, err
+		}
+		if _, _, err := step(def, state, orchestrator.ResumeInput{}); err != nil {
+			return store.InputRequest{}, orchErr(err)
+		}
+		// ExpireLeases can requeue a run that still has a queue row from the
+		// gap before park. Put it back before the answer is stored.
+		if err := s.parkSuspendedRun(ctx, pending.RunID); err != nil {
+			return store.InputRequest{}, err
+		}
+	}
+	stored, err := s.store.AnswerInputRequest(ctx, workItemID, answer, answeredBy)
+	if err != nil {
+		return store.InputRequest{}, orchErr(err)
+	}
+	if err := s.resumeStored(ctx, stored, agentID); err != nil {
+		return store.InputRequest{}, err
+	}
+	return stored, nil
 }
 
 func (s *Server) withWorkItem(ctx context.Context, factoryID, id string, fn func(store.WorkItem) error) error {
@@ -436,9 +517,8 @@ func (s *Server) commitState(ctx context.Context, item store.WorkItem, next orch
 }
 
 // applyEffects performs the single effect Step returned. parentRunID is the
-// run that caused a StartRun, when there is one. suspendRunID is the run
-// whose worker slot AskInput releases. The logical run is not finished.
-func (s *Server) applyEffects(ctx context.Context, item store.WorkItem, effects []orchestrator.Effect, parentRunID, suspendRunID string) (bool, error) {
+// run that caused a StartRun, when there is one.
+func (s *Server) applyEffects(ctx context.Context, item store.WorkItem, effects []orchestrator.Effect, parentRunID string) (bool, error) {
 	cancel := false
 	for _, effect := range effects {
 		switch eff := effect.(type) {
@@ -462,10 +542,7 @@ func (s *Server) applyEffects(ctx context.Context, item store.WorkItem, effects 
 		case orchestrator.Escalate:
 			s.log.Info("work item escalated", "work_item_id", item.ID, "stage", item.Stage, "revision_count", item.RevisionCount)
 		case orchestrator.Noop:
-			if suspendRunID != "" {
-				s.releaseWorkerSlot(suspendRunID)
-				s.log.Info("work item awaiting input", "work_item_id", item.ID, "run_id", suspendRunID)
-			}
+			continue
 		default:
 			return false, fmt.Errorf("server: unhandled orchestrator effect %T", effect)
 		}
@@ -654,6 +731,10 @@ func (s *Server) cancelWorkItemRuns(ctx context.Context, workItemID string) {
 		}
 		if _, err := s.CancelRun(ctx, run.ID); err != nil && !errors.Is(err, api.ErrConflict) {
 			s.log.Error("cancel stage run", "work_item_id", workItemID, "run_id", run.ID, "err", err)
+			continue
+		}
+		if err := s.settleParkedCancel(ctx, run.ID); err != nil {
+			s.log.Error("settle parked cancel", "work_item_id", workItemID, "run_id", run.ID, "err", err)
 		}
 	}
 }
@@ -675,12 +756,348 @@ func (s *Server) clearSuspended(runID string) {
 
 func (s *Server) suspendedSnapshot() map[string]struct{} {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	out := make(map[string]struct{}, len(s.suspended))
 	for id := range s.suspended {
 		out[id] = struct{}{}
 	}
+	s.mu.Unlock()
+	if s.store == nil {
+		return out
+	}
+	ids, err := s.store.ListSuspendedRunIDs(context.WithoutCancel(s.ctx))
+	if err != nil {
+		if s.ctx.Err() == nil && s.log != nil {
+			s.log.Error("suspended runs", "err", err)
+		}
+		return out
+	}
+	for _, id := range ids {
+		out[id] = struct{}{}
+	}
+	s.reconcileSuspended(context.WithoutCancel(s.ctx), ids)
 	return out
+}
+
+// reconcileSuspended parks a run that still has a queue row after the input
+// request committed, and finishes a parked run whose cancel was only flagged.
+// ExpireLeases does not read suspended_run_id, so a leftover row would
+// otherwise be requeued. The leader calls this after ExpireLeases, and again
+// on startup when the loop ticks.
+func (s *Server) reconcileSuspended(ctx context.Context, ids []string) {
+	for _, id := range ids {
+		if err := s.parkSuspendedRun(ctx, id); err != nil {
+			if ctx.Err() == nil && s.log != nil {
+				s.log.Error("repark suspended run", "run_id", id, "err", err)
+			}
+			continue
+		}
+		if err := s.settleParkedCancel(ctx, id); err != nil && ctx.Err() == nil && s.log != nil {
+			s.log.Error("settle parked cancel", "run_id", id, "err", err)
+		}
+	}
+}
+
+// settleParkedCancel makes a cancel-requested parked run terminal in the
+// database. A parked run has no worker, so waiting for the in-memory grace
+// timer would lose the cancel across a restart.
+func (s *Server) settleParkedCancel(ctx context.Context, runID string) error {
+	if !s.runSuspended(ctx, runID) {
+		return nil
+	}
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if isTerminalStatus(run.Status) || !run.CancelRequested {
+		return nil
+	}
+	live, err := s.liveExecution(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if live != "" {
+		return nil
+	}
+	s.settleCancel(ctx, runID)
+	s.clearSuspended(runID)
+	return nil
+}
+
+func (s *Server) runSuspended(ctx context.Context, runID string) bool {
+	s.mu.Lock()
+	_, ok := s.suspended[runID]
+	s.mu.Unlock()
+	if ok {
+		return true
+	}
+	var n int
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM work_items WHERE suspended_run_id = $1`, runID).Scan(&n)
+	return err == nil && n > 0
+}
+
+func (s *Server) latestQuestion(ctx context.Context, runID string) (string, error) {
+	var text string
+	err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(payload_json->>'text', '')
+		FROM run_events
+		WHERE run_id = $1 AND type = 'question'
+		ORDER BY seq DESC
+		LIMIT 1`, runID).Scan(&text)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(text), nil
+}
+
+// runStillSuspended locks the work item that still names this run, if any.
+// A concurrent answer clears suspended_run_id under the same row lock, so
+// the caller observes the committed value and does not park a resumed run.
+func (s *Server) runStillSuspended(ctx context.Context, tx pgx.Tx, runID string) (bool, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id FROM work_items
+		WHERE suspended_run_id = $1
+		FOR UPDATE`, runID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	held := false
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return false, err
+		}
+		held = true
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return held, nil
+}
+
+// parkSuspendedRun ends the live execution and removes the queue row.
+// executions.state has no suspended value, so the attempt ends as orphaned.
+// The run stays running and off the queue: lease expiry has nothing to
+// requeue, and a restart does not see a queued run. The work item's
+// suspended_* columns are the durable record.
+//
+// The leader loads suspended run ids, then waits on leaseMu. AnswerInput
+// can clear suspended_run_id and queue the resume in that gap. Parking is
+// conditional on the work item still naming this run, in this transaction,
+// so that stale id does not delete the resume's queue row.
+func (s *Server) parkSuspendedRun(ctx context.Context, runID string) error {
+	s.leaseMu.Lock()
+	defer s.leaseMu.Unlock()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var queued string
+	err = tx.QueryRow(ctx, `SELECT run_id FROM run_queue WHERE run_id = $1 FOR UPDATE`, runID).Scan(&queued)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1 FOR UPDATE`, runID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	switch status {
+	case store.StatusSucceeded, store.StatusFailed, store.StatusCancelled:
+		return tx.Commit(ctx)
+	}
+	still, err := s.runStillSuspended(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
+	if !still {
+		return tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE executions
+		SET state = $2, ended_at = COALESCE(ended_at, clock_timestamp()), failure_reason = NULL
+		WHERE run_id = $1 AND state IN ($3, $4)`,
+		runID, store.ExecOrphaned, store.ExecAssigned, store.ExecRunning); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE runs
+		SET status = $2, worker_id = NULL, ended_at = NULL, failure_reason = NULL
+		WHERE id = $1 AND status IN ($3, $4, $2)`,
+		runID, store.StatusRunning, store.StatusQueued, store.StatusAssigned); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// stageAgentID resolves the pipeline agent for the work item's stage.
+// An empty stage mapping is an error. It does not call resolveAgent with an
+// empty name, which would bind the factory's only agent.
+func (s *Server) stageAgentID(item store.WorkItem, factoryID string) (string, error) {
+	def, err := s.pipelineDef()
+	if err != nil {
+		return "", err
+	}
+	agentName := ""
+	if def.Agents != nil {
+		agentName = strings.TrimSpace(def.Agents[item.Stage])
+	}
+	if agentName == "" {
+		return "", fmt.Errorf("server: stage %q has no agent", item.Stage)
+	}
+	agentID, _, err := s.resolveAgent(agentName, factoryID, s.snapshot())
+	if err != nil {
+		return "", err
+	}
+	return agentID, nil
+}
+
+func (s *Server) resumeStored(ctx context.Context, req store.InputRequest, agentID string) error {
+	run, err := s.store.GetRun(ctx, req.RunID)
+	if err != nil {
+		return orchErr(err)
+	}
+	if agentID == "" {
+		item, err := s.store.GetWorkItem(ctx, run.WorkItemID)
+		if err != nil {
+			return orchErr(err)
+		}
+		agentID, err = s.stageAgentID(item, run.FactoryID)
+		if err != nil {
+			return err
+		}
+	}
+	return s.resumeIfParked(ctx, run, agentID, req.Question, req.Answer)
+}
+
+// resumeIfParked queues one new execution for this answer. A run that lease
+// expiry already put back on the queue is updated in place so the answer
+// still yields one execution. A second call finds that execution and leaves
+// it alone. A pre-answer lease is cleared; a lease taken after the answer
+// was written into the prompt is left in place.
+func (s *Server) resumeIfParked(ctx context.Context, run store.Run, agentID, question, answer string) error {
+	s.leaseMu.Lock()
+	defer s.leaseMu.Unlock()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var queued string
+	err = tx.QueryRow(ctx, `SELECT run_id FROM run_queue WHERE run_id = $1 FOR UPDATE`, run.ID).Scan(&queued)
+	hasQueue := err == nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		hasQueue = false
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+	var status, prompt, factoryID, pool string
+	var priority int
+	err = tx.QueryRow(ctx, `
+		SELECT status, prompt, factory_id, pool, priority
+		FROM runs WHERE id = $1 FOR UPDATE`, run.ID).Scan(&status, &prompt, &factoryID, &pool, &priority)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	switch status {
+	case store.StatusSucceeded, store.StatusFailed, store.StatusCancelled:
+		return tx.Commit(ctx)
+	}
+	var live bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM executions
+			WHERE run_id = $1 AND state IN ($2, $3)
+		)`, run.ID, store.ExecAssigned, store.ExecRunning).Scan(&live); err != nil {
+		return err
+	}
+	section := inputSection(question, answer)
+	if strings.Contains(prompt, section) && (hasQueue || live) {
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		s.clearSuspended(run.ID)
+		return nil
+	}
+	nextPrompt := prompt
+	if !strings.Contains(prompt, section) {
+		if _, err := tx.Exec(ctx, `
+			UPDATE executions
+			SET state = $2, ended_at = COALESCE(ended_at, clock_timestamp()), failure_reason = NULL
+			WHERE run_id = $1 AND state IN ($3, $4)`,
+			run.ID, store.ExecOrphaned, store.ExecAssigned, store.ExecRunning); err != nil {
+			return err
+		}
+		nextPrompt = resumePrompt(prompt, question, answer)
+		if hasQueue {
+			if _, err := tx.Exec(ctx, `UPDATE run_queue SET lease_until = NULL WHERE run_id = $1`, run.ID); err != nil {
+				return err
+			}
+		}
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE runs
+		SET status = $2, agent_id = $3, prompt = $4, worker_id = NULL, ended_at = NULL, failure_reason = NULL
+		WHERE id = $1 AND status IN ($2, $5, $6)`,
+		run.ID, store.StatusQueued, agentID, nextPrompt, store.StatusAssigned, store.StatusRunning)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("server: resume run %s from %s", run.ID, status)
+	}
+	if !hasQueue {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO run_queue (run_id, factory_id, pool, priority, enqueued_at)
+			VALUES ($1, $2, $3, $4, clock_timestamp())`,
+			run.ID, factoryID, pool, priority); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_notify('run_queue', $1)`, run.ID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	s.clearSuspended(run.ID)
+	s.nudge()
+	return nil
+}
+
+func inputSection(question, answer string) string {
+	return "\n# Input\nQuestion: " + question + "\nAnswer: " + answer + "\n"
+}
+
+func resumePrompt(prompt, question, answer string) string {
+	section := inputSection(question, answer)
+	if strings.Contains(prompt, section) {
+		return prompt
+	}
+	var b strings.Builder
+	b.WriteString(prompt)
+	if prompt != "" && !strings.HasSuffix(prompt, "\n") {
+		b.WriteByte('\n')
+	}
+	b.WriteString(section)
+	return b.String()
 }
 
 func withoutSuspended(runs []store.Run, held map[string]struct{}) []store.Run {
@@ -787,7 +1204,7 @@ func orchErr(err error) error {
 		return nil
 	case errors.Is(err, store.ErrNotFound):
 		return api.ErrNotFound
-	case errors.Is(err, store.ErrAlreadyDecided), errors.Is(err, orchestrator.ErrTerminal):
+	case errors.Is(err, store.ErrAlreadyDecided), errors.Is(err, store.ErrConflict), errors.Is(err, orchestrator.ErrTerminal):
 		return api.ErrConflict
 	default:
 		return err

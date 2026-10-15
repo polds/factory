@@ -85,6 +85,16 @@ func (s *Server) Rejected(ctx context.Context, m protocol.TaskRejected) error {
 		s.settleCancel(ctx, m.TaskID)
 		return nil
 	}
+	if s.runSuspended(ctx, m.TaskID) {
+		if err := s.parkSuspendedRun(ctx, m.TaskID); err != nil {
+			s.log.Error("reject suspended run", "task_id", m.TaskID, "err", err)
+			return err
+		}
+		s.releaseWorkerSlot(m.TaskID)
+		s.untrackRun(m.TaskID)
+		s.log.Info("reject leaves suspended run", "task_id", m.TaskID)
+		return nil
+	}
 	if err := s.prepareRequeue(ctx, m.TaskID); err != nil {
 		s.log.Error("prepare requeue", "task_id", m.TaskID, "err", err)
 		return err
@@ -131,6 +141,16 @@ func (s *Server) WorkerGone(ctx context.Context, connID string) {
 		}
 		if run.CancelRequested || isTerminalStatus(run.Status) {
 			s.settleCancel(ctx, id)
+			continue
+		}
+		if s.runSuspended(ctx, id) {
+			if err := s.parkSuspendedRun(ctx, id); err != nil {
+				s.log.Error("disconnect suspended run", "run_id", id, "conn_id", connID, "err", err)
+				continue
+			}
+			s.releaseWorkerSlot(id)
+			s.untrackRun(id)
+			s.log.Info("disconnect leaves suspended run", "run_id", id, "conn_id", connID)
 			continue
 		}
 		if err := s.forceExpire(ctx, id); err != nil {

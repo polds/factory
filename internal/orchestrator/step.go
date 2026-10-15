@@ -126,10 +126,12 @@ type Rejected struct {
 // Cancel stops the work item from any non-terminal status.
 type Cancel struct{}
 
-// AskInput parks an open work item without releasing its run.
+// AskInput parks an open work item. The caller persists the question, ends
+// the execution, and does not requeue the run.
 type AskInput struct{}
 
-// ResumeInput returns an awaiting_input work item to open.
+// ResumeInput returns an awaiting_input work item to open. The caller
+// starts a new execution on the same conversation with the answer.
 type ResumeInput struct{}
 
 // StartRun asks the caller to launch the stage agent.
