@@ -60,6 +60,8 @@ var (
 			"type": leaf(),
 			"slack": {children: map[string]*keySpec{
 				"autoRespondToThreadReplies": leaf(),
+				// Absent or empty denies every Slack user (D12).
+				"allowedUserIds": leaf(),
 			}},
 			"linear": {free: true},
 			"jira":   {free: true},

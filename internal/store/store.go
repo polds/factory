@@ -19,6 +19,10 @@ type Store struct {
 	// the work-item update are written and before commit. A non-nil error
 	// rolls the transaction back. Production leaves it nil.
 	openGateHook func(context.Context) error
+	// intakeHook runs inside EnsureIntake after the first new slot of the
+	// call is written and before commit. A non-nil error rolls the
+	// transaction back. Production leaves it nil.
+	intakeHook func(context.Context) error
 
 	// claims holds one transaction per ClaimReceived batch. The row locks
 	// stay until every id in the batch is passed to MarkDelivery.
@@ -34,6 +38,11 @@ func (s *Store) SetPendingLookupHookForTest(fn func(context.Context)) {
 // SetOpenGateHookForTest sets openGateHook. Pass nil to clear it.
 func (s *Store) SetOpenGateHookForTest(fn func(context.Context) error) {
 	s.openGateHook = fn
+}
+
+// SetIntakeHookForTest sets intakeHook. Pass nil to clear it.
+func (s *Store) SetIntakeHookForTest(fn func(context.Context) error) {
+	s.intakeHook = fn
 }
 
 // Open connects to url and checks the connection. Call Migrate before use.

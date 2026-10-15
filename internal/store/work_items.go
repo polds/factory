@@ -51,52 +51,79 @@ func scanApproval(row pgx.Row) (Approval, error) {
 // CreateWorkItem inserts a work item. Empty stage defaults to triage, empty
 // status to open, and an empty conversation id is assigned.
 func (s *Store) CreateWorkItem(ctx context.Context, w NewWorkItem) (WorkItem, error) {
+	prepared, err := prepareWorkItem(w)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	return insertPreparedWorkItem(ctx, s.pool, prepared)
+}
+
+type preparedWorkItem struct {
+	id             string
+	conversationID string
+	w              NewWorkItem
+}
+
+type queryRower interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func prepareWorkItem(w NewWorkItem) (preparedWorkItem, error) {
 	if w.FactoryID == "" {
-		return WorkItem{}, fmt.Errorf("store: factory is required")
+		return preparedWorkItem{}, fmt.Errorf("store: factory is required")
 	}
 	if err := validSource(w.Source); err != nil {
-		return WorkItem{}, err
+		return preparedWorkItem{}, err
 	}
 	stage := w.Stage
 	if stage == "" {
 		stage = StageTriage
 	}
 	if err := validStage(stage, false); err != nil {
-		return WorkItem{}, err
+		return preparedWorkItem{}, err
 	}
 	status := w.Status
 	if status == "" {
 		status = WorkItemOpen
 	}
 	if err := validWorkItemStatus(status); err != nil {
-		return WorkItem{}, err
+		return preparedWorkItem{}, err
 	}
 	if w.RevisionCount < 0 {
-		return WorkItem{}, fmt.Errorf("store: revision count must be >= 0")
+		return preparedWorkItem{}, fmt.Errorf("store: revision count must be >= 0")
 	}
 	conversationID := w.ConversationID
 	if conversationID == "" {
 		var err error
 		conversationID, err = NewID(PrefixConversation)
 		if err != nil {
-			return WorkItem{}, err
+			return preparedWorkItem{}, err
 		}
 	}
 	id, err := NewID(PrefixWorkItem)
 	if err != nil {
-		return WorkItem{}, err
+		return preparedWorkItem{}, err
 	}
-	if _, err := s.pool.Exec(ctx, `
+	w.Stage = stage
+	w.Status = status
+	return preparedWorkItem{id: id, conversationID: conversationID, w: w}, nil
+}
+
+// insertPreparedWorkItem writes one work item on q. q is a pool or a transaction.
+func insertPreparedWorkItem(ctx context.Context, q queryRower, p preparedWorkItem) (WorkItem, error) {
+	item, err := scanWorkItem(q.QueryRow(ctx, `
 		INSERT INTO work_items (
 		    id, factory_id, source, source_ref, title, body, stage, status,
 		    created_by, conversation_id, revision_count)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		id, w.FactoryID, w.Source, w.SourceRef, w.Title, w.Body, stage, status,
-		w.CreatedBy, conversationID, w.RevisionCount,
-	); err != nil {
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING `+workItemColumns,
+		p.id, p.w.FactoryID, p.w.Source, p.w.SourceRef, p.w.Title, p.w.Body,
+		p.w.Stage, p.w.Status, p.w.CreatedBy, p.conversationID, p.w.RevisionCount,
+	))
+	if err != nil {
 		return WorkItem{}, fmt.Errorf("store: create work item: %w", err)
 	}
-	return s.GetWorkItem(ctx, id)
+	return item, nil
 }
 
 // GetWorkItem returns the work item or ErrNotFound.
@@ -385,7 +412,8 @@ func (s *Store) ListApprovals(ctx context.Context, factoryID string, pendingOnly
 
 func validSource(source string) error {
 	switch source {
-	case SourceIssue, SourceManual, SourceAPI, SourceWebhook, SourceChat, SourceSchedule, SourceMCP:
+	case SourceIssue, SourceManual, SourceAPI, SourceWebhook, SourceChat, SourceSchedule, SourceMCP,
+		ProviderGitHub, ProviderSlack, ProviderLinear, SourceFactory:
 		return nil
 	default:
 		return fmt.Errorf("store: source %q is not valid", source)

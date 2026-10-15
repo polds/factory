@@ -68,6 +68,8 @@ const (
 	SourceChat     = "chat"
 	SourceSchedule = "schedule"
 	SourceMCP      = "mcp"
+	// SourceFactory is a stage event re-entered by the automation engine.
+	SourceFactory = "factory"
 
 	ProviderGitHub   = "github"
 	ProviderSlack    = "slack"

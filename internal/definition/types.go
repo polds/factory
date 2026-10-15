@@ -211,8 +211,13 @@ type Integration struct {
 }
 
 // SlackIntegration holds Slack integration settings.
+//
+// AllowedUserIDs is the Slack user ids permitted to continue a thread (D12).
+// An absent or empty list denies every Slack user. T30 copies this field to
+// automation.Allow.SlackUserIDs. A missing list is not "allow every non-bot".
 type SlackIntegration struct {
-	AutoRespondToThreadReplies bool `json:"autoRespondToThreadReplies,omitempty"`
+	AutoRespondToThreadReplies bool     `json:"autoRespondToThreadReplies,omitempty"`
+	AllowedUserIDs             []string `json:"allowedUserIds,omitempty"`
 }
 
 // AgentDefaults are factory-wide defaults. An agent's model and harness
