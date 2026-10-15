@@ -25,6 +25,8 @@ func cmdTask(args []string, stdout, stderr io.Writer, getenv func(string) string
 		return cmdTaskCancel(args[1:], stdout, stderr, getenv)
 	case "watch":
 		return cmdTaskWatch(args[1:], stdout, stderr, getenv)
+	case "answer":
+		return cmdTaskAnswer(args[1:], stdout, stderr, getenv)
 	default:
 		taskUsage(stderr)
 		return 2
@@ -39,7 +41,51 @@ Commands:
   list --factory NAME [--stage STAGE] [--status STATUS]
   get --factory NAME TASK_ID
   cancel --factory NAME TASK_ID
-  watch --factory NAME TASK_ID`)
+  watch --factory NAME TASK_ID
+  answer TASK_ID --text TEXT`)
+}
+
+func cmdTaskAnswer(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	fs := flag.NewFlagSet("task answer", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	text := fs.String("text", "", "answer text")
+	fs.Usage = func() {
+		say(stderr, "usage: factoryctl task answer TASK_ID --text TEXT")
+	}
+	flagArgs, pos, err := reorderArgs(args, helpFlags)
+	if err != nil {
+		say(stderr, "factoryctl:", err)
+		fs.Usage()
+		return 2
+	}
+	if err := fs.Parse(flagArgs); err != nil {
+		return 2
+	}
+	if len(pos) != 1 || *text == "" {
+		if len(pos) != 1 {
+			say(stderr, "factoryctl: task answer requires TASK_ID")
+		}
+		if *text == "" {
+			say(stderr, "factoryctl: --text is required")
+		}
+		fs.Usage()
+		return 2
+	}
+	c, err := clientFromEnv(getenv)
+	if err != nil {
+		say(stderr, "factoryctl:", err)
+		return 2
+	}
+	answer, err := c.AnswerInput(context.Background(), pos[0], *text)
+	if err != nil {
+		say(stderr, "factoryctl:", err)
+		return 1
+	}
+	if _, err := fmt.Fprintln(stdout, answer.WorkItemID); err != nil {
+		say(stderr, "factoryctl:", err)
+		return 1
+	}
+	return 0
 }
 
 func cmdTaskCreate(args []string, stdout, stderr io.Writer, getenv func(string) string) int {

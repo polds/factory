@@ -15,6 +15,10 @@ func execute(args []string, stdout, stderr io.Writer, getenv func(string) string
 		usage(stderr)
 		return 2
 	}
+	if args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		usage(stdout)
+		return 0
+	}
 	switch args[0] {
 	case "harness":
 		return cmdHarness(args[1:], stdout, stderr)
@@ -30,6 +34,10 @@ func execute(args []string, stdout, stderr io.Writer, getenv func(string) string
 		return cmdTask(args[1:], stdout, stderr, getenv)
 	case "approvals":
 		return cmdApprovals(args[1:], stdout, stderr, getenv)
+	case "deliveries":
+		return cmdDeliveries(args[1:], stdout, stderr, getenv)
+	case "schedules":
+		return cmdSchedules(args[1:], stdout, stderr, getenv)
 	default:
 		usage(stderr)
 		return 2
@@ -54,8 +62,14 @@ Commands:
   task get --factory NAME TASK_ID
   task cancel --factory NAME TASK_ID
   task watch --factory NAME TASK_ID
+  task answer TASK_ID --text TEXT
   approvals list --factory NAME
   approvals decide APPROVAL_ID --decision approve|reject [--note TEXT]
+  deliveries list --factory NAME [--unmatched]
+  deliveries replay DELIVERY_ID
+  schedules list [--factory NAME]
+  schedules pause SCHEDULE_ID
+  schedules resume SCHEDULE_ID
 
 Environment:
   FACTORY_URL       control plane base URL (default http://localhost:8080)
