@@ -117,8 +117,10 @@ func validateScheme(mode authMode, name string) error {
 }
 
 // ValidateDeliveryIDHeader accepts an empty name. A set name is at most 64
-// characters, a token per RFC 9110, and not Authorization, Cookie, or any
-// header whose name contains "signature".
+// characters, a token per RFC 9110, and not a credential header.
+// Credential names match store.credentialHeader: Authorization,
+// Proxy-Authorization, Cookie, X-Gitlab-Token, and any name containing
+// "signature" or "secret".
 func ValidateDeliveryIDHeader(name string) error {
 	if name == "" {
 		return nil
@@ -136,10 +138,11 @@ func ValidateDeliveryIDHeader(name string) error {
 }
 
 func rejectedDeliveryHeader(name string) bool {
-	switch strings.ToLower(name) {
-	case "authorization", "cookie":
+	n := strings.ToLower(strings.TrimSpace(name))
+	switch n {
+	case "authorization", "proxy-authorization", "cookie", "x-gitlab-token":
 		return true
 	default:
-		return strings.Contains(strings.ToLower(name), "signature")
+		return strings.Contains(n, "signature") || strings.Contains(n, "secret")
 	}
 }

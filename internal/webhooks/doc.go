@@ -7,16 +7,17 @@
 // is the secret, the lookup key is its SHA-256, and the segment must match
 // charset A-Za-z0-9-._~. The token is never written to a log line. Access
 // logs must pass the request URI through RedactRequestURI, which replaces
-// that path segment with "{redacted}". Handler does this when Config.Log
-// is set.
+// that path segment with "{redacted}" and drops the query string and
+// fragment. Handler does this when Config.Log is set.
 //
 // Verification runs on the raw body before any JSON parse. A failed verify
 // is 401 and is not persisted. The body read is capped at 1 MiB (413,
 // also not persisted). Trigger matching is not done here.
 //
-// deliveryIdHeader, when set, is the dedup id. It is at most 64 characters,
-// a valid HTTP header name, and neither Authorization, Cookie, nor a
-// signature header. When it is empty, the dedup id is
+// deliveryIdHeader, when set, is the dedup id. It is at most 64 characters
+// and a valid HTTP header name. Credential headers are rejected, including
+// Authorization, Proxy-Authorization, Cookie, X-Gitlab-Token, and any name
+// containing "signature" or "secret". When it is empty, the dedup id is
 // hex(SHA-256(raw body)) + "/" + floor(unix seconds / 300). Identical
 // bodies in the same 5-minute bucket are one delivery; the same body in a
 // later bucket is a new delivery. The bucket clock is Config.Now.

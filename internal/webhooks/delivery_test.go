@@ -49,8 +49,10 @@ func TestDeliveryIDUsesHeaderAndRejectsSignatureNames(t *testing.T) {
 	if _, err := DeliveryID("X-CI-Run-Id", nil, []byte("body"), time.Unix(10, 0)); err == nil {
 		t.Fatal("missing header value")
 	}
-	if _, err := DeliveryID("Authorization", h, []byte("body"), time.Unix(10, 0)); err == nil {
-		t.Fatal("authorization accepted")
+	for _, name := range []string{"Authorization", "X-Gitlab-Token", "Proxy-Authorization", "X-Webhook-Secret"} {
+		if _, err := DeliveryID(name, h, []byte("body"), time.Unix(10, 0)); err == nil {
+			t.Fatalf("accepted %s", name)
+		}
 	}
 	if err := ValidateDeliveryIDHeader(strings.Repeat("A", 64)); err != nil {
 		t.Fatal(err)

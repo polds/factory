@@ -174,7 +174,10 @@ func TestApplyHeaderRejection(t *testing.T) {
 		header string
 	}{
 		{name: "authorization", header: "Authorization"},
+		{name: "proxy authorization", header: "Proxy-Authorization"},
 		{name: "cookie", header: "Cookie"},
+		{name: "gitlab token", header: "X-Gitlab-Token"},
+		{name: "webhook secret", header: "X-Webhook-Secret"},
 		{name: "github signature", header: "X-Hub-Signature-256"},
 		{name: "stripe signature", header: "Stripe-Signature"},
 		{name: "standard signature", header: "Webhook-Signature"},

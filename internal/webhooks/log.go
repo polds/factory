@@ -3,7 +3,6 @@ package webhooks
 import (
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -16,25 +15,20 @@ const (
 
 const redactedToken = "{redacted}"
 
-// RedactRequestURI replaces the url_token path segment with "{redacted}".
-// A query value equal to that segment is replaced too. Other characters are
-// left alone, including a short token that happens to occur inside a word.
+// RedactRequestURI returns the request path with the url_token segment
+// replaced by "{redacted}". The query string and fragment are dropped, so a
+// copy of the token in the query, including a percent-encoded copy, is not
+// logged.
 func RedactRequestURI(uri string) string {
-	token := urlTokenSegment(uri)
-	out := replaceURLTokenSegment(uri)
-	if token == "" || token == redactedToken {
-		return out
+	if i := strings.IndexAny(uri, "?#"); i >= 0 {
+		uri = uri[:i]
 	}
-	out = replaceQueryValue(out, token)
-	if decoded, err := url.PathUnescape(token); err == nil && decoded != "" && decoded != token {
-		out = replaceQueryValue(out, decoded)
-	}
-	return out
+	return replaceURLTokenSegment(uri)
 }
 
-// AccessLog writes one line per request with a redacted URI.
-// It records the method, the redacted request URI, and the status.
-// It does not record headers or the body.
+// AccessLog writes one line per request.
+// It records the method, the redacted path, and the status.
+// The query string, fragment, headers, and body are omitted.
 func AccessLog(log *slog.Logger, next http.Handler) http.Handler {
 	if log == nil || next == nil {
 		return next
@@ -55,15 +49,6 @@ func AccessLog(log *slog.Logger, next http.Handler) http.Handler {
 			"status", rec.code,
 		)
 	})
-}
-
-func urlTokenSegment(uri string) string {
-	i := strings.Index(uri, URLTokenPrefix)
-	if i < 0 {
-		return ""
-	}
-	rest := uri[i+len(URLTokenPrefix):]
-	return rest[:segmentEnd(rest)]
 }
 
 func replaceURLTokenSegment(uri string) string {
@@ -93,33 +78,6 @@ func segmentEnd(rest string) int {
 		}
 	}
 	return len(rest)
-}
-
-func replaceQueryValue(uri, token string) string {
-	q := strings.Index(uri, "?")
-	if q < 0 || token == "" {
-		return uri
-	}
-	raw := uri[q+1:]
-	frag := ""
-	if h := strings.Index(raw, "#"); h >= 0 {
-		frag = raw[h:]
-		raw = raw[:h]
-	}
-	parts := strings.Split(raw, "&")
-	for i, part := range parts {
-		key, val, ok := strings.Cut(part, "=")
-		if !ok {
-			if part == token {
-				parts[i] = redactedToken
-			}
-			continue
-		}
-		if val == token {
-			parts[i] = key + "=" + redactedToken
-		}
-	}
-	return uri[:q+1] + strings.Join(parts, "&") + frag
 }
 
 type statusRecorder struct {
