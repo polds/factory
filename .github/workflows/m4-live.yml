@@ -1,0 +1,116 @@
+# Manual M4 CI live run.
+#
+# workflow_dispatch only. This workflow is not part of the required CI
+# check. Dispatch it from the orchestrator; do not run it on
+# pull_request or push.
+#
+# permissions is contents:read only. GITHUB_TOKEN cannot push or open
+# PRs. The job mints one GitHub App installation token and does not
+# print it. MODE=live-ci injects a self-signed synthetic issues.labeled
+# delivery at the local ingress (no inbound tunnel) and asserts a pull
+# request plus a Slack thread post.
+#
+# Repository secrets (values are masked; never printed):
+#   M4_GITHUB_APP_ID            GitHub App id (FACTORY_GITHUB_APP_ID)
+#   M4_GITHUB_APP_PRIVATE_KEY   unencrypted PEM (written to a file)
+#   M4_SLACK_BOT_TOKEN          Slack bot token (FACTORY_SLACK_BOT_TOKEN)
+#   M4_SLACK_CHANNEL            Slack channel id
+#   M1_OPENAI_BASE_URL          OpenAI-compatible endpoint (OPENAI_BASE_URL)
+#   M1_OPENAI_API_KEY           optional; omit the secret to run without a key
+name: m4-live
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: Repository the run opens a draft PR against (M4_REPO)
+        required: false
+        default: polds/factory
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  live:
+    name: m4 live
+    runs-on: ubuntu-latest
+    # Image builds plus four model stages. The spec gate is not required.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Stage the GitHub App private key
+        env:
+          M4_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M4_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${M4_GITHUB_APP_PRIVATE_KEY}" ]]; then
+            echo "M4_GITHUB_APP_PRIVATE_KEY is empty" >&2
+            exit 1
+          fi
+          key_dir="${GITHUB_WORKSPACE}/spike/m4/.work"
+          key_path="${key_dir}/ci-github-app.pem"
+          install -d -m 700 "${key_dir}"
+          printf '%s\n' "${M4_GITHUB_APP_PRIVATE_KEY}" >"${key_path}"
+          # factoryd is uid 65532 and cannot read a mode-600 mount.
+          chmod 644 "${key_path}"
+          printf 'FACTORY_GITHUB_APP_PRIVATE_KEY_FILE=%s\n' "${key_path}" >>"${GITHUB_ENV}"
+      - name: Mint a GitHub App installation token
+        env:
+          FACTORY_GITHUB_APP_ID: ${{ secrets.M4_GITHUB_APP_ID }}
+          M4_REPO: ${{ inputs.repo }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${FACTORY_GITHUB_APP_ID}" ]]; then
+            echo "M4_GITHUB_APP_ID is empty" >&2
+            exit 1
+          fi
+          if [[ ! "${M4_REPO}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "repo must be owner/name" >&2
+            exit 1
+          fi
+          if [[ -z "${FACTORY_GITHUB_APP_PRIVATE_KEY_FILE:-}" || ! -f "${FACTORY_GITHUB_APP_PRIVATE_KEY_FILE}" ]]; then
+            echo "GitHub App private key file is missing" >&2
+            exit 1
+          fi
+          go build -o "${GITHUB_WORKSPACE}/spike/m4/.work/apptoken" ./spike/m4/apptoken
+          token="$("${GITHUB_WORKSPACE}/spike/m4/.work/apptoken" -repo "${M4_REPO}")"
+          if [[ -z "${token}" || "${token}" == *$'\n'* ]]; then
+            echo "apptoken did not mint an installation token" >&2
+            exit 1
+          fi
+          echo "::add-mask::${token}"
+          {
+            printf 'GH_TOKEN=%s\n' "${token}"
+            printf 'FACTORY_SECRET_GH_TOKEN=%s\n' "${token}"
+          } >>"${GITHUB_ENV}"
+      - name: Run the CI live M4 driver
+        env:
+          OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          FACTORY_GITHUB_APP_ID: ${{ secrets.M4_GITHUB_APP_ID }}
+          FACTORY_SLACK_BOT_TOKEN: ${{ secrets.M4_SLACK_BOT_TOKEN }}
+          M4_SLACK_CHANNEL: ${{ secrets.M4_SLACK_CHANNEL }}
+          M4_REPO: ${{ inputs.repo }}
+          FACTORY_GITHUB_TOKEN_MODE: app
+        run: MODE=live-ci ./spike/m4/run.sh
+      # .work is a hidden directory, so the upload must opt in.
+      - name: Upload M4 evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: m4-evidence
+          path: spike/m4/.work/evidence/
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: error
