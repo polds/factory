@@ -13,10 +13,11 @@
 // seconds per message. Each attempt backs off exponentially, at most eight
 // tries, and never waits longer than five minutes.
 //
-// Slack posts for a GitHub-originated item use Config.SlackChannel, the
-// integrations[].slack.channel value (D5). definition.SlackIntegration does
-// not have that field yet. Every post names the agent and the model and
-// links the run under Config.ExternalURL (FACTORY_EXTERNAL_URL).
+// Slack posts for a GitHub-originated item use Config.SlackChannel, copied
+// from definition.SlackIntegration.Channel (json channel). T30 also sets
+// Notice.Channel from the live definition so a later sync is visible
+// without rebuilding the notifier. Every post names the agent and the model
+// and links the run under Config.ExternalURL (FACTORY_EXTERNAL_URL).
 //
 // When Config.Refs, Notice.SlackTeam, and Notice.ConversationID are set, the
 // Slack root is bound as slack:<team>/<channel>/<root ts> so a reply

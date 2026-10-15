@@ -242,7 +242,9 @@ func (s *Server) IngestEvents(ctx context.Context, runID, bearer string, startId
 	s.hub.Publish(runID)
 	if sawQuestion(lines) {
 		s.onQuestion(ctx, runID)
+		s.noteQuestion(ctx, runID, lines)
 	}
+	s.noteIngest(ctx, runID, lines)
 	return nil
 }
 

@@ -566,6 +566,7 @@ type bootOpts struct {
 	gitRef        string
 	gitInterval   time.Duration
 	gitCloner     defsync.Cloner
+	configure     func(*Config)
 }
 
 type env struct {
@@ -644,6 +645,9 @@ func boot(t *testing.T, opts bootOpts) *env {
 	}
 	if opts.maxConcurrent > 0 {
 		cfg.WorkerMaxConcurrent = opts.maxConcurrent
+	}
+	if opts.configure != nil {
+		opts.configure(&cfg)
 	}
 	var s3copy artifacts.S3
 	if opts.s3 != nil {

@@ -47,7 +47,11 @@ func execute(args []string, getenv func(string) string, environ []string, stdout
 }
 
 func cmdServe(getenv func(string) string, environ []string, stderr io.Writer) int {
-	cfg := configFromEnv(getenv, environ)
+	cfg, err := configFromEnv(getenv, environ)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err.Error())
+		return 1
+	}
 	if err := validateServe(cfg.server); err != nil {
 		_, _ = fmt.Fprintln(stderr, err.Error())
 		return 1
@@ -184,6 +188,24 @@ Environment:
   FACTORY_HTTP_ADDR (default :8080)
   FACTORY_HEALTHCHECK_URL (default http://127.0.0.1:8080/healthz)
   FACTORY_LOG_LEVEL
+  FACTORY_GITHUB_APP_ID
+  FACTORY_GITHUB_APP_PRIVATE_KEY_FILE
+  FACTORY_GITHUB_WEBHOOK_SECRET
+  FACTORY_GITHUB_TOKEN_MODE
+      app mints a scoped installation token when a run allowlist includes
+      GH_TOKEN. pat (default) copies FACTORY_SECRET_GH_TOKEN.
+  FACTORY_SLACK_BOT_TOKEN
+  FACTORY_SLACK_SIGNING_SECRET
+  FACTORY_SLACK_TEAM_ID
+      Team id used to bind slack:<team>/<channel>/<root ts>. The definition
+      has a channel and no team id.
+  FACTORY_LINEAR_API_KEY
+  FACTORY_LINEAR_WEBHOOK_SECRET
+  FACTORY_DELIVERY_RETENTION (default 168h)
+  FACTORY_SCHEDULE_CATCHUP (default 1h)
+  FACTORY_GITHUB_API_BASE
+  FACTORY_SLACK_API_BASE
+  FACTORY_LINEAR_API_BASE
 `)
 }
 

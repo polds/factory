@@ -34,6 +34,7 @@ func (s *Server) defsyncLoop() {
 		Dest:    s.cfg.DefinitionPath,
 		Cloner:  cloner,
 		Handler: s.onDefinitionSync,
+		Wake:    s.integ.defWake,
 	}
 	err := p.Run(s.ctx)
 	if err != nil && s.ctx.Err() == nil {
@@ -73,7 +74,19 @@ func (s *Server) redact(text string) string {
 		}
 		text = strings.ReplaceAll(text, value, "[REDACTED]")
 	}
-	for _, value := range []string{s.cfg.InferenceAPIKey, s.cfg.APIKey, s.cfg.WorkerAPIKey, s.cfg.DatabaseURL} {
+	for _, value := range []string{
+		s.cfg.InferenceAPIKey,
+		s.cfg.APIKey,
+		s.cfg.WorkerAPIKey,
+		s.cfg.DatabaseURL,
+		s.cfg.GitHubWebhookSecret,
+		s.cfg.SlackBotToken,
+		s.cfg.SlackSigningSecret,
+		s.cfg.LinearAPIKey,
+		s.cfg.LinearWebhookSecret,
+		s.cfg.S3.SecretKey,
+		s.cfg.S3.AccessKey,
+	} {
 		if len(value) < 4 {
 			continue
 		}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -18,7 +19,7 @@ func TestTaskEnvDefaultGitIdentity(t *testing.T) {
 			Factory: definition.Factory{Secrets: []string{"GH_TOKEN"}},
 		}},
 	}
-	env, err := s.taskEnv(store.Run{ID: "run_test", Prompt: "edit greet"}, boundAgent{
+	env, err := s.taskEnv(context.Background(), store.Run{ID: "run_test", Prompt: "edit greet"}, boundAgent{
 		agent: definition.Agent{MaxTurns: 3},
 	})
 	if err != nil {
@@ -53,7 +54,7 @@ func TestTaskEnvGitIdentityYieldsToAllowlistedSecret(t *testing.T) {
 			Factory: definition.Factory{Secrets: []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"}},
 		}},
 	}
-	env, err := s.taskEnv(store.Run{ID: "run_test", Prompt: "edit greet"}, boundAgent{})
+	env, err := s.taskEnv(context.Background(), store.Run{ID: "run_test", Prompt: "edit greet"}, boundAgent{})
 	if err != nil {
 		t.Fatal(err)
 	}

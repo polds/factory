@@ -20,6 +20,17 @@ const (
 
 	defaultCancelGrace = 60 * time.Second
 
+	// defaultDeliveryRetention is D11: matched deliveries are kept for seven days.
+	defaultDeliveryRetention = 7 * 24 * time.Hour
+	// defaultScheduleCatchUp is the D8 window.
+	defaultScheduleCatchUp = time.Hour
+
+	tokenModeApp = "app"
+	tokenModePAT = "pat"
+
+	dispatchInterval = 200 * time.Millisecond
+	cronLeaseName    = "factory-cron"
+
 	// serverEventBase is above any harness X-Factory-Event-Index so a
 	// server-written event cannot collide with an ingested batch.
 	serverEventBase = 1_000_000_000
