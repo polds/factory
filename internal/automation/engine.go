@@ -19,21 +19,23 @@ import (
 const maxEventDepth = 8
 
 // Engine matches events to automations and starts or continues work.
-// Handle is safe for concurrent use. Idempotency of one automation plus
-// one delivery lasts for the life of this Engine.
+// Handle is safe for concurrent use. Idempotency lives in Store, so a
+// second engine and a re-claimed delivery observe the same rows.
 type Engine struct {
 	Store Store
-	// Tree returns the applied definition. Handle calls it for every event
-	// and caches compiled matchers by Digest.
+	// Answer resumes a parked run. T30 sets an adapter around
+	// (*server.Server).AnswerInput. See ResumingAnswerer. A nil Answer
+	// is a configuration error on an eligible reply; Handle does not
+	// fall through to the store method.
+	Answer    ResumingAnswerer
 	Tree      func() definition.Tree
 	FactoryID string
 	Allow     Allow
 	Now       func() time.Time
 
-	mu     sync.Mutex
-	cache  map[string][]compiled
-	claims map[string]struct{}
-	owners map[string][]string
+	// mu guards cache only. Store calls run outside it.
+	mu    sync.Mutex
+	cache map[string][]compiled
 }
 
 type compiled struct {
@@ -64,9 +66,7 @@ func (e *Engine) handle(ctx context.Context, ev event.Event, depth int) (Result,
 		return Result{}, errors.New("automation: external ref is required")
 	}
 
-	e.mu.Lock()
 	res, emit, err := e.decide(ctx, ev)
-	e.mu.Unlock()
 	if err != nil || emit == nil {
 		return res, err
 	}
@@ -79,7 +79,7 @@ func (e *Engine) handle(ctx context.Context, ev event.Event, depth int) (Result,
 	return res, nil
 }
 
-// decide runs with e.mu held. emit is the stage change to re-enter, if any.
+// decide does not hold e.mu. Store methods run here.
 func (e *Engine) decide(ctx context.Context, ev event.Event) (Result, *event.Event, error) {
 	tree := e.Tree()
 	if shape := replyShape(tree, ev); shape != replyNone {
@@ -97,35 +97,15 @@ func (e *Engine) decide(ctx context.Context, ev event.Event) (Result, *event.Eve
 	if len(matches) == 0 {
 		return Result{}, nil, nil
 	}
-	fresh := e.claimAll(matches, ev.DeliveryID)
-	if len(fresh) == 0 {
-		return Result{Matched: true, Outcomes: []Outcome{{Kind: KindDuplicate}}}, nil, nil
-	}
-	item, created, err := e.ensureItem(ctx, tree, ev)
-	if err != nil {
-		e.unclaim(fresh, ev.DeliveryID)
-		return Result{}, nil, err
-	}
-	if !created {
-		if err := e.Store.AppendContext(ctx, item.ID, laterNote(ev)); err != nil {
-			e.unclaim(fresh, ev.DeliveryID)
-			return Result{}, nil, fmt.Errorf("automation: append context: %w", err)
-		}
-		out := make([]Outcome, len(fresh))
-		for i, auto := range fresh {
-			out[i] = Outcome{
-				Kind:           KindContinued,
-				Automation:     auto.auto.Name,
-				WorkItemID:     item.ID,
-				ConversationID: item.ConversationID,
-			}
-		}
-		return Result{Matched: true, Outcomes: out}, nil, nil
-	}
-	return e.startIntake(ctx, tree, ev, item, fresh)
+	return e.intake(ctx, tree, ev, matches)
 }
 
 func (e *Engine) matching(tree definition.Tree, ev event.Event) []compiled {
+	// The GitHub normalizer appends [bot] when sender.type is Bot.
+	// That includes labels the App applies. Those actors do not open work.
+	if e.bot(ev) {
+		return nil
+	}
 	caused := causation(ev)
 	tev := toTrigger(ev)
 	var out []compiled
@@ -141,6 +121,8 @@ func (e *Engine) matching(tree definition.Tree, ev event.Event) []compiled {
 }
 
 func (e *Engine) compiled(tree definition.Tree) []compiled {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if hit, ok := e.cache[tree.Digest]; ok {
 		return hit
 	}
@@ -169,31 +151,23 @@ func (e *Engine) compiled(tree definition.Tree) []compiled {
 	return out
 }
 
-func (e *Engine) ensureItem(ctx context.Context, tree definition.Tree, ev event.Event) (WorkItem, bool, error) {
-	ref, err := e.Store.GetExternalRef(ctx, ev.Provider, ev.Thread.ExternalRef)
-	if err == nil {
-		item, getErr := e.Store.GetWorkItem(ctx, ref.WorkItemID)
-		if getErr != nil {
-			return WorkItem{}, false, fmt.Errorf("automation: work item: %w", getErr)
-		}
-		return item, false, nil
-	}
-	if !errors.Is(err, ErrNotFound) {
-		return WorkItem{}, false, fmt.Errorf("automation: external ref: %w", err)
-	}
+func (e *Engine) intake(ctx context.Context, tree definition.Tree, ev event.Event, matches []compiled) (Result, *event.Event, error) {
 	def, err := pipelineDef(tree)
 	if err != nil {
-		return WorkItem{}, false, err
+		return Result{}, nil, err
 	}
 	next, effects, err := orchestrator.Step(def, orchestrator.State{}, orchestrator.Created{}, orchestrator.M3Predicates())
 	if err != nil {
-		return WorkItem{}, false, err
+		return Result{}, nil, err
+	}
+	if len(effects) != 1 {
+		return Result{}, nil, errors.New("automation: orchestrator returned no effect")
 	}
 	stage, status := next.Stage, next.Status
 	if stage == "" {
 		stage = firstStage(def, effects)
 	}
-	item, err := e.Store.CreateWorkItem(ctx, NewWorkItem{
+	item, _, err := e.Store.OpenWorkItem(ctx, ev.Provider, ev.Thread.ExternalRef, NewWorkItem{
 		FactoryID: e.FactoryID,
 		Source:    ev.Provider,
 		SourceRef: ev.Thread.ExternalRef,
@@ -204,74 +178,49 @@ func (e *Engine) ensureItem(ctx context.Context, tree definition.Tree, ev event.
 		CreatedBy: actorName(ev),
 	})
 	if err != nil {
-		return WorkItem{}, false, fmt.Errorf("automation: create work item: %w", err)
+		return Result{}, nil, fmt.Errorf("automation: open work item: %w", err)
 	}
-	bound, created, err := e.Store.BindExternalRef(ctx, ev.Provider, ev.Thread.ExternalRef, item.ID, item.ConversationID)
+	slots, err := intakeSlots(tree, ev, item, matches, effects[0])
 	if err != nil {
-		return WorkItem{}, false, fmt.Errorf("automation: bind external ref: %w", err)
+		return Result{}, nil, err
 	}
-	if created {
-		return item, true, nil
-	}
-	winner, err := e.Store.GetWorkItem(ctx, bound.WorkItemID)
+	got, err := e.Store.EnsureIntake(ctx, item.ID, ev.DeliveryID, slots)
 	if err != nil {
-		return WorkItem{}, false, fmt.Errorf("automation: work item: %w", err)
+		return Result{}, nil, fmt.Errorf("automation: intake: %w", err)
 	}
-	return winner, false, nil
+	if got.Continuation {
+		res, noteErr := e.noteContinuation(ctx, ev, got.Item, matches)
+		return res, nil, noteErr
+	}
+	return e.intakeResult(ctx, ev, got, matches)
 }
 
-func (e *Engine) startIntake(ctx context.Context, tree definition.Tree, ev event.Event, item WorkItem, fresh []compiled) (Result, *event.Event, error) {
-	def, err := pipelineDef(tree)
-	if err != nil {
-		return Result{}, nil, err
-	}
-	_, effects, err := orchestrator.Step(def, orchestrator.State{}, orchestrator.Created{}, orchestrator.M3Predicates())
-	if err != nil {
-		return Result{}, nil, err
-	}
-	if len(effects) != 1 {
-		return Result{}, nil, errors.New("automation: orchestrator returned no effect")
-	}
-	names := autoNames(fresh)
-	e.remember(item.ID, names)
-	out := Result{Matched: true}
-	switch eff := effects[0].(type) {
+func intakeSlots(tree definition.Tree, ev event.Event, item WorkItem, matches []compiled, effect orchestrator.Effect) ([]IntakeSlot, error) {
+	slots := make([]IntakeSlot, len(matches))
+	switch eff := effect.(type) {
 	case orchestrator.StartRun:
-		for _, auto := range fresh {
-			run, err := e.enqueue(ctx, tree, ev, item, auto, eff.Stage)
-			if err != nil {
-				return Result{}, nil, err
-			}
-			out.Outcomes = append(out.Outcomes, outcomeFrom(auto.auto, run, KindCreated))
+		for i, auto := range matches {
+			run := intakeRun(tree, ev, item, auto, eff.Stage)
+			slots[i] = IntakeSlot{Automation: auto.auto.Name, Run: &run}
 		}
 	case orchestrator.RequestApproval:
-		for _, auto := range fresh {
-			out.Outcomes = append(out.Outcomes, Outcome{
-				Kind:           KindCreated,
-				Automation:     auto.auto.Name,
-				WorkItemID:     item.ID,
-				ConversationID: item.ConversationID,
-				Stage:          item.Stage,
-			})
+		for i, auto := range matches {
+			slots[i] = IntakeSlot{Automation: auto.auto.Name}
 		}
 	default:
-		return Result{}, nil, fmt.Errorf("automation: unhandled orchestrator effect %T", effects[0])
+		return nil, fmt.Errorf("automation: unhandled orchestrator effect %T", effect)
 	}
-	emitted, err := e.stageEvent(ev, item, chain(ev, names))
-	if err != nil {
-		return Result{}, nil, err
-	}
-	return out, &emitted, nil
+	return slots, nil
 }
 
-func (e *Engine) enqueue(ctx context.Context, tree definition.Tree, ev event.Event, item WorkItem, auto compiled, stage string) (Run, error) {
+func intakeRun(tree definition.Tree, ev event.Event, item WorkItem, auto compiled, stage string) NewRun {
 	agent, model, pool := runIdentity(tree, auto.auto, stage)
 	promptAuto := auto.auto
 	promptAuto.Agent = agent
 	if promptAuto.Model == "" {
 		promptAuto.Model = model
 	}
-	run, err := e.Store.CreateRun(ctx, NewRun{
+	return NewRun{
 		FactoryID:      item.FactoryID,
 		Agent:          agent,
 		Pool:           pool,
@@ -282,11 +231,73 @@ func (e *Engine) enqueue(ctx context.Context, tree definition.Tree, ev event.Eve
 		ConversationID: item.ConversationID,
 		Stage:          stage,
 		ModelID:        model,
-	})
-	if err != nil {
-		return Run{}, fmt.Errorf("automation: create run: %w", err)
 	}
-	return run, nil
+}
+
+func (e *Engine) intakeResult(ctx context.Context, ev event.Event, got IntakeResult, matches []compiled) (Result, *event.Event, error) {
+	if len(got.Slots) != len(matches) {
+		return Result{}, nil, errors.New("automation: intake result does not match automations")
+	}
+	inserted := false
+	out := make([]Outcome, 0, len(matches))
+	for i, slot := range got.Slots {
+		if !slot.Inserted {
+			continue
+		}
+		inserted = true
+		auto := matches[i].auto
+		if slot.Run.ID == "" {
+			out = append(out, Outcome{
+				Kind:           KindCreated,
+				Automation:     auto.Name,
+				WorkItemID:     got.Item.ID,
+				ConversationID: got.Item.ConversationID,
+				Stage:          got.Item.Stage,
+			})
+			continue
+		}
+		out = append(out, outcomeFrom(auto, slot.Run, KindCreated))
+	}
+	if !inserted {
+		return Result{Matched: true, Outcomes: []Outcome{{
+			Kind:           KindDuplicate,
+			WorkItemID:     got.Item.ID,
+			ConversationID: got.Item.ConversationID,
+		}}}, nil, nil
+	}
+	owners, err := e.Store.Owners(ctx, got.Item.ID)
+	if err != nil {
+		return Result{}, nil, fmt.Errorf("automation: owners: %w", err)
+	}
+	emitted, err := e.stageEvent(ev, got.Item, chain(ev, owners))
+	if err != nil {
+		return Result{}, nil, err
+	}
+	return Result{Matched: true, Outcomes: out}, &emitted, nil
+}
+
+func (e *Engine) noteContinuation(ctx context.Context, ev event.Event, item WorkItem, matches []compiled) (Result, error) {
+	applied, err := e.Store.AppendContext(ctx, item.ID, ev.DeliveryID, laterNote(ev))
+	if err != nil {
+		return Result{}, fmt.Errorf("automation: append context: %w", err)
+	}
+	if !applied {
+		return Result{Matched: true, Outcomes: []Outcome{{
+			Kind:           KindDuplicate,
+			WorkItemID:     item.ID,
+			ConversationID: item.ConversationID,
+		}}}, nil
+	}
+	out := make([]Outcome, len(matches))
+	for i, auto := range matches {
+		out[i] = Outcome{
+			Kind:           KindContinued,
+			Automation:     auto.auto.Name,
+			WorkItemID:     item.ID,
+			ConversationID: item.ConversationID,
+		}
+	}
+	return Result{Matched: true, Outcomes: out}, nil
 }
 
 func (e *Engine) stageEvent(cause event.Event, item WorkItem, caused []string) (event.Event, error) {
@@ -316,59 +327,11 @@ func (e *Engine) stageEvent(cause event.Event, item WorkItem, caused []string) (
 	}, nil
 }
 
-func (e *Engine) claimAll(matches []compiled, deliveryID string) []compiled {
-	var fresh []compiled
-	for _, auto := range matches {
-		if e.claim(claimKey(auto.auto.Name, deliveryID)) {
-			fresh = append(fresh, auto)
-		}
-	}
-	return fresh
-}
-
-func (e *Engine) unclaim(matches []compiled, deliveryID string) {
-	for _, auto := range matches {
-		delete(e.claims, claimKey(auto.auto.Name, deliveryID))
-	}
-}
-
-func (e *Engine) claim(key string) bool {
-	if e.claims == nil {
-		e.claims = map[string]struct{}{}
-	}
-	if _, ok := e.claims[key]; ok {
-		return false
-	}
-	e.claims[key] = struct{}{}
-	return true
-}
-
-func (e *Engine) remember(workItem string, names []string) {
-	if e.owners == nil {
-		e.owners = map[string][]string{}
-	}
-	cur := e.owners[workItem]
-	for _, name := range names {
-		if !contains(cur, name) {
-			cur = append(cur, name)
-		}
-	}
-	e.owners[workItem] = cur
-}
-
-func (e *Engine) ownerNames(workItem string) []string {
-	return append([]string(nil), e.owners[workItem]...)
-}
-
 func (e *Engine) now() time.Time {
 	if e.Now != nil {
 		return e.Now()
 	}
 	return time.Now()
-}
-
-func claimKey(name, deliveryID string) string {
-	return name + "\x00" + deliveryID
 }
 
 func pipelineDef(tree definition.Tree) (orchestrator.Def, error) {
@@ -472,14 +435,6 @@ func outcomeFrom(auto definition.Automation, run Run, kind string) Outcome {
 		Secrets:        append([]string(nil), auto.Secrets...),
 		RequiredRepos:  append([]definition.Repository(nil), auto.RequiredRepos...),
 	}
-}
-
-func autoNames(fresh []compiled) []string {
-	names := make([]string, len(fresh))
-	for i, auto := range fresh {
-		names[i] = auto.auto.Name
-	}
-	return names
 }
 
 func matchAny(matchers []trigger.Matcher, ev trigger.Event) bool {

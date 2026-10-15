@@ -20,7 +20,6 @@ const (
 	replyGitHub
 )
 
-// continueReply runs with e.mu held.
 func (e *Engine) continueReply(ctx context.Context, tree definition.Tree, ev event.Event, ref Ref, kind replyKind) (Result, *event.Event, error) {
 	allowed, err := e.eligible(ctx, kind, ev)
 	if err != nil {
@@ -33,16 +32,8 @@ func (e *Engine) continueReply(ctx context.Context, tree definition.Tree, ev eve
 			ConversationID: ref.ConversationID,
 		}}}, nil, nil
 	}
-	if !e.claim(claimKey("\x00reply", ev.DeliveryID)) {
-		return Result{Matched: true, Outcomes: []Outcome{{
-			Kind:           KindDuplicate,
-			WorkItemID:     ref.WorkItemID,
-			ConversationID: ref.ConversationID,
-		}}}, nil, nil
-	}
 	item, err := e.Store.GetWorkItem(ctx, ref.WorkItemID)
 	if err != nil {
-		e.unclaimReply(ev.DeliveryID)
 		return Result{}, nil, fmt.Errorf("automation: work item: %w", err)
 	}
 	if item.Status == orchestrator.StatusCancelled {
@@ -52,41 +43,43 @@ func (e *Engine) continueReply(ctx context.Context, tree definition.Tree, ev eve
 			ConversationID: item.ConversationID,
 		}}}, nil, nil
 	}
-	_, err = e.Store.PendingInput(ctx, item.ID)
+	if e.Answer == nil {
+		return Result{}, nil, errors.New("automation: resuming answerer is not configured")
+	}
+	answered, err := e.Answer.Answer(ctx, item.ID, replyText(ev), actorName(ev))
 	switch {
 	case err == nil:
-		answered, ansErr := e.Store.AnswerInput(ctx, item.ID, replyText(ev), actorName(ev))
-		if ansErr != nil {
-			e.unclaimReply(ev.DeliveryID)
-			return Result{}, nil, ansErr
-		}
 		return Result{Matched: true, Outcomes: []Outcome{{
 			Kind:           KindAnswered,
 			WorkItemID:     item.ID,
 			ConversationID: item.ConversationID,
-			RunID:          answered.ID,
+			RunID:          answered.RunID,
 		}}}, nil, nil
 	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, ErrConflict):
+		return Result{}, nil, err
 	default:
-		e.unclaimReply(ev.DeliveryID)
-		return Result{}, nil, fmt.Errorf("automation: pending input: %w", err)
+		return Result{}, nil, err
 	}
 	if terminalHandoff(item) {
 		pr, ok, prErr := e.Store.OpenPullRequest(ctx, item.ID)
 		if prErr != nil {
-			e.unclaimReply(ev.DeliveryID)
 			return Result{}, nil, fmt.Errorf("automation: pull request: %w", prErr)
 		}
 		if ok && pr != "" {
 			return e.followUp(ctx, tree, ev, item, pr)
 		}
 	}
-	if err := e.Store.AppendContext(ctx, item.ID, laterNote(ev)); err != nil {
-		e.unclaimReply(ev.DeliveryID)
+	applied, err := e.Store.AppendContext(ctx, item.ID, ev.DeliveryID, laterNote(ev))
+	if err != nil {
 		return Result{}, nil, fmt.Errorf("automation: append context: %w", err)
 	}
+	kindOut := KindContinued
+	if !applied {
+		kindOut = KindDuplicate
+	}
 	return Result{Matched: true, Outcomes: []Outcome{{
-		Kind:           KindContinued,
+		Kind:           kindOut,
 		WorkItemID:     item.ID,
 		ConversationID: item.ConversationID,
 	}}}, nil, nil
@@ -99,7 +92,6 @@ func (e *Engine) followUp(ctx context.Context, tree definition.Tree, ev event.Ev
 	agent, model, pool := stageIdentity(tree, orchestrator.StageBuilding)
 	prior, err := e.Store.Context(ctx, item.ID)
 	if err != nil {
-		e.unclaimReply(ev.DeliveryID)
 		return Result{}, nil, fmt.Errorf("automation: context: %w", err)
 	}
 	parent := ""
@@ -109,10 +101,9 @@ func (e *Engine) followUp(ctx context.Context, tree definition.Tree, ev event.Ev
 		parent = latest.ID
 	case errors.Is(err, ErrNotFound):
 	default:
-		e.unclaimReply(ev.DeliveryID)
 		return Result{}, nil, fmt.Errorf("automation: latest run: %w", err)
 	}
-	run, err := e.Store.CreateRun(ctx, NewRun{
+	run, created, err := e.Store.FollowUp(ctx, ev.DeliveryID, NewRun{
 		FactoryID:      item.FactoryID,
 		Agent:          agent,
 		Pool:           pool,
@@ -124,16 +115,26 @@ func (e *Engine) followUp(ctx context.Context, tree definition.Tree, ev event.Ev
 		ConversationID: item.ConversationID,
 		Stage:          orchestrator.StageBuilding,
 		ModelID:        model,
-	})
+	}, orchestrator.StageBuilding, orchestrator.StatusOpen)
 	if err != nil {
-		e.unclaimReply(ev.DeliveryID)
-		return Result{}, nil, fmt.Errorf("automation: create run: %w", err)
+		return Result{}, nil, fmt.Errorf("automation: follow up: %w", err)
 	}
-	updated, err := e.Store.UpdateWorkItemStage(ctx, item.ID, orchestrator.StageBuilding, orchestrator.StatusOpen)
+	if !created {
+		return Result{Matched: true, Outcomes: []Outcome{{
+			Kind:           KindDuplicate,
+			WorkItemID:     item.ID,
+			ConversationID: item.ConversationID,
+		}}}, nil, nil
+	}
+	updated, err := e.Store.GetWorkItem(ctx, item.ID)
 	if err != nil {
-		return Result{}, nil, fmt.Errorf("automation: update work item: %w", err)
+		return Result{}, nil, fmt.Errorf("automation: work item: %w", err)
 	}
-	emitted, err := e.stageEvent(ev, updated, chain(ev, e.ownerNames(updated.ID)))
+	owners, err := e.Store.Owners(ctx, updated.ID)
+	if err != nil {
+		return Result{}, nil, fmt.Errorf("automation: owners: %w", err)
+	}
+	emitted, err := e.stageEvent(ev, updated, chain(ev, owners))
 	if err != nil {
 		return Result{}, nil, err
 	}
@@ -147,10 +148,6 @@ func (e *Engine) followUp(ctx context.Context, tree definition.Tree, ev event.Ev
 		ModelID:        run.ModelID,
 		Pool:           run.Pool,
 	}}}, &emitted, nil
-}
-
-func (e *Engine) unclaimReply(deliveryID string) {
-	delete(e.claims, claimKey("\x00reply", deliveryID))
 }
 
 func (e *Engine) eligible(ctx context.Context, kind replyKind, ev event.Event) (bool, error) {
@@ -231,7 +228,7 @@ func (e *Engine) bot(ev event.Event) bool {
 
 func (e *Engine) slackUserOK(ev event.Event) bool {
 	if len(e.Allow.SlackUserIDs) == 0 {
-		return true
+		return false
 	}
 	return contains(e.Allow.SlackUserIDs, slackUser(ev))
 }
@@ -251,7 +248,7 @@ func slackUser(ev event.Event) string {
 
 func (e *Engine) githubUserOK(ctx context.Context, ev event.Event) (bool, error) {
 	if e.Allow.GitHub == nil {
-		return true, nil
+		return false, nil
 	}
 	ok, err := e.Allow.GitHub(ctx, ev.Subject.Repo.Owner, ev.Subject.Repo.Name, ev.Actor.Handle)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,8 +89,18 @@ func TestSecondLabelContinuesSameWorkItem(t *testing.T) {
 	if res.Outcomes[0].Kind != KindContinued || res.Outcomes[0].WorkItemID != store.items()[0].ID {
 		t.Fatalf("outcomes %+v", res.Outcomes)
 	}
-	if !strings.Contains(store.contextOf(store.items()[0].ID), "dlv_2") {
+	if strings.Count(store.contextOf(store.items()[0].ID), "# Later event") != 1 {
 		t.Fatalf("context %q", store.contextOf(store.items()[0].ID))
+	}
+	if !strings.Contains(store.items()[0].Body, "dlv_2") {
+		t.Fatal("work item body was not updated")
+	}
+	again, err := eng.Handle(context.Background(), labelEvent(t, labelOpt{delivery: "dlv_2"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Outcomes[0].Kind != KindDuplicate || strings.Count(store.contextOf(store.items()[0].ID), "# Later event") != 1 {
+		t.Fatalf("redelivered continuation %+v", again.Outcomes)
 	}
 }
 
@@ -283,8 +294,19 @@ func TestPendingInputIsAnswered(t *testing.T) {
 	if res.Outcomes[0].Kind != KindAnswered || store.answerOf(item.ID) != "the empty one" {
 		t.Fatalf("kind %s answer %q", res.Outcomes[0].Kind, store.answerOf(item.ID))
 	}
-	if len(store.runs()) != 1 {
-		t.Fatalf("runs %d", len(store.runs()))
+	parked := store.runs()[0].ID
+	if res.Outcomes[0].RunID != parked || res.Outcomes[0].RunID == "inr_1" {
+		t.Fatalf("run id %s, want parked %s", res.Outcomes[0].RunID, parked)
+	}
+	if len(store.runs()) != 1 || store.resumeCount(item.ID) != 1 {
+		t.Fatalf("runs %d resumes %d", len(store.runs()), store.resumeCount(item.ID))
+	}
+	again, err := eng.Handle(context.Background(), slackReply(t, "dlv_reply", "U1", "the empty one", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Outcomes[0].Kind != KindAnswered || again.Outcomes[0].RunID != parked || store.resumeCount(item.ID) != 1 {
+		t.Fatalf("second answer %+v resumes %d", again.Outcomes, store.resumeCount(item.ID))
 	}
 }
 
@@ -515,7 +537,7 @@ func TestGitHubEligibilityError(t *testing.T) {
 	}
 }
 
-func TestReplyAfterAnswerIsContext(t *testing.T) {
+func TestDifferentAnswerConflicts(t *testing.T) {
 	eng, store := newEngine(t, testTree())
 	if _, err := eng.Handle(context.Background(), labelEvent(t, labelOpt{delivery: "dlv_1"})); err != nil {
 		t.Fatal(err)
@@ -525,12 +547,279 @@ func TestReplyAfterAnswerIsContext(t *testing.T) {
 	if _, err := eng.Handle(context.Background(), ghComment(t, "dlv_a", "octocat", "the empty one")); err != nil {
 		t.Fatal(err)
 	}
-	res, err := eng.Handle(context.Background(), ghComment(t, "dlv_b", "octocat", "a different answer"))
+	_, err := eng.Handle(context.Background(), ghComment(t, "dlv_b", "octocat", "a different answer"))
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("err %v", err)
+	}
+	if store.answerOf(item.ID) != "the empty one" || strings.Contains(store.contextOf(item.ID), "different") {
+		t.Fatalf("answer %q context %q", store.answerOf(item.ID), store.contextOf(item.ID))
+	}
+	if len(store.runs()) != 1 {
+		t.Fatalf("runs %d", len(store.runs()))
+	}
+}
+
+func TestAnswerRetryResumesInsteadOfFollowUp(t *testing.T) {
+	eng, store := newEngine(t, testTree())
+	if _, err := eng.Handle(context.Background(), labelEvent(t, labelOpt{delivery: "dlv_1"})); err != nil {
+		t.Fatal(err)
+	}
+	item := store.finishWithPR(t, "https://github.com/acme/payments-service/pull/9")
+	store.setPending(item.ID, "which name?")
+	store.failResume = true
+	reply := ghComment(t, "dlv_a", "octocat", "the empty one")
+	if _, err := eng.Handle(context.Background(), reply); err == nil {
+		t.Fatal("expected resume failure")
+	}
+	if store.answerOf(item.ID) != "the empty one" || store.resumeCount(item.ID) != 0 {
+		t.Fatalf("answer %q resumes %d", store.answerOf(item.ID), store.resumeCount(item.ID))
+	}
+	fresh := cloneEngine(eng, store)
+	res, err := fresh.Handle(context.Background(), reply)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcomes[0].Kind != KindContinued || store.answerOf(item.ID) != "the empty one" {
-		t.Fatalf("kind %s answer %q", res.Outcomes[0].Kind, store.answerOf(item.ID))
+	if res.Outcomes[0].Kind != KindAnswered || res.Outcomes[0].RunID != store.runs()[0].ID {
+		t.Fatalf("outcomes %+v", res.Outcomes)
+	}
+	if len(store.runs()) != 1 || store.resumeCount(item.ID) != 1 {
+		t.Fatalf("runs %d resumes %d", len(store.runs()), store.resumeCount(item.ID))
+	}
+	if strings.Contains(store.contextOf(item.ID), "the empty one") {
+		t.Fatal("retry appended context")
+	}
+}
+
+func TestZeroAllowIgnoresBothReplyShapes(t *testing.T) {
+	eng, store := newEngine(t, testTree())
+	eng.Allow = Allow{}
+	if _, err := eng.Handle(context.Background(), labelEvent(t, labelOpt{delivery: "dlv_1"})); err != nil {
+		t.Fatal(err)
+	}
+	item := store.finishWithPR(t, "https://github.com/acme/payments-service/pull/9")
+	store.bind(t, event.ProviderSlack, "slack:T1/C1/1700000000.000100", item)
+	slack, err := eng.Handle(context.Background(), slackReply(t, "dlv_slack", "U_STRANGER", "do it", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slack.Outcomes[0].Kind != KindIgnored || len(store.runs()) != 1 {
+		t.Fatalf("slack %+v runs %d", slack.Outcomes, len(store.runs()))
+	}
+	gh, err := eng.Handle(context.Background(), ghComment(t, "dlv_gh", "octocat", "do it"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gh.Outcomes[0].Kind != KindIgnored || len(store.runs()) != 1 {
+		t.Fatalf("github %+v runs %d", gh.Outcomes, len(store.runs()))
+	}
+}
+
+func TestBotLabelDoesNotIntake(t *testing.T) {
+	eng, store := newEngine(t, testTree())
+	res, err := eng.Handle(context.Background(), labelEvent(t, labelOpt{delivery: "dlv_bot", author: "factory-dev[bot]"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Matched || len(store.items()) != 0 {
+		t.Fatalf("matched %v items %d", res.Matched, len(store.items()))
+	}
+	if _, err := eng.Handle(context.Background(), labelEvent(t, labelOpt{delivery: "dlv_1"})); err != nil {
+		t.Fatal(err)
+	}
+	again, err := eng.Handle(context.Background(), labelEvent(t, labelOpt{delivery: "dlv_bot2", author: "factory-dev[bot]"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Matched || len(store.items()) != 1 || len(store.runs()) != 1 {
+		t.Fatalf("matched %v items %d runs %d", again.Matched, len(store.items()), len(store.runs()))
+	}
+	if strings.Contains(store.contextOf(store.items()[0].ID), "dlv_bot2") {
+		t.Fatal("bot label appended context")
+	}
+}
+
+func TestRedeliveryOnNewEngineIsDuplicate(t *testing.T) {
+	eng, store := newEngine(t, testTree())
+	ev := labelEvent(t, labelOpt{delivery: "dlv_1"})
+	if _, err := eng.Handle(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	fresh := cloneEngine(eng, store)
+	res, err := fresh.Handle(context.Background(), ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Matched || res.Outcomes[0].Kind != KindDuplicate {
+		t.Fatalf("result %+v", res)
+	}
+	if len(store.items()) != 1 || len(store.runs()) != 1 {
+		t.Fatalf("items %d runs %d", len(store.items()), len(store.runs()))
+	}
+	if strings.Contains(store.contextOf(store.items()[0].ID), "# Later event") {
+		t.Fatal("redelivery appended context")
+	}
+}
+
+func TestMissingIntakeRunIsEnqueuedOnce(t *testing.T) {
+	eng, store := newEngine(t, testTree())
+	ev := labelEvent(t, labelOpt{delivery: "dlv_1"})
+	store.failIntake = 1
+	if _, err := eng.Handle(context.Background(), ev); err == nil {
+		t.Fatal("expected run insert failure")
+	}
+	if len(store.items()) != 1 || len(store.runs()) != 0 {
+		t.Fatalf("items %d runs %d", len(store.items()), len(store.runs()))
+	}
+	if _, err := store.GetExternalRef(context.Background(), event.ProviderGitHub, "acme/payments-service#412"); err != nil {
+		t.Fatal(err)
+	}
+	fresh := cloneEngine(eng, store)
+	res, err := fresh.Handle(context.Background(), ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcomes[0].Kind != KindCreated || len(store.items()) != 1 || len(store.runs()) != 1 {
+		t.Fatalf("kind %s items %d runs %d", res.Outcomes[0].Kind, len(store.items()), len(store.runs()))
+	}
+	again, err := fresh.Handle(context.Background(), ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Outcomes[0].Kind != KindDuplicate || len(store.runs()) != 1 {
+		t.Fatalf("again %+v runs %d", again.Outcomes, len(store.runs()))
+	}
+	if strings.Contains(store.contextOf(store.items()[0].ID), "# Later event") {
+		t.Fatal("recovered intake appended context")
+	}
+}
+
+func TestOpenFailureLeavesNoWorkItem(t *testing.T) {
+	eng, store := newEngine(t, testTree())
+	ev := labelEvent(t, labelOpt{delivery: "dlv_1"})
+	store.failOpen = 1
+	if _, err := eng.Handle(context.Background(), ev); err == nil {
+		t.Fatal("expected open failure")
+	}
+	if len(store.items()) != 0 {
+		t.Fatalf("items %d", len(store.items()))
+	}
+	if _, err := store.GetExternalRef(context.Background(), event.ProviderGitHub, "acme/payments-service#412"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ref err %v", err)
+	}
+	res, err := eng.Handle(context.Background(), ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcomes[0].Kind != KindCreated || len(store.items()) != 1 || len(store.runs()) != 1 {
+		t.Fatalf("kind %s items %d runs %d", res.Outcomes[0].Kind, len(store.items()), len(store.runs()))
+	}
+}
+
+func TestTwoEnginesOneThreadOneIntake(t *testing.T) {
+	eng, store := newEngine(t, testTree())
+	other := cloneEngine(eng, store)
+	ev1 := labelEvent(t, labelOpt{delivery: "dlv_1"})
+	ev2 := labelEvent(t, labelOpt{delivery: "dlv_2"})
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	for _, job := range []struct {
+		eng *Engine
+		ev  event.Event
+	}{{eng, ev1}, {other, ev2}} {
+		wg.Add(1)
+		go func(eng *Engine, ev event.Event) {
+			defer wg.Done()
+			_, err := eng.Handle(context.Background(), ev)
+			errCh <- err
+		}(job.eng, job.ev)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(store.items()) != 1 || len(store.runs()) != 1 {
+		t.Fatalf("items %d runs %d", len(store.items()), len(store.runs()))
+	}
+}
+
+func TestFollowUpLoopGuardUsesStoredOwners(t *testing.T) {
+	tree := testTree()
+	auto := tree.Automations["labeled-intake"]
+	auto.Triggers = append(append([]definition.Trigger{}, auto.Triggers...), definition.Trigger{
+		Provider: "factory",
+		Event:    "work_item_stage_changed",
+	})
+	tree.Automations["labeled-intake"] = auto
+	eng, store := newEngine(t, tree)
+	if _, err := eng.Handle(context.Background(), labelEvent(t, labelOpt{delivery: "dlv_1"})); err != nil {
+		t.Fatal(err)
+	}
+	store.finishWithPR(t, "https://github.com/acme/payments-service/pull/9")
+	fresh := cloneEngine(eng, store)
+	res, err := fresh.Handle(context.Background(), ghComment(t, "dlv_c", "octocat", "also add a test for an empty name"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(store.items()) != 1 || len(store.runs()) != 2 || res.Outcomes[0].Kind != KindFollowUp {
+		t.Fatalf("items %d runs %d outcomes %+v", len(store.items()), len(store.runs()), res.Outcomes)
+	}
+	var body struct {
+		CausedBy []string `json:"caused_by"`
+	}
+	if err := json.Unmarshal(res.Emitted[0].Raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(body.CausedBy, "labeled-intake") {
+		t.Fatalf("caused_by %+v", body.CausedBy)
+	}
+}
+
+func TestReplyRedeliveryOnNewEngineDoesNotFollowUpTwice(t *testing.T) {
+	eng, store := newEngine(t, testTree())
+	if _, err := eng.Handle(context.Background(), labelEvent(t, labelOpt{delivery: "dlv_1"})); err != nil {
+		t.Fatal(err)
+	}
+	item := store.finishWithPR(t, "https://github.com/acme/payments-service/pull/9")
+	store.bind(t, event.ProviderSlack, "slack:T1/C1/1700000000.000100", item)
+	reply := slackReply(t, "dlv_reply", "U1", "also add a test for an empty name", "")
+	fresh := cloneEngine(eng, store)
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	for _, job := range []*Engine{eng, fresh} {
+		wg.Add(1)
+		go func(eng *Engine) {
+			defer wg.Done()
+			_, err := eng.Handle(context.Background(), reply)
+			errCh <- err
+		}(job)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(store.items()) != 1 || len(store.runs()) != 2 {
+		t.Fatalf("items %d runs %d", len(store.items()), len(store.runs()))
+	}
+}
+
+func TestStoreIODoesNotHoldEngineLock(t *testing.T) {
+	eng, store := newEngine(t, testTree())
+	probe := &lockProbe{mem: store, eng: eng}
+	eng.Store = probe
+	if _, err := eng.Handle(context.Background(), labelEvent(t, labelOpt{delivery: "dlv_1"})); err != nil {
+		t.Fatal(err)
+	}
+	if !probe.probed {
+		t.Fatal("open was not called")
+	}
+	if len(store.items()) != 1 || len(store.runs()) != 1 {
+		t.Fatalf("items %d runs %d", len(store.items()), len(store.runs()))
 	}
 }
 
@@ -539,12 +828,33 @@ func newEngine(t *testing.T, tree definition.Tree) (*Engine, *mem) {
 	store := newMem()
 	eng := &Engine{
 		Store:     store,
+		Answer:    store,
 		Tree:      func() definition.Tree { return tree },
 		FactoryID: "fac_test",
-		Allow:     Allow{SlackUserIDs: []string{"U1"}},
-		Now:       func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) },
+		Allow: Allow{
+			SlackUserIDs: []string{"U1"},
+			GitHub: func(_ context.Context, _, _, handle string) (bool, error) {
+				return handle == "octocat", nil
+			},
+		},
+		Now: func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) },
 	}
 	return eng, store
+}
+
+func cloneEngine(eng *Engine, store *mem) *Engine {
+	answer := eng.Answer
+	if answer == nil {
+		answer = store
+	}
+	return &Engine{
+		Store:     store,
+		Answer:    answer,
+		Tree:      eng.Tree,
+		FactoryID: eng.FactoryID,
+		Allow:     eng.Allow,
+		Now:       eng.Now,
+	}
 }
 
 func testTree() definition.Tree {
@@ -724,36 +1034,77 @@ func ghComment(t *testing.T, delivery, handle, text string) event.Event {
 	}
 }
 
+type intakeSlot struct {
+	automation string
+	deliveryID string
+	runID      string
+}
+
+type effect struct {
+	kind     string
+	runID    string
+	workItem string
+}
+
 type mem struct {
-	mu       sync.Mutex
-	seq      int
-	runSeq   int
-	itemsM   map[string]WorkItem
-	order    []string
-	refs     map[string]Ref
-	runsM    []Run
-	ctxText  map[string]string
-	pending  map[string]Input
-	answered map[string]Input
-	prs      map[string]string
+	mu         sync.Mutex
+	seq        int
+	runSeq     int
+	failOpen   int
+	failIntake int
+	failResume bool
+	itemsM     map[string]WorkItem
+	order      []string
+	refs       map[string]Ref
+	runsM      []Run
+	slots      map[string][]intakeSlot
+	effects    map[string]effect
+	ctxText    map[string]string
+	pending    map[string]Input
+	answered   map[string]Input
+	resumed    map[string]bool
+	resumeN    map[string]int
+	prs        map[string]string
 }
 
 func newMem() *mem {
 	return &mem{
 		itemsM:   map[string]WorkItem{},
 		refs:     map[string]Ref{},
+		slots:    map[string][]intakeSlot{},
+		effects:  map[string]effect{},
 		ctxText:  map[string]string{},
 		pending:  map[string]Input{},
 		answered: map[string]Input{},
+		resumed:  map[string]bool{},
+		resumeN:  map[string]int{},
 		prs:      map[string]string{},
 	}
 }
 
-var _ Store = (*mem)(nil)
+var (
+	_ Store            = (*mem)(nil)
+	_ ResumingAnswerer = (*mem)(nil)
+)
 
-func (m *mem) CreateWorkItem(_ context.Context, w NewWorkItem) (WorkItem, error) {
+func (m *mem) OpenWorkItem(_ context.Context, provider, externalRef string, w NewWorkItem) (WorkItem, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failOpen > 0 {
+		m.failOpen--
+		return WorkItem{}, false, errors.New("automation: bind external ref: rolled back")
+	}
+	if provider == "" || externalRef == "" {
+		return WorkItem{}, false, errors.New("automation: external ref is required")
+	}
+	key := provider + "\x00" + externalRef
+	if row, ok := m.refs[key]; ok {
+		item, found := m.itemsM[row.WorkItemID]
+		if !found {
+			return WorkItem{}, false, ErrNotFound
+		}
+		return item, false, nil
+	}
 	m.seq++
 	item := WorkItem{
 		ID: "wi_" + strconv.Itoa(m.seq), FactoryID: w.FactoryID, Source: w.Source, SourceRef: w.SourceRef,
@@ -762,7 +1113,76 @@ func (m *mem) CreateWorkItem(_ context.Context, w NewWorkItem) (WorkItem, error)
 	}
 	m.itemsM[item.ID] = item
 	m.order = append(m.order, item.ID)
-	return item, nil
+	m.refs[key] = Ref{Provider: provider, ExternalRef: externalRef, WorkItemID: item.ID, ConversationID: item.ConversationID}
+	return item, true, nil
+}
+
+func (m *mem) EnsureIntake(_ context.Context, workItemID, deliveryID string, slots []IntakeSlot) (IntakeResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failIntake > 0 {
+		m.failIntake--
+		return IntakeResult{}, errors.New("automation: ensure intake: run insert failed")
+	}
+	item, ok := m.itemsM[workItemID]
+	if !ok {
+		return IntakeResult{}, ErrNotFound
+	}
+	existing := map[string]intakeSlot{}
+	same, other := false, false
+	for _, slot := range m.slots[workItemID] {
+		existing[slot.automation] = slot
+		if slot.deliveryID == deliveryID {
+			same = true
+		} else {
+			other = true
+		}
+	}
+	if other && !same {
+		return IntakeResult{Item: item, Continuation: true}, nil
+	}
+	out := IntakeResult{Item: item}
+	for _, slot := range slots {
+		if got, found := existing[slot.Automation]; found {
+			out.Slots = append(out.Slots, IntakeSlotResult{
+				Automation: slot.Automation,
+				Run:        m.runByID(got.runID),
+				Inserted:   false,
+			})
+			continue
+		}
+		var run Run
+		runID := ""
+		if slot.Run != nil {
+			copied := *slot.Run
+			copied.WorkItemID = item.ID
+			copied.ConversationID = item.ConversationID
+			if copied.FactoryID == "" {
+				copied.FactoryID = item.FactoryID
+			}
+			run = m.insertRun(copied)
+			runID = run.ID
+		}
+		m.slots[workItemID] = append(m.slots[workItemID], intakeSlot{
+			automation: slot.Automation, deliveryID: deliveryID, runID: runID,
+		})
+		out.Slots = append(out.Slots, IntakeSlotResult{Automation: slot.Automation, Run: run, Inserted: true})
+	}
+	return out, nil
+}
+
+func (m *mem) Owners(_ context.Context, workItemID string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.itemsM[workItemID]; !ok {
+		return nil, ErrNotFound
+	}
+	names := make([]string, 0, len(m.slots[workItemID]))
+	for _, slot := range m.slots[workItemID] {
+		names = append(names, slot.automation)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func (m *mem) GetWorkItem(_ context.Context, id string) (WorkItem, error) {
@@ -775,31 +1195,6 @@ func (m *mem) GetWorkItem(_ context.Context, id string) (WorkItem, error) {
 	return item, nil
 }
 
-func (m *mem) UpdateWorkItemStage(_ context.Context, id, stage, status string) (WorkItem, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	item, ok := m.itemsM[id]
-	if !ok {
-		return WorkItem{}, ErrNotFound
-	}
-	item.Stage = stage
-	item.Status = status
-	m.itemsM[id] = item
-	return item, nil
-}
-
-func (m *mem) BindExternalRef(_ context.Context, provider, externalRef, workItemID, conversationID string) (Ref, bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	key := provider + "\x00" + externalRef
-	if row, ok := m.refs[key]; ok {
-		return row, false, nil
-	}
-	row := Ref{Provider: provider, ExternalRef: externalRef, WorkItemID: workItemID, ConversationID: conversationID}
-	m.refs[key] = row
-	return row, true, nil
-}
-
 func (m *mem) GetExternalRef(_ context.Context, provider, externalRef string) (Ref, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -810,24 +1205,38 @@ func (m *mem) GetExternalRef(_ context.Context, provider, externalRef string) (R
 	return row, nil
 }
 
-func (m *mem) PendingInput(_ context.Context, workItemID string) (Input, error) {
+func (m *mem) FollowUp(_ context.Context, deliveryID string, r NewRun, stage, status string) (Run, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	in, ok := m.pending[workItemID]
-	if !ok {
-		return Input{}, ErrNotFound
+	if deliveryID == "" {
+		return Run{}, false, errors.New("automation: delivery id is required")
 	}
-	return in, nil
+	if prev, ok := m.effects[deliveryID]; ok {
+		if prev.kind != "follow_up" {
+			return Run{}, false, errors.New("automation: delivery already applied")
+		}
+		return m.runByID(prev.runID), false, nil
+	}
+	item, ok := m.itemsM[r.WorkItemID]
+	if !ok {
+		return Run{}, false, ErrNotFound
+	}
+	run := m.insertRun(r)
+	item.Stage = stage
+	item.Status = status
+	m.itemsM[r.WorkItemID] = item
+	m.effects[deliveryID] = effect{kind: "follow_up", runID: run.ID, workItem: r.WorkItemID}
+	return run, true, nil
 }
 
-func (m *mem) AnswerInput(_ context.Context, workItemID, answer, answeredBy string) (Input, error) {
+func (m *mem) Answer(_ context.Context, workItemID, answer, answeredBy string) (Input, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if prev, ok := m.answered[workItemID]; ok {
-		if prev.Answer == answer {
-			return prev, nil
+		if prev.Answer != answer {
+			return Input{}, ErrConflict
 		}
-		return Input{}, ErrConflict
+		return m.finishResume(prev)
 	}
 	cur, ok := m.pending[workItemID]
 	if !ok {
@@ -835,22 +1244,26 @@ func (m *mem) AnswerInput(_ context.Context, workItemID, answer, answeredBy stri
 	}
 	cur.Answer = answer
 	cur.AnsweredBy = answeredBy
+	cur.RunID = m.parked(workItemID)
 	delete(m.pending, workItemID)
 	m.answered[workItemID] = cur
-	return cur, nil
+	return m.finishResume(cur)
 }
 
-func (m *mem) CreateRun(_ context.Context, r NewRun) (Run, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.runSeq++
-	run := Run{
-		ID: "run_" + strconv.Itoa(m.runSeq), FactoryID: r.FactoryID, Agent: r.Agent, Pool: r.Pool,
-		Priority: r.Priority, Prompt: r.Prompt, Title: r.Title, WorkItemID: r.WorkItemID,
-		ParentRunID: r.ParentRunID, ConversationID: r.ConversationID, Stage: r.Stage, ModelID: r.ModelID,
+func (m *mem) finishResume(in Input) (Input, error) {
+	if m.resumed[in.WorkItemID] {
+		in.RunID = m.parked(in.WorkItemID)
+		return in, nil
 	}
-	m.runsM = append(m.runsM, run)
-	return run, nil
+	if m.failResume {
+		m.failResume = false
+		return Input{}, errors.New("automation: resume parked run: queue failed")
+	}
+	m.resumed[in.WorkItemID] = true
+	m.resumeN[in.WorkItemID]++
+	in.RunID = m.parked(in.WorkItemID)
+	m.answered[in.WorkItemID] = in
+	return in, nil
 }
 
 func (m *mem) LatestRun(_ context.Context, workItemID string) (Run, error) {
@@ -864,14 +1277,21 @@ func (m *mem) LatestRun(_ context.Context, workItemID string) (Run, error) {
 	return Run{}, ErrNotFound
 }
 
-func (m *mem) AppendContext(_ context.Context, workItemID, text string) error {
+func (m *mem) AppendContext(_ context.Context, workItemID, deliveryID, text string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if cur := m.ctxText[workItemID]; cur != "" {
-		text = cur + text
+	if _, ok := m.effects[deliveryID]; ok {
+		return false, nil
 	}
-	m.ctxText[workItemID] = text
-	return nil
+	item, ok := m.itemsM[workItemID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	item.Body += text
+	m.itemsM[workItemID] = item
+	m.ctxText[workItemID] += text
+	m.effects[deliveryID] = effect{kind: "context", workItem: workItemID}
+	return true, nil
 }
 
 func (m *mem) Context(_ context.Context, workItemID string) (string, error) {
@@ -885,6 +1305,38 @@ func (m *mem) OpenPullRequest(_ context.Context, workItemID string) (string, boo
 	defer m.mu.Unlock()
 	pr, ok := m.prs[workItemID]
 	return pr, ok && pr != "", nil
+}
+
+func (m *mem) insertRun(r NewRun) Run {
+	m.runSeq++
+	run := Run{
+		ID: "run_" + strconv.Itoa(m.runSeq), FactoryID: r.FactoryID, Agent: r.Agent, Pool: r.Pool,
+		Priority: r.Priority, Prompt: r.Prompt, Title: r.Title, WorkItemID: r.WorkItemID,
+		ParentRunID: r.ParentRunID, ConversationID: r.ConversationID, Stage: r.Stage, ModelID: r.ModelID,
+	}
+	m.runsM = append(m.runsM, run)
+	return run
+}
+
+func (m *mem) runByID(id string) Run {
+	if id == "" {
+		return Run{}
+	}
+	for _, run := range m.runsM {
+		if run.ID == id {
+			return run
+		}
+	}
+	return Run{}
+}
+
+func (m *mem) parked(workItemID string) string {
+	for i := len(m.runsM) - 1; i >= 0; i-- {
+		if m.runsM[i].WorkItemID == workItemID {
+			return m.runsM[i].ID
+		}
+	}
+	return ""
 }
 
 func (m *mem) items() []WorkItem {
@@ -915,6 +1367,12 @@ func (m *mem) answerOf(id string) string {
 	return m.answered[id].Answer
 }
 
+func (m *mem) resumeCount(id string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.resumeN[id]
+}
+
 func (m *mem) finishWithPR(t *testing.T, pr string) WorkItem {
 	t.Helper()
 	m.mu.Lock()
@@ -934,9 +1392,38 @@ func (m *mem) finishWithPR(t *testing.T, pr string) WorkItem {
 
 func (m *mem) bind(t *testing.T, provider, externalRef string, item WorkItem) {
 	t.Helper()
-	if _, _, err := m.BindExternalRef(context.Background(), provider, externalRef, item.ID, item.ConversationID); err != nil {
-		t.Fatal(err)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refs[provider+"\x00"+externalRef] = Ref{
+		Provider: provider, ExternalRef: externalRef,
+		WorkItemID: item.ID, ConversationID: item.ConversationID,
 	}
+}
+
+// lockProbe fails the call when Engine.mu is held across OpenWorkItem.
+type lockProbe struct {
+	*mem
+	eng    *Engine
+	probed bool
+}
+
+func (p *lockProbe) OpenWorkItem(ctx context.Context, provider, externalRef string, w NewWorkItem) (WorkItem, bool, error) {
+	if !p.probed {
+		p.probed = true
+		done := make(chan struct{})
+		go func() {
+			p.eng.mu.Lock()
+			_ = len(p.eng.cache)
+			p.eng.mu.Unlock()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			return WorkItem{}, false, errors.New("e.mu held across store I/O")
+		}
+	}
+	return p.mem.OpenWorkItem(ctx, provider, externalRef, w)
 }
 
 func (m *mem) setPending(id, question string) {
