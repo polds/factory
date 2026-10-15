@@ -11,10 +11,14 @@
 #
 # Task containers are on the host Docker bridge. They reach published ports
 # through the bridge gateway on Linux and through host.docker.internal on
-# Docker Desktop. This script does not rewrite a loopback model URL.
+# Docker Desktop. The live model URL from a container is
+# http://host.docker.internal:8317/v1. This script does not rewrite a
+# loopback model URL.
 #
 # Live reads deploy/.env when that file exists (KEY=VALUE text, not
 # executed). A non-empty shell variable wins. Secrets stay in that file.
+# The App private key stays at spike/m4/secrets/github-app.pem. Live copies
+# it to spike/m4/.work/live/github-app.pem (mode 644) and mounts the copy.
 # Nothing in this script prints token or key material.
 set -euo pipefail
 
@@ -44,6 +48,7 @@ OFFLINE_API_KEY="m4-api-7f3c9a2e1b4d"
 OFFLINE_WORKER_KEY="m4-worker-7f3c9a2e1b4d"
 OFFLINE_S3="m4s3-secret-7f3c9a2e1b4d"
 PLANTED_DUMMY="m4-planted-dummy-7f3c9a"
+LIVE_MODEL_URL="http://host.docker.internal:8317/v1"
 
 ISSUE_NUMBER=17
 PR_NUMBER=77
@@ -206,6 +211,36 @@ apply_live_env_aliases() {
   copy_if_empty OPENAI_BASE_URL FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL
   copy_if_empty OPENAI_API_KEY FACTORY_INFERENCE_OPENAI_API_KEY
   copy_if_empty GH_TOKEN FACTORY_SECRET_GH_TOKEN
+}
+
+live_app_key_source() {
+  if [[ -n "${FACTORY_GITHUB_APP_PRIVATE_KEY_FILE:-}" ]]; then
+    printf '%s\n' "$FACTORY_GITHUB_APP_PRIVATE_KEY_FILE"
+    return 0
+  fi
+  printf '%s\n' "$HERE/secrets/github-app.pem"
+}
+
+file_mode() {
+  python3 -c 'import os, sys; print(format(os.stat(sys.argv[1]).st_mode & 0o777, "03o"))' "$1"
+}
+
+# stage_live_app_key copies src to dest at mode 644 and leaves src unchanged.
+# factoryd is uid 65532 and cannot read a mode-600 mount. The caller mounts
+# dest and keeps it off the offline key path, which openssl replaces.
+stage_live_app_key() {
+  local src="$1" dest="$2" mode=""
+  if [[ ! -f "$src" ]]; then
+    return 1
+  fi
+  if [[ "$src" -ef "$dest" ]]; then
+    return 1
+  fi
+  mkdir -p "$(dirname "$dest")"
+  install -m 644 "$src" "$dest"
+  mode="$(file_mode "$dest")"
+  [[ "$mode" == "644" ]] || return 1
+  cmp -s "$src" "$dest"
 }
 
 url_log_host() {
@@ -1071,10 +1106,13 @@ Live checklist
   2. Set FACTORY_PUBLIC_URL to that https origin.
   3. GitHub App webhook: \${FACTORY_PUBLIC_URL}/api/v1/ingress/github
      Slack request URL: \${FACTORY_PUBLIC_URL}/api/v1/ingress/slack
-  4. Point the model server at http://host.docker.internal:8317/v1
+  4. Point the model server at ${LIVE_MODEL_URL}
      (FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL). Containers on Docker
      Desktop reach the Mac through host.docker.internal.
-  5. After the draft PR opens, reply in the Slack thread.
+  5. Put the GitHub App private key at spike/m4/secrets/github-app.pem.
+     The script copies it to spike/m4/.work/live/github-app.pem (mode 644)
+     and mounts that copy. The original file is left unchanged.
+  6. After the draft PR opens, reply in the Slack thread.
      Suggested text: also add a test for an empty name
      Set REPLY_TEXT and SLACK_TEST_USER_TOKEN to post that reply as a user.
 
@@ -1216,16 +1254,23 @@ else
   live_host="$(url_log_host "$OPENAI_BASE_URL")"
   case "$live_host" in
     localhost | localhost:* | 127.0.0.1 | 127.0.0.1:* | "::1" | "::1:"*)
-      die "OPENAI_BASE_URL points at a loopback host. Task containers cannot reach it. On Docker Desktop use host.docker.internal:8317. This script does not rewrite that URL."
+      die "OPENAI_BASE_URL points at a loopback host. Task containers cannot reach it. Set FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL=${LIVE_MODEL_URL}. This script does not rewrite that URL."
       ;;
   esac
   echo "task OPENAI_BASE_URL host: ${live_host}"
-  key_host="${FACTORY_GITHUB_APP_PRIVATE_KEY_FILE:-$ROOT/deploy/secrets/github-app.pem}"
-  if [[ ! -f "$key_host" ]]; then
-    die "GitHub App private key file is missing. Keep it untracked under deploy/secrets/github-app.pem."
+  key_src="$(live_app_key_source)"
+  key_copy="$WORK/live/github-app.pem"
+  if [[ ! -f "$key_src" ]]; then
+    die "GitHub App private key file is missing (${key_src}). Keep it at spike/m4/secrets/github-app.pem."
   fi
-  export M4_GITHUB_APP_KEY_HOST="$key_host"
-  export FACTORY_GITHUB_APP_PRIVATE_KEY_FILE="$key_host"
+  if [[ "$key_src" -ef "$WORK/github-app.pem" ]]; then
+    die "The live App key must not be spike/m4/.work/github-app.pem. Offline overwrites that file. Keep the live key at spike/m4/secrets/github-app.pem."
+  fi
+  if ! stage_live_app_key "$key_src" "$key_copy"; then
+    die "Could not stage a mode-644 copy of the GitHub App private key for factoryd."
+  fi
+  export M4_GITHUB_APP_KEY_HOST="$key_copy"
+  export FACTORY_GITHUB_APP_PRIVATE_KEY_FILE="$key_copy"
   export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$OPENAI_BASE_URL"
   export FACTORY_INFERENCE_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
   export FACTORY_API_KEY="${FACTORY_API_KEY:-m4-api-7f3c9a2e1b4d}"

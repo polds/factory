@@ -1,0 +1,2 @@
+# Live GitHub App private key. Offline writes its own key under .work/.
+secrets/

@@ -82,6 +82,44 @@ case_building_script() {
   assert_eq "$first" "intake: scope recorded"
 }
 
+case_live_key_copy() {
+  local dir="" src="" dest="" src_mode="" dest_mode="" saved=""
+  dir="$(mktemp -d)"
+  src="$dir/source.pem"
+  dest="$dir/live/github-app.pem"
+  printf 'live-key-bytes\n' >"$src"
+  chmod 600 "$src"
+  stage_live_app_key "$src" "$dest" || return 1
+  cmp -s "$src" "$dest" || return 1
+  src_mode="$(file_mode "$src")"
+  dest_mode="$(file_mode "$dest")"
+  assert_eq "$src_mode" "600" || return 1
+  assert_eq "$dest_mode" "644" || return 1
+  assert_eq "$(live_app_key_source)" "$HERE/secrets/github-app.pem" || return 1
+  saved="${FACTORY_GITHUB_APP_PRIVATE_KEY_FILE:-}"
+  FACTORY_GITHUB_APP_PRIVATE_KEY_FILE="$src"
+  assert_eq "$(live_app_key_source)" "$src" || return 1
+  if [[ -n "$saved" ]]; then
+    FACTORY_GITHUB_APP_PRIVATE_KEY_FILE="$saved"
+  else
+    unset FACTORY_GITHUB_APP_PRIVATE_KEY_FILE
+  fi
+  git -C "$ROOT" check-ignore -q -- spike/m4/secrets/github-app.pem || return 1
+  git -C "$ROOT" check-ignore -q -- spike/m4/.work/live/github-app.pem || return 1
+  rm -rf "$dir"
+}
+
+case_live_model_url() {
+  local text=""
+  [[ "$LIVE_MODEL_URL" == "http://host.docker.internal:8317/v1" ]] || return 1
+  text="$(print_live_checklist)"
+  [[ "$text" == *"Point the model server at ${LIVE_MODEL_URL}"* ]] || return 1
+  [[ "$text" == *"spike/m4/secrets/github-app.pem"* ]] || return 1
+  [[ "$text" == *"spike/m4/.work/live/github-app.pem"* ]] || return 1
+  [[ "$text" != *"deploy/secrets/github-app.pem"* ]] || return 1
+  [[ "$text" != *"host.docker.internal:8317."* ]] || return 1
+}
+
 case_no_gnu_flags() {
   if grep -n -E '(grep[[:space:]]+-P|sed[[:space:]]+-i|[[:space:]]mapfile[[:space:]]|^mapfile[[:space:]]|(^|[[:space:]])timeout[[:space:]])' \
     "$SCRIPT" "$HERE/run_test.sh"; then
@@ -104,6 +142,8 @@ run_case host_desktop case_host_desktop
 run_case host_linux case_host_linux
 run_case task_lines case_task_lines
 run_case building_script case_building_script
+run_case live_key_copy case_live_key_copy
+run_case live_model_url case_live_model_url
 run_case no_gnu_flags case_no_gnu_flags
 
 echo
