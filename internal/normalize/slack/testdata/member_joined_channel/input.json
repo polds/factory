@@ -1,0 +1,19 @@
+{
+  "type": "event_callback",
+  "team_id": "T0FACTORY",
+  "api_app_id": "A0FACTORY",
+  "event_id": "EvJOIN",
+  "event_time": 1600000006,
+  "authorizations": [
+    {"team_id": "T0FACTORY", "user_id": "U0BOT", "is_bot": true}
+  ],
+  "event": {
+    "type": "member_joined_channel",
+    "user": "U0HUMAN",
+    "channel": "C0FACTORY",
+    "channel_type": "C",
+    "team": "T0FACTORY",
+    "inviter": "U0OTHER",
+    "event_ts": "1600000006.000400"
+  }
+}

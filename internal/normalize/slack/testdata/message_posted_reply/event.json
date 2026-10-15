@@ -1,0 +1,27 @@
+{
+  "provider": "slack",
+  "event": "message_posted",
+  "delivery_id": "EvMSGREPLY",
+  "occurred_at": "2020-09-13T12:26:41Z",
+  "actor": {"provider_id": "U0HUMAN"},
+  "subject": {
+    "kind": "message",
+    "id": "1600000001.000200",
+    "text": "A reply in the thread"
+  },
+  "thread": {
+    "kind": "slack_thread",
+    "external_ref": "slack:T0FACTORY/C0FACTORY/1600000000.000100"
+  },
+  "raw": {
+    "type": "message",
+    "user": "U0HUMAN",
+    "text": "A reply in the thread",
+    "ts": "1600000001.000200",
+    "thread_ts": "1600000000.000100",
+    "channel": "C0FACTORY",
+    "channel_type": "channel",
+    "event_ts": "1600000001.000200",
+    "client_msg_id": "msg-reply-1"
+  }
+}

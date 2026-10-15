@@ -1,0 +1,24 @@
+{
+  "provider": "slack",
+  "event": "app_mention",
+  "delivery_id": "EvAPPMENTION",
+  "occurred_at": "2020-09-13T12:26:42Z",
+  "actor": {"provider_id": "U0HUMAN"},
+  "subject": {
+    "kind": "message",
+    "id": "1600000002.000150",
+    "text": "<@U0BOT> please look at the payments bug"
+  },
+  "thread": {
+    "kind": "slack_thread",
+    "external_ref": "slack:T0FACTORY/C0FACTORY/1600000002.000150"
+  },
+  "raw": {
+    "type": "app_mention",
+    "user": "U0HUMAN",
+    "text": "<@U0BOT> please look at the payments bug",
+    "ts": "1600000002.000150",
+    "channel": "C0FACTORY",
+    "event_ts": "1600000002.000150"
+  }
+}

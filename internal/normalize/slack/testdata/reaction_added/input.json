@@ -1,0 +1,18 @@
+{
+  "type": "event_callback",
+  "team_id": "T0FACTORY",
+  "api_app_id": "A0FACTORY",
+  "event_id": "EvREACT",
+  "event_time": 1600000005,
+  "authorizations": [
+    {"team_id": "T0FACTORY", "user_id": "U0BOT", "is_bot": true}
+  ],
+  "event": {
+    "type": "reaction_added",
+    "user": "U0HUMAN",
+    "reaction": "thumbsup",
+    "item_user": "U0OTHER",
+    "item": {"type": "message", "channel": "C0FACTORY", "ts": "1600000000.000100"},
+    "event_ts": "1600000005.000300"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "provider": "slack",
+  "event": "reaction_added",
+  "delivery_id": "EvREACT",
+  "occurred_at": "2020-09-13T12:26:45Z",
+  "actor": {"provider_id": "U0HUMAN"},
+  "subject": {
+    "kind": "reaction",
+    "id": "1600000000.000100",
+    "text": "thumbsup"
+  },
+  "thread": {
+    "kind": "slack_thread",
+    "external_ref": "slack:T0FACTORY/C0FACTORY/1600000000.000100"
+  },
+  "raw": {
+    "type": "reaction_added",
+    "user": "U0HUMAN",
+    "reaction": "thumbsup",
+    "item_user": "U0OTHER",
+    "item": {"type": "message", "channel": "C0FACTORY", "ts": "1600000000.000100"},
+    "event_ts": "1600000005.000300"
+  }
+}
