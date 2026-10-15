@@ -456,6 +456,97 @@ func TestE2EAskInputRequeueGap(t *testing.T) {
 	}
 }
 
+// TestE2EAskInputStaleParkLeavesResumeQueued snapshots the suspended run id,
+// answers, then parks that id the way a leader tick does after waiting out
+// the answer. The resume stays queued and starts one execution.
+func TestE2EAskInputStaleParkLeavesResumeQueued(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	const question = "Which staging env?"
+	const answer = "staging-2"
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	task := env.createTask(t, "Stale park after answer", "which env?")
+	asg := w.readAssignment(t)
+	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: asg.TaskID, WorkerID: "local-1"})
+	postEvents(t, asg.EnvVars["FACTORY_EVENTS_URL"], asg.EnvVars["FACTORY_RUN_TOKEN"], 0, []string{
+		`{"type":"question","gate":"clarification","text":"` + question + `"}`,
+	})
+	waiting := env.waitTask(t, task.ID, "awaiting_input", "triage")
+	env.assertSuspended(t, task.ID, asg.TaskID, question)
+	var stale string
+	if err := env.raw.QueryRow(context.Background(), `SELECT suspended_run_id FROM work_items WHERE id = $1`, task.ID).Scan(&stale); err != nil {
+		t.Fatal(err)
+	}
+	if stale != asg.TaskID {
+		t.Fatalf("suspended run %s", stale)
+	}
+	w.close()
+
+	if _, err := env.srv.AnswerInput(context.Background(), task.ID, answer, "peter"); err != nil {
+		t.Fatal(err)
+	}
+	env.srv.reconcileSuspended(context.Background(), []string{stale})
+	if err := env.srv.parkSuspendedRun(context.Background(), stale); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := env.raw.QueryRow(context.Background(), `SELECT status FROM runs WHERE id = $1`, asg.TaskID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "queued" {
+		t.Fatalf("status %s, want queued", status)
+	}
+	if n := env.queueRows(t, asg.TaskID); n != 1 {
+		t.Fatalf("queue rows %d, want 1", n)
+	}
+	var attempts int
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM executions WHERE run_id = $1`, asg.TaskID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("executions before claim %d, want 1", attempts)
+	}
+	if _, err := env.srv.AnswerInput(context.Background(), task.ID, answer, "someone"); err != nil {
+		t.Fatal(err)
+	}
+	if n := env.queueRows(t, asg.TaskID); n != 1 {
+		t.Fatalf("queue rows after replay %d, want 1", n)
+	}
+
+	w2 := dialWorker(t, env, "local-2")
+	defer w2.close()
+	next := w2.readAssignment(t)
+	if next.TaskID != asg.TaskID {
+		t.Fatalf("resume run %s, want %s", next.TaskID, asg.TaskID)
+	}
+	prompt := next.EnvVars["FACTORY_TASK_PROMPT"]
+	if !strings.Contains(prompt, question) || !strings.Contains(prompt, answer) {
+		t.Fatal("resumed prompt is missing the question and answer")
+	}
+	if next.EnvVars["FACTORY_CONVERSATION_ID"] != waiting.ConversationID {
+		t.Fatalf("conversation %s", next.EnvVars["FACTORY_CONVERSATION_ID"])
+	}
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM executions WHERE run_id = $1`, asg.TaskID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("executions %d, want 2", attempts)
+	}
+	if _, err := env.srv.AnswerInput(context.Background(), task.ID, answer, "again"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM executions WHERE run_id = $1`, asg.TaskID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("executions after replay %d, want 2", attempts)
+	}
+}
+
 func TestE2EAskInputMissingStageAgentLeavesPending(t *testing.T) {
 	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
 		t.Skip("FACTORY_TEST_DATABASE_URL unset")

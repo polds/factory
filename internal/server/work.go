@@ -852,11 +852,42 @@ func (s *Server) latestQuestion(ctx context.Context, runID string) (string, erro
 	return strings.TrimSpace(text), nil
 }
 
+// runStillSuspended locks the work item that still names this run, if any.
+// A concurrent answer clears suspended_run_id under the same row lock, so
+// the caller observes the committed value and does not park a resumed run.
+func (s *Server) runStillSuspended(ctx context.Context, tx pgx.Tx, runID string) (bool, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id FROM work_items
+		WHERE suspended_run_id = $1
+		FOR UPDATE`, runID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	held := false
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return false, err
+		}
+		held = true
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return held, nil
+}
+
 // parkSuspendedRun ends the live execution and removes the queue row.
 // executions.state has no suspended value, so the attempt ends as orphaned.
 // The run stays running and off the queue: lease expiry has nothing to
 // requeue, and a restart does not see a queued run. The work item's
 // suspended_* columns are the durable record.
+//
+// The leader loads suspended run ids, then waits on leaseMu. AnswerInput
+// can clear suspended_run_id and queue the resume in that gap. Parking is
+// conditional on the work item still naming this run, in this transaction,
+// so that stale id does not delete the resume's queue row.
 func (s *Server) parkSuspendedRun(ctx context.Context, runID string) error {
 	s.leaseMu.Lock()
 	defer s.leaseMu.Unlock()
@@ -881,6 +912,13 @@ func (s *Server) parkSuspendedRun(ctx context.Context, runID string) error {
 	}
 	switch status {
 	case store.StatusSucceeded, store.StatusFailed, store.StatusCancelled:
+		return tx.Commit(ctx)
+	}
+	still, err := s.runStillSuspended(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
+	if !still {
 		return tx.Commit(ctx)
 	}
 	if _, err := tx.Exec(ctx, `
