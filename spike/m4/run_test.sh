@@ -120,6 +120,140 @@ case_live_model_url() {
   [[ "$text" != *"host.docker.internal:8317."* ]] || return 1
 }
 
+case_mode_parse() {
+  accept_mode offline || return 1
+  accept_mode live || return 1
+  accept_mode live-ci || return 1
+  if accept_mode liveci; then
+    return 1
+  fi
+  if accept_mode ""; then
+    return 1
+  fi
+  if accept_mode LIVE; then
+    return 1
+  fi
+}
+
+case_live_ci_delivery_sign() {
+  local dir="" body="" sig="" want="" saved=""
+  dir="$(mktemp -d)"
+  body="Change spike/m1/fixture/greet/greet.go so Hello returns Hello, name!."
+  write_live_ci_delivery "$dir/issue.json" 17 "M4: emphasize Hello" "$body" "polds/factory" || return 1
+  saved="${FACTORY_GITHUB_WEBHOOK_SECRET:-}"
+  FACTORY_GITHUB_WEBHOOK_SECRET="m4-test-secret"
+  sig="$(sign_github "$FACTORY_GITHUB_WEBHOOK_SECRET" "$dir/issue.json")"
+  want="$(
+    python3 - "$FACTORY_GITHUB_WEBHOOK_SECRET" "$dir/issue.json" <<'PY'
+import hashlib
+import hmac
+import sys
+
+secret, path = sys.argv[1], sys.argv[2]
+payload = open(path, "rb").read()
+print("sha256=" + hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest())
+PY
+  )"
+  assert_eq "$sig" "$want" || return 1
+  if [[ "$(sign_github "other-secret" "$dir/issue.json")" == "$sig" ]]; then
+    echo "a different webhook secret produced the same signature" >&2
+    return 1
+  fi
+  python3 - "$dir/issue.json" <<'PY' || return 1
+import json
+import sys
+
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+if doc.get("action") != "labeled":
+    raise SystemExit("action")
+if (doc.get("label") or {}).get("name") != "factory-ready":
+    raise SystemExit("label")
+issue = doc.get("issue") or {}
+if issue.get("number") != 17 or not str(issue.get("body") or "").startswith("Change spike"):
+    raise SystemExit("issue")
+if "factory-ready" not in [row.get("name") for row in issue.get("labels") or []]:
+    raise SystemExit("labels")
+repo = doc.get("repository") or {}
+if repo.get("full_name") != "polds/factory" or (repo.get("owner") or {}).get("login") != "polds":
+    raise SystemExit("repo")
+PY
+  if [[ -n "$saved" ]]; then
+    FACTORY_GITHUB_WEBHOOK_SECRET="$saved"
+  else
+    unset FACTORY_GITHUB_WEBHOOK_SECRET
+  fi
+  rm -rf "$dir"
+}
+
+case_live_ci_webhook_secret() {
+  local saved="${FACTORY_GITHUB_WEBHOOK_SECRET:-}" generated=""
+  FACTORY_GITHUB_WEBHOOK_SECRET="configured-secret"
+  configure_live_ci_webhook || return 1
+  assert_eq "$FACTORY_GITHUB_WEBHOOK_SECRET" "configured-secret" || return 1
+  unset FACTORY_GITHUB_WEBHOOK_SECRET
+  configure_live_ci_webhook || return 1
+  generated="$FACTORY_GITHUB_WEBHOOK_SECRET"
+  [[ "$generated" =~ ^[0-9a-f]{64}$ ]] || return 1
+  if [[ -n "$saved" ]]; then
+    FACTORY_GITHUB_WEBHOOK_SECRET="$saved"
+  else
+    unset FACTORY_GITHUB_WEBHOOK_SECRET
+  fi
+}
+
+case_live_ci_pem() {
+  local dir="" dest="" pem="" out="" mode=""
+  dir="$(mktemp -d)"
+  dest="$dir/github-app.pem"
+  pem=$'-----BEGIN PRIVATE KEY-----\nYQ==\n-----END PRIVATE KEY-----\n'
+  M4_GITHUB_APP_PRIVATE_KEY="$pem"
+  out="$(umask 077 && stage_app_key_from_env "$dest" 2>"$dir/err")" || return 1
+  [[ -z "$out" ]] || return 1
+  if [[ -s "$dir/err" ]]; then
+    echo "staging the App key wrote to stderr" >&2
+    return 1
+  fi
+  if grep -F -q "BEGIN PRIVATE KEY" <<<"$out"; then
+    echo "staging the App key printed the PEM" >&2
+    return 1
+  fi
+  mode="$(file_mode "$dest")"
+  assert_eq "$mode" "644" || return 1
+  cmp -s <(printf '%s' "$pem") "$dest" || return 1
+  git -C "$ROOT" check-ignore -q -- spike/m4/.work/live-ci/github-app.pem || return 1
+  unset M4_GITHUB_APP_PRIVATE_KEY
+  if stage_app_key_from_env "$dir/missing.pem" >"$dir/empty.out" 2>"$dir/empty.err"; then
+    echo "empty PEM was accepted" >&2
+    return 1
+  fi
+  if grep -F -q "BEGIN" "$dir/empty.err"; then
+    echo "empty-PEM error included key material" >&2
+    return 1
+  fi
+  rm -rf "$dir"
+}
+
+case_live_ci_env_names() {
+  local name=""
+  for name in \
+    M4_GITHUB_APP_ID \
+    M4_GITHUB_APP_PRIVATE_KEY \
+    M4_SLACK_BOT_TOKEN \
+    M4_SLACK_CHANNEL \
+    M1_OPENAI_BASE_URL \
+    M1_OPENAI_API_KEY \
+    FACTORY_GITHUB_WEBHOOK_SECRET; do
+    grep -F -q "$name" "$SCRIPT" || {
+      echo "run.sh does not mention ${name}" >&2
+      return 1
+    }
+    grep -F -q "$name" "$ROOT/.github/workflows/m4-live.yml" || {
+      echo "m4-live.yml does not mention ${name}" >&2
+      return 1
+    }
+  done
+}
+
 case_no_gnu_flags() {
   if grep -n -E '(grep[[:space:]]+-P|sed[[:space:]]+-i|[[:space:]]mapfile[[:space:]]|^mapfile[[:space:]]|(^|[[:space:]])timeout[[:space:]])' \
     "$SCRIPT" "$HERE/run_test.sh"; then
@@ -144,6 +278,11 @@ run_case task_lines case_task_lines
 run_case building_script case_building_script
 run_case live_key_copy case_live_key_copy
 run_case live_model_url case_live_model_url
+run_case mode_parse case_mode_parse
+run_case live_ci_delivery_sign case_live_ci_delivery_sign
+run_case live_ci_webhook_secret case_live_ci_webhook_secret
+run_case live_ci_pem case_live_ci_pem
+run_case live_ci_env_names case_live_ci_env_names
 run_case no_gnu_flags case_no_gnu_flags
 
 echo

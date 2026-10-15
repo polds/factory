@@ -237,6 +237,8 @@ jobs:
           shellcheck -x "${files[@]}"
       - name: M2 run.sh unit tests
         run: ./spike/m2/run_test.sh
+      - name: M4 run.sh unit tests
+        run: ./spike/m4/run_test.sh
 
   yaml:
     name: yaml
