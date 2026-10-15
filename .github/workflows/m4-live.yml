@@ -12,8 +12,12 @@
 # a synthetic issues.labeled delivery with FACTORY_GITHUB_WEBHOOK_SECRET
 # and posts that delivery to the local ingress. When
 # FACTORY_GITHUB_WEBHOOK_SECRET is empty, the driver generates one value
-# and configures factoryd with it. The run asserts a pull request and a
-# Slack thread post, then writes spike/m4/.work/evidence/.
+# and configures factoryd with it. The synthetic sender is
+# M4_LIVE_CI_SENDER (a human login, type User). An empty sender uses the
+# owner of inputs.repo. The issue title includes GITHUB_RUN_ID. On exit
+# the driver closes the issue, closes the draft pull request, and
+# deletes that pull request branch. The run asserts a pull request and
+# a Slack thread post, then writes spike/m4/.work/evidence/.
 #
 # Repository secrets (values are masked; never printed):
 #   M4_GITHUB_APP_ID            GitHub App id
@@ -31,6 +35,11 @@ on:
         description: Repository the run opens a draft PR against (M4_REPO)
         required: false
         default: polds/factory
+        type: string
+      sender:
+        description: Human GitHub login for the synthetic sender (M4_LIVE_CI_SENDER). Empty uses the repo owner.
+        required: false
+        default: ""
         type: string
 
 permissions:
@@ -57,6 +66,7 @@ jobs:
       - name: Run the CI live M4 driver
         env:
           M4_REPO: ${{ inputs.repo }}
+          M4_LIVE_CI_SENDER: ${{ inputs.sender }}
           M4_GITHUB_APP_ID: ${{ secrets.M4_GITHUB_APP_ID }}
           M4_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M4_GITHUB_APP_PRIVATE_KEY }}
           M4_SLACK_BOT_TOKEN: ${{ secrets.M4_SLACK_BOT_TOKEN }}

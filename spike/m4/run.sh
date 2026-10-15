@@ -24,7 +24,10 @@
 # spike/m4/.work/live-ci/github-app.pem (mode 644). It does not start a
 # tunnel. It signs a synthetic issues.labeled delivery with
 # FACTORY_GITHUB_WEBHOOK_SECRET, generating that secret when it is empty,
-# and posts the delivery to the local ingress. Nothing in this script
+# and posts the delivery to the local ingress. The sender is
+# M4_LIVE_CI_SENDER, or the repo owner when that is empty, and its type
+# is User. On exit the trap closes that issue, closes the draft pull
+# request, and deletes the pull request branch. Nothing in this script
 # prints token or key material.
 set -euo pipefail
 
@@ -83,6 +86,7 @@ cleanup() {
   local code=$? pid=""
   trap - EXIT INT TERM ERR
   set +e
+  close_live_ci || true
   if [[ -n "${ROUTER_PID}" ]]; then
     kill "${ROUTER_PID}" 2>/dev/null || true
   fi
@@ -417,7 +421,7 @@ log_files() {
     "$WORK/live-pr.json"
     "$WORK/live-slack.json"
   )
-  for f in "$WORK"/model-stub-*.log "$WORK"/evidence/*; do
+  for f in "$WORK"/model-stub-*.log "$WORK"/evidence/* "$WORK"/live-ci-cleanup-*.err; do
     if [[ -f "$f" ]]; then
       LOG_FILES+=("$f")
     fi
@@ -697,61 +701,65 @@ with open(dest, "w", encoding="utf-8") as fh:
 PY
 }
 
-write_live_ci_delivery() {
-  local dest="$1" number="$2" title="$3" body="$4" repo="$5"
+# live_ci_sender_for prints the human login for a synthetic delivery.
+# M4_LIVE_CI_SENDER wins. Otherwise the login is the owner of repo.
+# The intake trigger rejects authors in not_in, and the engine drops [bot].
+live_ci_sender_for() {
+  local repo="$1" sender="${M4_LIVE_CI_SENDER:-}"
   if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
     echo "repo must be owner/name" >&2
     return 1
   fi
-  python3 - "$dest" "$number" "$title" "$body" "$repo" <<'PY'
-import json
+  if [[ -z "$sender" ]]; then
+    sender="${repo%%/*}"
+  fi
+  python3 - "$sender" "$ROOT/deploy/m4-factory/automations/labeled-intake/automation.md" <<'PY'
+import re
 import sys
 
-dest, number, title, body, repo = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
-owner, name = repo.split("/", 1)
-doc = {
-    "action": "labeled",
-    "label": {"name": "factory-ready"},
-    "issue": {
-        "id": 17000 + number,
-        "number": number,
-        "title": title,
-        "body": body,
-        "html_url": "https://github.com/%s/issues/%d" % (repo, number),
-        "updated_at": "2026-10-15T00:00:00Z",
-        "labels": [{"name": "factory-ready"}],
-    },
-    "repository": {
-        "id": 32,
-        "name": name,
-        "full_name": repo,
-        "owner": {"login": owner, "id": 7, "type": "User"},
-    },
-    "sender": {"login": "octocat", "id": 1, "type": "User"},
-}
-with open(dest, "w", encoding="utf-8") as fh:
-    json.dump(doc, fh)
-    fh.write("\n")
+login, path = sys.argv[1], sys.argv[2]
+if "[bot]" in login.lower():
+    raise SystemExit("sender is not a human login the intake trigger accepts")
+if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login):
+    raise SystemExit("sender is not a human login the intake trigger accepts")
+text = open(path, encoding="utf-8").read()
+match = re.search(r"not_in:\s*\[([^\]]*)\]", text)
+excluded = []
+if match:
+    excluded = [part.strip().strip("'\"") for part in match.group(1).split(",") if part.strip()]
+if login in excluded:
+    raise SystemExit("sender is not a human login the intake trigger accepts")
+print(login)
 PY
 }
 
+resolve_live_ci_sender() {
+  local sender=""
+  sender="$(live_ci_sender_for "$M4_REPO")" || return 1
+  M4_LIVE_CI_SENDER="$sender"
+  export M4_LIVE_CI_SENDER
+}
+
 write_live_ci_delivery_from_issue() {
-  local dest="$1" issue_json="$2" repo="$3"
+  local dest="$1" issue_json="$2" repo="$3" sender=""
   if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
     echo "repo must be owner/name" >&2
     return 1
   fi
-  python3 - "$dest" "$issue_json" "$repo" <<'PY'
+  sender="$(live_ci_sender_for "$repo")" || return 1
+  python3 - "$dest" "$issue_json" "$repo" "$sender" <<'PY'
 import json
+import re
 import sys
 
-dest, src, repo = sys.argv[1], sys.argv[2], sys.argv[3]
+dest, src, repo, sender = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+if "[bot]" in sender.lower() or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", sender):
+    raise SystemExit("sender is not a human login the intake trigger accepts")
 issue = json.load(open(src, encoding="utf-8"))
 number = issue.get("number")
 if not isinstance(number, int) or number <= 0:
     raise SystemExit("issue number")
 owner, name = repo.split("/", 1)
-user = issue.get("user") or {}
 doc = {
     "action": "labeled",
     "label": {"name": "factory-ready"},
@@ -770,11 +778,7 @@ doc = {
         "full_name": repo,
         "owner": {"login": owner, "id": 7, "type": "User"},
     },
-    "sender": {
-        "login": user.get("login") or "octocat",
-        "id": user.get("id") or 1,
-        "type": user.get("type") or "User",
-    },
+    "sender": {"login": sender, "id": 1, "type": "User"},
 }
 with open(dest, "w", encoding="utf-8") as fh:
     json.dump(doc, fh)
@@ -1287,6 +1291,139 @@ require_live_ids() {
   export FACTORY_EXTERNAL_URL="$FACTORY_PUBLIC_URL"
 }
 
+live_ci_run_id() {
+  local id="${GITHUB_RUN_ID:-local}"
+  if [[ "$id" == local || "$id" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$id"
+    return 0
+  fi
+  echo "GITHUB_RUN_ID is not a number" >&2
+  return 1
+}
+
+live_ci_issue_title() {
+  local id=""
+  id="$(live_ci_run_id)" || return 1
+  printf '[m4-live-ci %s] M4: emphasize Hello\n' "$id"
+}
+
+live_ci_marker() {
+  local id=""
+  id="$(live_ci_run_id)" || return 1
+  printf 'm4-live-ci-marker: %s\n' "$id"
+}
+
+live_ci_definition_repo() {
+  python3 - "$ROOT/deploy/m4-factory/automations/labeled-intake/automation.md" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+owners = re.findall(r"owner: ([A-Za-z0-9_.-]+), name: ([A-Za-z0-9_.-]+)", text)
+filters = re.findall(r"repos: \[([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\]", text)
+slugs = {"%s/%s" % pair for pair in owners}
+slugs.update(filters)
+if len(slugs) != 1:
+    raise SystemExit("labeled-intake does not name one repo")
+print(next(iter(slugs)))
+PY
+}
+
+assert_live_ci_repo() {
+  local defined=""
+  defined="$(live_ci_definition_repo)" || return 1
+  [[ "$M4_REPO" == "$defined" ]]
+}
+
+live_ci_cleanup_request() {
+  local kind="$1"
+  [[ "${M4_REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+  case "$kind" in
+    issue)
+      [[ "${ISSUE_LIVE:-}" =~ ^[1-9][0-9]*$ ]] || return 1
+      printf 'PATCH /repos/%s/issues/%s state=closed\n' "$M4_REPO" "$ISSUE_LIVE"
+      ;;
+    pull)
+      [[ "${PR_LIVE_NUMBER:-}" =~ ^[1-9][0-9]*$ ]] || return 1
+      printf 'PATCH /repos/%s/pulls/%s state=closed\n' "$M4_REPO" "$PR_LIVE_NUMBER"
+      ;;
+    branch)
+      [[ "${PR_LIVE_BRANCH:-}" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+      case "$PR_LIVE_BRANCH" in
+        main | master | */main | */master | *..*) return 1 ;;
+      esac
+      printf 'DELETE /repos/%s/git/refs/heads/%s\n' "$M4_REPO" "$PR_LIVE_BRANCH"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+select_draft_pull() {
+  python3 - "$1" "$2" <<'PY'
+import json
+import re
+import sys
+
+path, number = sys.argv[1], sys.argv[2]
+if not re.fullmatch(r"[1-9][0-9]*", number):
+    raise SystemExit(1)
+pattern = re.compile(r"(?<!\w)Closes #%s(?!\d)" % re.escape(number))
+rows = json.load(open(path, encoding="utf-8"))
+for row in rows:
+    if row.get("isDraft") and pattern.search(row.get("body") or ""):
+        print(row.get("url") or "")
+        print(row.get("headRefOid") or "")
+        print(row.get("number") or "")
+        print(row.get("headRefName") or "")
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+record_live_ci_evidence() {
+  [[ "${MODE:-}" == live-ci ]] || return 0
+  mkdir -p "$WORK/evidence"
+  if [[ -n "${ISSUE_LIVE:-}" ]]; then
+    printf '%s\n' "https://github.com/${M4_REPO}/issues/${ISSUE_LIVE}" >"$WORK/evidence/issue.txt"
+  fi
+  if [[ -n "${PR_LIVE_URL:-}" ]]; then
+    printf '%s\n' "$PR_LIVE_URL" >"$WORK/evidence/pull-request.txt"
+  fi
+  if [[ -n "${PR_LIVE_BRANCH:-}" ]]; then
+    printf '%s\n' "$PR_LIVE_BRANCH" >"$WORK/evidence/branch.txt"
+  fi
+  if [[ -n "${PERMALINK:-}" ]]; then
+    printf '%s\n' "$PERMALINK" >"$WORK/evidence/slack.txt"
+  fi
+}
+
+# close_live_ci closes the issue and draft PR, then deletes the PR branch.
+# Failures are logged without response bodies, so a token in an error stays off the console.
+close_live_ci() {
+  local kind="" spec="" method="" path=""
+  [[ "${MODE:-}" == live-ci ]] || return 0
+  record_live_ci_evidence || true
+  [[ -n "${LIVE_TOKEN:-}" ]] || return 0
+  mkdir -p "$WORK"
+  for kind in issue pull branch; do
+    spec="$(live_ci_cleanup_request "$kind" 2>/dev/null)" || continue
+    method="${spec%% *}"
+    path="${spec#* }"
+    path="${path%% *}"
+    if [[ "$method" == DELETE ]]; then
+      GH_TOKEN="$LIVE_TOKEN" gh api --method DELETE \
+        -H "Accept: application/vnd.github+json" \
+        "$path" >/dev/null 2>"$WORK/live-ci-cleanup-${kind}.err" ||
+        echo "live-ci cleanup: could not delete the pull request branch" >&2
+    else
+      GH_TOKEN="$LIVE_TOKEN" gh api --method PATCH \
+        -H "Accept: application/vnd.github+json" \
+        "$path" -f state=closed >/dev/null 2>"$WORK/live-ci-cleanup-${kind}.err" ||
+        echo "live-ci cleanup: could not close the ${kind}" >&2
+    fi
+  done
+}
+
 mint_installation_token() {
   (cd "$ROOT" && CGO_ENABLED=0 go build -o "$WORK/apptoken" ./spike/m4/apptoken)
   LIVE_TOKEN="$("$WORK/apptoken" -repo "$M4_REPO" 2>"$WORK/apptoken.err" || true)"
@@ -1299,10 +1436,14 @@ mint_installation_token() {
 }
 
 create_live_issue() {
+  local title="M4: emphasize Hello"
+  if [[ "$MODE" == live-ci ]]; then
+    title="$(live_ci_issue_title)" || return 1
+  fi
   GH_TOKEN="$LIVE_TOKEN" gh api --method POST \
     -H "Accept: application/vnd.github+json" \
     "/repos/${M4_REPO}/issues" \
-    -f title="M4: emphasize Hello" \
+    -f title="$title" \
     -f body="$(live_issue_body 0)" \
     >"$WORK/live-issue.json"
   ISSUE_LIVE="$(
@@ -1346,45 +1487,39 @@ wait_draft_pull() {
   local parsed=""
   PR_LIVE_URL=""
   PR_LIVE_SHA=""
+  PR_LIVE_NUMBER=""
+  PR_LIVE_BRANCH=""
   for _ in $(seq 1 360); do
     GH_TOKEN="$LIVE_TOKEN" gh pr list --repo "$M4_REPO" --state open \
-      --json number,isDraft,url,body,headRefOid >"$WORK/live-pr.json" || true
-    parsed="$(
-      python3 - "$WORK/live-pr.json" "$ISSUE_LIVE" <<'PY'
-import json
-import sys
-
-rows = json.load(open(sys.argv[1], encoding="utf-8"))
-needle = "Closes #%s" % sys.argv[2]
-for row in rows:
-    if row.get("isDraft") and needle in (row.get("body") or ""):
-        print(row["url"])
-        print(row.get("headRefOid") or "")
-        sys.exit(0)
-sys.exit(1)
-PY
-    )" && PR_LIVE_URL="$(printf '%s\n' "$parsed" | awk 'NR==1')" &&
-      PR_LIVE_SHA="$(printf '%s\n' "$parsed" | awk 'NR==2')" && return 0
+      --json number,isDraft,url,body,headRefOid,headRefName >"$WORK/live-pr.json" || true
+    parsed="$(select_draft_pull "$WORK/live-pr.json" "$ISSUE_LIVE")" &&
+      PR_LIVE_URL="$(printf '%s\n' "$parsed" | awk 'NR==1')" &&
+      PR_LIVE_SHA="$(printf '%s\n' "$parsed" | awk 'NR==2')" &&
+      PR_LIVE_NUMBER="$(printf '%s\n' "$parsed" | awk 'NR==3')" &&
+      PR_LIVE_BRANCH="$(printf '%s\n' "$parsed" | awk 'NR==4')" &&
+      [[ -n "$PR_LIVE_URL" ]] && return 0
     sleep 10
   done
   return 1
 }
 
 read_slack_permalink() {
+  local needle="${1:-M4: emphasize Hello}"
   curl -fsS -H "Authorization: Bearer ${FACTORY_SLACK_BOT_TOKEN}" \
     "https://slack.com/api/conversations.history?channel=${M4_SLACK_CHANNEL}&limit=50" \
     >"$WORK/live-slack.json" || return 1
   LIVE_ROOT="$(
-    python3 - "$WORK/live-slack.json" <<'PY'
+    python3 - "$WORK/live-slack.json" "$needle" <<'PY'
 import json
 import sys
 
 doc = json.load(open(sys.argv[1], encoding="utf-8"))
+needle = sys.argv[2]
 if not doc.get("ok"):
     sys.exit(1)
 for msg in doc.get("messages") or []:
     text = msg.get("text") or ""
-    if "Work item" in text and "M4: emphasize Hello" in text:
+    if "Work item" in text and needle in text:
         print(msg.get("ts") or "")
         sys.exit(0)
 sys.exit(1)
@@ -1401,8 +1536,7 @@ write_live_ci_evidence() {
   if [[ -f "$WORK/ack-issue.json" ]]; then
     cp "$WORK/ack-issue.json" "$WORK/evidence/ack.json"
   fi
-  printf '%s\n' "${PR_LIVE_URL:-}" >"$WORK/evidence/pull-request.txt"
-  printf '%s\n' "${PERMALINK:-}" >"$WORK/evidence/slack.txt"
+  record_live_ci_evidence
 }
 
 live_issue_body() {
@@ -1417,6 +1551,9 @@ GH_TOKEN is already in the environment. Run gh auth setup-git before git push.
 Open a draft pull request whose body contains Closes #${number}.
 Do not print GH_TOKEN or OPENAI_API_KEY. Do not merge.
 EOF
+  if [[ "$MODE" == live-ci ]]; then
+    live_ci_marker
+  fi
 }
 
 # Sourced by spike/m4/run_test.sh. Executing the file runs the laptop stack.
@@ -1485,6 +1622,9 @@ if [[ "$MODE" == live-ci ]]; then
   [[ -n "${FACTORY_SLACK_BOT_TOKEN:-}" ]] || die "M4_SLACK_BOT_TOKEN is empty"
   [[ "${M4_SLACK_CHANNEL:-}" =~ ^[CG][A-Z0-9]+$ ]] || die "M4_SLACK_CHANNEL must be a Slack channel id"
   [[ "${M4_REPO}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "M4_REPO must be owner/name"
+  assert_live_ci_repo || die "M4_REPO does not match the labeled-intake repo in deploy/m4-factory"
+  resolve_live_ci_sender || die "M4_LIVE_CI_SENDER is not a human login the intake trigger accepts"
+  live_ci_issue_title >/dev/null || die "GITHUB_RUN_ID is not a number"
   configure_live_ci_webhook || die "could not configure FACTORY_GITHUB_WEBHOOK_SECRET"
   remember "${FACTORY_GITHUB_WEBHOOK_SECRET}"
   remember "${FACTORY_SLACK_BOT_TOKEN}"
@@ -1872,7 +2012,7 @@ if [[ "$MODE" == live-ci ]]; then
   echo "draft pull request: ${PR_LIVE_URL}"
 
   say "Slack thread"
-  read_slack_permalink || fail "slack history has no factory root for this issue"
+  read_slack_permalink "$(live_ci_issue_title)" || fail "slack history has no factory root for this issue"
   echo "slack thread: ${PERMALINK}"
   write_live_ci_evidence
   save_compose_logs
