@@ -1,0 +1,43 @@
+{
+  "delivery_id": "dlv_issue_labeled",
+  "headers": {
+    "X-GitHub-Event": "issues"
+  },
+  "body": {
+    "action": "labeled",
+    "label": {
+      "name": "factory-ready"
+    },
+    "issue": {
+      "id": 4120,
+      "number": 412,
+      "title": "Add refunds",
+      "body": "Please refund.",
+      "html_url": "https://github.com/acme/payments-service/issues/412",
+      "updated_at": "2026-01-02T03:05:06Z",
+      "labels": [
+        {
+          "name": "bug"
+        },
+        {
+          "name": "factory-ready"
+        }
+      ]
+    },
+    "repository": {
+      "id": 100,
+      "name": "payments-service",
+      "full_name": "acme/payments-service",
+      "owner": {
+        "login": "acme",
+        "id": 10,
+        "type": "Organization"
+      }
+    },
+    "sender": {
+      "login": "octocat",
+      "id": 1,
+      "type": "User"
+    }
+  }
+}

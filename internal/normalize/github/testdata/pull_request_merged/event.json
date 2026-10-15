@@ -1,0 +1,79 @@
+[
+  {
+    "provider": "github",
+    "event": "pull_request_merged",
+    "delivery_id": "dlv_pull_request_merged",
+    "occurred_at": "2026-01-02T05:00:00Z",
+    "actor": {
+      "provider_id": "1",
+      "handle": "octocat",
+      "factory_user_id": null
+    },
+    "subject": {
+      "kind": "pull_request",
+      "id": "7700",
+      "number": 77,
+      "title": "Refunds",
+      "url": "https://github.com/acme/payments-service/pull/77",
+      "repo": {
+        "code_forge": "GITHUB",
+        "owner": "acme",
+        "name": "payments-service"
+      },
+      "labels": [
+        "needs-review"
+      ],
+      "branch": "refunds",
+      "base_branch": "main",
+      "text": "Open a refund path."
+    },
+    "thread": {
+      "kind": "github_issue",
+      "external_ref": "acme/payments-service#77"
+    },
+    "raw": {
+      "action": "closed",
+      "label": {
+        "name": "needs-review"
+      },
+      "number": 77,
+      "pull_request": {
+        "id": 7700,
+        "number": 77,
+        "title": "Refunds",
+        "body": "Open a refund path.",
+        "html_url": "https://github.com/acme/payments-service/pull/77",
+        "merged": true,
+        "updated_at": "2026-01-02T05:00:00Z",
+        "labels": [
+          {
+            "name": "needs-review"
+          }
+        ],
+        "head": {
+          "ref": "refunds",
+          "sha": "abc123"
+        },
+        "base": {
+          "ref": "main",
+          "sha": "def456"
+        }
+      },
+      "repository": {
+        "id": 100,
+        "name": "payments-service",
+        "full_name": "acme/payments-service",
+        "owner": {
+          "login": "acme",
+          "id": 10,
+          "type": "Organization"
+        }
+      },
+      "sender": {
+        "login": "octocat",
+        "id": 1,
+        "type": "User"
+      }
+    }
+  }
+]

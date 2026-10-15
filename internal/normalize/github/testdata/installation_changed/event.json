@@ -1,0 +1,53 @@
+[
+  {
+    "provider": "github",
+    "event": "installation_changed",
+    "delivery_id": "dlv_installation_changed",
+    "occurred_at": "2026-01-02T11:00:00Z",
+    "actor": {
+      "provider_id": "1",
+      "handle": "octocat",
+      "factory_user_id": null
+    },
+    "subject": {
+      "kind": "installation",
+      "id": "42",
+      "title": "acme",
+      "repo": {
+        "code_forge": "GITHUB",
+        "owner": "acme",
+        "name": "payments-service"
+      },
+      "branch": null,
+      "base_branch": null
+    },
+    "thread": {
+      "kind": "github_installation",
+      "external_ref": "installation:42"
+    },
+    "raw": {
+      "action": "created",
+      "installation": {
+        "id": 42,
+        "account": {
+          "login": "acme",
+          "id": 10,
+          "type": "Organization"
+        },
+        "updated_at": "2026-01-02T11:00:00Z"
+      },
+      "repositories": [
+        {
+          "id": 100,
+          "name": "payments-service",
+          "full_name": "acme/payments-service"
+        }
+      ],
+      "sender": {
+        "login": "octocat",
+        "id": 1,
+        "type": "User"
+      }
+    }
+  }
+]

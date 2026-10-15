@@ -1,0 +1,47 @@
+{
+  "delivery_id": "dlv_push",
+  "headers": {
+    "X-GitHub-Event": "push"
+  },
+  "body": {
+    "ref": "refs/heads/main",
+    "after": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "before": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "repository": {
+      "id": 100,
+      "name": "payments-service",
+      "full_name": "acme/payments-service",
+      "owner": {
+        "login": "acme",
+        "id": 10,
+        "type": "Organization"
+      }
+    },
+    "sender": {
+      "login": "octocat",
+      "id": 1,
+      "type": "User"
+    },
+    "head_commit": {
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "message": "fix refunds",
+      "timestamp": "2026-01-02T07:00:00Z",
+      "url": "https://github.com/acme/payments-service/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "commits": [
+      {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "added": [
+          "a.go"
+        ],
+        "removed": [
+          "b.go"
+        ],
+        "modified": [
+          "c.go",
+          "a.go"
+        ]
+      }
+    ]
+  }
+}

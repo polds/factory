@@ -1,0 +1,54 @@
+[
+  {
+    "provider": "github",
+    "event": "check_suite_completed",
+    "delivery_id": "dlv_check_suite_completed",
+    "occurred_at": "2026-01-02T09:00:00Z",
+    "actor": {
+      "provider_id": "1",
+      "handle": "octocat",
+      "factory_user_id": null
+    },
+    "subject": {
+      "kind": "check_suite",
+      "id": "654",
+      "repo": {
+        "code_forge": "GITHUB",
+        "owner": "acme",
+        "name": "payments-service"
+      },
+      "branch": "main",
+      "base_branch": null
+    },
+    "thread": {
+      "kind": "github_check",
+      "external_ref": "acme/payments-service@abc123"
+    },
+    "raw": {
+      "action": "completed",
+      "check_suite": {
+        "id": 654,
+        "head_branch": "main",
+        "head_sha": "abc123",
+        "conclusion": "success",
+        "updated_at": "2026-01-02T09:00:00Z",
+        "pull_requests": []
+      },
+      "repository": {
+        "id": 100,
+        "name": "payments-service",
+        "full_name": "acme/payments-service",
+        "owner": {
+          "login": "acme",
+          "id": 10,
+          "type": "Organization"
+        }
+      },
+      "sender": {
+        "login": "octocat",
+        "id": 1,
+        "type": "User"
+      }
+    }
+  }
+]
