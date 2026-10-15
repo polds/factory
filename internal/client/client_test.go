@@ -75,6 +75,52 @@ func TestStartRunSendsBearerAndJSON(t *testing.T) {
 	}
 }
 
+func TestRunDecodesStageLinkage(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want Run
+	}{
+		{
+			name: "stage run",
+			body: `{"id":"run_child","status":"queued","work_item_id":"wi_1","parent_run_id":"run_parent","conversation_id":"conv_1","stage":"building","model_id":"claude-x"}`,
+			want: Run{
+				ID:             "run_child",
+				Status:         "queued",
+				WorkItemID:     "wi_1",
+				ParentRunID:    "run_parent",
+				ConversationID: "conv_1",
+				Stage:          "building",
+				ModelID:        "claude-x",
+			},
+		},
+		{
+			name: "bare run",
+			body: `{"id":"run_bare","status":"queued"}`,
+			want: Run{ID: "run_bare", Status: "queued"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			t.Cleanup(srv.Close)
+
+			c := &Client{BaseURL: srv.URL, APIKey: "test-key"}
+			got, err := c.StartRun(context.Background(), RunRequest{Prompt: "x"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("run %+v want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStartRunProblem(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/problem+json")
