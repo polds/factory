@@ -33,10 +33,13 @@
 // caller persists the input request and that status in one transaction,
 // releases the worker slot, and ends the execution. The run is not failed
 // and is not put back on the queue. Worker loss, lease expiry, and process
-// restart leave it parked. ResumeInput returns the work item to open and
-// emits Noop. The caller then starts a new execution of the same run, on
-// the same conversation, with the question and answer in the handoff
-// prompt. The same answer twice does not start a second execution. A
+// restart leave it parked. A crash after the input request commits and
+// before the queue row is deleted is repaired by parking that run again,
+// so lease expiry cannot hand it to a worker. ResumeInput returns the work
+// item to open and emits Noop. The caller then starts one new execution of
+// the same run, on the same conversation, with the question and answer in
+// the handoff prompt. That still holds when the run was requeued before
+// the answer. The same answer twice does not start a second execution. A
 // different answer is a conflict. Cancel from any non-terminal status
 // emits MarkCancelled.
 package orchestrator

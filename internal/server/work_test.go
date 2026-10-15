@@ -372,6 +372,260 @@ func TestE2EAskInputSurvivesRestart(t *testing.T) {
 	}
 }
 
+// TestE2EAskInputRequeueGap restores the queue row CreateInputRequest leaves
+// behind before parkSuspendedRun deletes it. Restart plus ExpireLeases used
+// to requeue that run, and AnswerInput then returned success without a new
+// execution.
+func TestE2EAskInputRequeueGap(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	const question = "Which staging env?"
+	const answer = "staging-2"
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	task := env.createTask(t, "Gap before park", "which env?")
+	asg := w.readAssignment(t)
+	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: asg.TaskID, WorkerID: "local-1"})
+	postEvents(t, asg.EnvVars["FACTORY_EVENTS_URL"], asg.EnvVars["FACTORY_RUN_TOKEN"], 0, []string{
+		`{"type":"question","gate":"clarification","text":"` + question + `"}`,
+	})
+	waiting := env.waitTask(t, task.ID, "awaiting_input", "triage")
+	env.assertSuspended(t, task.ID, asg.TaskID, question)
+	w.close()
+	env.stop(t)
+	env.restorePrePark(t, task.ID, asg.TaskID)
+	env.start(t)
+	if _, err := env.srv.store.ExpireLeases(context.Background(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var before int
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM executions WHERE run_id = $1`, asg.TaskID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if before != 1 {
+		t.Fatalf("executions before answer %d, want 1", before)
+	}
+
+	req, err := env.srv.AnswerInput(context.Background(), task.ID, answer, "peter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Answer != answer || req.RunID != asg.TaskID {
+		t.Fatalf("answer %+v", req)
+	}
+	resumed := env.getTask(t, task.ID)
+	if resumed.Status != "open" || resumed.ConversationID != waiting.ConversationID {
+		t.Fatalf("resumed %+v", resumed)
+	}
+
+	w2 := dialWorker(t, env, "local-2")
+	defer w2.close()
+	next := w2.readAssignment(t)
+	if next.TaskID != asg.TaskID {
+		t.Fatalf("resume run %s, want %s", next.TaskID, asg.TaskID)
+	}
+	if next.EnvVars["FACTORY_CONVERSATION_ID"] != waiting.ConversationID {
+		t.Fatalf("conversation %s", next.EnvVars["FACTORY_CONVERSATION_ID"])
+	}
+	prompt := next.EnvVars["FACTORY_TASK_PROMPT"]
+	if !strings.Contains(prompt, question) || !strings.Contains(prompt, answer) {
+		t.Fatal("resumed prompt is missing the question and answer")
+	}
+	var attempts int
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM executions WHERE run_id = $1`, asg.TaskID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("executions %d, want 2", attempts)
+	}
+	again, err := env.srv.AnswerInput(context.Background(), task.ID, answer, "someone")
+	if err != nil || again.ID != req.ID {
+		t.Fatalf("replay %+v %v", again, err)
+	}
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM executions WHERE run_id = $1`, asg.TaskID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("replay executions %d, want 2", attempts)
+	}
+	if _, err := env.srv.AnswerInput(context.Background(), task.ID, "a different answer", "peter"); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("conflict %v", err)
+	}
+}
+
+func TestE2EAskInputMissingStageAgentLeavesPending(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	task := env.createTask(t, "No stage agent", "which env?")
+	asg := w.readAssignment(t)
+	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: asg.TaskID, WorkerID: "local-1"})
+	postEvents(t, asg.EnvVars["FACTORY_EVENTS_URL"], asg.EnvVars["FACTORY_RUN_TOKEN"], 0, []string{
+		`{"type":"question","gate":"clarification","text":"Which staging env?"}`,
+	})
+	env.waitTask(t, task.ID, "awaiting_input", "triage")
+	env.assertSuspended(t, task.ID, asg.TaskID, "Which staging env?")
+	w.close()
+
+	env.srv.mu.Lock()
+	pipeline := env.srv.loaded.tree.Factory.Pipeline
+	agents := make(map[string]string, len(pipeline.Agents))
+	for stage, name := range pipeline.Agents {
+		if stage == "triage" {
+			continue
+		}
+		agents[stage] = name
+	}
+	pipeline.Agents = agents
+	var name, id string
+	for n, agentID := range env.srv.loaded.byName {
+		name, id = n, agentID
+		break
+	}
+	if id == "" {
+		env.srv.mu.Unlock()
+		t.Fatal("no agent")
+	}
+	bound := env.srv.loaded.byID[id]
+	env.srv.loaded.byName = map[string]string{name: id}
+	env.srv.loaded.byID = map[string]boundAgent{id: bound}
+	env.srv.mu.Unlock()
+
+	if _, err := env.srv.AnswerInput(context.Background(), task.ID, "staging-2", "peter"); err == nil {
+		t.Fatal("missing stage agent was accepted")
+	}
+	var answered *time.Time
+	if err := env.raw.QueryRow(context.Background(), `SELECT answered_at FROM input_requests WHERE work_item_id = $1`, task.ID).Scan(&answered); err != nil {
+		t.Fatal(err)
+	}
+	if answered != nil {
+		t.Fatal("answer was stored")
+	}
+	still := env.getTask(t, task.ID)
+	if still.Status != "awaiting_input" {
+		t.Fatalf("status %s", still.Status)
+	}
+	if n := env.queueRows(t, asg.TaskID); n != 0 {
+		t.Fatalf("queue rows %d", n)
+	}
+	var attempts int
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM executions WHERE run_id = $1`, asg.TaskID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("executions %d, want 1", attempts)
+	}
+}
+
+func TestE2EAskInputCancelSettlesWithoutGrace(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	task := env.createTask(t, "Cancel while parked", "which env?")
+	asg := w.readAssignment(t)
+	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: asg.TaskID, WorkerID: "local-1"})
+	postEvents(t, asg.EnvVars["FACTORY_EVENTS_URL"], asg.EnvVars["FACTORY_RUN_TOKEN"], 0, []string{
+		`{"type":"question","gate":"clarification","text":"Which staging env?"}`,
+	})
+	env.waitTask(t, task.ID, "awaiting_input", "triage")
+	env.assertSuspended(t, task.ID, asg.TaskID, "Which staging env?")
+	w.close()
+
+	code, raw := env.authed(t, http.MethodPost, "/api/v1/factory/pipe/tasks/"+task.ID+"/cancel", "")
+	if code != http.StatusOK {
+		t.Fatalf("cancel %d %s", code, raw)
+	}
+	env.waitStatus(t, asg.TaskID, "cancelled")
+	cancelled := env.getTask(t, task.ID)
+	if cancelled.Status != "cancelled" {
+		t.Fatalf("task %+v", cancelled)
+	}
+	if n := env.queueRows(t, asg.TaskID); n != 0 {
+		t.Fatalf("queue rows %d", n)
+	}
+	env.requireOneTerminal(t, asg.TaskID, "cancelled")
+	env.stop(t)
+
+	env = boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w = dialWorker(t, env, "local-1")
+	task = env.createTask(t, "Cancel flag then restart", "which env?")
+	asg = w.readAssignment(t)
+	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: asg.TaskID, WorkerID: "local-1"})
+	postEvents(t, asg.EnvVars["FACTORY_EVENTS_URL"], asg.EnvVars["FACTORY_RUN_TOKEN"], 0, []string{
+		`{"type":"question","gate":"clarification","text":"Which staging env?"}`,
+	})
+	env.waitTask(t, task.ID, "awaiting_input", "triage")
+	env.assertSuspended(t, task.ID, asg.TaskID, "Which staging env?")
+	w.close()
+	env.stop(t)
+	if _, err := env.raw.Exec(context.Background(), `UPDATE runs SET cancel_requested = true WHERE id = $1`, asg.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	var st string
+	if err := env.raw.QueryRow(context.Background(), `SELECT status FROM runs WHERE id = $1`, asg.TaskID).Scan(&st); err != nil {
+		t.Fatal(err)
+	}
+	if st == "cancelled" {
+		t.Fatal("cancel settled while the server was stopped")
+	}
+	env.start(t)
+	env.waitStatus(t, asg.TaskID, "cancelled")
+	env.requireOneTerminal(t, asg.TaskID, "cancelled")
+	if n := env.queueRows(t, asg.TaskID); n != 0 {
+		t.Fatalf("queue rows %d", n)
+	}
+}
+
+func (e *env) restorePrePark(t *testing.T, workItemID, runID string) {
+	t.Helper()
+	_, err := e.raw.Exec(context.Background(), `
+		INSERT INTO run_queue (run_id, factory_id, pool, priority, enqueued_at, lease_until)
+		SELECT id, factory_id, pool, priority, clock_timestamp(), '1970-01-02T00:00:00Z'
+		FROM runs WHERE id = $1`, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag, err := e.raw.Exec(context.Background(), `
+		UPDATE executions
+		SET state = 'running', ended_at = NULL
+		WHERE id = (
+			SELECT execution_id FROM input_requests
+			WHERE work_item_id = $1 AND answered_at IS NULL
+		)`, workItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("restored executions %d", tag.RowsAffected())
+	}
+	tag, err = e.raw.Exec(context.Background(), `
+		UPDATE runs
+		SET status = 'running', worker_id = NULL, ended_at = NULL
+		WHERE id = $1`, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("restored runs %d", tag.RowsAffected())
+	}
+	if n := e.queueRows(t, runID); n != 1 {
+		t.Fatalf("pre-park queue rows %d", n)
+	}
+}
+
 func (e *env) assertSuspended(t *testing.T, workItemID, runID, question string) {
 	t.Helper()
 	var gotQuestion, execState, runStatus string
@@ -424,10 +678,20 @@ func (e *env) waitNotRequeued(t *testing.T, runID string) {
 
 func (e *env) restart(t *testing.T) {
 	t.Helper()
-	cfg := e.srv.cfg
+	e.stop(t)
+	e.start(t)
+}
+
+func (e *env) stop(t *testing.T) {
+	t.Helper()
 	if err := e.srv.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (e *env) start(t *testing.T) {
+	t.Helper()
+	cfg := e.srv.cfg
 	srv, err := Open(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
