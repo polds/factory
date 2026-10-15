@@ -111,7 +111,14 @@ func (s *Server) finish(ctx context.Context, runID, execID, state, reason, summa
 	s.clearSuspended(runID)
 	s.archive(ctx, runID, execID)
 	s.hub.Publish(runID)
+	var before store.WorkItem
+	if run.WorkItemID != "" {
+		if item, itemErr := s.store.GetWorkItem(ctx, run.WorkItemID); itemErr == nil {
+			before = item
+		}
+	}
 	s.advanceAfterTerminal(ctx, runID)
+	s.noteAfterTerminal(ctx, runID, before)
 	s.nudge()
 }
 

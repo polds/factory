@@ -186,7 +186,8 @@ func (s *Server) assignOne(ctx context.Context, run store.Run, workerID string, 
 	if !ok {
 		return
 	}
-	env, err := s.taskEnv(run, bound)
+	bound = s.boundForRun(run, bound)
+	env, err := s.taskEnv(ctx, run, bound)
 	if err != nil {
 		s.failConfig(ctx, run.ID, workerID, err)
 		return

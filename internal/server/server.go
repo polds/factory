@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -56,6 +57,29 @@ type Config struct {
 	DefinitionGitInterval      time.Duration
 	// DefinitionGitCloner overrides the git cloner. Tests set it.
 	DefinitionGitCloner defsync.Cloner
+
+	// M4 ingress and outbound. Empty secrets leave that integration off.
+	// GitHubTokenMode is app or pat. pat is the default so a planted
+	// GH_TOKEN still reaches the task. app mints an installation token
+	// at assignment time.
+	GitHubAppID         int64
+	GitHubAppKey        *rsa.PrivateKey
+	GitHubWebhookSecret string
+	GitHubTokenMode     string
+	GitHubAPIBase       string
+	SlackBotToken       string
+	SlackSigningSecret  string
+	SlackTeamID         string
+	SlackAPIBase        string
+	LinearAPIKey        string
+	LinearWebhookSecret string
+	LinearAPIBase       string
+	DeliveryRetention   time.Duration
+	ScheduleCatchUp     time.Duration
+	// HTTPClient, when set, is the client for GitHub, Slack, and Linear.
+	HTTPClient *http.Client
+	// OutboundSleep overrides notifier backoff and coalesce waits.
+	OutboundSleep func(context.Context, time.Duration) error
 }
 
 // Server is one factoryd process: REST, SSE, the worker gateway, and the
@@ -97,6 +121,9 @@ type Server struct {
 	// is inserted. Nil in production. Tests block here so a reader must not
 	// observe the new status until the event commits with it.
 	beforeTerminalEvent func()
+
+	// integ is the M4 ingress, automation, and outbound runtime.
+	integ m4State
 }
 
 var (
@@ -166,12 +193,17 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		schemas:   schemaHandler(cfg.SchemasPath),
 	}
 	s.gw = gateway.New(s.authenticate, s, s.log)
-	s.api = api.NewHandler(s, cfg.APIKey, problemSSE(events.Handler(logSource{s: s}, s.hub)))
+	if err := s.wire(); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	s.api = api.NewHandler(apiFacade{s}, cfg.APIKey, problemSSE(events.Handler(logSource{s: s}, s.hub)))
 	if err := s.applyBoot(runCtx); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
-	loops := 3
+	// Scheduler loops plus the dispatcher and the leader-elected cron ticker.
+	loops := 5
 	if cfg.DefinitionGitURL != "" {
 		loops++
 	}
@@ -179,6 +211,8 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 	go s.loop()
 	go s.listenQueue()
 	go s.pingLoop()
+	go s.dispatchLoop()
+	go s.cronLoop()
 	if cfg.DefinitionGitURL != "" {
 		go s.defsyncLoop()
 	}
@@ -230,6 +264,23 @@ func normalize(cfg Config) (Config, error) {
 			cfg.DefinitionGitInterval = time.Minute
 		}
 	}
+	mode, err := normalizeTokenMode(cfg.GitHubTokenMode)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.GitHubTokenMode = mode
+	if mode == tokenModeApp && (cfg.GitHubAppID <= 0 || cfg.GitHubAppKey == nil) {
+		return Config{}, errors.New("server: FACTORY_GITHUB_TOKEN_MODE=app requires FACTORY_GITHUB_APP_ID and FACTORY_GITHUB_APP_PRIVATE_KEY_FILE")
+	}
+	if (cfg.GitHubAppID > 0) != (cfg.GitHubAppKey != nil) {
+		return Config{}, errors.New("server: FACTORY_GITHUB_APP_ID and FACTORY_GITHUB_APP_PRIVATE_KEY_FILE must both be set")
+	}
+	if cfg.DeliveryRetention <= 0 {
+		cfg.DeliveryRetention = defaultDeliveryRetention
+	}
+	if cfg.ScheduleCatchUp <= 0 {
+		cfg.ScheduleCatchUp = defaultScheduleCatchUp
+	}
 	if strings.TrimSpace(cfg.S3.Endpoint) != "" {
 		if cfg.S3.Region == "" {
 			cfg.S3.Region = "us-east-1"
@@ -256,6 +307,7 @@ func (s *Server) Close() error {
 		if s.cancel != nil {
 			s.cancel()
 		}
+		s.closeOutbound()
 		s.wg.Wait()
 		s.mu.Lock()
 		for id, timer := range s.grace {

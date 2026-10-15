@@ -1,12 +1,18 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/polds/factory/internal/server"
 )
@@ -38,7 +44,7 @@ func TestUsageMentionsTaskServerURL(t *testing.T) {
 }
 
 func TestTaskServerURLDefault(t *testing.T) {
-	cfg := configFromEnv(func(k string) string {
+	cfg, err := configFromEnv(func(k string) string {
 		switch k {
 		case "FACTORY_DATABASE_URL":
 			return "postgres://example"
@@ -52,6 +58,9 @@ func TestTaskServerURLDefault(t *testing.T) {
 			return ""
 		}
 	}, []string{"FACTORY_SECRET_GH_TOKEN=planted-secret-value"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.server.TaskServerURL != server.DefaultTaskServerURL {
 		t.Fatal(cfg.server.TaskServerURL)
 	}
@@ -64,7 +73,7 @@ func TestTaskServerURLDefault(t *testing.T) {
 }
 
 func TestConfigReadsDefinitionGit(t *testing.T) {
-	cfg := configFromEnv(func(k string) string {
+	cfg, err := configFromEnv(func(k string) string {
 		switch k {
 		case "FACTORY_DATABASE_URL":
 			return "postgres://example"
@@ -90,6 +99,12 @@ func TestConfigReadsDefinitionGit(t *testing.T) {
 			return ""
 		}
 	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.server.GitHubTokenMode != "pat" {
+		t.Fatalf("token mode %q", cfg.server.GitHubTokenMode)
+	}
 	if cfg.server.SchemasPath != "/schemas" || cfg.server.DefinitionGitURL != "https://example.invalid/factory.git" {
 		t.Fatalf("schema %q git %q", cfg.server.SchemasPath, cfg.server.DefinitionGitURL)
 	}
@@ -150,5 +165,89 @@ func TestMigrateUp(t *testing.T) {
 	}, nil, io.Discard, &stderr)
 	if code != 0 {
 		t.Fatal(stderr.String())
+	}
+}
+
+func TestConfigReadsM4(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	path := filepath.Join(t.TempDir(), "app.pem")
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const webhook = "whsec-config-value"
+	cfg, err := configFromEnv(func(k string) string {
+		switch k {
+		case "FACTORY_GITHUB_APP_ID":
+			return "4242"
+		case "FACTORY_GITHUB_APP_PRIVATE_KEY_FILE":
+			return path
+		case "FACTORY_GITHUB_WEBHOOK_SECRET":
+			return webhook
+		case "FACTORY_GITHUB_TOKEN_MODE":
+			return "app"
+		case "FACTORY_SLACK_BOT_TOKEN":
+			return "xoxb-config"
+		case "FACTORY_SLACK_SIGNING_SECRET":
+			return "slack-sign"
+		case "FACTORY_SLACK_TEAM_ID":
+			return "T0FACTORY"
+		case "FACTORY_LINEAR_API_KEY":
+			return "lin_api_config"
+		case "FACTORY_LINEAR_WEBHOOK_SECRET":
+			return "lin-whsec"
+		case "FACTORY_DELIVERY_RETENTION":
+			return "168h"
+		case "FACTORY_SCHEDULE_CATCHUP":
+			return "1h"
+		case "FACTORY_GITHUB_API_BASE":
+			return "http://127.0.0.1:9"
+		default:
+			return ""
+		}
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.server.GitHubAppID != 4242 || cfg.server.GitHubAppKey == nil || cfg.server.GitHubTokenMode != "app" {
+		t.Fatalf("app id %d mode %s key nil %v", cfg.server.GitHubAppID, cfg.server.GitHubTokenMode, cfg.server.GitHubAppKey == nil)
+	}
+	if cfg.server.SlackTeamID != "T0FACTORY" || cfg.server.DeliveryRetention != 168*time.Hour || cfg.server.ScheduleCatchUp != time.Hour {
+		t.Fatalf("team %s retention %s catchup %s", cfg.server.SlackTeamID, cfg.server.DeliveryRetention, cfg.server.ScheduleCatchUp)
+	}
+	if cfg.server.GitHubAPIBase != "http://127.0.0.1:9" {
+		t.Fatal(cfg.server.GitHubAPIBase)
+	}
+	joined := strings.Join(cfg.secrets, "\n")
+	if !strings.Contains(joined, webhook) || strings.Contains(string(pemBytes), webhook) {
+		t.Fatal("webhook secret was not added to the redact list")
+	}
+
+	if _, err := configFromEnv(func(k string) string {
+		if k == "FACTORY_GITHUB_TOKEN_MODE" {
+			return "oauth"
+		}
+		return ""
+	}, nil); err == nil || strings.Contains(err.Error(), webhook) {
+		t.Fatalf("mode error %v", err)
+	}
+	if _, err := configFromEnv(func(k string) string {
+		if k == "FACTORY_GITHUB_APP_ID" {
+			return "1"
+		}
+		return ""
+	}, nil); err == nil {
+		t.Fatal("half app config was accepted")
+	}
+	if _, err := configFromEnv(func(k string) string {
+		if k == "FACTORY_DELIVERY_RETENTION" {
+			return "soon"
+		}
+		return ""
+	}, nil); err == nil || strings.Contains(err.Error(), webhook) {
+		t.Fatalf("duration error %v", err)
 	}
 }

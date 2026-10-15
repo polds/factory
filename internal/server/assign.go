@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,14 +23,29 @@ const (
 	defaultGitEmail = "agent@example.com"
 )
 
-func (s *Server) taskEnv(run store.Run, bound boundAgent) (map[string]string, error) {
-	allow := secretNames(s.snapshot().tree.Factory.Secrets, bound.agent.Secrets)
+func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (map[string]string, error) {
+	factorySecrets := []string(nil)
+	if tree := s.snapshot().tree; tree != nil {
+		factorySecrets = tree.Factory.Secrets
+	}
+	agentSecrets := bound.agent.Secrets
+	if ov, ok := s.overlayOf(run.ID); ok && ov.Secrets != nil {
+		agentSecrets = ov.Secrets
+	}
+	allow := secretNames(factorySecrets, agentSecrets)
 	env := make(map[string]string, len(allow)+12)
 	var values []string
 	for _, name := range allow {
 		value, ok := s.cfg.Secrets[name]
 		if !ok || value == "" {
 			return nil, fmt.Errorf("server: secret %s is not configured", name)
+		}
+		if name == "GH_TOKEN" && s.cfg.GitHubTokenMode == tokenModeApp {
+			minted, err := s.mintGitHubToken(ctx, run)
+			if err != nil {
+				return nil, err
+			}
+			value = minted
 		}
 		env[name] = value
 		values = append(values, value)

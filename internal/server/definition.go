@@ -84,6 +84,11 @@ func (s *Server) applyTree(ctx context.Context, tree *definition.Tree) (string, 
 	s.mu.Lock()
 	s.loaded = next
 	s.mu.Unlock()
+	// Schedules and webhook registrations follow the published tree, before
+	// the dispatcher claims a delivery that names an agent.
+	if err := s.syncDefinition(ctx, tree); err != nil {
+		return "", err
+	}
 	return id, nil
 }
 
