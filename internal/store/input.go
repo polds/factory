@@ -124,7 +124,7 @@ func (s *Store) AnswerInputRequest(ctx context.Context, workItemID, answer, answ
 		LIMIT 1
 		FOR UPDATE`, workItemID))
 	if errors.Is(err, ErrNotFound) {
-		return InputRequest{}, ErrNotFound
+		return InputRequest{}, withAutomationSentinel(ErrNotFound)
 	}
 	if err != nil {
 		return InputRequest{}, fmt.Errorf("store: answer input: %w", err)
@@ -136,7 +136,7 @@ func (s *Store) AnswerInputRequest(ctx context.Context, workItemID, answer, answ
 		if current.Answer == answer {
 			return current, nil
 		}
-		return InputRequest{}, ErrConflict
+		return InputRequest{}, withAutomationSentinel(ErrConflict)
 	}
 	updated, err := scanInput(tx.QueryRow(ctx, `
 		UPDATE input_requests

@@ -72,6 +72,18 @@ func immutableOr(err error) error {
 	return err
 }
 
+// uniqueOn reports a unique or primary-key violation on table.
+func uniqueOn(err error, table string) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return false
+	}
+	if pgErr.TableName == table {
+		return true
+	}
+	return strings.HasPrefix(pgErr.ConstraintName, table+"_")
+}
+
 func validProvider(provider string) error {
 	switch provider {
 	case ProviderGitHub, ProviderSlack, ProviderLinear, ProviderWebhook, ProviderSchedule:

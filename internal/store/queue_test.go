@@ -625,7 +625,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := h.raw.QueryRow(ctx, `SELECT count(*), count(DISTINCT filename) FROM schema_migrations`).Scan(&files, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if files != 3 || distinct != 3 {
+	if files != 4 || distinct != 4 {
 		t.Fatalf("schema_migrations rows %d distinct %d", files, distinct)
 	}
 	nameRows, err := h.raw.Query(ctx, `SELECT filename FROM schema_migrations ORDER BY filename`)
@@ -644,7 +644,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := nameRows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	wantFiles := []string{"0001_init.sql", "0002_m3.sql", "0003_m4.sql"}
+	wantFiles := []string{"0001_init.sql", "0002_m3.sql", "0003_m4.sql", "0004_automation.sql"}
 	if strings.Join(filenames, ",") != strings.Join(wantFiles, ",") {
 		t.Fatalf("filenames %v", filenames)
 	}
@@ -658,11 +658,12 @@ func TestMigrateIdempotent(t *testing.T) {
 		    'work_items', 'approvals', 'routers', 'skills', 'automations',
 		    'scorers', 'webhooks', 'deliveries', 'integration_installations',
 		    'webhook_registrations', 'schedules', 'leader_leases',
-		    'external_refs', 'outbound_threads', 'input_requests'
+		    'external_refs', 'outbound_threads', 'input_requests',
+		    'intake_slots', 'delivery_effects'
 		  )`).Scan(&tables); err != nil {
 		t.Fatal(err)
 	}
-	if tables != 25 {
+	if tables != 27 {
 		t.Fatalf("tables %d", tables)
 	}
 	assertColumns(t, h, "runs", []string{
@@ -672,6 +673,13 @@ func TestMigrateIdempotent(t *testing.T) {
 		"id", "factory_id", "source", "source_ref", "title", "body", "stage", "status",
 		"created_by", "conversation_id", "revision_count", "created_at",
 		"suspended_run_id", "suspended_execution_id", "suspended_at",
+		"open_pr_url",
+	})
+	assertColumns(t, h, "intake_slots", []string{
+		"work_item_id", "automation", "delivery_id", "run_id",
+	})
+	assertColumns(t, h, "delivery_effects", []string{
+		"delivery_id", "work_item_id", "kind", "run_id", "note", "seq",
 	})
 	assertColumns(t, h, "approvals", []string{
 		"id", "work_item_id", "gate", "requested_at", "decided_at", "decided_by",
