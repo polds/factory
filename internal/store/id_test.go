@@ -69,6 +69,7 @@ func TestNewIDShapeAndUniqueness(t *testing.T) {
 	prefixes := []string{
 		PrefixRun, PrefixExec, PrefixFactory, PrefixAgent, PrefixDefinition,
 		PrefixWorkItem, PrefixApproval, PrefixConversation,
+		PrefixDelivery, PrefixSchedule, PrefixInputRequest, PrefixWebhook,
 	}
 	seen := map[string]bool{}
 	for _, prefix := range prefixes {

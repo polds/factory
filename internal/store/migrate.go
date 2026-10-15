@@ -115,15 +115,119 @@ func execScript(ctx context.Context, tx pgx.Tx, body string) error {
 	return nil
 }
 
+// splitSQL splits a migration on semicolons that are outside quotes, comments,
+// and dollar-quoted bodies. A PL/pgSQL function can keep its internal
+// semicolons and still run as one statement.
 func splitSQL(body string) []string {
-	parts := strings.Split(body, ";")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		stmt := strings.TrimSpace(part)
-		if stmt == "" {
+	var b strings.Builder
+	out := make([]string, 0)
+	inSingle := false
+	inLineComment := false
+	inBlockComment := false
+	dollar := ""
+	for i := 0; i < len(body); {
+		if inLineComment {
+			b.WriteByte(body[i])
+			if body[i] == '\n' {
+				inLineComment = false
+			}
+			i++
 			continue
 		}
+		if inBlockComment {
+			if strings.HasPrefix(body[i:], "*/") {
+				b.WriteString("*/")
+				i += 2
+				inBlockComment = false
+				continue
+			}
+			b.WriteByte(body[i])
+			i++
+			continue
+		}
+		if dollar != "" {
+			if strings.HasPrefix(body[i:], dollar) {
+				b.WriteString(dollar)
+				i += len(dollar)
+				dollar = ""
+				continue
+			}
+			b.WriteByte(body[i])
+			i++
+			continue
+		}
+		if inSingle {
+			b.WriteByte(body[i])
+			if body[i] == '\'' {
+				if i+1 < len(body) && body[i+1] == '\'' {
+					b.WriteByte('\'')
+					i += 2
+					continue
+				}
+				inSingle = false
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(body[i:], "--") {
+			b.WriteString("--")
+			i += 2
+			inLineComment = true
+			continue
+		}
+		if strings.HasPrefix(body[i:], "/*") {
+			b.WriteString("/*")
+			i += 2
+			inBlockComment = true
+			continue
+		}
+		if body[i] == '\'' {
+			inSingle = true
+			b.WriteByte(body[i])
+			i++
+			continue
+		}
+		if tag, next, ok := dollarTag(body, i); ok {
+			dollar = tag
+			b.WriteString(tag)
+			i = next
+			continue
+		}
+		if body[i] == ';' {
+			if stmt := strings.TrimSpace(b.String()); stmt != "" {
+				out = append(out, stmt)
+			}
+			b.Reset()
+			i++
+			continue
+		}
+		b.WriteByte(body[i])
+		i++
+	}
+	if stmt := strings.TrimSpace(b.String()); stmt != "" {
 		out = append(out, stmt)
 	}
 	return out
+}
+
+func dollarTag(body string, i int) (string, int, bool) {
+	if i >= len(body) || body[i] != '$' {
+		return "", 0, false
+	}
+	j := i + 1
+	for j < len(body) {
+		c := body[j]
+		if c == '$' {
+			return body[i : j+1], j + 1, true
+		}
+		if !isDollarTagChar(c) {
+			return "", 0, false
+		}
+		j++
+	}
+	return "", 0, false
+}
+
+func isDollarTagChar(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }

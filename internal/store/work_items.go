@@ -11,7 +11,8 @@ import (
 
 const workItemColumns = `
     id, factory_id, source, source_ref, title, body, stage, status, created_by,
-    conversation_id, revision_count, created_at`
+    conversation_id, revision_count, created_at,
+    suspended_run_id, suspended_execution_id, suspended_at`
 
 const approvalColumns = `
     id, work_item_id, gate, requested_at, decided_at, decided_by, decision, note`
@@ -21,7 +22,7 @@ func scanWorkItem(row pgx.Row) (WorkItem, error) {
 	err := row.Scan(
 		&item.ID, &item.FactoryID, &item.Source, &item.SourceRef, &item.Title, &item.Body,
 		&item.Stage, &item.Status, &item.CreatedBy, &item.ConversationID, &item.RevisionCount,
-		&item.CreatedAt,
+		&item.CreatedAt, &item.SuspendedRunID, &item.SuspendedExecutionID, &item.SuspendedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkItem{}, ErrNotFound

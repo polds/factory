@@ -37,6 +37,12 @@ var (
 	// ErrAlreadyDecided is returned when DecideApproval is asked to change a
 	// decision that was already recorded. Repeating the same decision is not an error.
 	ErrAlreadyDecided = errors.New("store: approval already decided")
+	// ErrConflict is returned when an input answer would replace a different
+	// recorded answer, or a second pending question is opened.
+	ErrConflict = errors.New("store: conflict")
+	// ErrImmutable is returned when a webhook registration would change
+	// auth_mode or signature_scheme. Delete the registration and create it again.
+	ErrImmutable = errors.New("store: immutable")
 )
 
 const (
@@ -62,6 +68,25 @@ const (
 	SourceChat     = "chat"
 	SourceSchedule = "schedule"
 	SourceMCP      = "mcp"
+
+	ProviderGitHub   = "github"
+	ProviderSlack    = "slack"
+	ProviderLinear   = "linear"
+	ProviderWebhook  = "webhook"
+	ProviderSchedule = "schedule"
+
+	DeliveryReceived  = "received"
+	DeliveryMatched   = "matched"
+	DeliveryUnmatched = "unmatched"
+	DeliveryIgnored   = "ignored"
+	DeliveryFailed    = "failed"
+
+	WebhookAuthToken     = "token"
+	WebhookAuthURLToken  = "url_token"
+	WebhookAuthSignature = "signature"
+
+	// DeliveryBodyCap is the maximum raw body stored for one delivery.
+	DeliveryBodyCap = 256 << 10
 )
 
 // Run is one logical task. Tokens and env values are never fields of Run.
@@ -229,6 +254,11 @@ type WorkItem struct {
 	ConversationID string
 	RevisionCount  int
 	CreatedAt      time.Time
+	// Suspension is set while a question is unanswered. Empty means the work
+	// item is not suspended.
+	SuspendedRunID       string
+	SuspendedExecutionID string
+	SuspendedAt          *time.Time
 }
 
 // NewWorkItem is the input to CreateWorkItem.
@@ -267,6 +297,81 @@ type Approval struct {
 	DecidedBy   string
 	Decision    string
 	Note        string
+}
+
+// Delivery is one persisted provider payload. Headers are redacted and Body
+// is capped at DeliveryBodyCap. Secret values are not fields of Delivery.
+type Delivery struct {
+	ID                 string
+	FactoryID          string
+	Provider           string
+	WebhookUID         string
+	DeliveryID         string
+	ReceivedAt         time.Time
+	Headers            map[string]string
+	Body               []byte
+	Truncated          bool
+	Status             string
+	MatchedAutomations []string
+	ExpiresAt          time.Time
+}
+
+// WebhookRegistration is the live ingress config for one custom webhook.
+// SecretRef is a credential name. URLTokenHash is a SHA-256 digest.
+// Neither field holds a secret value.
+type WebhookRegistration struct {
+	UID              string
+	FactoryID        string
+	Name             string
+	AuthMode         string
+	SignatureScheme  string
+	SecretRef        string
+	URLTokenHash     []byte
+	DeliveryIDHeader string
+	Enabled          bool
+}
+
+// Schedule is one cron trigger. Name may be empty for the single unnamed
+// schedule of an automation.
+type Schedule struct {
+	ID          string
+	FactoryID   string
+	Automation  string
+	Name        string
+	Cron        string
+	LastFiredAt *time.Time
+	NextFireAt  time.Time
+	Paused      bool
+}
+
+// ExternalRef binds a provider thread to one work item.
+type ExternalRef struct {
+	Provider       string
+	ExternalRef    string
+	WorkItemID     string
+	ConversationID string
+}
+
+// OutboundThread is the one root-and-status thread for a work item and provider.
+type OutboundThread struct {
+	WorkItemID   string
+	Provider     string
+	Channel      string
+	RootRef      string
+	StatusMsgRef string
+}
+
+// InputRequest is one question asked of a person. AnsweredAt is nil until answered.
+type InputRequest struct {
+	ID          string
+	WorkItemID  string
+	RunID       string
+	ExecutionID string
+	Question    string
+	Answer      string
+	AnsweredBy  string
+	CreatedAt   time.Time
+	AnsweredAt  *time.Time
 }
 
 // Worker is a connected worker row. Upsert replaces mutable fields.
