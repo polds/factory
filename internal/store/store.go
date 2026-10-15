@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -18,6 +19,11 @@ type Store struct {
 	// the work-item update are written and before commit. A non-nil error
 	// rolls the transaction back. Production leaves it nil.
 	openGateHook func(context.Context) error
+
+	// claims holds one transaction per ClaimReceived batch. The row locks
+	// stay until every id in the batch is passed to MarkDelivery.
+	claimMu sync.Mutex
+	claims  map[string]*deliveryClaim
 }
 
 // SetPendingLookupHookForTest sets pendingLookupHook. Pass nil to clear it.
@@ -43,7 +49,9 @@ func Open(ctx context.Context, url string) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
-// Close releases the pool. It waits until acquired connections are returned.
+// Close releases claim transactions, then the pool. It waits until acquired
+// connections are returned.
 func (s *Store) Close() {
+	s.abortDeliveryClaims()
 	s.pool.Close()
 }

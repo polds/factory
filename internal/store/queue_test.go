@@ -44,9 +44,25 @@ func TestExportedStructsOmitSecrets(t *testing.T) {
 		reflect.TypeOf(store.NewWorkItem{}),
 		reflect.TypeOf(store.WorkItemFilter{}),
 		reflect.TypeOf(store.Approval{}),
+		reflect.TypeOf(store.Delivery{}),
+		reflect.TypeOf(store.Schedule{}),
+		reflect.TypeOf(store.ExternalRef{}),
+		reflect.TypeOf(store.OutboundThread{}),
+		reflect.TypeOf(store.InputRequest{}),
 	}
 	for _, typ := range types {
 		assertNoSecretFields(t, typ)
+	}
+	webhookType := reflect.TypeOf(store.WebhookRegistration{})
+	for i := 0; i < webhookType.NumField(); i++ {
+		field := webhookType.Field(i)
+		switch field.Name {
+		case "SecretRef", "URLTokenHash":
+			continue
+		}
+		if secretish(field.Name) {
+			t.Fatalf("WebhookRegistration.%s looks like a secret", field.Name)
+		}
 	}
 	execType := reflect.TypeOf(store.Execution{})
 	for i := 0; i < execType.NumField(); i++ {
@@ -609,7 +625,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := h.raw.QueryRow(ctx, `SELECT count(*), count(DISTINCT filename) FROM schema_migrations`).Scan(&files, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if files != 2 || distinct != 2 {
+	if files != 3 || distinct != 3 {
 		t.Fatalf("schema_migrations rows %d distinct %d", files, distinct)
 	}
 	nameRows, err := h.raw.Query(ctx, `SELECT filename FROM schema_migrations ORDER BY filename`)
@@ -628,7 +644,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := nameRows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	wantFiles := []string{"0001_init.sql", "0002_m3.sql"}
+	wantFiles := []string{"0001_init.sql", "0002_m3.sql", "0003_m4.sql"}
 	if strings.Join(filenames, ",") != strings.Join(wantFiles, ",") {
 		t.Fatalf("filenames %v", filenames)
 	}
@@ -640,11 +656,13 @@ func TestMigrateIdempotent(t *testing.T) {
 		    'factories', 'definitions', 'agents', 'runners', 'runs', 'executions',
 		    'run_events', 'workers', 'run_queue', 'schema_migrations',
 		    'work_items', 'approvals', 'routers', 'skills', 'automations',
-		    'scorers', 'webhooks'
+		    'scorers', 'webhooks', 'deliveries', 'integration_installations',
+		    'webhook_registrations', 'schedules', 'leader_leases',
+		    'external_refs', 'outbound_threads', 'input_requests'
 		  )`).Scan(&tables); err != nil {
 		t.Fatal(err)
 	}
-	if tables != 17 {
+	if tables != 25 {
 		t.Fatalf("tables %d", tables)
 	}
 	assertColumns(t, h, "runs", []string{
@@ -653,6 +671,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	assertColumns(t, h, "work_items", []string{
 		"id", "factory_id", "source", "source_ref", "title", "body", "stage", "status",
 		"created_by", "conversation_id", "revision_count", "created_at",
+		"suspended_run_id", "suspended_execution_id", "suspended_at",
 	})
 	assertColumns(t, h, "approvals", []string{
 		"id", "work_item_id", "gate", "requested_at", "decided_at", "decided_by",
@@ -700,6 +719,13 @@ func TestNoSecretColumns(t *testing.T) {
 			if table != "executions" || dataType != "bytea" {
 				t.Fatalf("run_token_sha256 on %s type %s", table, dataType)
 			}
+			continue
+		}
+		// Names and digests, not secret values. Same class as run_token_sha256.
+		if table == "webhook_registrations" && column == "secret_ref" && dataType == "text" {
+			continue
+		}
+		if table == "webhook_registrations" && column == "url_token_hash" && dataType == "bytea" {
 			continue
 		}
 		if secretish(column) || strings.Contains(strings.ToLower(column), "env_var") {
@@ -958,7 +984,7 @@ func withSearchPath(raw, schema string, pool bool) (string, error) {
 	q := u.Query()
 	q.Set("search_path", schema)
 	if pool {
-		q.Set("pool_max_conns", "8")
+		q.Set("pool_max_conns", "16")
 	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
