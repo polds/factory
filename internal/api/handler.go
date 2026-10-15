@@ -1,5 +1,5 @@
 // Package api is the factoryd REST surface for factories, agents, runs,
-// work items, and approvals.
+// work items, approvals, deliveries, and schedules.
 package api
 
 import (
@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/polds/factory/internal/ingress"
 )
 
 const (
@@ -28,16 +30,23 @@ type handler struct {
 // NewHandler serves the factoryd REST API.
 //
 // Every route requires Authorization: Bearer apiKey except GET /healthz,
-// POST /api/v1/agent/runs/{runId}/events:ingest, and GET
-// /api/v1/factory-files/schemas/…. Ingest forwards its bearer token to
-// Backend.IngestEvents and does not compare it to apiKey.
+// POST /api/v1/agent/runs/{runId}/events:ingest, GET
+// /api/v1/factory-files/schemas/…, POST /api/v1/ingress/{github,slack,linear},
+// and POST /api/v1/webhooks/…. Ingest forwards its bearer token to
+// Backend.IngestEvents and does not compare it to apiKey. Ingress and
+// webhook routes are signature-authenticated by the mounted handler. They
+// have no flag that skips verification, and a body over 1 MiB is rejected
+// before that handler runs.
 //
 // events serves GET /api/v1/agent/runs/{runId}/events after the API key is
 // accepted. A nil events handler responds 404 on that route.
 //
 // Work-item and approval routes call WorkBackend when b implements it, and
-// respond 404 otherwise. Schema routes are mounted by RegisterSchemaRoutes
-// and delegate to SchemaCatalog when b implements it.
+// respond 404 otherwise. Delivery, schedule, external-reference, and input
+// routes do the same with DeliveryBackend, ScheduleBackend,
+// ExternalRefBackend, and InputBackend. Ingress routes call IngressMounts.
+// Schema routes are mounted by RegisterSchemaRoutes and delegate to
+// SchemaCatalog when b implements it.
 func NewHandler(b Backend, apiKey string, events http.Handler) http.Handler {
 	h := &handler{
 		backend: b,
@@ -74,6 +83,27 @@ func (h *handler) route() {
 	m.HandleFunc("POST /api/v1/factory/{uid}/tasks/{taskID}/cancel", h.withAPIKey(h.handleCancelTask))
 	m.HandleFunc("GET /api/v1/factory/{uid}/approvals", h.withAPIKey(h.handleListApprovals))
 	m.HandleFunc("POST /api/v1/approvals/{approvalID}", h.withAPIKey(h.handleDecideApproval))
+
+	// docs/04 schedules and docs/07 ingress. Replay is one path segment;
+	// the :replay suffix is parsed like :decide.
+	m.HandleFunc("GET /api/v1/factory/{uid}/deliveries", h.withAPIKey(h.handleListDeliveries))
+	m.HandleFunc("POST /api/v1/deliveries/{deliveryID}", h.withAPIKey(h.handleReplayDelivery))
+	m.HandleFunc("GET /api/v1/agent/schedules", h.withAPIKey(h.handleListSchedules))
+	m.HandleFunc("POST /api/v1/agent/schedules", h.withAPIKey(h.handleCreateSchedule))
+	m.HandleFunc("GET /api/v1/agent/schedules/{id}", h.withAPIKey(h.handleGetSchedule))
+	m.HandleFunc("PATCH /api/v1/agent/schedules/{id}", h.withAPIKey(h.handleUpdateSchedule))
+	m.HandleFunc("DELETE /api/v1/agent/schedules/{id}", h.withAPIKey(h.handleDeleteSchedule))
+	m.HandleFunc("POST /api/v1/agent/schedules/{id}/pause", h.withAPIKey(h.handlePauseSchedule))
+	m.HandleFunc("POST /api/v1/agent/schedules/{id}/resume", h.withAPIKey(h.handleResumeSchedule))
+	m.HandleFunc("GET /api/v1/agent/run-by-external-reference", h.withAPIKey(h.handleRunByExternalReference))
+	m.HandleFunc("POST /api/v1/work-items/{id}/input", h.withAPIKey(h.handleAnswerInput))
+
+	// No API key. The provider verifies the signature over the raw body.
+	m.HandleFunc("POST /api/v1/ingress/github", h.handleProviderIngress(ingress.ProviderGitHub))
+	m.HandleFunc("POST /api/v1/ingress/slack", h.handleProviderIngress(ingress.ProviderSlack))
+	m.HandleFunc("POST /api/v1/ingress/linear", h.handleProviderIngress(ingress.ProviderLinear))
+	m.HandleFunc("POST /api/v1/webhooks/u/{urlToken}", h.handleWebhook)
+	m.HandleFunc("POST /api/v1/webhooks/{webhookUID}", h.handleWebhook)
 
 	var schemas http.Handler
 	if cat, ok := h.backend.(SchemaCatalog); ok {
