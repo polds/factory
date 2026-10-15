@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const deliveryColumns = `
@@ -71,13 +73,11 @@ func (s *Store) InsertDelivery(ctx context.Context, d Delivery) (Delivery, bool,
 		INSERT INTO deliveries (
 		    id, factory_id, provider, webhook_uid, delivery_id, received_at,
 		    headers, body, truncated, status, matched_automations, expires_at)
-		VALUES (
-		    $1, $2, $3, $4, $5,
-		    COALESCE($6::timestamptz, clock_timestamp()),
-		    $7::jsonb, $8, $9, 'received', '[]'::jsonb,
-		    COALESCE(
-		        $10::timestamptz,
-		        COALESCE($6::timestamptz, clock_timestamp()) + interval '7 days'))
+		SELECT $1, $2, $3, $4, $5,
+		       clock.ts,
+		       $7::jsonb, $8, $9, 'received', '[]'::jsonb,
+		       COALESCE($10::timestamptz, clock.ts + interval '7 days')
+		FROM (SELECT COALESCE($6::timestamptz, clock_timestamp()) AS ts) AS clock
 		ON CONFLICT (provider, webhook_uid, delivery_id) DO NOTHING
 		RETURNING `+deliveryColumns,
 		id, d.FactoryID, d.Provider, d.WebhookUID, d.DeliveryID, nullTime(d.ReceivedAt),
@@ -113,33 +113,53 @@ func (s *Store) GetDelivery(ctx context.Context, id string) (Delivery, error) {
 	return d, nil
 }
 
-// MarkDelivery sets status and the automations that matched.
-// A zero expiresAt leaves retention unchanged, except unmatched deliveries
-// are capped at 72 hours from received_at.
-func (s *Store) MarkDelivery(ctx context.Context, id, status string, matched []string, expiresAt time.Time) (Delivery, error) {
+// MarkDelivery sets status. It does not write matched_automations: a status-only
+// call leaves that column unchanged. MarkDelivery(id, received) releases a
+// ClaimReceived lock without finishing the delivery. Unmatched shortens
+// retention to 72 hours from received_at when that is sooner.
+//
+// The signature matches ingress.Store. Claim locks are the exclusive state.
+// Status stays one of received|matched|unmatched|ignored|failed, which is what
+// the deliveries check allows. The in-memory ingress fake's private "claimed"
+// value is not stored.
+func (s *Store) MarkDelivery(ctx context.Context, id, status string) error {
 	if err := validDeliveryStatus(status); err != nil {
-		return Delivery{}, err
+		return err
+	}
+	if id == "" {
+		return fmt.Errorf("store: delivery id is required")
+	}
+	if hold, ok := s.claimHold(id); ok {
+		return s.markClaimed(ctx, hold, id, status)
+	}
+	return applyDeliveryStatus(ctx, s.pool, id, status)
+}
+
+// SetMatchedAutomations replaces matched_automations.
+// A nil list leaves the column unchanged. An empty slice clears it.
+func (s *Store) SetMatchedAutomations(ctx context.Context, id string, matched []string) (Delivery, error) {
+	if id == "" {
+		return Delivery{}, fmt.Errorf("store: delivery id is required")
+	}
+	db, unlock := s.deliveryDB(id)
+	defer unlock()
+	if matched == nil {
+		return getDelivery(ctx, db, id)
 	}
 	raw, err := jsonStringList(matched)
 	if err != nil {
 		return Delivery{}, err
 	}
-	d, err := scanDelivery(s.pool.QueryRow(ctx, `
+	d, err := scanDelivery(db.QueryRow(ctx, `
 		UPDATE deliveries
-		SET status = $2,
-		    matched_automations = $3::jsonb,
-		    expires_at = CASE
-		        WHEN $2 = 'unmatched' AND $4::timestamptz IS NULL
-		            THEN LEAST(expires_at, received_at + interval '72 hours')
-		        ELSE COALESCE($4::timestamptz, expires_at)
-		    END
+		SET matched_automations = $2::jsonb
 		WHERE id = $1
-		RETURNING `+deliveryColumns, id, status, raw, nullTime(expiresAt)))
+		RETURNING `+deliveryColumns, id, raw))
 	if errors.Is(err, ErrNotFound) {
 		return Delivery{}, ErrNotFound
 	}
 	if err != nil {
-		return Delivery{}, fmt.Errorf("store: mark delivery: %w", err)
+		return Delivery{}, fmt.Errorf("store: set delivery automations: %w", err)
 	}
 	return d, nil
 }
@@ -193,4 +213,226 @@ func (s *Store) PurgeExpiredDeliveries(ctx context.Context, now time.Time) (int,
 		return 0, fmt.Errorf("store: purge deliveries: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// deliveryClaim is one ClaimReceived transaction. Row locks stay until every
+// id has been passed to MarkDelivery, then the transaction commits.
+type deliveryClaim struct {
+	mu     sync.Mutex
+	tx     pgx.Tx
+	ids    []string
+	left   int
+	done   map[string]bool
+	closed bool
+}
+
+// deliveryDB is the pool or a claim transaction.
+type deliveryDB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// ClaimReceived locks up to limit rows with status received.
+// Two callers cannot observe the same row: the locks are FOR UPDATE SKIP
+// LOCKED and stay held until MarkDelivery for every returned id.
+// Status is unchanged, so a crash rolls the transaction back and leaves
+// received. limit <= 0 claims nothing.
+func (s *Store) ClaimReceived(ctx context.Context, limit int) ([]Delivery, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: claim deliveries: %w", err)
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT `+deliveryColumns+`
+		FROM deliveries
+		WHERE status = $1
+		ORDER BY received_at ASC, id ASC
+		FOR UPDATE SKIP LOCKED
+		LIMIT $2`, DeliveryReceived, limit)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, fmt.Errorf("store: claim deliveries: %w", err)
+	}
+	out := []Delivery{}
+	var scanErr error
+	for rows.Next() {
+		var d Delivery
+		d, scanErr = scanDelivery(rows)
+		if scanErr != nil {
+			break
+		}
+		out = append(out, d)
+	}
+	if scanErr == nil {
+		scanErr = rows.Err()
+	}
+	rows.Close()
+	if scanErr != nil {
+		_ = tx.Rollback(ctx)
+		return nil, fmt.Errorf("store: claim deliveries: %w", scanErr)
+	}
+	if len(out) == 0 {
+		if err := tx.Rollback(ctx); err != nil {
+			return nil, fmt.Errorf("store: claim deliveries: %w", err)
+		}
+		return nil, nil
+	}
+	hold := &deliveryClaim{
+		tx:   tx,
+		ids:  make([]string, len(out)),
+		left: len(out),
+		done: map[string]bool{},
+	}
+	for i := range out {
+		hold.ids[i] = out[i].ID
+	}
+	s.claimMu.Lock()
+	if s.claims == nil {
+		s.claims = map[string]*deliveryClaim{}
+	}
+	for _, id := range hold.ids {
+		s.claims[id] = hold
+	}
+	s.claimMu.Unlock()
+	return out, nil
+}
+
+func (s *Store) claimHold(id string) (*deliveryClaim, bool) {
+	s.claimMu.Lock()
+	defer s.claimMu.Unlock()
+	hold, ok := s.claims[id]
+	if !ok {
+		return nil, false
+	}
+	return hold, true
+}
+
+func (s *Store) markClaimed(ctx context.Context, hold *deliveryClaim, id, status string) error {
+	hold.mu.Lock()
+	err := s.markClaimedLocked(ctx, hold, id, status)
+	release := hold.closed
+	hold.mu.Unlock()
+	if release {
+		s.dropClaim(hold)
+	}
+	return err
+}
+
+func (s *Store) markClaimedLocked(ctx context.Context, hold *deliveryClaim, id, status string) error {
+	if hold.done[id] {
+		return nil
+	}
+	if hold.closed {
+		return fmt.Errorf("store: delivery claim closed")
+	}
+	if err := applyDeliveryStatus(ctx, hold.tx, id, status); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			if cerr := s.finishClaimLocked(ctx, hold, id); cerr != nil {
+				return cerr
+			}
+			return ErrNotFound
+		}
+		// A statement error aborts the Postgres transaction.
+		hold.closed = true
+		_ = hold.tx.Rollback(context.Background())
+		return err
+	}
+	return s.finishClaimLocked(ctx, hold, id)
+}
+
+func (s *Store) finishClaimLocked(ctx context.Context, hold *deliveryClaim, id string) error {
+	hold.done[id] = true
+	hold.left--
+	if hold.left > 0 {
+		return nil
+	}
+	if err := hold.tx.Commit(ctx); err != nil {
+		hold.closed = true
+		_ = hold.tx.Rollback(context.Background())
+		return fmt.Errorf("store: commit delivery claim: %w", err)
+	}
+	hold.closed = true
+	return nil
+}
+
+func (s *Store) dropClaim(hold *deliveryClaim) {
+	s.claimMu.Lock()
+	defer s.claimMu.Unlock()
+	for _, id := range hold.ids {
+		if s.claims[id] == hold {
+			delete(s.claims, id)
+		}
+	}
+}
+
+func (s *Store) deliveryDB(id string) (deliveryDB, func()) {
+	s.claimMu.Lock()
+	hold := s.claims[id]
+	s.claimMu.Unlock()
+	if hold == nil {
+		return s.pool, func() {}
+	}
+	hold.mu.Lock()
+	if hold.closed {
+		hold.mu.Unlock()
+		return s.pool, func() {}
+	}
+	return hold.tx, hold.mu.Unlock
+}
+
+func getDelivery(ctx context.Context, db deliveryDB, id string) (Delivery, error) {
+	d, err := scanDelivery(db.QueryRow(ctx, `SELECT `+deliveryColumns+` FROM deliveries WHERE id = $1`, id))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return Delivery{}, err
+		}
+		return Delivery{}, fmt.Errorf("store: get delivery: %w", err)
+	}
+	return d, nil
+}
+
+func applyDeliveryStatus(ctx context.Context, db deliveryDB, id, status string) error {
+	tag, err := db.Exec(ctx, `
+		UPDATE deliveries
+		SET status = $2,
+		    expires_at = CASE
+		        WHEN $2 = 'unmatched'
+		            THEN LEAST(expires_at, received_at + interval '72 hours')
+		        ELSE expires_at
+		    END
+		WHERE id = $1`, id, status)
+	if err != nil {
+		return fmt.Errorf("store: mark delivery: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// abortDeliveryClaims rolls back claim transactions still open at Close.
+func (s *Store) abortDeliveryClaims() {
+	s.claimMu.Lock()
+	seen := map[*deliveryClaim]struct{}{}
+	holds := []*deliveryClaim{}
+	for _, hold := range s.claims {
+		if _, ok := seen[hold]; ok {
+			continue
+		}
+		seen[hold] = struct{}{}
+		holds = append(holds, hold)
+	}
+	s.claims = nil
+	s.claimMu.Unlock()
+	for _, hold := range holds {
+		hold.mu.Lock()
+		if !hold.closed {
+			hold.closed = true
+			_ = hold.tx.Rollback(context.Background())
+		}
+		hold.mu.Unlock()
+	}
 }

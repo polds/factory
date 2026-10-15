@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -74,12 +75,29 @@ func TestDeliveryInsertDedupListAndPurge(t *testing.T) {
 		t.Fatalf("other webhook dup %v err %v", dup, err)
 	}
 
-	marked, err := h.st.MarkDelivery(ctx, got.ID, store.DeliveryMatched, []string{"labeled-intake"}, time.Time{})
+	labeled, err := h.st.SetMatchedAutomations(ctx, got.ID, []string{"labeled-intake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(labeled.MatchedAutomations) != 1 || labeled.MatchedAutomations[0] != "labeled-intake" {
+		t.Fatalf("labeled %+v", labeled.MatchedAutomations)
+	}
+	kept, err := h.st.SetMatchedAutomations(ctx, got.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept.MatchedAutomations) != 1 || kept.MatchedAutomations[0] != "labeled-intake" {
+		t.Fatalf("nil list cleared automations: %+v", kept.MatchedAutomations)
+	}
+	if err := h.st.MarkDelivery(ctx, got.ID, store.DeliveryMatched); err != nil {
+		t.Fatal(err)
+	}
+	marked, err := h.st.GetDelivery(ctx, got.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if marked.Status != store.DeliveryMatched || len(marked.MatchedAutomations) != 1 || marked.MatchedAutomations[0] != "labeled-intake" {
-		t.Fatalf("marked %+v", marked.MatchedAutomations)
+		t.Fatalf("marked %+v status %s", marked.MatchedAutomations, marked.Status)
 	}
 	if !marked.ExpiresAt.Equal(expires) {
 		t.Fatalf("matched expiry changed %s", marked.ExpiresAt)
@@ -97,7 +115,10 @@ func TestDeliveryInsertDedupListAndPurge(t *testing.T) {
 			second = row
 		}
 	}
-	unmatched, err := h.st.MarkDelivery(ctx, second.ID, store.DeliveryUnmatched, nil, time.Time{})
+	if err := h.st.MarkDelivery(ctx, second.ID, store.DeliveryUnmatched); err != nil {
+		t.Fatal(err)
+	}
+	unmatched, err := h.st.GetDelivery(ctx, second.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,11 +146,30 @@ func TestDeliveryInsertDedupListAndPurge(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("purge %d %v", n, err)
 	}
-	if _, err := h.st.MarkDelivery(ctx, "dlv_missing", store.DeliveryFailed, nil, time.Time{}); !errors.Is(err, store.ErrNotFound) {
+	if err := h.st.MarkDelivery(ctx, "dlv_missing", store.DeliveryFailed); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("missing mark %v", err)
 	}
-	if _, err := h.st.MarkDelivery(ctx, got.ID, "nope", nil, time.Time{}); err == nil {
+	if err := h.st.MarkDelivery(ctx, got.ID, "nope"); err == nil {
 		t.Fatal("accepted bad status")
+	}
+	cleared, err := h.st.SetMatchedAutomations(ctx, got.ID, []string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleared.MatchedAutomations) != 0 {
+		t.Fatalf("empty slice did not clear %+v", cleared.MatchedAutomations)
+	}
+	clocked, _, err := h.st.InsertDelivery(ctx, store.Delivery{
+		FactoryID:  factoryID,
+		Provider:   store.ProviderLinear,
+		DeliveryID: "clock-once",
+		Body:       []byte("t"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !clocked.ExpiresAt.Equal(clocked.ReceivedAt.Add(7 * 24 * time.Hour)) {
+		t.Fatalf("one clock expiry %s received %s", clocked.ExpiresAt, clocked.ReceivedAt)
 	}
 }
 
@@ -180,6 +220,190 @@ func TestDeliveryConcurrentInsertOneRow(t *testing.T) {
 	if rows != 1 {
 		t.Fatalf("rows %d", rows)
 	}
+}
+
+func TestDeliveryClaimHoldAndRelease(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, _ := h.seed(t)
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	ids := make([]string, 3)
+	for i, name := range []string{"a", "b", "c"} {
+		row, _, err := h.st.InsertDelivery(ctx, store.Delivery{
+			FactoryID:  factoryID,
+			Provider:   store.ProviderWebhook,
+			DeliveryID: name,
+			ReceivedAt: base.Add(time.Duration(i) * time.Second),
+			ExpiresAt:  base.Add(7 * 24 * time.Hour),
+			Body:       []byte(name),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = row.ID
+	}
+	if claimed, err := h.st.ClaimReceived(ctx, 0); err != nil || len(claimed) != 0 {
+		t.Fatalf("limit 0 claimed %d err %v", len(claimed), err)
+	}
+	first, err := h.st.ClaimReceived(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || first[0].ID != ids[0] || first[1].ID != ids[1] {
+		t.Fatalf("first claim %#v", idsOf(first))
+	}
+	var status string
+	if err := h.raw.QueryRow(ctx, `SELECT status FROM deliveries WHERE id = $1`, ids[0]).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != store.DeliveryReceived {
+		t.Fatalf("status during claim %s", status)
+	}
+	labeled, err := h.st.SetMatchedAutomations(ctx, ids[0], []string{"labeled-intake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(labeled.MatchedAutomations) != 1 || labeled.MatchedAutomations[0] != "labeled-intake" {
+		t.Fatalf("labeled %+v", labeled.MatchedAutomations)
+	}
+	kept, err := h.st.SetMatchedAutomations(ctx, ids[0], nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept.MatchedAutomations) != 1 || kept.MatchedAutomations[0] != "labeled-intake" {
+		t.Fatalf("nil list cleared automations: %+v", kept.MatchedAutomations)
+	}
+	second, err := h.st.ClaimReceived(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second[0].ID != ids[2] {
+		t.Fatalf("second claim %#v", idsOf(second))
+	}
+	if err := h.st.MarkDelivery(ctx, ids[0], store.DeliveryReceived); err != nil {
+		t.Fatal(err)
+	}
+	held, err := h.st.ClaimReceived(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held) != 0 {
+		t.Fatalf("claimed a locked row %#v", idsOf(held))
+	}
+	if err := h.st.MarkDelivery(ctx, ids[1], store.DeliveryMatched); err != nil {
+		t.Fatal(err)
+	}
+	released, err := h.st.GetDelivery(ctx, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released.Status != store.DeliveryReceived || len(released.MatchedAutomations) != 1 || released.MatchedAutomations[0] != "labeled-intake" {
+		t.Fatalf("release %+v status %s", released.MatchedAutomations, released.Status)
+	}
+	finished, err := h.st.GetDelivery(ctx, ids[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status != store.DeliveryMatched {
+		t.Fatalf("batch status %s", finished.Status)
+	}
+	if err := h.st.MarkDelivery(ctx, ids[2], store.DeliveryReceived); err != nil {
+		t.Fatal(err)
+	}
+	again, err := h.st.ClaimReceived(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 2 || again[0].ID != ids[0] || again[1].ID != ids[2] {
+		t.Fatalf("reclaim %#v", idsOf(again))
+	}
+	for _, row := range again {
+		if err := h.st.MarkDelivery(ctx, row.ID, store.DeliveryMatched); err != nil {
+			t.Fatal(err)
+		}
+	}
+	none, err := h.st.ClaimReceived(ctx, 10)
+	if err != nil || len(none) != 0 {
+		t.Fatalf("matched rows reclaimed %#v err %v", idsOf(none), err)
+	}
+}
+
+func TestDeliveryClaimRace(t *testing.T) {
+	h := newHarness(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	factoryID, _ := h.seed(t)
+	const n = 16
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	for i := range n {
+		if _, _, err := h.st.InsertDelivery(ctx, store.Delivery{
+			FactoryID:  factoryID,
+			Provider:   store.ProviderGitHub,
+			DeliveryID: fmt.Sprintf("race-%d", i),
+			ReceivedAt: base.Add(time.Duration(i) * time.Millisecond),
+			ExpiresAt:  base.Add(7 * 24 * time.Hour),
+			Body:       []byte("x"),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const workers = 4
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	counts := map[string]int{}
+	var errs []error
+	start := make(chan struct{})
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			<-start
+			for {
+				claimed, err := h.st.ClaimReceived(ctx, 5)
+				if err != nil {
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+					return
+				}
+				if len(claimed) == 0 {
+					return
+				}
+				for _, row := range claimed {
+					mu.Lock()
+					counts[row.ID]++
+					mu.Unlock()
+					if err := h.st.MarkDelivery(ctx, row.ID, store.DeliveryMatched); err != nil {
+						mu.Lock()
+						errs = append(errs, err)
+						mu.Unlock()
+						return
+					}
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	for _, err := range errs {
+		t.Error(err)
+	}
+	if len(counts) != n {
+		t.Fatalf("claimed ids %d", len(counts))
+	}
+	for id, count := range counts {
+		if count != 1 {
+			t.Errorf("%s claimed %d times", id, count)
+		}
+	}
+}
+
+func idsOf(rows []store.Delivery) []string {
+	out := make([]string, len(rows))
+	for i := range rows {
+		out[i] = rows[i].ID
+	}
+	return out
 }
 
 func TestScheduleUpsertReplaceDueAndFire(t *testing.T) {
