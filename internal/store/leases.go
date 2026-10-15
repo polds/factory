@@ -10,9 +10,10 @@ import (
 )
 
 // AcquireLease takes or renews a named lease until now+ttl.
-// The current holder can renew before expiry. Another holder acquires only
-// when expires_at is strictly before now. acquired is false when the lease
-// is held by someone else; that is not an error.
+// A missing name is inserted. ON CONFLICT updates only when expires_at is
+// strictly before now or holder is already this holder. An update of a
+// missing row would grant nothing. acquired is false when someone else
+// holds an unexpired lease; that is not an error.
 func (s *Store) AcquireLease(ctx context.Context, name, holder string, ttl time.Duration, now time.Time) (bool, error) {
 	if name == "" || holder == "" {
 		return false, fmt.Errorf("store: lease name and holder are required")

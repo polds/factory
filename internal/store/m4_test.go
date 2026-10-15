@@ -485,6 +485,40 @@ func TestScheduleUpsertReplaceDueAndFire(t *testing.T) {
 	}
 }
 
+func TestLeaseAcquireOnEmptyTable(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	var rows int
+	if err := h.raw.QueryRow(ctx, `SELECT count(*) FROM leader_leases`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("leader_leases rows %d", rows)
+	}
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	ttl := 15 * time.Second
+	ok, err := h.st.AcquireLease(ctx, "cron", "holder-a", ttl, now)
+	if err != nil || !ok {
+		t.Fatalf("first grant %v %v", ok, err)
+	}
+	var holder string
+	var expires time.Time
+	if err := h.raw.QueryRow(ctx, `
+		SELECT holder, expires_at FROM leader_leases WHERE name = 'cron'`,
+	).Scan(&holder, &expires); err != nil {
+		t.Fatal(err)
+	}
+	if holder != "holder-a" || !expires.Equal(now.Add(ttl)) {
+		t.Fatalf("stored holder %s expires %s", holder, expires)
+	}
+	if err := h.raw.QueryRow(ctx, `SELECT count(*) FROM leader_leases`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("leader_leases rows %d", rows)
+	}
+}
+
 func TestLeaseAcquireRenewAndSteal(t *testing.T) {
 	h := newHarness(t, true)
 	ctx := context.Background()
