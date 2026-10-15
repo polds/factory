@@ -1,0 +1,1 @@
+automations/issue-labeled/automation.md:1: filters decide when work starts, not what a running agent can reach; a filter is not an authorization boundary

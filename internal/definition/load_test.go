@@ -53,8 +53,10 @@ func TestLoadDirExamples(t *testing.T) {
 	if tree == nil {
 		t.Fatal("nil tree")
 	}
-	if len(diags) != 0 {
-		t.Fatalf("acme-factory diagnostics:\n%s", formatDiags(diags))
+	for _, d := range diags {
+		if d.Severity == SeverityError || d.Message != FilterNotAuthorizationWarning {
+			t.Fatalf("acme-factory diagnostics:\n%s", formatDiags(diags))
+		}
 	}
 	if tree.Factory.Name != "acme-payments" || tree.Factory.SchemaVersion != "v1alpha1" {
 		t.Fatalf("factory = %+v", tree.Factory)

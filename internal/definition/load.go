@@ -65,6 +65,7 @@ func LoadDir(path string) (*Tree, []Diagnostic) {
 	loadWebhooks(path, tree, &diags)
 	validatePipeline(tree, factoryLines, &diags)
 	validateScorerDefaults(tree, factoryLines, &diags)
+	diags = append(diags, CheckAutomations(tree.Automations, nil)...)
 	sortDiags(diags)
 	return tree, diags
 }
