@@ -3,14 +3,17 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/defsync"
 	"github.com/polds/factory/internal/protocol"
 	"github.com/polds/factory/internal/store"
@@ -287,6 +290,154 @@ func TestE2EWorkItemAskInputReleasesSlot(t *testing.T) {
 		t.Fatalf("slot stayed held: assigned %s, want %s", next.TaskID, other)
 	}
 	env.forbidSecrets(t, asg.EnvVars["FACTORY_RUN_TOKEN"])
+}
+
+func TestE2EAskInputSurvivesRestart(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	const question = "Which staging env?"
+	const answer = "staging-2"
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+
+	task := env.createTask(t, "Ask across restart", "which env?")
+	asg := w.readAssignment(t)
+	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: asg.TaskID, WorkerID: "local-1"})
+	postEvents(t, asg.EnvVars["FACTORY_EVENTS_URL"], asg.EnvVars["FACTORY_RUN_TOKEN"], 0, []string{
+		`{"type":"question","gate":"clarification","text":"` + question + `"}`,
+	})
+	waiting := env.waitTask(t, task.ID, "awaiting_input", "triage")
+	if waiting.ConversationID == "" {
+		t.Fatal("work item has no conversation")
+	}
+	env.assertSuspended(t, task.ID, asg.TaskID, question)
+
+	w.close()
+	env.waitNotRequeued(t, asg.TaskID)
+	if _, err := env.srv.store.ExpireLeases(context.Background(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	env.waitNotRequeued(t, asg.TaskID)
+
+	env.restart(t)
+	// The restarted loop expires leases on its own. ExpireLeases is the same
+	// call, on the pool, so the test does not share the leader connection.
+	if _, err := env.srv.store.ExpireLeases(context.Background(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	still := env.getTask(t, task.ID)
+	if still.Status != "awaiting_input" || still.ConversationID != waiting.ConversationID {
+		t.Fatalf("after restart %+v", still)
+	}
+	env.assertSuspended(t, task.ID, asg.TaskID, question)
+	env.waitNotRequeued(t, asg.TaskID)
+
+	w2 := dialWorker(t, env, "local-2")
+	defer w2.close()
+	req, err := env.srv.AnswerInput(context.Background(), task.ID, answer, "peter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := env.srv.AnswerInput(context.Background(), task.ID, answer, "someone")
+	if err != nil || again.ID != req.ID || again.Answer != answer {
+		t.Fatalf("replay %+v %v", again, err)
+	}
+	if _, err := env.srv.AnswerInput(context.Background(), task.ID, "a different answer", "peter"); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("conflict %v", err)
+	}
+	resumed := env.getTask(t, task.ID)
+	if resumed.Status != "open" || resumed.ConversationID != waiting.ConversationID {
+		t.Fatalf("resumed %+v", resumed)
+	}
+	next := w2.readAssignment(t)
+	if next.TaskID != asg.TaskID {
+		t.Fatalf("resume run %s, want %s", next.TaskID, asg.TaskID)
+	}
+	if next.EnvVars["FACTORY_CONVERSATION_ID"] != waiting.ConversationID {
+		t.Fatalf("conversation %s", next.EnvVars["FACTORY_CONVERSATION_ID"])
+	}
+	prompt := next.EnvVars["FACTORY_TASK_PROMPT"]
+	if !strings.Contains(prompt, question) || !strings.Contains(prompt, answer) {
+		t.Fatal("resumed prompt is missing the question and answer")
+	}
+	var attempts int
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM executions WHERE run_id = $1`, asg.TaskID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("executions %d, want 2", attempts)
+	}
+}
+
+func (e *env) assertSuspended(t *testing.T, workItemID, runID, question string) {
+	t.Helper()
+	var gotQuestion, execState, runStatus string
+	var ended *time.Time
+	err := e.raw.QueryRow(context.Background(), `
+		SELECT r.question, ex.state, ex.ended_at, run.status
+		FROM input_requests r
+		JOIN runs run ON run.id = r.run_id
+		JOIN executions ex ON ex.id = r.execution_id
+		WHERE r.work_item_id = $1 AND r.answered_at IS NULL`, workItemID).Scan(&gotQuestion, &execState, &ended, &runStatus)
+	if err != nil {
+		t.Fatalf("pending input: %v", err)
+	}
+	if gotQuestion != question {
+		t.Fatalf("question %q", gotQuestion)
+	}
+	if execState == "assigned" || execState == "running" || execState == "failed" || ended == nil {
+		t.Fatalf("execution state %s ended %v", execState, ended != nil)
+	}
+	if runStatus == "queued" || runStatus == "succeeded" || runStatus == "failed" || runStatus == "cancelled" {
+		t.Fatalf("run status %s", runStatus)
+	}
+	var suspended string
+	if err := e.raw.QueryRow(context.Background(), `SELECT suspended_run_id FROM work_items WHERE id = $1`, workItemID).Scan(&suspended); err != nil {
+		t.Fatal(err)
+	}
+	if suspended != runID {
+		t.Fatalf("suspended run %s", suspended)
+	}
+	if n := e.queueRows(t, runID); n != 0 {
+		t.Fatalf("queue rows %d", n)
+	}
+}
+
+func (e *env) waitNotRequeued(t *testing.T, runID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		st := e.status(t, runID)
+		if st == "queued" || st == "succeeded" || st == "failed" || st == "cancelled" {
+			t.Fatalf("run requeued or finished: %s", st)
+		}
+		if e.queueRows(t, runID) == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("run %s still queued", runID)
+}
+
+func (e *env) restart(t *testing.T) {
+	t.Helper()
+	cfg := e.srv.cfg
+	if err := e.srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := Open(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	srv.cfg.TaskServerURL = ts.URL
+	e.srv = srv
+	e.base = ts.URL
 }
 
 func TestDefinitionSyncKeepsLastGood(t *testing.T) {

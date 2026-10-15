@@ -30,7 +30,13 @@
 // open, emits Escalate, and does not start a run.
 //
 // AskInput moves an open work item to awaiting_input and emits Noop. The
-// caller releases the worker slot and keeps the logical run suspended
-// (docs/02, docs/05). ResumeInput returns to open and does not start a
-// run. Cancel from any non-terminal status emits MarkCancelled.
+// caller persists the input request and that status in one transaction,
+// releases the worker slot, and ends the execution. The run is not failed
+// and is not put back on the queue. Worker loss, lease expiry, and process
+// restart leave it parked. ResumeInput returns the work item to open and
+// emits Noop. The caller then starts a new execution of the same run, on
+// the same conversation, with the question and answer in the handoff
+// prompt. The same answer twice does not start a second execution. A
+// different answer is a conflict. Cancel from any non-terminal status
+// emits MarkCancelled.
 package orchestrator

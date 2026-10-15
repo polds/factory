@@ -289,8 +289,9 @@ func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
 	}
 }
 
-// onQuestion suspends the work item and releases the worker slot. The run
-// stays assigned so the logical execution is not retried or finished.
+// onQuestion suspends the work item and releases the worker slot. The input
+// request and awaiting_input status commit together. The execution ends and
+// the run leaves the queue, so it is not failed and not requeued.
 func (s *Server) onQuestion(ctx context.Context, runID string) {
 	run, err := s.store.GetRun(ctx, runID)
 	if err != nil || run.WorkItemID == "" {
@@ -301,6 +302,14 @@ func (s *Server) onQuestion(ctx context.Context, runID string) {
 	item, err := s.store.GetWorkItem(ctx, run.WorkItemID)
 	if err != nil {
 		s.log.Error("question", "run_id", runID, "err", err)
+		return
+	}
+	if item.Status == store.WorkItemAwaitingInput && item.SuspendedRunID == run.ID {
+		if err := s.parkSuspendedRun(ctx, run.ID); err != nil {
+			s.log.Error("question", "work_item_id", item.ID, "err", err)
+			return
+		}
+		s.releaseWorkerSlot(run.ID)
 		return
 	}
 	if item.Status != store.WorkItemOpen {
@@ -316,19 +325,80 @@ func (s *Server) onQuestion(ctx context.Context, runID string) {
 		s.log.Error("question", "work_item_id", item.ID, "err", err)
 		return
 	}
-	next, effects, err := step(def, state, orchestrator.AskInput{})
+	next, _, err := step(def, state, orchestrator.AskInput{})
 	if err != nil {
 		s.log.Info("question ignored", "work_item_id", item.ID, "err", err)
 		return
 	}
-	updated, err := s.commitStep(ctx, item, next, effects)
+	if next.Status != orchestrator.StatusAwaitingInput {
+		s.log.Error("question", "work_item_id", item.ID, "status", next.Status)
+		return
+	}
+	question, err := s.latestQuestion(ctx, run.ID)
 	if err != nil {
 		s.log.Error("question", "work_item_id", item.ID, "err", err)
 		return
 	}
-	if _, err := s.applyEffects(ctx, updated, effects, "", run.ID); err != nil {
-		s.log.Error("question", "work_item_id", item.ID, "err", err)
+	if question == "" {
+		s.log.Info("question ignored", "work_item_id", item.ID, "err", "empty question")
+		return
 	}
+	execID, err := s.liveExecution(ctx, run.ID)
+	if err != nil {
+		s.log.Error("question", "work_item_id", item.ID, "err", err)
+		return
+	}
+	if execID == "" {
+		s.log.Error("question", "work_item_id", item.ID, "err", "no live execution")
+		return
+	}
+	if _, err := s.store.CreateInputRequest(ctx, item.ID, run.ID, execID, question); err != nil {
+		s.log.Error("question", "work_item_id", item.ID, "err", err)
+		return
+	}
+	if err := s.parkSuspendedRun(ctx, run.ID); err != nil {
+		s.log.Error("question", "work_item_id", item.ID, "err", err)
+		return
+	}
+	s.releaseWorkerSlot(run.ID)
+	s.log.Info("work item awaiting input", "work_item_id", item.ID, "run_id", run.ID)
+}
+
+// AnswerInput records an answer and resumes the parked run. The same answer
+// returns the stored row and does not start another execution. A different
+// answer returns api.ErrConflict.
+func (s *Server) AnswerInput(ctx context.Context, workItemID, answer, answeredBy string) (store.InputRequest, error) {
+	s.orchMu.Lock()
+	defer s.orchMu.Unlock()
+	item, err := s.store.GetWorkItem(ctx, workItemID)
+	if err != nil {
+		return store.InputRequest{}, orchErr(err)
+	}
+	_, pendErr := s.store.PendingInputRequest(ctx, workItemID)
+	if pendErr != nil && !errors.Is(pendErr, store.ErrNotFound) {
+		return store.InputRequest{}, pendErr
+	}
+	if pendErr == nil {
+		def, err := s.pipelineDef()
+		if err != nil {
+			return store.InputRequest{}, err
+		}
+		state, err := s.loadState(ctx, item)
+		if err != nil {
+			return store.InputRequest{}, err
+		}
+		if _, _, err := step(def, state, orchestrator.ResumeInput{}); err != nil {
+			return store.InputRequest{}, orchErr(err)
+		}
+	}
+	stored, err := s.store.AnswerInputRequest(ctx, workItemID, answer, answeredBy)
+	if err != nil {
+		return store.InputRequest{}, orchErr(err)
+	}
+	if err := s.resumeStored(ctx, stored); err != nil {
+		return store.InputRequest{}, err
+	}
+	return stored, nil
 }
 
 func (s *Server) withWorkItem(ctx context.Context, factoryID, id string, fn func(store.WorkItem) error) error {
@@ -675,12 +745,194 @@ func (s *Server) clearSuspended(runID string) {
 
 func (s *Server) suspendedSnapshot() map[string]struct{} {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	out := make(map[string]struct{}, len(s.suspended))
 	for id := range s.suspended {
 		out[id] = struct{}{}
 	}
+	s.mu.Unlock()
+	if s.store == nil {
+		return out
+	}
+	ids, err := s.store.ListSuspendedRunIDs(context.WithoutCancel(s.ctx))
+	if err != nil {
+		if s.ctx.Err() == nil && s.log != nil {
+			s.log.Error("suspended runs", "err", err)
+		}
+		return out
+	}
+	for _, id := range ids {
+		out[id] = struct{}{}
+	}
 	return out
+}
+
+func (s *Server) runSuspended(ctx context.Context, runID string) bool {
+	s.mu.Lock()
+	_, ok := s.suspended[runID]
+	s.mu.Unlock()
+	if ok {
+		return true
+	}
+	var n int
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM work_items WHERE suspended_run_id = $1`, runID).Scan(&n)
+	return err == nil && n > 0
+}
+
+func (s *Server) latestQuestion(ctx context.Context, runID string) (string, error) {
+	var text string
+	err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(payload_json->>'text', '')
+		FROM run_events
+		WHERE run_id = $1 AND type = 'question'
+		ORDER BY seq DESC
+		LIMIT 1`, runID).Scan(&text)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(text), nil
+}
+
+// parkSuspendedRun ends the live execution and removes the queue row.
+// executions.state has no suspended value, so the attempt ends as orphaned.
+// The run stays running and off the queue: lease expiry has nothing to
+// requeue, and a restart does not see a queued run. The work item's
+// suspended_* columns are the durable record.
+func (s *Server) parkSuspendedRun(ctx context.Context, runID string) error {
+	s.leaseMu.Lock()
+	defer s.leaseMu.Unlock()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var queued string
+	err = tx.QueryRow(ctx, `SELECT run_id FROM run_queue WHERE run_id = $1 FOR UPDATE`, runID).Scan(&queued)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1 FOR UPDATE`, runID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	switch status {
+	case store.StatusSucceeded, store.StatusFailed, store.StatusCancelled:
+		return tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE executions
+		SET state = $2, ended_at = COALESCE(ended_at, clock_timestamp()), failure_reason = NULL
+		WHERE run_id = $1 AND state IN ($3, $4)`,
+		runID, store.ExecOrphaned, store.ExecAssigned, store.ExecRunning); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE runs
+		SET status = $2, worker_id = NULL, ended_at = NULL, failure_reason = NULL
+		WHERE id = $1 AND status IN ($3, $4, $2)`,
+		runID, store.StatusRunning, store.StatusQueued, store.StatusAssigned); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Server) resumeStored(ctx context.Context, req store.InputRequest) error {
+	run, err := s.store.GetRun(ctx, req.RunID)
+	if err != nil {
+		return orchErr(err)
+	}
+	item, err := s.store.GetWorkItem(ctx, run.WorkItemID)
+	if err != nil {
+		return orchErr(err)
+	}
+	def, err := s.pipelineDef()
+	if err != nil {
+		return err
+	}
+	agentName := ""
+	if def.Agents != nil {
+		agentName = def.Agents[item.Stage]
+	}
+	agentID, _, err := s.resolveAgent(agentName, run.FactoryID, s.snapshot())
+	if err != nil {
+		return err
+	}
+	return s.resumeIfParked(ctx, run, agentID, req.Question, req.Answer)
+}
+
+// resumeIfParked queues one new execution when the run is parked: still
+// running, absent from the queue, and without a live execution. A second
+// call finds the run queued or executing and leaves it alone.
+func (s *Server) resumeIfParked(ctx context.Context, run store.Run, agentID, question, answer string) error {
+	s.leaseMu.Lock()
+	defer s.leaseMu.Unlock()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Point the parked run at the current agent row. A restarted process
+	// applies the definition again and mints new agent ids.
+	tag, err := tx.Exec(ctx, `
+		UPDATE runs
+		SET status = $2, agent_id = $3, prompt = $4, worker_id = NULL, ended_at = NULL, failure_reason = NULL
+		WHERE id = $1
+		  AND status = $5
+		  AND NOT EXISTS (SELECT 1 FROM run_queue q WHERE q.run_id = $1)
+		  AND NOT EXISTS (
+		    SELECT 1 FROM executions e
+		    WHERE e.run_id = $1 AND e.state IN ($6, $7)
+		  )`,
+		run.ID, store.StatusQueued, agentID, resumePrompt(run.Prompt, question, answer), store.StatusRunning,
+		store.ExecAssigned, store.ExecRunning)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO run_queue (run_id, factory_id, pool, priority, enqueued_at)
+		VALUES ($1, $2, $3, $4, clock_timestamp())`,
+		run.ID, run.FactoryID, run.Pool, int(run.Priority)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_notify('run_queue', $1)`, run.ID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	s.clearSuspended(run.ID)
+	s.nudge()
+	return nil
+}
+
+func resumePrompt(prompt, question, answer string) string {
+	var b strings.Builder
+	b.WriteString(prompt)
+	if prompt != "" && !strings.HasSuffix(prompt, "\n") {
+		b.WriteByte('\n')
+	}
+	b.WriteString("\n# Input\n")
+	b.WriteString("Question: ")
+	b.WriteString(question)
+	b.WriteByte('\n')
+	b.WriteString("Answer: ")
+	b.WriteString(answer)
+	b.WriteByte('\n')
+	return b.String()
 }
 
 func withoutSuspended(runs []store.Run, held map[string]struct{}) []store.Run {
@@ -787,7 +1039,7 @@ func orchErr(err error) error {
 		return nil
 	case errors.Is(err, store.ErrNotFound):
 		return api.ErrNotFound
-	case errors.Is(err, store.ErrAlreadyDecided), errors.Is(err, orchestrator.ErrTerminal):
+	case errors.Is(err, store.ErrAlreadyDecided), errors.Is(err, store.ErrConflict), errors.Is(err, orchestrator.ErrTerminal):
 		return api.ErrConflict
 	default:
 		return err
