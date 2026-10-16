@@ -15,7 +15,9 @@
 # host.docker.internal on Docker Desktop, OrbStack, and Darwin.
 # FACTORY_TASK_SERVER_URL names that same host when it is set. An empty
 # URL is filled from the gateway on Linux. M4_TASK_HOST overrides engine
-# detection. The live model URL from a container is
+# detection. This process dials an IPv4 task host and otherwise uses
+# loopback: host.docker.internal resolves inside a container, not on the
+# macOS host. The live model URL from a container is
 # http://host.docker.internal:8317/v1. This script does not rewrite a
 # loopback model URL.
 #
@@ -632,6 +634,18 @@ resolve_task_endpoint() {
   fi
   export FACTORY_TASK_SERVER_URL="http://${TASK_HOST}:8080"
   printf 'FACTORY_TASK_SERVER_URL=http://%s:8080\n' "$TASK_HOST"
+}
+
+# host_router_probe_url is the router health URL this process may curl.
+# An IPv4 task host is the bridge gateway, which a Linux host can dial.
+# host.docker.internal and any other name return empty: OrbStack and
+# Docker Desktop resolve that name only inside a container, so the
+# bridge-container probes are what check it.
+host_router_probe_url() {
+  local task_host="$1" port="${2:-9090}"
+  if [[ "$task_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf 'http://%s:%s/healthz\n' "$task_host" "$port"
+  fi
 }
 
 distinct_models() {
@@ -1859,8 +1873,9 @@ if [[ "$MODE" == offline ]]; then
   if ! wait_http "http://127.0.0.1:9090/healthz"; then
     fail "model router did not become reachable"
   fi
-  if ! wait_http "http://${TASK_HOST}:9090/healthz"; then
-    fail "model router is not reachable from the task host"
+  router_probe="$(host_router_probe_url "$TASK_HOST" 9090)"
+  if [[ -n "$router_probe" ]] && ! wait_http "$router_probe"; then
+    fail "model router is not reachable at ${router_probe}"
   fi
 fi
 
@@ -1898,6 +1913,8 @@ if [[ "$MODE" == offline ]]; then
   if ! wait_http "http://127.0.0.1:${M4_FAKE_SLACK_PORT}/healthz"; then
     fail "fake-slack /healthz did not become ready"
   fi
+  # Containers resolve TASK_HOST. These probes run before the signed
+  # delivery, which is the first thing that asks a task to dial it.
   docker run --rm --network bridge --entrypoint curl "$TASK_IMAGE" \
     -fsS --connect-timeout 2 -m 5 "http://${TASK_HOST}:${M4_FAKE_GITHUB_PORT}/healthz" >/dev/null ||
     fail "fake-github is not reachable from a bridge container at ${TASK_HOST}:${M4_FAKE_GITHUB_PORT}"

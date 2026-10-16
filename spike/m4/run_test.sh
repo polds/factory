@@ -100,6 +100,21 @@ case_host_follows_server_url() {
   assert_eq "$(host_for_tasks "Ubuntu 24.04.1 LTS" "172.17.0.1" "Linux" "")" "172.17.0.1"
 }
 
+case_host_router_probe() {
+  assert_eq "$(host_router_probe_url "172.17.0.1" 9090)" "http://172.17.0.1:9090/healthz" || return 1
+  assert_eq "$(host_router_probe_url "192.168.215.1")" "http://192.168.215.1:9090/healthz" || return 1
+  local name=""
+  name="$(host_router_probe_url "host.docker.internal" 9090)"
+  if [[ -n "$name" ]]; then
+    echo "host probe would dial ${name}" >&2
+    return 1
+  fi
+  if grep -F -n "wait_http \"http://\${TASK_HOST}" "$SCRIPT"; then
+    echo "host wait_http dials TASK_HOST" >&2
+    return 1
+  fi
+}
+
 case_task_endpoint_consistent() {
   local saved_url="${FACTORY_TASK_SERVER_URL:-}" saved_host="${M4_TASK_HOST:-}"
   local dir="" log="" rc=0
@@ -177,10 +192,14 @@ case_health_probe_bounds() {
     esac
     case "$line" in
       *http*healthz*)
-        [[ "$line" == *"--connect-timeout 2"* && "$line" == *"-m 5"* ]] || {
-          echo "unbounded health probe: ${line}" >&2
-          return 1
-        }
+        case "$line" in
+          *curl* | *-fsS*)
+            [[ "$line" == *"--connect-timeout 2"* && "$line" == *"-m 5"* ]] || {
+              echo "unbounded health probe: ${line}" >&2
+              return 1
+            }
+            ;;
+        esac
         ;;
     esac
   done <"$SCRIPT"
@@ -500,6 +519,7 @@ run_case host_darwin_unknown case_host_darwin_unknown
 run_case host_linux case_host_linux
 run_case host_override case_host_override
 run_case host_follows_server_url case_host_follows_server_url
+run_case host_router_probe case_host_router_probe
 run_case task_endpoint_consistent case_task_endpoint_consistent
 run_case health_probe_bounds case_health_probe_bounds
 run_case task_lines case_task_lines
