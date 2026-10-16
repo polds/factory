@@ -276,6 +276,11 @@ case_live_model_url() {
   [[ "$text" == *"Check run"* ]] || return 1
   [[ "$text" == *"Check suite"* ]] || return 1
   [[ "$text" == *"A trycloudflare quick tunnel changes URL on every restart."* ]] || return 1
+  [[ "$text" == *"Set M4_LIVE_MODEL to an id the server lists."* ]] || return 1
+  [[ "$text" == *"M4_LIVE_MODEL_TRIAGE"* ]] || return 1
+  [[ "$text" == *"M4_LIVE_MODEL_PLANNING"* ]] || return 1
+  [[ "$text" == *"M4_LIVE_MODEL_BUILDING"* ]] || return 1
+  [[ "$text" == *"M4_LIVE_MODEL_REVIEWING"* ]] || return 1
 }
 
 case_mode_parse() {
@@ -491,6 +496,7 @@ case_live_ci_env_names() {
     M4_SLACK_CHANNEL \
     M1_OPENAI_BASE_URL \
     M1_OPENAI_API_KEY \
+    M4_LIVE_MODEL \
     M4_LIVE_CI_SENDER \
     FACTORY_GITHUB_WEBHOOK_SECRET; do
     grep -F -q "$name" "$SCRIPT" || {
@@ -505,7 +511,7 @@ case_live_ci_env_names() {
 }
 
 case_prepare_definition_offline() {
-  local dest="" saved_mode="$MODE" rc=0
+  local dest="" saved_mode="$MODE" rc=0 rel=""
   dest="$(mktemp -d)"
   MODE=offline
   prepare_definition "$dest" || rc=1
@@ -523,6 +529,18 @@ if text.count("enabled: true\n") != 1 or "enabled: false" in text:
 PY
   then
     rc=1
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    for rel in \
+      agents/triage/agent.md \
+      agents/spec/agent.md \
+      agents/implementer/agent.md \
+      agents/reviewer/agent.md; do
+      if ! cmp -s "$ROOT/deploy/m4-factory/$rel" "$dest/$rel"; then
+        echo "offline prepare_definition changed ${rel}" >&2
+        rc=1
+      fi
+    done
   fi
   MODE="$saved_mode"
   rm -rf "$dest"
@@ -579,6 +597,9 @@ case_prepare_definition_placeholders() {
   local dest="" base="" mode="" rc=0
   local saved_mode="$MODE" saved_src="$SRC_DEF"
   local saved_channel="" saved_user="" had_channel=0 had_user=0
+  local saved_model="" had_model=0
+  local saved_triage="" saved_planning="" saved_building="" saved_reviewing=""
+  local had_triage=0 had_planning=0 had_building=0 had_reviewing=0
   if [[ -n "${M4_SLACK_CHANNEL+x}" ]]; then
     had_channel=1
     saved_channel="$M4_SLACK_CHANNEL"
@@ -587,10 +608,32 @@ case_prepare_definition_placeholders() {
     had_user=1
     saved_user="$M4_SLACK_ALLOWED_USER"
   fi
+  if [[ -n "${M4_LIVE_MODEL+x}" ]]; then
+    had_model=1
+    saved_model="$M4_LIVE_MODEL"
+  fi
+  if [[ -n "${M4_LIVE_MODEL_TRIAGE+x}" ]]; then
+    had_triage=1
+    saved_triage="$M4_LIVE_MODEL_TRIAGE"
+  fi
+  if [[ -n "${M4_LIVE_MODEL_PLANNING+x}" ]]; then
+    had_planning=1
+    saved_planning="$M4_LIVE_MODEL_PLANNING"
+  fi
+  if [[ -n "${M4_LIVE_MODEL_BUILDING+x}" ]]; then
+    had_building=1
+    saved_building="$M4_LIVE_MODEL_BUILDING"
+  fi
+  if [[ -n "${M4_LIVE_MODEL_REVIEWING+x}" ]]; then
+    had_reviewing=1
+    saved_reviewing="$M4_LIVE_MODEL_REVIEWING"
+  fi
   dest="$(mktemp -d)"
   base="$(mktemp -d)"
   export M4_SLACK_CHANNEL=C0C9TEST
   export M4_SLACK_ALLOWED_USER=U0TEST
+  export M4_LIVE_MODEL=claude-sonnet-5-5
+  unset M4_LIVE_MODEL_TRIAGE M4_LIVE_MODEL_PLANNING M4_LIVE_MODEL_BUILDING M4_LIVE_MODEL_REVIEWING
   for mode in live live-ci; do
     MODE="$mode"
     SRC_DEF="$ROOT/deploy/m4-factory"
@@ -598,16 +641,17 @@ case_prepare_definition_placeholders() {
       rc=1
       break
     fi
-    if ! python3 - "$ROOT/deploy/m4-factory/factory.yaml" "$dest/factory.yaml" C0C9TEST U0TEST <<'PY'
+    if ! python3 - "$ROOT/deploy/m4-factory/factory.yaml" "$dest/factory.yaml" C0C9TEST U0TEST claude-sonnet-5-5 <<'PY'
 import sys
 from pathlib import Path
 
 source = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
 prepared = Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
-channel, user = sys.argv[3], sys.argv[4]
+channel, user, model = sys.argv[3], sys.argv[4], sys.argv[5]
 rewritten = []
 n_channel = 0
 n_user = 0
+n_model = 0
 for line in source:
     indent = line[: len(line) - len(line.lstrip())]
     body = line.strip()
@@ -619,12 +663,17 @@ for line in source:
     elif body == "- U0M4HUMAN":
         n_user += 1
         rewritten.append(indent + "- " + user)
+    elif body == "model: m4-triage":
+        n_model += 1
+        rewritten.append(indent + "model: " + model)
     else:
         rewritten.append(line)
-if n_channel != 1 or n_user != 1:
-    raise SystemExit("source placeholders channel=%s user=%s" % (n_channel, n_user))
+if n_channel != 1 or n_user != 1 or n_model != 1:
+    raise SystemExit(
+        "source placeholders channel=%s user=%s model=%s" % (n_channel, n_user, n_model)
+    )
 if prepared != rewritten:
-    raise SystemExit("prepared factory.yaml is not one channel line and one user line")
+    raise SystemExit("prepared factory.yaml is not one channel line, one user line, and one model line")
 PY
     then
       rc=1
@@ -661,14 +710,40 @@ PY
   else
     unset M4_SLACK_ALLOWED_USER
   fi
+  if [[ "$had_model" -eq 1 ]]; then
+    export M4_LIVE_MODEL="$saved_model"
+  else
+    unset M4_LIVE_MODEL
+  fi
+  if [[ "$had_triage" -eq 1 ]]; then
+    export M4_LIVE_MODEL_TRIAGE="$saved_triage"
+  else
+    unset M4_LIVE_MODEL_TRIAGE
+  fi
+  if [[ "$had_planning" -eq 1 ]]; then
+    export M4_LIVE_MODEL_PLANNING="$saved_planning"
+  else
+    unset M4_LIVE_MODEL_PLANNING
+  fi
+  if [[ "$had_building" -eq 1 ]]; then
+    export M4_LIVE_MODEL_BUILDING="$saved_building"
+  else
+    unset M4_LIVE_MODEL_BUILDING
+  fi
+  if [[ "$had_reviewing" -eq 1 ]]; then
+    export M4_LIVE_MODEL_REVIEWING="$saved_reviewing"
+  else
+    unset M4_LIVE_MODEL_REVIEWING
+  fi
   rm -rf "$dest" "$base"
   return "$rc"
 }
 
 case_live_label_sender() {
-  local dir="" bin="" log="" text="" rc=0
+  local dir="" bin="" log="" text="" rc=0 login_rc=0 post_rc=0
   local saved_path="$PATH" saved_issue="${ISSUE_LIVE:-}" saved_repo="${M4_REPO:-}"
   local saved_token="" had_token=0 saved_live="${LIVE_TOKEN:-}" had_live=0
+  local saved_mode="$MODE"
   dir="$(mktemp -d)"
   bin="$dir/bin"
   log="$dir/gh.log"
@@ -688,6 +763,9 @@ if [ "$1" = api ] && [ "$2" = user ]; then
   printf '{"type":"%s"}\n' "$FAKE_GH_USER"
   exit 0
 fi
+if [ "$FAKE_GH_LABEL" = fail ]; then
+  exit 1
+fi
 exit 0
 EOF
   chmod +x "$bin/gh"
@@ -702,6 +780,7 @@ EOF
   export LIVE_TOKEN="ghs_app_token_sentinel"
   export FAKE_GH_LOG="$log"
   export FAKE_GH_USER=User
+  export FAKE_GH_LABEL=ok
   export PATH="$bin:$PATH"
   M4_REPO=polds/factory
   ISSUE_LIVE=77
@@ -746,8 +825,10 @@ EOF
   fi
   FAKE_GH_USER=fail
   : >"$log"
-  if label_live_issue >"$dir/fail.out" 2>"$dir/fail.err"; then
-    echo "a missing gh login was allowed to label" >&2
+  label_live_issue >"$dir/fail.out" 2>"$dir/fail.err"
+  login_rc=$?
+  if [[ "$login_rc" -ne 1 ]]; then
+    echo "a missing gh login returned ${login_rc}, want 1" >&2
     rc=1
   elif ! grep -F -q "gh auth login" "$dir/fail.err"; then
     echo "missing login did not mention gh auth login" >&2
@@ -757,14 +838,49 @@ EOF
     echo "missing login still applied the label" >&2
     rc=1
   fi
+  FAKE_GH_USER=User
+  FAKE_GH_LABEL=fail
+  : >"$log"
+  label_live_issue >"$dir/post.out" 2>"$dir/post.err"
+  post_rc=$?
+  if [[ "$post_rc" -ne 2 ]]; then
+    echo "a failed label POST returned ${post_rc}, want 2" >&2
+    cat "$dir/post.err" >&2
+    rc=1
+  elif grep -F -q "gh auth login" "$dir/post.err"; then
+    echo "label POST failure was reported as a login failure" >&2
+    rc=1
+  elif ! grep -F -q "could not apply the factory-ready label" "$dir/post.err"; then
+    echo "label POST failure was not reported" >&2
+    cat "$dir/post.err" >&2
+    rc=1
+  elif ! grep -F -q "/repos/polds/factory/issues/77/labels" "$log"; then
+    echo "label POST was not attempted" >&2
+    rc=1
+  fi
   text="$(live_wait_hint)"
   if [[ "$text" != $'https://github.com/polds/factory/issues/77\nno work item yet: check webhook delivery and sender' ]]; then
     echo "wait hint was:" >&2
     printf '%s\n' "$text" >&2
     rc=1
   fi
-  if ! declare -f wait_draft_pull | grep -F -q live_wait_hint; then
-    echo "wait_draft_pull does not print the stall hint" >&2
+  MODE=live
+  if ! live_wait_should_hint 1 || ! live_wait_should_hint 6; then
+    echo "live mode did not schedule the stall hint" >&2
+    rc=1
+  fi
+  if live_wait_should_hint 2; then
+    echo "live mode hinted on a quiet poll" >&2
+    rc=1
+  fi
+  MODE=live-ci
+  if live_wait_should_hint 1 || live_wait_should_hint 6; then
+    echo "live-ci scheduled the webhook stall hint" >&2
+    rc=1
+  fi
+  MODE="$saved_mode"
+  if ! declare -f wait_draft_pull | grep -F -q live_wait_should_hint; then
+    echo "wait_draft_pull does not gate the stall hint" >&2
     rc=1
   fi
   text="$(print_live_checklist)"
@@ -785,8 +901,287 @@ EOF
   else
     unset LIVE_TOKEN
   fi
-  unset FAKE_GH_LOG FAKE_GH_USER
+  unset FAKE_GH_LOG FAKE_GH_USER FAKE_GH_LABEL
   rm -rf "$dir"
+  return "$rc"
+}
+
+case_prepare_definition_models() {
+  local dest="" base="" fixture="" mode="" rc=0
+  local saved_mode="$MODE" saved_src="$SRC_DEF"
+  local saved_channel="" saved_user="" had_channel=0 had_user=0
+  local saved_model="" had_model=0
+  local saved_triage="" saved_planning="" saved_building="" saved_reviewing=""
+  local had_triage=0 had_planning=0 had_building=0 had_reviewing=0
+  if [[ -n "${M4_SLACK_CHANNEL+x}" ]]; then
+    had_channel=1
+    saved_channel="$M4_SLACK_CHANNEL"
+  fi
+  if [[ -n "${M4_SLACK_ALLOWED_USER+x}" ]]; then
+    had_user=1
+    saved_user="$M4_SLACK_ALLOWED_USER"
+  fi
+  if [[ -n "${M4_LIVE_MODEL+x}" ]]; then
+    had_model=1
+    saved_model="$M4_LIVE_MODEL"
+  fi
+  if [[ -n "${M4_LIVE_MODEL_TRIAGE+x}" ]]; then
+    had_triage=1
+    saved_triage="$M4_LIVE_MODEL_TRIAGE"
+  fi
+  if [[ -n "${M4_LIVE_MODEL_PLANNING+x}" ]]; then
+    had_planning=1
+    saved_planning="$M4_LIVE_MODEL_PLANNING"
+  fi
+  if [[ -n "${M4_LIVE_MODEL_BUILDING+x}" ]]; then
+    had_building=1
+    saved_building="$M4_LIVE_MODEL_BUILDING"
+  fi
+  if [[ -n "${M4_LIVE_MODEL_REVIEWING+x}" ]]; then
+    had_reviewing=1
+    saved_reviewing="$M4_LIVE_MODEL_REVIEWING"
+  fi
+  dest="$(mktemp -d)"
+  base="$(mktemp -d)"
+  fixture="$(mktemp -d)"
+  export M4_SLACK_CHANNEL=C0C9TEST
+  export M4_SLACK_ALLOWED_USER=U0TEST
+  export M4_LIVE_MODEL=claude-sonnet-5-5
+  unset M4_LIVE_MODEL_TRIAGE M4_LIVE_MODEL_PLANNING M4_LIVE_MODEL_BUILDING M4_LIVE_MODEL_REVIEWING
+  for mode in live live-ci; do
+    MODE="$mode"
+    SRC_DEF="$ROOT/deploy/m4-factory"
+    if ! prepare_definition "$dest"; then
+      echo "default model rewrite failed for ${mode}" >&2
+      rc=1
+      break
+    fi
+    if ! python3 - "$dest" claude-sonnet-5-5 claude-sonnet-5-5 claude-sonnet-5-5 claude-sonnet-5-5 <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+triage, planning, building, reviewing = sys.argv[2:6]
+expect = {
+    "factory.yaml": ("m4-triage", triage),
+    "agents/triage/agent.md": ("m4-triage", triage),
+    "agents/spec/agent.md": ("m4-planning", planning),
+    "agents/implementer/agent.md": ("m4-building", building),
+    "agents/reviewer/agent.md": ("m4-reviewing", reviewing),
+}
+for rel, pair in expect.items():
+    stub, model = pair
+    lines = (root / rel).read_text(encoding="utf-8").splitlines()
+    hits = [line for line in lines if line.strip() == "model: " + model]
+    leftover = [line for line in lines if line.strip() == "model: " + stub and model != stub]
+    model_lines = [line for line in lines if line.strip().startswith("model:")]
+    if len(hits) != 1 or leftover or len(model_lines) != 1:
+        raise SystemExit("%s model rewrite failed" % rel)
+PY
+    then
+      rc=1
+      break
+    fi
+  done
+  if [[ "$rc" -eq 0 ]]; then
+    export M4_LIVE_MODEL_TRIAGE=model-triage.1
+    export M4_LIVE_MODEL_PLANNING="org/planning:v1"
+    export M4_LIVE_MODEL_BUILDING="model-building+1"
+    export M4_LIVE_MODEL_REVIEWING=model_reviewing
+    MODE=live
+    SRC_DEF="$ROOT/deploy/m4-factory"
+    if ! prepare_definition "$dest"; then
+      echo "role model overrides were rejected" >&2
+      rc=1
+    elif ! python3 - "$dest" model-triage.1 "org/planning:v1" "model-building+1" model_reviewing <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+triage, planning, building, reviewing = sys.argv[2:6]
+expect = {
+    "factory.yaml": ("m4-triage", triage),
+    "agents/triage/agent.md": ("m4-triage", triage),
+    "agents/spec/agent.md": ("m4-planning", planning),
+    "agents/implementer/agent.md": ("m4-building", building),
+    "agents/reviewer/agent.md": ("m4-reviewing", reviewing),
+}
+for rel, pair in expect.items():
+    stub, model = pair
+    lines = (root / rel).read_text(encoding="utf-8").splitlines()
+    hits = [line for line in lines if line.strip() == "model: " + model]
+    leftover = [line for line in lines if line.strip() == "model: " + stub and model != stub]
+    model_lines = [line for line in lines if line.strip().startswith("model:")]
+    if len(hits) != 1 or leftover or len(model_lines) != 1:
+        raise SystemExit("%s override rewrite failed" % rel)
+PY
+    then
+      rc=1
+    fi
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    unset M4_LIVE_MODEL
+    MODE=live
+    SRC_DEF="$ROOT/deploy/m4-factory"
+    if prepare_definition "$dest" >"$base/unset.out" 2>"$base/unset.err"; then
+      echo "unset M4_LIVE_MODEL was accepted" >&2
+      rc=1
+    elif ! grep -F -q "M4_LIVE_MODEL is required for live mode" "$base/unset.err"; then
+      echo "unset M4_LIVE_MODEL failure was not clear" >&2
+      cat "$base/unset.err" >&2
+      rc=1
+    fi
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    export M4_LIVE_MODEL=""
+    if require_live_model >"$base/req.out" 2>"$base/req.err"; then
+      echo "empty M4_LIVE_MODEL was accepted by require_live_model" >&2
+      rc=1
+    elif ! grep -F -q "M4_LIVE_MODEL is required for live mode" "$base/req.err"; then
+      echo "require_live_model failure was not clear" >&2
+      cat "$base/req.err" >&2
+      rc=1
+    fi
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    export M4_LIVE_MODEL="bad model"
+    if prepare_definition "$dest" >"$base/bad.out" 2>"$base/bad.err"; then
+      echo "an unsafe model id was accepted" >&2
+      rc=1
+    elif ! grep -F -q "model id is not a safe id" "$base/bad.err"; then
+      echo "unsafe model id failure was not clear" >&2
+      cat "$base/bad.err" >&2
+      rc=1
+    fi
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    export M4_LIVE_MODEL=claude-sonnet-5-5
+    export M4_LIVE_MODEL_BUILDING="bad model"
+    if prepare_definition "$dest" >"$base/override.out" 2>"$base/override.err"; then
+      echo "an unsafe model override was accepted" >&2
+      rc=1
+    elif ! grep -F -q "model id is not a safe id" "$base/override.err"; then
+      echo "unsafe model override failure was not clear" >&2
+      cat "$base/override.err" >&2
+      rc=1
+    fi
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    unset M4_LIVE_MODEL_TRIAGE M4_LIVE_MODEL_PLANNING M4_LIVE_MODEL_BUILDING M4_LIVE_MODEL_REVIEWING
+    cp -a "$ROOT/deploy/m4-factory/." "$fixture/"
+    python3 - "$fixture/factory.yaml" <<'PY' || rc=1
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+kept = []
+seen = 0
+for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
+    if line.strip() == "model: m4-triage":
+        seen += 1
+        continue
+    kept.append(line)
+if seen != 1:
+    raise SystemExit("fixture edit saw %s model lines" % seen)
+path.write_text("".join(kept), encoding="utf-8")
+PY
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    SRC_DEF="$fixture"
+    if prepare_definition "$dest" >"$base/missing.out" 2>"$base/missing.err"; then
+      echo "a missing model line was accepted" >&2
+      rc=1
+    elif ! grep -F -q "factory.yaml model was not replaced" "$base/missing.err"; then
+      echo "missing model line failure was not clear" >&2
+      cat "$base/missing.err" >&2
+      rc=1
+    fi
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    if ! safe_model_ids claude-sonnet-5-5 claude-sonnet-5-5 claude-sonnet-5-5 claude-sonnet-5-5; then
+      echo "safe_model_ids rejected one shared id" >&2
+      rc=1
+    fi
+  fi
+  if [[ "$rc" -eq 0 ]] && distinct_models claude-sonnet-5-5 claude-sonnet-5-5 claude-sonnet-5-5 claude-sonnet-5-5 >/dev/null 2>&1; then
+    echo "distinct_models accepted one shared id" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    printf '%s\n' '{"data":[{"id":"claude-sonnet-5-5"},{"id":"org/planning:v1"}]}' >"$base/models.json"
+    if ! assert_listed_models "$base/models.json" claude-sonnet-5-5 claude-sonnet-5-5 "org/planning:v1"; then
+      echo "listed models were rejected" >&2
+      rc=1
+    fi
+  fi
+  if [[ "$rc" -eq 0 ]] && assert_listed_models "$base/models.json" claude-sonnet-5-5 missing-model >"$base/miss.out" 2>"$base/miss.err"; then
+    echo "an unlisted model was accepted" >&2
+    rc=1
+  elif [[ "$rc" -eq 0 ]] && ! grep -F -q "model id missing-model is not listed" "$base/miss.err"; then
+    echo "unlisted model failure was not clear" >&2
+    cat "$base/miss.err" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    printf '%s\n' '<html>forbidden</html>' >"$base/models.html"
+    if assert_listed_models "$base/models.html" claude-sonnet-5-5 >"$base/html.out" 2>"$base/html.err"; then
+      echo "an html model list was accepted" >&2
+      rc=1
+    elif ! grep -F -q "model list was not a catalog" "$base/html.err"; then
+      echo "html model list failure was not clear" >&2
+      cat "$base/html.err" >&2
+      rc=1
+    fi
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    printf '%s\n' '{"object":"list"}' >"$base/nodata.json"
+    if assert_listed_models "$base/nodata.json" claude-sonnet-5-5 >"$base/nodata.out" 2>"$base/nodata.err"; then
+      echo "a catalog without data was accepted" >&2
+      rc=1
+    elif ! grep -F -q "model list was not a catalog" "$base/nodata.err"; then
+      echo "catalog without data failure was not clear" >&2
+      cat "$base/nodata.err" >&2
+      rc=1
+    fi
+  fi
+  MODE="$saved_mode"
+  SRC_DEF="$saved_src"
+  if [[ "$had_channel" -eq 1 ]]; then
+    export M4_SLACK_CHANNEL="$saved_channel"
+  else
+    unset M4_SLACK_CHANNEL
+  fi
+  if [[ "$had_user" -eq 1 ]]; then
+    export M4_SLACK_ALLOWED_USER="$saved_user"
+  else
+    unset M4_SLACK_ALLOWED_USER
+  fi
+  if [[ "$had_model" -eq 1 ]]; then
+    export M4_LIVE_MODEL="$saved_model"
+  else
+    unset M4_LIVE_MODEL
+  fi
+  if [[ "$had_triage" -eq 1 ]]; then
+    export M4_LIVE_MODEL_TRIAGE="$saved_triage"
+  else
+    unset M4_LIVE_MODEL_TRIAGE
+  fi
+  if [[ "$had_planning" -eq 1 ]]; then
+    export M4_LIVE_MODEL_PLANNING="$saved_planning"
+  else
+    unset M4_LIVE_MODEL_PLANNING
+  fi
+  if [[ "$had_building" -eq 1 ]]; then
+    export M4_LIVE_MODEL_BUILDING="$saved_building"
+  else
+    unset M4_LIVE_MODEL_BUILDING
+  fi
+  if [[ "$had_reviewing" -eq 1 ]]; then
+    export M4_LIVE_MODEL_REVIEWING="$saved_reviewing"
+  else
+    unset M4_LIVE_MODEL_REVIEWING
+  fi
+  rm -rf "$dest" "$base" "$fixture"
   return "$rc"
 }
 
@@ -829,6 +1224,7 @@ run_case live_ci_pem case_live_ci_pem
 run_case live_ci_env_names case_live_ci_env_names
 run_case prepare_definition_offline case_prepare_definition_offline
 run_case prepare_definition_placeholders case_prepare_definition_placeholders
+run_case prepare_definition_models case_prepare_definition_models
 run_case live_label_sender case_live_label_sender
 run_case no_gnu_flags case_no_gnu_flags
 

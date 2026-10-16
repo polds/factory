@@ -19,7 +19,10 @@
 # loopback: host.docker.internal resolves inside a container, not on the
 # macOS host. The live model URL from a container is
 # http://host.docker.internal:8317/v1. This script does not rewrite a
-# loopback model URL.
+# loopback model URL. Live and live-ci rewrite the stub model ids in the
+# mounted copy from M4_LIVE_MODEL. Optional M4_LIVE_MODEL_TRIAGE,
+# M4_LIVE_MODEL_PLANNING, M4_LIVE_MODEL_BUILDING, and
+# M4_LIVE_MODEL_REVIEWING override one role.
 #
 # Live reads deploy/.env when that file exists (KEY=VALUE text, not
 # executed). A non-empty shell variable wins. Secrets stay in that file.
@@ -66,6 +69,8 @@ OFFLINE_WORKER_KEY="m4-worker-7f3c9a2e1b4d"
 OFFLINE_S3="m4s3-secret-7f3c9a2e1b4d"
 PLANTED_DUMMY="m4-planted-dummy-7f3c9a"
 LIVE_MODEL_URL="http://host.docker.internal:8317/v1"
+LIVE_MODEL_ERROR=""
+MODEL_CATALOG_ERROR=""
 
 ISSUE_NUMBER=17
 PR_NUMBER=77
@@ -651,6 +656,10 @@ host_router_probe_url() {
   fi
 }
 
+model_id_safe() {
+  [[ "$1" =~ ^[A-Za-z0-9_.:/+-]+$ ]]
+}
+
 distinct_models() {
   local seen="" item=""
   if [[ "$#" -eq 0 ]]; then
@@ -662,7 +671,7 @@ distinct_models() {
       echo "empty model id" >&2
       return 1
     fi
-    if [[ ! "$item" =~ ^[A-Za-z0-9_.:/+-]+$ ]]; then
+    if ! model_id_safe "$item"; then
       echo "model id has characters this script will not write into the definition" >&2
       return 1
     fi
@@ -674,6 +683,137 @@ distinct_models() {
     esac
     seen="${seen} ${item}"
   done
+}
+
+# safe_model_ids allows one id on every role. Live defaults all four to
+# M4_LIVE_MODEL unless a role override is set.
+safe_model_ids() {
+  local item=""
+  if [[ "$#" -eq 0 ]]; then
+    echo "no model ids" >&2
+    return 1
+  fi
+  for item in "$@"; do
+    if [[ -z "$item" ]]; then
+      echo "empty model id" >&2
+      return 1
+    fi
+    if ! model_id_safe "$item"; then
+      echo "model id has characters this script will not write into the definition" >&2
+      return 1
+    fi
+  done
+}
+
+require_live_model() {
+  local name="" value=""
+  LIVE_MODEL_ERROR=""
+  if [[ -z "${M4_LIVE_MODEL:-}" ]]; then
+    LIVE_MODEL_ERROR="M4_LIVE_MODEL is required for live mode"
+    echo "$LIVE_MODEL_ERROR" >&2
+    return 1
+  fi
+  if ! model_id_safe "$M4_LIVE_MODEL"; then
+    LIVE_MODEL_ERROR="model id is not a safe id"
+    echo "$LIVE_MODEL_ERROR" >&2
+    return 1
+  fi
+  for name in M4_LIVE_MODEL_TRIAGE M4_LIVE_MODEL_PLANNING M4_LIVE_MODEL_BUILDING M4_LIVE_MODEL_REVIEWING; do
+    value="${!name:-}"
+    if [[ -n "$value" ]] && ! model_id_safe "$value"; then
+      LIVE_MODEL_ERROR="model id is not a safe id"
+      echo "$LIVE_MODEL_ERROR" >&2
+      return 1
+    fi
+  done
+}
+
+live_model_value() {
+  local name="$1" value=""
+  value="${!name:-}"
+  if [[ -n "$value" ]]; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  printf '%s\n' "${M4_LIVE_MODEL}"
+}
+
+# assert_listed_models reads an OpenAI-style catalog file. It does not
+# fetch the network. preflight_model_catalog does that for a real run.
+assert_listed_models() {
+  python3 - "$@" <<'PY'
+import json
+import sys
+
+path, ids = sys.argv[1], sys.argv[2:]
+try:
+    doc = json.loads(open(path, encoding="utf-8").read())
+except (OSError, json.JSONDecodeError):
+    raise SystemExit("model list was not a catalog")
+data = doc.get("data") if isinstance(doc, dict) else None
+if not isinstance(data, list):
+    raise SystemExit("model list was not a catalog")
+listed = set()
+for item in data:
+    if isinstance(item, dict) and isinstance(item.get("id"), str):
+        listed.add(item["id"])
+seen = set()
+for model_id in ids:
+    if model_id in seen:
+        continue
+    seen.add(model_id)
+    if model_id not in listed:
+        raise SystemExit("model id %s is not listed" % model_id)
+PY
+}
+
+preflight_model_catalog() {
+  local catalog="" host="" url="" err=""
+  local triage="" planning="" building="" reviewing=""
+  MODEL_CATALOG_ERROR=""
+  host="$(url_log_host "${OPENAI_BASE_URL:-}")"
+  case "${OPENAI_BASE_URL:-}" in
+    http://* | https://*) ;;
+    *)
+      MODEL_CATALOG_ERROR="could not list models from ${host:-unknown}"
+      echo "$MODEL_CATALOG_ERROR" >&2
+      return 1
+      ;;
+  esac
+  if [[ -z "$host" || "${OPENAI_BASE_URL}" == *"@"* ]]; then
+    MODEL_CATALOG_ERROR="could not list models from ${host:-unknown}"
+    echo "$MODEL_CATALOG_ERROR" >&2
+    return 1
+  fi
+  catalog="$(mktemp)"
+  url="${OPENAI_BASE_URL%/}/models"
+  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    if ! curl -fsS --connect-timeout 5 -m 20 \
+      -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+      -o "$catalog" \
+      "$url"; then
+      rm -f "$catalog"
+      MODEL_CATALOG_ERROR="could not list models from ${host}"
+      echo "$MODEL_CATALOG_ERROR" >&2
+      return 1
+    fi
+  elif ! curl -fsS --connect-timeout 5 -m 20 -o "$catalog" "$url"; then
+    rm -f "$catalog"
+    MODEL_CATALOG_ERROR="could not list models from ${host}"
+    echo "$MODEL_CATALOG_ERROR" >&2
+    return 1
+  fi
+  triage="$(live_model_value M4_LIVE_MODEL_TRIAGE)"
+  planning="$(live_model_value M4_LIVE_MODEL_PLANNING)"
+  building="$(live_model_value M4_LIVE_MODEL_BUILDING)"
+  reviewing="$(live_model_value M4_LIVE_MODEL_REVIEWING)"
+  if ! err="$(assert_listed_models "$catalog" "$triage" "$planning" "$building" "$reviewing" 2>&1)"; then
+    rm -f "$catalog"
+    MODEL_CATALOG_ERROR="$err"
+    echo "$MODEL_CATALOG_ERROR" >&2
+    return 1
+  fi
+  rm -f "$catalog"
 }
 
 read_model() {
@@ -1138,6 +1278,25 @@ if mode == "offline":
         raise SystemExit("hourly automation does not have one disabled line")
     path.write_text(text.replace(old, "enabled: true\n", 1), encoding="utf-8")
 elif mode in ("live", "live-ci"):
+    model_safe = re.compile(r"[A-Za-z0-9_.:/+-]+")
+
+    def role_model(name, fallback):
+        raw = os.environ.get(name, "")
+        if not raw:
+            return fallback
+        if model_safe.fullmatch(raw) is None:
+            raise SystemExit("model id is not a safe id")
+        return raw
+
+    default_model = os.environ.get("M4_LIVE_MODEL", "")
+    if not default_model:
+        raise SystemExit("M4_LIVE_MODEL is required for live mode")
+    if model_safe.fullmatch(default_model) is None:
+        raise SystemExit("model id is not a safe id")
+    triage = role_model("M4_LIVE_MODEL_TRIAGE", default_model)
+    planning = role_model("M4_LIVE_MODEL_PLANNING", default_model)
+    building = role_model("M4_LIVE_MODEL_BUILDING", default_model)
+    reviewing = role_model("M4_LIVE_MODEL_REVIEWING", default_model)
     channel = os.environ["M4_SLACK_CHANNEL"]
     user = os.environ.get("M4_SLACK_ALLOWED_USER", "")
     if not re.fullmatch(r"[CG][A-Z0-9]+", channel):
@@ -1161,7 +1320,29 @@ elif mode in ("live", "live-ci"):
             r"\1- %s" % user,
             "factory.yaml slack user was not replaced",
         )
+    text = replace_exactly_one(
+        text,
+        r"^(\s*)model: m4-triage$",
+        r"\1model: %s" % triage,
+        "factory.yaml model was not replaced",
+    )
     path.write_text(text, encoding="utf-8")
+    for rel, stub, model_id in (
+        ("agents/triage/agent.md", "m4-triage", triage),
+        ("agents/spec/agent.md", "m4-planning", planning),
+        ("agents/implementer/agent.md", "m4-building", building),
+        ("agents/reviewer/agent.md", "m4-reviewing", reviewing),
+    ):
+        agent = root / rel
+        agent.write_text(
+            replace_exactly_one(
+                agent.read_text(encoding="utf-8"),
+                r"^(\s*)model: %s$" % re.escape(stub),
+                r"\1model: %s" % model_id,
+                "%s model was not replaced" % rel,
+            ),
+            encoding="utf-8",
+        )
 else:
     raise SystemExit("unknown mode")
 PY
@@ -1379,6 +1560,10 @@ Live checklist
   4. Point the model server at ${LIVE_MODEL_URL}
      (FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL). Containers on Docker
      Desktop reach the Mac through host.docker.internal.
+     Set M4_LIVE_MODEL to an id the server lists. It replaces m4-triage,
+     m4-planning, m4-building, and m4-reviewing. Optional overrides:
+     M4_LIVE_MODEL_TRIAGE, M4_LIVE_MODEL_PLANNING, M4_LIVE_MODEL_BUILDING,
+     and M4_LIVE_MODEL_REVIEWING.
   5. Put the GitHub App private key at spike/m4/secrets/github-app.pem.
      The script copies it to spike/m4/.work/live/github-app.pem (mode 644)
      and mounts that copy. The original file is left unchanged.
@@ -1582,10 +1767,14 @@ label_live_issue() {
     echo "gh is not logged in as a GitHub user. Run gh auth login, then retry." >&2
     return 1
   fi
-  env -u GH_TOKEN gh api --method POST \
+  # A failed POST is not a login problem. Return 2 so the caller can say so.
+  if ! env -u GH_TOKEN gh api --method POST \
     -H "Accept: application/vnd.github+json" \
     "/repos/${M4_REPO}/issues/${ISSUE_LIVE}/labels" \
-    -f "labels[]=factory-ready" >/dev/null
+    -f "labels[]=factory-ready" >/dev/null; then
+    echo "could not apply the factory-ready label" >&2
+    return 2
+  fi
 }
 
 mint_installation_token() {
@@ -1652,6 +1841,14 @@ live_wait_hint() {
   printf '%s\n' "no work item yet: check webhook delivery and sender"
 }
 
+# live_wait_should_hint is true on the first live poll and once a minute
+# after that. live-ci injects the labeled delivery itself, so it stays quiet.
+live_wait_should_hint() {
+  local attempt="$1"
+  [[ "$MODE" == live ]] || return 1
+  [[ "$attempt" -eq 1 || $((attempt % 6)) -eq 0 ]]
+}
+
 wait_draft_pull() {
   local parsed="" attempt=0
   PR_LIVE_URL=""
@@ -1668,9 +1865,7 @@ wait_draft_pull() {
       PR_LIVE_NUMBER="$(printf '%s\n' "$parsed" | awk 'NR==3')" &&
       PR_LIVE_BRANCH="$(printf '%s\n' "$parsed" | awk 'NR==4')" &&
       [[ -n "$PR_LIVE_URL" ]] && return 0
-    # First miss, then once a minute, so a stalled intake is visible
-    # without a line every poll.
-    if [[ "$attempt" -eq 1 || $((attempt % 6)) -eq 0 ]]; then
+    if live_wait_should_hint "$attempt"; then
       live_wait_hint
     fi
     sleep 10
@@ -1777,6 +1972,7 @@ if [[ "$MODE" == live ]]; then
   print_live_checklist
   require_live_ids
   [[ -n "${OPENAI_BASE_URL:-}" ]] || die "OPENAI_BASE_URL or FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL is required for MODE=live"
+  require_live_model || die "${LIVE_MODEL_ERROR}"
   [[ -n "${FACTORY_GITHUB_APP_ID:-}" ]] || die "FACTORY_GITHUB_APP_ID is required for MODE=live"
   [[ -n "${FACTORY_GITHUB_WEBHOOK_SECRET:-}" ]] || die "FACTORY_GITHUB_WEBHOOK_SECRET is required for MODE=live"
   [[ -n "${FACTORY_SLACK_BOT_TOKEN:-}" ]] || die "FACTORY_SLACK_BOT_TOKEN is required for MODE=live"
@@ -1792,6 +1988,7 @@ fi
 if [[ "$MODE" == live-ci ]]; then
   command -v gh >/dev/null || die "gh not found (required for MODE=live-ci)"
   [[ -n "${OPENAI_BASE_URL:-}" ]] || die "M1_OPENAI_BASE_URL or OPENAI_BASE_URL is required for MODE=live-ci"
+  require_live_model || die "${LIVE_MODEL_ERROR}"
   [[ "${M4_GITHUB_APP_ID:-}" =~ ^[1-9][0-9]*$ ]] || die "M4_GITHUB_APP_ID must be a positive integer"
   [[ -n "${M4_GITHUB_APP_PRIVATE_KEY:-}" ]] || die "M4_GITHUB_APP_PRIVATE_KEY is empty"
   [[ -n "${FACTORY_SLACK_BOT_TOKEN:-}" ]] || die "M4_SLACK_BOT_TOKEN is empty"
@@ -1843,6 +2040,7 @@ else
       ;;
   esac
   echo "task OPENAI_BASE_URL host: ${live_host}"
+  preflight_model_catalog || die "${MODEL_CATALOG_ERROR}"
   if [[ "$MODE" == live-ci ]]; then
     key_copy="$WORK/live-ci/github-app.pem"
     if ! stage_app_key_from_env "$key_copy"; then
@@ -1886,8 +2084,13 @@ MODEL_TRIAGE="$(read_model "$DEF/agents/triage/agent.md")"
 MODEL_PLANNING="$(read_model "$DEF/agents/spec/agent.md")"
 MODEL_BUILDING="$(read_model "$DEF/agents/implementer/agent.md")"
 MODEL_REVIEWING="$(read_model "$DEF/agents/reviewer/agent.md")"
-distinct_models "$MODEL_TRIAGE" "$MODEL_PLANNING" "$MODEL_BUILDING" "$MODEL_REVIEWING" ||
-  die "definition model ids must be four distinct values"
+if [[ "$MODE" == offline ]]; then
+  distinct_models "$MODEL_TRIAGE" "$MODEL_PLANNING" "$MODEL_BUILDING" "$MODEL_REVIEWING" ||
+    die "definition model ids must be four distinct values"
+else
+  safe_model_ids "$MODEL_TRIAGE" "$MODEL_PLANNING" "$MODEL_BUILDING" "$MODEL_REVIEWING" ||
+    die "definition model ids are not safe ids"
+fi
 echo "models: triage=${MODEL_TRIAGE} planning=${MODEL_PLANNING} building=${MODEL_BUILDING} reviewing=${MODEL_REVIEWING}"
 
 export FACTORY_DEFINITION_HOST_PATH="$DEF"
@@ -2195,9 +2398,17 @@ fi
 
 say "Label the issue"
 create_live_issue || fail "issue create did not return a number"
-if ! label_live_issue; then
-  fail "gh is not logged in as a GitHub user. Run gh auth login, then retry."
-fi
+label_rc=0
+label_live_issue || label_rc=$?
+case "$label_rc" in
+  0) ;;
+  1)
+    fail "gh is not logged in as a GitHub user. Run gh auth login, then retry."
+    ;;
+  *)
+    fail "could not apply the factory-ready label"
+    ;;
+esac
 echo "labeled issue #${ISSUE_LIVE}"
 
 say "Wait for a draft pull request"
