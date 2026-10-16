@@ -25,6 +25,9 @@
 # executed). A non-empty shell variable wins. Secrets stay in that file.
 # The App private key stays at spike/m4/secrets/github-app.pem. Live copies
 # it to spike/m4/.work/live/github-app.pem (mode 644) and mounts the copy.
+# Live applies the factory-ready label with the operator's gh auth. The
+# App token would send the label as a bot, and intake drops that actor.
+# Run gh auth login first. The App token stays on the other GitHub calls.
 # live-ci reads M4_GITHUB_APP_PRIVATE_KEY (PEM text) and writes it to
 # spike/m4/.work/live-ci/github-app.pem (mode 644). It does not start a
 # tunnel. It signs a synthetic issues.labeled delivery with
@@ -1373,6 +1376,9 @@ Live checklist
   6. After the draft PR opens, reply in the Slack thread.
      Suggested text: also add a test for an empty name
      Set REPLY_TEXT and SLACK_TEST_USER_TOKEN to post that reply as a user.
+  7. Run gh auth login as yourself before the label step. factory-ready is
+     applied with that user. The App installation token is a bot sender,
+     and intake ignores it.
 
 EOF
   if [[ -n "${FACTORY_PUBLIC_URL:-}" ]]; then
@@ -1531,6 +1537,48 @@ close_live_ci() {
   done
 }
 
+# operator_gh_user_type prints the type from `gh api user` using the
+# operator's own auth. GH_TOKEN is the App installation token by the time
+# live labels the issue, so this call removes it for gh only.
+operator_gh_user_type() {
+  local tmp="" rc=0
+  tmp="$(mktemp)"
+  if ! env -u GH_TOKEN gh api user >"$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  python3 - "$tmp" <<'PY' || rc=$?
+import json
+import sys
+
+try:
+    doc = json.load(open(sys.argv[1], encoding="utf-8"))
+except json.JSONDecodeError:
+    raise SystemExit(1)
+print(doc.get("type") or "")
+PY
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# label_live_issue applies factory-ready as a human. A Bot sender becomes
+# a [bot] handle, and the automation engine drops those actors.
+label_live_issue() {
+  local user_type=""
+  if ! user_type="$(operator_gh_user_type)"; then
+    echo "gh is not logged in as a GitHub user. Run gh auth login, then retry." >&2
+    return 1
+  fi
+  if [[ "$user_type" != "User" ]]; then
+    echo "gh is not logged in as a GitHub user. Run gh auth login, then retry." >&2
+    return 1
+  fi
+  env -u GH_TOKEN gh api --method POST \
+    -H "Accept: application/vnd.github+json" \
+    "/repos/${M4_REPO}/issues/${ISSUE_LIVE}/labels" \
+    -f "labels[]=factory-ready" >/dev/null
+}
+
 mint_installation_token() {
   (cd "$ROOT" && CGO_ENABLED=0 go build -o "$WORK/apptoken" ./spike/m4/apptoken)
   LIVE_TOKEN="$("$WORK/apptoken" -repo "$M4_REPO" 2>"$WORK/apptoken.err" || true)"
@@ -1590,13 +1638,19 @@ PY
     >"$WORK/live-issue.json"
 }
 
+live_wait_hint() {
+  printf '%s\n' "https://github.com/${M4_REPO}/issues/${ISSUE_LIVE}"
+  printf '%s\n' "no work item yet: check webhook delivery and sender"
+}
+
 wait_draft_pull() {
-  local parsed=""
+  local parsed="" attempt=0
   PR_LIVE_URL=""
   PR_LIVE_SHA=""
   PR_LIVE_NUMBER=""
   PR_LIVE_BRANCH=""
   for _ in $(seq 1 360); do
+    attempt=$((attempt + 1))
     GH_TOKEN="$LIVE_TOKEN" gh pr list --repo "$M4_REPO" --state open \
       --json number,isDraft,url,body,headRefOid,headRefName >"$WORK/live-pr.json" || true
     parsed="$(select_draft_pull "$WORK/live-pr.json" "$ISSUE_LIVE")" &&
@@ -1605,6 +1659,11 @@ wait_draft_pull() {
       PR_LIVE_NUMBER="$(printf '%s\n' "$parsed" | awk 'NR==3')" &&
       PR_LIVE_BRANCH="$(printf '%s\n' "$parsed" | awk 'NR==4')" &&
       [[ -n "$PR_LIVE_URL" ]] && return 0
+    # First miss, then once a minute, so a stalled intake is visible
+    # without a line every poll.
+    if [[ "$attempt" -eq 1 || $((attempt % 6)) -eq 0 ]]; then
+      live_wait_hint
+    fi
     sleep 10
   done
   return 1
@@ -2127,10 +2186,9 @@ fi
 
 say "Label the issue"
 create_live_issue || fail "issue create did not return a number"
-GH_TOKEN="$LIVE_TOKEN" gh api --method POST \
-  -H "Accept: application/vnd.github+json" \
-  "/repos/${M4_REPO}/issues/${ISSUE_LIVE}/labels" \
-  -f "labels[]=factory-ready" >/dev/null
+if ! label_live_issue; then
+  fail "gh is not logged in as a GitHub user. Run gh auth login, then retry."
+fi
 echo "labeled issue #${ISSUE_LIVE}"
 
 say "Wait for a draft pull request"

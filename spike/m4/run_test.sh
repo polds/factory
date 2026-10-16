@@ -656,6 +656,131 @@ PY
   return "$rc"
 }
 
+case_live_label_sender() {
+  local dir="" bin="" log="" text="" rc=0
+  local saved_path="$PATH" saved_issue="${ISSUE_LIVE:-}" saved_repo="${M4_REPO:-}"
+  local saved_token="" had_token=0 saved_live="${LIVE_TOKEN:-}" had_live=0
+  dir="$(mktemp -d)"
+  bin="$dir/bin"
+  log="$dir/gh.log"
+  mkdir -p "$bin"
+  cat >"$bin/gh" <<'EOF'
+#!/bin/sh
+if [ -n "${GH_TOKEN+x}" ]; then
+  printf 'GH_TOKEN=set\n' >> "$FAKE_GH_LOG"
+else
+  printf 'GH_TOKEN=unset\n' >> "$FAKE_GH_LOG"
+fi
+printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+if [ "$1" = api ] && [ "$2" = user ]; then
+  if [ "$FAKE_GH_USER" = fail ]; then
+    exit 1
+  fi
+  printf '{"type":"%s"}\n' "$FAKE_GH_USER"
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$bin/gh"
+  if [[ -n "${GH_TOKEN+x}" ]]; then
+    had_token=1
+    saved_token="$GH_TOKEN"
+  fi
+  if [[ -n "${LIVE_TOKEN+x}" ]]; then
+    had_live=1
+  fi
+  export GH_TOKEN="ghs_app_token_sentinel"
+  export LIVE_TOKEN="ghs_app_token_sentinel"
+  export FAKE_GH_LOG="$log"
+  export FAKE_GH_USER=User
+  export PATH="$bin:$PATH"
+  M4_REPO=polds/factory
+  ISSUE_LIVE=77
+  : >"$log"
+  if ! label_live_issue >"$dir/user.out" 2>"$dir/user.err"; then
+    echo "a User login was not allowed to label" >&2
+    cat "$dir/user.err" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && grep -F -q "GH_TOKEN=set" "$log"; then
+    echo "label call saw GH_TOKEN" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q "api user" "$log"; then
+    echo "label path did not check gh api user" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q "/repos/polds/factory/issues/77/labels" "$log"; then
+    echo "label path did not post factory-ready" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && grep -F -q "ghs_app_token_sentinel" "$log"; then
+    echo "app token was passed to gh" >&2
+    rc=1
+  fi
+  if [[ "$GH_TOKEN" != "ghs_app_token_sentinel" ]]; then
+    echo "label call cleared the App token" >&2
+    rc=1
+  fi
+  FAKE_GH_USER=Bot
+  : >"$log"
+  if label_live_issue >"$dir/bot.out" 2>"$dir/bot.err"; then
+    echo "a Bot login was allowed to label" >&2
+    rc=1
+  elif ! grep -F -q "gh auth login" "$dir/bot.err"; then
+    echo "bot rejection did not mention gh auth login" >&2
+    cat "$dir/bot.err" >&2
+    rc=1
+  elif grep -F -q "/labels" "$log"; then
+    echo "bot rejection still applied the label" >&2
+    rc=1
+  fi
+  FAKE_GH_USER=fail
+  : >"$log"
+  if label_live_issue >"$dir/fail.out" 2>"$dir/fail.err"; then
+    echo "a missing gh login was allowed to label" >&2
+    rc=1
+  elif ! grep -F -q "gh auth login" "$dir/fail.err"; then
+    echo "missing login did not mention gh auth login" >&2
+    cat "$dir/fail.err" >&2
+    rc=1
+  elif grep -F -q "/labels" "$log"; then
+    echo "missing login still applied the label" >&2
+    rc=1
+  fi
+  text="$(live_wait_hint)"
+  if [[ "$text" != $'https://github.com/polds/factory/issues/77\nno work item yet: check webhook delivery and sender' ]]; then
+    echo "wait hint was:" >&2
+    printf '%s\n' "$text" >&2
+    rc=1
+  fi
+  if ! declare -f wait_draft_pull | grep -F -q live_wait_hint; then
+    echo "wait_draft_pull does not print the stall hint" >&2
+    rc=1
+  fi
+  text="$(print_live_checklist)"
+  if [[ "$text" != *"gh auth login"* ]]; then
+    echo "live checklist does not mention gh auth login" >&2
+    rc=1
+  fi
+  PATH="$saved_path"
+  M4_REPO="$saved_repo"
+  ISSUE_LIVE="$saved_issue"
+  if [[ "$had_token" -eq 1 ]]; then
+    export GH_TOKEN="$saved_token"
+  else
+    unset GH_TOKEN
+  fi
+  if [[ "$had_live" -eq 1 ]]; then
+    LIVE_TOKEN="$saved_live"
+  else
+    unset LIVE_TOKEN
+  fi
+  unset FAKE_GH_LOG FAKE_GH_USER
+  rm -rf "$dir"
+  return "$rc"
+}
+
 case_no_gnu_flags() {
   if grep -n -E '(grep[[:space:]]+-P|sed[[:space:]]+-i|[[:space:]]mapfile[[:space:]]|^mapfile[[:space:]]|(^|[[:space:]])timeout[[:space:]])' \
     "$SCRIPT" "$HERE/run_test.sh"; then
@@ -695,6 +820,7 @@ run_case live_ci_pem case_live_ci_pem
 run_case live_ci_env_names case_live_ci_env_names
 run_case prepare_definition_offline case_prepare_definition_offline
 run_case prepare_definition_placeholders case_prepare_definition_placeholders
+run_case live_label_sender case_live_label_sender
 run_case no_gnu_flags case_no_gnu_flags
 
 echo
