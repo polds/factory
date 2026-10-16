@@ -60,11 +60,141 @@ case_sign_slack() {
 }
 
 case_host_desktop() {
-  assert_eq "$(host_for_tasks "Docker Desktop" "172.17.0.1")" "host.docker.internal"
+  unset M4_TASK_HOST
+  assert_eq "$(host_for_tasks "Docker Desktop" "172.17.0.1" "Darwin")" "host.docker.internal"
+}
+
+case_host_orbstack() {
+  unset M4_TASK_HOST
+  assert_eq "$(host_for_tasks "OrbStack" "192.168.215.1" "Darwin")" "host.docker.internal" || return 1
+  assert_eq "$(host_for_tasks "OrbStack" "192.168.215.1" "Linux")" "host.docker.internal"
+}
+
+case_host_darwin_unknown() {
+  unset M4_TASK_HOST
+  assert_eq "$(host_for_tasks "colima" "192.168.64.1" "Darwin")" "host.docker.internal"
 }
 
 case_host_linux() {
-  assert_eq "$(host_for_tasks "Ubuntu 24.04.1 LTS" "172.17.0.1")" "172.17.0.1"
+  unset M4_TASK_HOST
+  assert_eq "$(host_for_tasks "Ubuntu 24.04.1 LTS" "172.17.0.1" "Linux")" "172.17.0.1"
+}
+
+case_host_override() {
+  local saved="${M4_TASK_HOST:-}" rc=0
+  M4_TASK_HOST="10.9.8.7"
+  assert_eq "$(host_for_tasks "Ubuntu 24.04.1 LTS" "172.17.0.1" "Linux")" "10.9.8.7" || rc=1
+  assert_eq "$(host_for_tasks "OrbStack" "192.168.215.1" "Darwin" "host.docker.internal")" "10.9.8.7" || rc=1
+  if [[ -n "$saved" ]]; then
+    M4_TASK_HOST="$saved"
+  else
+    unset M4_TASK_HOST
+  fi
+  return "$rc"
+}
+
+case_host_follows_server_url() {
+  unset M4_TASK_HOST
+  assert_eq "$(host_for_tasks "OrbStack" "192.168.215.1" "Darwin" "host.docker.internal")" "host.docker.internal" || return 1
+  assert_eq "$(host_for_tasks "Ubuntu 24.04.1 LTS" "172.17.0.1" "Linux" "host.docker.internal")" "host.docker.internal" || return 1
+  assert_eq "$(host_for_tasks "Ubuntu 24.04.1 LTS" "172.17.0.1" "Linux" "")" "172.17.0.1"
+}
+
+case_task_endpoint_consistent() {
+  local saved_url="${FACTORY_TASK_SERVER_URL:-}" saved_host="${M4_TASK_HOST:-}"
+  local dir="" log="" rc=0
+  dir="$(mktemp -d)"
+  unset M4_TASK_HOST
+  FACTORY_TASK_SERVER_URL="http://host.docker.internal:8080"
+  if ! resolve_task_endpoint "OrbStack" "192.168.215.1" "Darwin" >"$dir/preset.out"; then
+    rc=1
+  fi
+  log="$(cat "$dir/preset.out")"
+  assert_eq "$TASK_HOST" "host.docker.internal" || rc=1
+  assert_eq "${FACTORY_TASK_SERVER_URL:-}" "http://host.docker.internal:8080" || rc=1
+  [[ "$log" == *"task host: host.docker.internal"* ]] || rc=1
+  [[ "$log" == *"FACTORY_TASK_SERVER_URL host: host.docker.internal:8080"* ]] || rc=1
+
+  unset FACTORY_TASK_SERVER_URL
+  if ! resolve_task_endpoint "Ubuntu 24.04.1 LTS" "172.17.0.1" "Linux" >"$dir/linux.out"; then
+    rc=1
+  fi
+  assert_eq "$TASK_HOST" "172.17.0.1" || rc=1
+  assert_eq "${FACTORY_TASK_SERVER_URL:-}" "http://172.17.0.1:8080" || rc=1
+
+  unset FACTORY_TASK_SERVER_URL
+  if resolve_task_endpoint "OrbStack" "192.168.215.1" "Darwin" >"$dir/out" 2>"$dir/err"; then
+    echo "OrbStack without FACTORY_TASK_SERVER_URL was accepted" >&2
+    rc=1
+  fi
+  if ! grep -F -q "FACTORY_TASK_SERVER_URL=http://host.docker.internal:8080" "$dir/out" "$dir/err"; then
+    echo "OrbStack refusal did not name the task server URL" >&2
+    rc=1
+  fi
+
+  unset FACTORY_TASK_SERVER_URL
+  if resolve_task_endpoint "colima" "192.168.64.1" "Darwin" >"$dir/darwin.out" 2>"$dir/darwin.err"; then
+    echo "Darwin without FACTORY_TASK_SERVER_URL was accepted" >&2
+    rc=1
+  fi
+
+  M4_TASK_HOST="10.9.8.7"
+  unset FACTORY_TASK_SERVER_URL
+  resolve_task_endpoint "Ubuntu 24.04.1 LTS" "172.17.0.1" "Linux" >"$dir/override.out" || rc=1
+  assert_eq "$TASK_HOST" "10.9.8.7" || rc=1
+  assert_eq "${FACTORY_TASK_SERVER_URL:-}" "http://10.9.8.7:8080" || rc=1
+
+  FACTORY_TASK_SERVER_URL="http://host.docker.internal:8080"
+  if resolve_task_endpoint "Ubuntu 24.04.1 LTS" "172.17.0.1" "Linux" >"$dir/mismatch.out" 2>"$dir/mismatch.err"; then
+    echo "M4_TASK_HOST was allowed to diverge from FACTORY_TASK_SERVER_URL" >&2
+    rc=1
+  fi
+
+  if [[ -n "$saved_url" ]]; then
+    FACTORY_TASK_SERVER_URL="$saved_url"
+  else
+    unset FACTORY_TASK_SERVER_URL
+  fi
+  if [[ -n "$saved_host" ]]; then
+    M4_TASK_HOST="$saved_host"
+  else
+    unset M4_TASK_HOST
+  fi
+  rm -rf "$dir"
+  return "$rc"
+}
+
+case_health_probe_bounds() {
+  local start="" end="" elapsed="" body="" line=""
+  body="$(awk '/^wait_http\(\)/,/^}/' "$SCRIPT")"
+  [[ "$body" == *"--connect-timeout 2"* && "$body" == *"-m 5"* ]] || {
+    echo "wait_http curl is unbounded" >&2
+    return 1
+  }
+  while IFS= read -r line; do
+    case "$line" in
+      *wait_http*) continue ;;
+    esac
+    case "$line" in
+      *http*healthz*)
+        [[ "$line" == *"--connect-timeout 2"* && "$line" == *"-m 5"* ]] || {
+          echo "unbounded health probe: ${line}" >&2
+          return 1
+        }
+        ;;
+    esac
+  done <"$SCRIPT"
+  start="$(date +%s)"
+  if curl -fsS --connect-timeout 2 -m 5 "http://192.0.2.1:9090/healthz" >/dev/null 2>&1; then
+    echo "blackhole health probe succeeded" >&2
+    return 1
+  fi
+  end="$(date +%s)"
+  elapsed="$((end - start))"
+  if [[ "$elapsed" -gt 8 ]]; then
+    echo "health probe took ${elapsed}s" >&2
+    return 1
+  fi
 }
 
 case_task_lines() {
@@ -365,7 +495,13 @@ run_case hourly_disabled case_hourly_disabled
 run_case sign_github case_sign_github
 run_case sign_slack case_sign_slack
 run_case host_desktop case_host_desktop
+run_case host_orbstack case_host_orbstack
+run_case host_darwin_unknown case_host_darwin_unknown
 run_case host_linux case_host_linux
+run_case host_override case_host_override
+run_case host_follows_server_url case_host_follows_server_url
+run_case task_endpoint_consistent case_task_endpoint_consistent
+run_case health_probe_bounds case_health_probe_bounds
 run_case task_lines case_task_lines
 run_case building_script case_building_script
 run_case live_key_copy case_live_key_copy

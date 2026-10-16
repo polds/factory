@@ -11,8 +11,11 @@
 # check run, and a signed Slack reply starts a second building run.
 #
 # Task containers are on the host Docker bridge. They reach published ports
-# through the bridge gateway on Linux and through host.docker.internal on
-# Docker Desktop. The live model URL from a container is
+# through the bridge gateway on a native Linux engine and through
+# host.docker.internal on Docker Desktop, OrbStack, and Darwin.
+# FACTORY_TASK_SERVER_URL names that same host when it is set. An empty
+# URL is filled from the gateway on Linux. M4_TASK_HOST overrides engine
+# detection. The live model URL from a container is
 # http://host.docker.internal:8317/v1. This script does not rewrite a
 # loopback model URL.
 #
@@ -78,6 +81,7 @@ OCI_PLATFORM=""
 GOARCH_TARGET=""
 GW=""
 TASK_HOST=""
+TASK_ENDPOINT_ERROR=""
 DEF=""
 PR_POSTED=0
 
@@ -311,6 +315,14 @@ host = parts.hostname or ""
 if parts.port:
     host = f"{host}:{parts.port}"
 print(host)
+PY
+}
+
+url_hostname() {
+  RAW="$1" python3 - <<'PY'
+import os
+from urllib.parse import urlparse
+print(urlparse(os.environ.get("RAW", "")).hostname or "")
 PY
 }
 
@@ -554,13 +566,72 @@ bridge_gateway() {
 }
 
 # host_for_tasks is the host name a bridge container uses for published ports.
-# Docker Desktop publishes them on host.docker.internal. Linux uses the gateway.
+# Docker Desktop, OrbStack, and any Darwin host use host.docker.internal.
+# A native Linux engine uses the bridge gateway. M4_TASK_HOST overrides that.
+# server_host, when set, is the hostname of FACTORY_TASK_SERVER_URL and wins
+# over engine detection so the two cannot diverge. kernel is uname -s; an
+# empty kernel uses the current uname.
+# Args: docker operating system, gateway, kernel, server host.
 host_for_tasks() {
-  local os="$1" gw="$2"
+  local os="$1" gw="$2" kernel="${3:-}" server_host="${4:-}"
+  if [[ -z "$kernel" ]]; then
+    kernel="$(uname -s)"
+  fi
+  if [[ -n "${M4_TASK_HOST:-}" ]]; then
+    printf '%s\n' "$M4_TASK_HOST"
+    return 0
+  fi
+  if [[ -n "$server_host" ]]; then
+    printf '%s\n' "$server_host"
+    return 0
+  fi
   case "$os" in
-    *Docker\ Desktop*) printf '%s\n' "host.docker.internal" ;;
-    *) printf '%s\n' "$gw" ;;
+    *Docker\ Desktop* | *OrbStack*)
+      printf '%s\n' "host.docker.internal"
+      return 0
+      ;;
   esac
+  if [[ "$kernel" == "Darwin" ]]; then
+    printf '%s\n' "host.docker.internal"
+    return 0
+  fi
+  printf '%s\n' "$gw"
+}
+
+# resolve_task_endpoint sets TASK_HOST from the same host FACTORY_TASK_SERVER_URL
+# uses. When that URL is empty, it is exported from the chosen host. A
+# desktop-class host with an empty URL returns 1: this script does not invent
+# http://host.docker.internal:8080. An override that disagrees with a
+# configured URL returns 1. Status and errors go to stdout.
+resolve_task_endpoint() {
+  local os="$1" gw="$2" kernel="$3" server_host=""
+  TASK_ENDPOINT_ERROR=""
+  if [[ -n "${FACTORY_TASK_SERVER_URL:-}" ]]; then
+    server_host="$(url_hostname "$FACTORY_TASK_SERVER_URL")"
+    if [[ -z "$server_host" ]]; then
+      TASK_ENDPOINT_ERROR="FACTORY_TASK_SERVER_URL has no host"
+      printf '%s\n' "$TASK_ENDPOINT_ERROR"
+      return 1
+    fi
+  fi
+  TASK_HOST="$(host_for_tasks "$os" "$gw" "$kernel" "$server_host")"
+  printf 'task host: %s\n' "$TASK_HOST"
+  if [[ -n "$server_host" ]]; then
+    printf 'FACTORY_TASK_SERVER_URL host: %s\n' "$(url_log_host "$FACTORY_TASK_SERVER_URL")"
+    if [[ "$TASK_HOST" != "$server_host" ]]; then
+      TASK_ENDPOINT_ERROR="task host ${TASK_HOST} does not match FACTORY_TASK_SERVER_URL host ${server_host}"
+      printf '%s\n' "$TASK_ENDPOINT_ERROR"
+      return 1
+    fi
+    return 0
+  fi
+  if [[ "$TASK_HOST" == "host.docker.internal" ]]; then
+    TASK_ENDPOINT_ERROR="Docker Desktop, OrbStack, or Darwin: set FACTORY_TASK_SERVER_URL=http://host.docker.internal:8080. This script does not rewrite it."
+    printf '%s\n' "$TASK_ENDPOINT_ERROR"
+    return 1
+  fi
+  export FACTORY_TASK_SERVER_URL="http://${TASK_HOST}:8080"
+  printf 'FACTORY_TASK_SERVER_URL=http://%s:8080\n' "$TASK_HOST"
 }
 
 distinct_models() {
@@ -1129,7 +1200,7 @@ start_stub() {
 wait_http() {
   local url="$1" _
   for _ in $(seq 1 50); do
-    if curl -fsS "$url" >/dev/null 2>&1; then
+    if curl -fsS --connect-timeout 2 -m 5 "$url" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.2
@@ -1643,18 +1714,8 @@ prove_scanner
 GW="$(bridge_gateway)"
 echo "docker bridge gateway: $GW"
 DOCKER_OS="$(docker info --format '{{.OperatingSystem}}' 2>/dev/null || true)"
-TASK_HOST="$(host_for_tasks "$DOCKER_OS" "$GW")"
-echo "task host: $TASK_HOST"
-if [[ -n "${FACTORY_TASK_SERVER_URL:-}" ]]; then
-  echo "FACTORY_TASK_SERVER_URL host: $(url_log_host "$FACTORY_TASK_SERVER_URL")"
-else
-  case "$DOCKER_OS" in
-    *Docker\ Desktop*)
-      die "Docker Desktop: set FACTORY_TASK_SERVER_URL=http://host.docker.internal:8080. This script does not rewrite it."
-      ;;
-  esac
-  export FACTORY_TASK_SERVER_URL="http://${GW}:8080"
-  echo "FACTORY_TASK_SERVER_URL=http://${GW}:8080"
+if ! resolve_task_endpoint "$DOCKER_OS" "$GW" "$(uname -s)"; then
+  die "${TASK_ENDPOINT_ERROR:-could not choose a task host}"
 fi
 
 export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-factory}"
@@ -1819,12 +1880,12 @@ else
 fi
 
 for _ in $(seq 1 30); do
-  if curl -fsS "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then
+  if curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
-if ! curl -fsS "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then
+if ! curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then
   fail "factoryd /healthz did not become ready"
 fi
 echo "factoryd healthy on :8080"
@@ -1838,10 +1899,10 @@ if [[ "$MODE" == offline ]]; then
     fail "fake-slack /healthz did not become ready"
   fi
   docker run --rm --network bridge --entrypoint curl "$TASK_IMAGE" \
-    -fsS "http://${TASK_HOST}:${M4_FAKE_GITHUB_PORT}/healthz" >/dev/null ||
+    -fsS --connect-timeout 2 -m 5 "http://${TASK_HOST}:${M4_FAKE_GITHUB_PORT}/healthz" >/dev/null ||
     fail "fake-github is not reachable from a bridge container at ${TASK_HOST}:${M4_FAKE_GITHUB_PORT}"
   docker run --rm --network bridge --entrypoint curl "$TASK_IMAGE" \
-    -fsS "http://${TASK_HOST}:9090/healthz" >/dev/null ||
+    -fsS --connect-timeout 2 -m 5 "http://${TASK_HOST}:9090/healthz" >/dev/null ||
     fail "model router is not reachable from a bridge container at ${TASK_HOST}:9090"
   echo "fakes and model router reachable from a bridge container"
 
