@@ -1363,9 +1363,18 @@ print_live_checklist() {
 Live checklist
   1. Start a tunnel to factoryd on this machine:
        cloudflared tunnel --url http://localhost:8080
+     A trycloudflare quick tunnel changes URL on every restart.
      Or start the compose tunnel profile yourself. Its URL is not stable.
   2. Set FACTORY_PUBLIC_URL to that https origin.
   3. GitHub App webhook: \${FACTORY_PUBLIC_URL}/api/v1/ingress/github
+     Subscribe to:
+       Issues (required for the labeled intake)
+       Issue comment
+       Pull request
+       Pull request review
+       Push
+       Check run
+       Check suite
      Slack request URL: \${FACTORY_PUBLIC_URL}/api/v1/ingress/slack
   4. Point the model server at ${LIVE_MODEL_URL}
      (FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL). Containers on Docker

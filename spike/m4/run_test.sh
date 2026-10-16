@@ -267,6 +267,15 @@ case_live_model_url() {
   [[ "$text" == *"spike/m4/.work/live/github-app.pem"* ]] || return 1
   [[ "$text" != *"deploy/secrets/github-app.pem"* ]] || return 1
   [[ "$text" != *"host.docker.internal:8317."* ]] || return 1
+  [[ "$text" == *'FACTORY_PUBLIC_URL}/api/v1/ingress/github'* ]] || return 1
+  [[ "$text" == *"Issues (required for the labeled intake)"* ]] || return 1
+  [[ "$text" == *"Issue comment"* ]] || return 1
+  [[ "$text" == *$'\n       Pull request\n'* ]] || return 1
+  [[ "$text" == *"Pull request review"* ]] || return 1
+  [[ "$text" == *$'\n       Push\n'* ]] || return 1
+  [[ "$text" == *"Check run"* ]] || return 1
+  [[ "$text" == *"Check suite"* ]] || return 1
+  [[ "$text" == *"A trycloudflare quick tunnel changes URL on every restart."* ]] || return 1
 }
 
 case_mode_parse() {
