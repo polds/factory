@@ -495,6 +495,167 @@ case_live_ci_env_names() {
   done
 }
 
+case_prepare_definition_offline() {
+  local dest="" saved_mode="$MODE" rc=0
+  dest="$(mktemp -d)"
+  MODE=offline
+  prepare_definition "$dest" || rc=1
+  if [[ "$rc" -eq 0 ]] && ! cmp -s "$ROOT/deploy/m4-factory/factory.yaml" "$dest/factory.yaml"; then
+    echo "offline prepare_definition changed factory.yaml" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! python3 - "$dest/automations/hourly/automation.md" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+if text.count("enabled: true\n") != 1 or "enabled: false" in text:
+    raise SystemExit("offline did not enable the hourly automation once")
+PY
+  then
+    rc=1
+  fi
+  MODE="$saved_mode"
+  rm -rf "$dest"
+  return "$rc"
+}
+
+expect_placeholder_failure() {
+  local kind="$1" message="$2" dest="$3" base="$4"
+  cp -a "$ROOT/deploy/m4-factory/." "$base/" || return 1
+  python3 - "$base/factory.yaml" "$kind" <<'PY' || return 1
+import sys
+from pathlib import Path
+
+path, kind = Path(sys.argv[1]), sys.argv[2]
+kept = []
+seen = 0
+for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
+    body = line.strip()
+    if kind == "channel" and body == "channel: C0M4FACTORY":
+        seen += 1
+        continue
+    if kind == "user" and body == "- U0M4HUMAN":
+        seen += 1
+        continue
+    if kind == "dup-channel" and body == "channel: C0M4FACTORY":
+        seen += 1
+        kept.append(line)
+        kept.append(line)
+        continue
+    if kind == "dup-user" and body == "- U0M4HUMAN":
+        seen += 1
+        kept.append(line)
+        kept.append(line)
+        continue
+    kept.append(line)
+if seen != 1:
+    raise SystemExit("fixture edit saw %s placeholder lines" % seen)
+path.write_text("".join(kept), encoding="utf-8")
+PY
+  SRC_DEF="$base"
+  MODE=live
+  if prepare_definition "$dest" >"$base/out" 2>"$base/err"; then
+    echo "prepare_definition accepted a ${kind} placeholder fixture" >&2
+    return 1
+  fi
+  if ! grep -F -q "$message" "$base/err"; then
+    echo "prepare_definition ${kind} failure was not clear" >&2
+    cat "$base/err" >&2
+    return 1
+  fi
+}
+
+case_prepare_definition_placeholders() {
+  local dest="" base="" mode="" rc=0
+  local saved_mode="$MODE" saved_src="$SRC_DEF"
+  local saved_channel="" saved_user="" had_channel=0 had_user=0
+  if [[ -n "${M4_SLACK_CHANNEL+x}" ]]; then
+    had_channel=1
+    saved_channel="$M4_SLACK_CHANNEL"
+  fi
+  if [[ -n "${M4_SLACK_ALLOWED_USER+x}" ]]; then
+    had_user=1
+    saved_user="$M4_SLACK_ALLOWED_USER"
+  fi
+  dest="$(mktemp -d)"
+  base="$(mktemp -d)"
+  export M4_SLACK_CHANNEL=C0C9TEST
+  export M4_SLACK_ALLOWED_USER=U0TEST
+  for mode in live live-ci; do
+    MODE="$mode"
+    SRC_DEF="$ROOT/deploy/m4-factory"
+    if ! prepare_definition "$dest"; then
+      rc=1
+      break
+    fi
+    if ! python3 - "$ROOT/deploy/m4-factory/factory.yaml" "$dest/factory.yaml" C0C9TEST U0TEST <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+prepared = Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+channel, user = sys.argv[3], sys.argv[4]
+rewritten = []
+n_channel = 0
+n_user = 0
+for line in source:
+    indent = line[: len(line) - len(line.lstrip())]
+    body = line.strip()
+    if body.startswith("#") and ("C0M4FACTORY" in line or "U0M4HUMAN" in line):
+        raise SystemExit("placeholder token remains in a comment")
+    if body == "channel: C0M4FACTORY":
+        n_channel += 1
+        rewritten.append(indent + "channel: " + channel)
+    elif body == "- U0M4HUMAN":
+        n_user += 1
+        rewritten.append(indent + "- " + user)
+    else:
+        rewritten.append(line)
+if n_channel != 1 or n_user != 1:
+    raise SystemExit("source placeholders channel=%s user=%s" % (n_channel, n_user))
+if prepared != rewritten:
+    raise SystemExit("prepared factory.yaml is not one channel line and one user line")
+PY
+    then
+      rc=1
+      break
+    fi
+    if ! cmp -s "$ROOT/deploy/m4-factory/automations/hourly/automation.md" \
+      "$dest/automations/hourly/automation.md"; then
+      echo "live prepare_definition changed the hourly automation" >&2
+      rc=1
+      break
+    fi
+  done
+  if [[ "$rc" -eq 0 ]]; then
+    expect_placeholder_failure channel "factory.yaml slack channel was not replaced" "$dest" "$base" || rc=1
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    expect_placeholder_failure user "factory.yaml slack user was not replaced" "$dest" "$base" || rc=1
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    expect_placeholder_failure dup-channel "factory.yaml slack channel was not replaced" "$dest" "$base" || rc=1
+  fi
+  if [[ "$rc" -eq 0 ]]; then
+    expect_placeholder_failure dup-user "factory.yaml slack user was not replaced" "$dest" "$base" || rc=1
+  fi
+  MODE="$saved_mode"
+  SRC_DEF="$saved_src"
+  if [[ "$had_channel" -eq 1 ]]; then
+    export M4_SLACK_CHANNEL="$saved_channel"
+  else
+    unset M4_SLACK_CHANNEL
+  fi
+  if [[ "$had_user" -eq 1 ]]; then
+    export M4_SLACK_ALLOWED_USER="$saved_user"
+  else
+    unset M4_SLACK_ALLOWED_USER
+  fi
+  rm -rf "$dest" "$base"
+  return "$rc"
+}
+
 case_no_gnu_flags() {
   if grep -n -E '(grep[[:space:]]+-P|sed[[:space:]]+-i|[[:space:]]mapfile[[:space:]]|^mapfile[[:space:]]|(^|[[:space:]])timeout[[:space:]])' \
     "$SCRIPT" "$HERE/run_test.sh"; then
@@ -532,6 +693,8 @@ run_case live_ci_title_cleanup case_live_ci_title_cleanup
 run_case live_ci_webhook_secret case_live_ci_webhook_secret
 run_case live_ci_pem case_live_ci_pem
 run_case live_ci_env_names case_live_ci_env_names
+run_case prepare_definition_offline case_prepare_definition_offline
+run_case prepare_definition_placeholders case_prepare_definition_placeholders
 run_case no_gnu_flags case_no_gnu_flags
 
 echo

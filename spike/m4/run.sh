@@ -1107,13 +1107,26 @@ prepare_definition() {
   rm -rf "$dest"
   mkdir -p "$dest"
   cp -a "$SRC_DEF/." "$dest/"
-  DEF_ROOT="$dest" DEF_MODE="$MODE" python3 - <<'PY'
+  # Return the Python status even when errexit is ignored (unit tests).
+  if ! DEF_ROOT="$dest" DEF_MODE="$MODE" python3 - <<'PY'
 import os
 import re
 from pathlib import Path
 
 root = Path(os.environ["DEF_ROOT"])
 mode = os.environ["DEF_MODE"]
+
+
+def replace_exactly_one(text, pattern, replacement, message):
+    found = re.findall(pattern, text, re.M)
+    if len(found) != 1:
+        raise SystemExit(message)
+    updated, count = re.subn(pattern, replacement, text, count=1, flags=re.M)
+    if count != 1 or re.search(pattern, updated, re.M):
+        raise SystemExit(message)
+    return updated
+
+
 if mode == "offline":
     path = root / "automations/hourly/automation.md"
     text = path.read_text(encoding="utf-8")
@@ -1132,17 +1145,26 @@ elif mode in ("live", "live-ci"):
         raise SystemExit("slack user is not a safe id")
     path = root / "factory.yaml"
     text = path.read_text(encoding="utf-8")
-    text2 = text.replace("channel: C0M4FACTORY\n", "channel: %s\n" % channel, 1)
+    text = replace_exactly_one(
+        text,
+        r"^(\s*)channel: C0M4FACTORY$",
+        r"\1channel: %s" % channel,
+        "factory.yaml slack channel was not replaced",
+    )
     if user:
-        text2 = text2.replace("- U0M4HUMAN\n", "- %s\n" % user, 1)
-    if text2 == text or "C0M4FACTORY" in text2:
-        raise SystemExit("factory.yaml slack channel was not replaced")
-    if user and "U0M4HUMAN" in text2:
-        raise SystemExit("factory.yaml slack user was not replaced")
-    path.write_text(text2, encoding="utf-8")
+        text = replace_exactly_one(
+            text,
+            r"^(\s*)- U0M4HUMAN$",
+            r"\1- %s" % user,
+            "factory.yaml slack user was not replaced",
+        )
+    path.write_text(text, encoding="utf-8")
 else:
     raise SystemExit("unknown mode")
 PY
+  then
+    return 1
+  fi
   chmod -R a+rX "$dest"
 }
 
