@@ -230,7 +230,13 @@ func (c *Client) do(ctx context.Context, method, path, auth string, in any, out 
 		}
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("github: %s %s: HTTP %d: %s", method, path, resp.StatusCode, scrub(githubDetail(raw), auth))
+		return &StatusError{
+			Op:         op,
+			Method:     method,
+			Path:       path,
+			StatusCode: resp.StatusCode,
+			Detail:     scrub(githubDetail(raw), auth),
+		}
 	}
 	if out == nil || len(bytes.TrimSpace(raw)) == 0 {
 		return nil
@@ -283,8 +289,19 @@ func scrubErr(err error, secrets ...string) error {
 	if msg == err.Error() {
 		return err
 	}
-	return errors.New(msg)
+	return &redactedError{msg: msg, err: err}
 }
+
+// redactedError hides secret text and keeps the cause so a timeout or
+// connection error is still classifiable after the message is scrubbed.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+
+func (e *redactedError) Unwrap() error { return e.err }
 
 func splitRepo(repo string) (string, string, error) {
 	repo = strings.TrimSpace(repo)

@@ -321,16 +321,15 @@ func (s *Server) recordPullURL(ctx context.Context, workItemID, prURL, headSHA s
 	if workItemID == "" || prURL == "" || s.store == nil {
 		return
 	}
-	existing, ok, err := (&store.Automation{Store: s.store}).OpenPullRequest(ctx, workItemID)
+	claimed, stored, err := s.store.ClaimOpenPullRequest(ctx, workItemID, prURL)
 	if err != nil {
 		s.log.Error("pull request", "work_item_id", workItemID, "err", err)
 		return
 	}
-	if ok && existing == prURL {
-		return
-	}
-	if err := s.store.SetOpenPullRequest(ctx, workItemID, prURL); err != nil {
-		s.log.Error("pull request", "work_item_id", workItemID, "err", err)
+	if !claimed {
+		if stored != prURL {
+			s.log.Info("pull request already open", "work_item_id", workItemID, "open_pr_url", stored, "ignored", prURL)
+		}
 		return
 	}
 	item, err := s.store.GetWorkItem(ctx, workItemID)

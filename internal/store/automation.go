@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -17,6 +19,8 @@ import (
 // return automation.ErrNotFound, not store.ErrNotFound.
 type Automation struct {
 	Store *Store
+	// Log records a losing duplicate building run. Nil discards it.
+	Log *slog.Logger
 }
 
 var _ automation.Store = (*Automation)(nil)
@@ -275,6 +279,7 @@ func (a *Automation) EnsureIntake(ctx context.Context, workItemID, deliveryID st
 func (a *Automation) insertSlot(ctx context.Context, tx pgx.Tx, item WorkItem, deliveryID string, slot automation.IntakeSlot, haveOwn bool) (automation.Run, bool, bool, error) {
 	var run automation.Run
 	runID := ""
+	ownRun := false
 	if slot.Run != nil {
 		copied := *slot.Run
 		copied.WorkItemID = item.ID
@@ -283,7 +288,7 @@ func (a *Automation) insertSlot(ctx context.Context, tx pgx.Tx, item WorkItem, d
 			copied.FactoryID = item.FactoryID
 		}
 		var err error
-		run, err = insertAutoRun(ctx, tx, copied)
+		run, ownRun, err = insertAutoRun(ctx, tx, copied)
 		if err != nil {
 			return automation.Run{}, false, false, err
 		}
@@ -302,8 +307,10 @@ func (a *Automation) insertSlot(ctx context.Context, tx pgx.Tx, item WorkItem, d
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return automation.Run{}, false, false, fmt.Errorf("store: ensure intake: %w", err)
 	}
-	if err := deleteRun(ctx, tx, runID); err != nil {
-		return automation.Run{}, false, false, err
+	if ownRun {
+		if err := deleteRun(ctx, tx, runID); err != nil {
+			return automation.Run{}, false, false, err
+		}
 	}
 	winner, err := readSlot(ctx, tx, item.ID, slot.Automation)
 	if err != nil {
@@ -388,6 +395,9 @@ func (a *Automation) GetExternalRef(ctx context.Context, provider, externalRef s
 
 // FollowUp inserts the run, moves stage and status, and records the effect
 // in one transaction. The same delivery id returns that run and created=false.
+// A building run already in flight is also created=false: the reply is
+// appended to that run's prompt and to the work item body, and no second
+// run is inserted.
 func (a *Automation) FollowUp(ctx context.Context, deliveryID string, run automation.NewRun, stage, status string) (automation.Run, bool, error) {
 	if err := a.need(); err != nil {
 		return automation.Run{}, false, err
@@ -440,9 +450,17 @@ func (a *Automation) FollowUp(ctx context.Context, deliveryID string, run automa
 	if run.ConversationID == "" {
 		run.ConversationID = item.ConversationID
 	}
-	created, err := insertAutoRun(ctx, tx, run)
+	created, inserted, err := insertAutoRun(ctx, tx, run)
+	if uniqueOn(err, "runs") {
+		saved := err
+		_ = tx.Rollback(ctx)
+		return a.lostBuildingRun(ctx, deliveryID, run, saved)
+	}
 	if err != nil {
 		return automation.Run{}, false, err
+	}
+	if !inserted {
+		return a.keepLostFollowUp(ctx, tx, deliveryID, item, created, run.Prompt)
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE work_items SET stage = $2, status = $3 WHERE id = $1`,
@@ -609,8 +627,54 @@ func (a *Automation) OpenPullRequest(ctx context.Context, workItemID string) (st
 	return url, url != "", nil
 }
 
+// ClaimOpenPullRequest stores url when the work item has no open pull
+// request. claimed is false when one is already stored: stored is that URL
+// and it is left in place. The work-item row lock makes two writers keep
+// the first URL. An empty url is rejected. SetOpenPullRequest still
+// overwrites, including a clear.
+func (s *Store) ClaimOpenPullRequest(ctx context.Context, workItemID, url string) (bool, string, error) {
+	url = strings.TrimSpace(url)
+	if workItemID == "" || url == "" {
+		return false, "", errors.New("store: work item and pull request are required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, "", fmt.Errorf("store: pull request: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := lockWorkItem(ctx, tx, workItemID); errors.Is(err, ErrNotFound) {
+		return false, "", ErrNotFound
+	} else if err != nil {
+		return false, "", fmt.Errorf("store: pull request: %w", err)
+	}
+	var current string
+	if err := tx.QueryRow(ctx, `SELECT open_pr_url FROM work_items WHERE id = $1`, workItemID).Scan(&current); err != nil {
+		return false, "", fmt.Errorf("store: pull request: %w", err)
+	}
+	if current != "" {
+		return false, current, nil
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE work_items SET open_pr_url = $2
+		WHERE id = $1 AND open_pr_url = ''`, workItemID, url)
+	if err != nil {
+		return false, "", fmt.Errorf("store: pull request: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		if err := tx.QueryRow(ctx, `SELECT open_pr_url FROM work_items WHERE id = $1`, workItemID).Scan(&current); err != nil {
+			return false, "", fmt.Errorf("store: pull request: %w", err)
+		}
+		return false, current, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, "", fmt.Errorf("store: pull request: %w", err)
+	}
+	return true, url, nil
+}
+
 // SetOpenPullRequest stores the open pull request URL for a work item.
-// An empty URL clears it. T30 calls this when a pull request is opened.
+// An empty URL clears it. A second URL for an item that already has one
+// goes through ClaimOpenPullRequest, which keeps the first.
 func (s *Store) SetOpenPullRequest(ctx context.Context, workItemID, url string) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE work_items SET open_pr_url = $2 WHERE id = $1`, workItemID, url)
@@ -702,17 +766,26 @@ func effectByDelivery(ctx context.Context, q rowQuery, deliveryID string) (effec
 	return row, true, nil
 }
 
-func insertAutoRun(ctx context.Context, tx pgx.Tx, r automation.NewRun) (automation.Run, error) {
+func insertAutoRun(ctx context.Context, tx pgx.Tx, r automation.NewRun) (automation.Run, bool, error) {
 	if r.FactoryID == "" || r.Pool == "" {
-		return automation.Run{}, fmt.Errorf("store: factory and pool are required")
+		return automation.Run{}, false, fmt.Errorf("store: factory and pool are required")
 	}
 	switch Priority(r.Priority) {
 	case PriorityBatch, PriorityPipeline, PriorityInteractive:
 	default:
-		return automation.Run{}, fmt.Errorf("store: priority %d is not valid", r.Priority)
+		return automation.Run{}, false, fmt.Errorf("store: priority %d is not valid", r.Priority)
 	}
 	if err := validStage(r.Stage, true); err != nil {
-		return automation.Run{}, err
+		return automation.Run{}, false, err
+	}
+	if r.Stage == StageBuilding && r.WorkItemID != "" {
+		existing, ok, err := inflightAuto(ctx, tx, r.WorkItemID)
+		if err != nil {
+			return automation.Run{}, false, err
+		}
+		if ok {
+			return existing, false, nil
+		}
 	}
 	if err := bindRunLinkage(ctx, tx, NewRun{
 		FactoryID:   r.FactoryID,
@@ -720,13 +793,13 @@ func insertAutoRun(ctx context.Context, tx pgx.Tx, r automation.NewRun) (automat
 		ParentRunID: r.ParentRunID,
 	}); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return automation.Run{}, automation.ErrNotFound
+			return automation.Run{}, false, automation.ErrNotFound
 		}
-		return automation.Run{}, err
+		return automation.Run{}, false, err
 	}
 	id, err := NewID(PrefixRun)
 	if err != nil {
-		return automation.Run{}, err
+		return automation.Run{}, false, err
 	}
 	var agentID any
 	if r.Agent != "" {
@@ -739,7 +812,7 @@ func insertAutoRun(ctx context.Context, tx pgx.Tx, r automation.NewRun) (automat
 		if err == nil {
 			agentID = found
 		} else if !errors.Is(err, pgx.ErrNoRows) {
-			return automation.Run{}, fmt.Errorf("store: agent: %w", err)
+			return automation.Run{}, false, fmt.Errorf("store: agent: %w", err)
 		}
 	}
 	if _, err := tx.Exec(ctx, `
@@ -752,14 +825,14 @@ func insertAutoRun(ctx context.Context, tx pgx.Tx, r automation.NewRun) (automat
 		id, r.FactoryID, agentID, StatusQueued, r.Priority, r.Pool, r.Prompt, r.Title,
 		r.WorkItemID, r.ParentRunID, r.ConversationID, r.Stage, r.ModelID,
 	); err != nil {
-		return automation.Run{}, fmt.Errorf("store: create run: %w", err)
+		return automation.Run{}, false, fmt.Errorf("store: create run: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO run_queue (run_id, factory_id, pool, priority, enqueued_at)
 		VALUES ($1, $2, $3, $4, clock_timestamp())`,
 		id, r.FactoryID, r.Pool, r.Priority,
 	); err != nil {
-		return automation.Run{}, fmt.Errorf("store: enqueue run: %w", err)
+		return automation.Run{}, false, fmt.Errorf("store: enqueue run: %w", err)
 	}
 	return automation.Run{
 		ID:             id,
@@ -774,7 +847,124 @@ func insertAutoRun(ctx context.Context, tx pgx.Tx, r automation.NewRun) (automat
 		ConversationID: r.ConversationID,
 		Stage:          r.Stage,
 		ModelID:        r.ModelID,
-	}, nil
+	}, true, nil
+}
+
+func inflightAuto(ctx context.Context, q rowQuery, workItemID string) (automation.Run, bool, error) {
+	run, ok, err := inflightBuildingRun(ctx, q, workItemID)
+	if err != nil || !ok {
+		return automation.Run{}, false, err
+	}
+	loaded, err := loadAutoRun(ctx, q, run.ID)
+	if err != nil {
+		return automation.Run{}, false, err
+	}
+	return loaded, true, nil
+}
+
+func (a *Automation) lostBuildingRun(ctx context.Context, deliveryID string, run automation.NewRun, saved error) (automation.Run, bool, error) {
+	tx, err := a.Store.pool.Begin(ctx)
+	if err != nil {
+		return automation.Run{}, false, fmt.Errorf("store: follow up: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	item, err := lockWorkItem(ctx, tx, run.WorkItemID)
+	if errors.Is(err, ErrNotFound) {
+		return automation.Run{}, false, automation.ErrNotFound
+	}
+	if err != nil {
+		return automation.Run{}, false, fmt.Errorf("store: follow up: %w", err)
+	}
+	if prev, ok, err := effectByDelivery(ctx, tx, deliveryID); err != nil {
+		return automation.Run{}, false, err
+	} else if ok {
+		if prev.kind != "follow_up" {
+			return automation.Run{}, false, errors.New("store: delivery already applied")
+		}
+		loaded, err := loadAutoRun(ctx, tx, prev.runID)
+		if err != nil {
+			return automation.Run{}, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return automation.Run{}, false, fmt.Errorf("store: follow up: %w", err)
+		}
+		return loaded, false, nil
+	}
+	loaded, ok, err := inflightAuto(ctx, tx, run.WorkItemID)
+	if err != nil {
+		return automation.Run{}, false, err
+	}
+	if !ok {
+		return automation.Run{}, false, saved
+	}
+	return a.keepLostFollowUp(ctx, tx, deliveryID, item, loaded, run.Prompt)
+}
+
+// keepLostFollowUp stores the reply that lost the building-run race.
+// The in-flight run's prompt gains the text, and the work item body gains
+// it for the next building run. created stays false, so no second run starts.
+func (a *Automation) keepLostFollowUp(ctx context.Context, tx pgx.Tx, deliveryID string, item WorkItem, existing automation.Run, prompt string) (automation.Run, bool, error) {
+	if err := keepLostReply(ctx, tx, deliveryID, item, existing.ID, existing.Prompt, prompt); uniqueOn(err, "delivery_effects") {
+		_ = tx.Rollback(ctx)
+		return a.replayFollowUp(ctx, deliveryID)
+	} else if err != nil {
+		return automation.Run{}, false, fmt.Errorf("store: follow up: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return automation.Run{}, false, fmt.Errorf("store: follow up: %w", err)
+	}
+	loaded, err := loadAutoRun(ctx, a.Store.pool, existing.ID)
+	if err != nil {
+		return automation.Run{}, false, err
+	}
+	a.logInFlight(item.ID, loaded.ID)
+	return loaded, false, nil
+}
+
+func keepLostReply(ctx context.Context, tx pgx.Tx, deliveryID string, item WorkItem, runID, existingPrompt, extra string) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO delivery_effects (delivery_id, work_item_id, kind, run_id, note)
+		VALUES ($1, $2, 'follow_up', $3, $4)`,
+		deliveryID, item.ID, runID, extra); err != nil {
+		return err
+	}
+	if extra == "" {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE work_items SET body = $2 WHERE id = $1`,
+		item.ID, joinPrompt(item.Body, extra)); err != nil {
+		return fmt.Errorf("store: follow up: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE runs SET prompt = $2
+		WHERE id = $1 AND status IN ('queued', 'assigned', 'running')`,
+		runID, joinPrompt(existingPrompt, extra))
+	if err != nil {
+		return fmt.Errorf("store: follow up: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return nil
+	}
+	return nil
+}
+
+func joinPrompt(existing, extra string) string {
+	if extra == "" {
+		return existing
+	}
+	if existing == "" || strings.HasSuffix(existing, "\n") {
+		return existing + extra
+	}
+	return existing + "\n" + extra
+}
+
+func (a *Automation) logInFlight(workItemID, runID string) {
+	if a == nil || a.Log == nil {
+		return
+	}
+	a.Log.Info("building run already in flight", "work_item_id", workItemID, "run_id", runID)
 }
 
 func loadAutoRun(ctx context.Context, q rowQuery, id string) (automation.Run, error) {

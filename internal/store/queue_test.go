@@ -625,7 +625,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := h.raw.QueryRow(ctx, `SELECT count(*), count(DISTINCT filename) FROM schema_migrations`).Scan(&files, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if files != 4 || distinct != 4 {
+	if files != 5 || distinct != 5 {
 		t.Fatalf("schema_migrations rows %d distinct %d", files, distinct)
 	}
 	nameRows, err := h.raw.Query(ctx, `SELECT filename FROM schema_migrations ORDER BY filename`)
@@ -644,7 +644,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := nameRows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	wantFiles := []string{"0001_init.sql", "0002_m3.sql", "0003_m4.sql", "0004_automation.sql"}
+	wantFiles := []string{"0001_init.sql", "0002_m3.sql", "0003_m4.sql", "0004_automation.sql", "0005_building_guard.sql"}
 	if strings.Join(filenames, ",") != strings.Join(wantFiles, ",") {
 		t.Fatalf("filenames %v", filenames)
 	}

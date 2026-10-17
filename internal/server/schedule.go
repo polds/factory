@@ -211,8 +211,15 @@ func (s *Server) assignOne(ctx context.Context, run store.Run, workerID string, 
 		return
 	}
 	bound = s.boundForRun(ctx, run, bound)
-	env, err := s.taskEnv(ctx, run, bound)
+	env, err := s.taskEnvRetry(ctx, run, bound)
 	if err != nil {
+		if s.leaveQueued(ctx, err) {
+			s.log.Warn("github token unavailable", "run_id", run.ID, "err", err)
+			if relErr := s.releaseClaim(ctx, run.ID); relErr != nil {
+				s.log.Error("release claim", "run_id", run.ID, "err", relErr)
+			}
+			return
+		}
 		s.failConfig(ctx, run.ID, workerID, err)
 		return
 	}

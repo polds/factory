@@ -50,7 +50,7 @@ func (s *Server) wire() error {
 	s.integ.githubBase = strings.TrimRight(strings.TrimSpace(s.cfg.GitHubAPIBase), "/")
 
 	s.integ.engine = &automation.Engine{
-		Store:  &store.Automation{Store: s.store},
+		Store:  &store.Automation{Store: s.store, Log: s.log},
 		Answer: resumingAnswerer{s},
 		Tree:   s.definitionTree,
 		Now:    s.now,
