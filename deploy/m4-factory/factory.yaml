@@ -1,7 +1,8 @@
 # M4 laptop factory. A factory-ready label starts the M3 pipeline.
 # approvals.spec is not required (D12) so the run is unattended.
-# The Slack channel id is D5. Offline uses C0M4FACTORY. Live patches it
-# from M4_SLACK_ALLOWED_USER and M4_SLACK_CHANNEL.
+# The Slack channel id is D5. Offline keeps the channel and allowed user
+# on the lines below. Live replaces those lines from M4_SLACK_CHANNEL and
+# M4_SLACK_ALLOWED_USER.
 schemaVersion: v1alpha1
 name: m4
 description: Label intake, Slack progress, and a reply that continues the work.
