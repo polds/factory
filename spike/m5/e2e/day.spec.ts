@@ -76,6 +76,11 @@ async function signIn(page: Page, start = "/", shot = "dashboard"): Promise<void
   await saveShot(page, shot);
 }
 
+async function rowIndex(page: Page, title: string): Promise<number> {
+  const titles = await page.locator("tr[data-run] a.run-link").allTextContents();
+  return titles.findIndex((text) => text.includes(title));
+}
+
 async function openSection(page: Page, name: string): Promise<void> {
   await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name, exact: true }).click();
 }
@@ -163,8 +168,11 @@ test("day of factory", async ({ browser }) => {
   });
   await context.tracing.start({ screenshots: true, snapshots: true });
   const page = await context.newPage();
+  const runListURLs: string[] = [];
   page.on("request", (req) => {
-    if (req.method() === "POST" && req.url().includes(":replay")) replayPosts += 1;
+    const target = req.url();
+    if (req.method() === "POST" && target.includes(":replay")) replayPosts += 1;
+    if (req.method() === "GET" && target.includes("/api/v1/agent/runs?")) runListURLs.push(target);
   });
   try {
     await signIn(page);
@@ -189,8 +197,12 @@ test("day of factory", async ({ browser }) => {
 
     const issueAck = await signal("deliver", '{"op":"issue"}\n');
     if (!issueAck.startsWith("status 2")) throw new Error(`step 6: issue delivery ${issueAck}`);
+    const boardRuns = runListURLs.filter((url) => url.includes("factory_id=fac_")).length;
+    if (boardRuns === 0) throw new Error("board runs were fetched without factory_id");
 
     await approveOnly(page, "m5-day");
+    const inboxRuns = runListURLs.filter((url) => url.includes("factory_id=fac_")).length;
+    if (inboxRuns <= boardRuns) throw new Error("inbox runs were fetched without factory_id");
 
     await openSection(page, "Runs");
     const building = page
@@ -222,6 +234,10 @@ test("day of factory", async ({ browser }) => {
     await followUp.fill("m5-follow-up Reply with a one-line summary and no tool calls.");
     await page.getByRole("button", { name: "Send follow-up" }).click();
     await expect(log.getByText("Follow-up", { exact: true })).toBeVisible({ timeout: 60_000 });
+    const steerList = page.locator("ul.steer-list");
+    await expect(steerList.getByText("interrupt", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(steerList.getByText("followup", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(steerList.getByText("delivered", { exact: true })).toHaveCount(2, { timeout: 30_000 });
     const idleAck = await signal("idle", `${dayRun}\n`);
     if (idleAck !== "running") throw new Error(`step 5: container was ${idleAck} during idle`);
 
@@ -261,10 +277,10 @@ test("day of factory", async ({ browser }) => {
 
     await openSection(page, "Work items");
     const done = page.getByRole("region", { name: "Done" });
-    await expect(done.getByRole("link", { name: "m5-day" })).toBeVisible({
-      timeout: 240_000,
-    });
-    await done.getByRole("link", { name: "m5-day" }).click();
+    const dayCard = done.getByRole("link", { name: "m5-day" });
+    await expect(dayCard).toBeVisible({ timeout: 240_000 });
+    await expect(dayCard).toContainText("m5-reviewing");
+    await dayCard.click();
     await expect(page.locator("strong").filter({ hasText: /^Handoff$/ })).toBeVisible();
     const prAck = await signal("deliver", '{"op":"pr"}\n');
     if (!prAck.startsWith("status 2")) throw new Error(`step 6: pr delivery ${prAck}`);
@@ -276,11 +292,27 @@ test("day of factory", async ({ browser }) => {
 
     await openSection(page, "Runs");
     await axe(page, "runs");
+    await expect(page.getByRole("columnheader", { name: "Started" })).toBeVisible();
+    const questionAt = await rowIndex(page, "m5-question");
+    const agentAt = await rowIndex(page, "m5-agent-failure");
+    if (questionAt < 0 || agentAt < 0 || questionAt > agentAt) {
+      throw new Error(`created_at order question ${questionAt} agent ${agentAt}`);
+    }
+    await expect(
+      page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" }).locator("time"),
+    ).toHaveAttribute("datetime", /^\d{4}-/);
+    await page.locator("#filter-source").selectOption("manual");
+    await expect(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" })).toBeVisible();
+    await expect(page.locator("tr[data-run]").filter({ hasText: "m5-day" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Clear filters" }).click();
+    await page.locator("#filter-worker").selectOption("local-1");
+    await expect(page.locator("tr[data-run]").first()).toBeVisible();
+    await page.getByRole("button", { name: "Clear filters" }).click();
     const failureGroup = page.getByRole("group", { name: "Failure class" });
     await failureGroup.getByRole("button", { name: "Agent" }).click();
-    await expect(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" })).toBeVisible({
-      timeout: 60_000,
-    });
+    const agentListRow = page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" });
+    await expect(agentListRow).toBeVisible({ timeout: 60_000 });
+    await expect(agentListRow).toContainText("agent_reported");
     await expect(page.locator("tr[data-run]").filter({ hasText: "m5-infra-kill" })).toHaveCount(0);
     await page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" }).getByRole("link").click();
     const agentPanel = page.getByRole("region", { name: "Failure" });
@@ -295,13 +327,29 @@ test("day of factory", async ({ browser }) => {
 
     await openSection(page, "Runs");
     await failureGroup.getByRole("button", { name: "Infrastructure" }).click();
-    await expect(page.locator("tr[data-run]").filter({ hasText: "m5-infra-kill" })).toBeVisible();
+    const infraListRow = page.locator("tr[data-run]").filter({ hasText: "m5-infra-kill" });
+    await expect(infraListRow).toBeVisible();
+    await expect(infraListRow).toContainText("container_killed");
+    await expect(infraListRow).toContainText("exit 137");
     await expect(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" })).toHaveCount(0);
     await page.locator("tr[data-run]").filter({ hasText: "m5-infra-kill" }).getByRole("link").click();
     const infraPanel = page.getByRole("region", { name: "Failure" });
     await expect(infraPanel).toHaveAttribute("data-failure-class", "infrastructure");
     await expect(infraPanel.locator("code", { hasText: "container_killed" })).toBeVisible();
     await expect(infraPanel.getByRole("list", { name: "Evidence" }).getByRole("listitem").first()).toBeVisible();
+    await expect(page.locator(".meta-row > div").filter({ hasText: "Created" }).locator("time")).toHaveAttribute(
+      "datetime",
+      /^\d{4}-/,
+    );
+    await expect(page.locator(".meta-row > div").filter({ hasText: "Started" }).locator("time")).toHaveAttribute(
+      "datetime",
+      /^\d{4}-/,
+    );
+    await expect(page.locator(".meta-row > div").filter({ hasText: "Cost" }).locator("dd")).toHaveText(/^(—|\$)/);
+    await page.getByText("Raw details").click();
+    await expect(
+      page.locator(".raw-details dt").filter({ hasText: "exit_code" }).locator("xpath=following-sibling::dd[1]"),
+    ).toHaveText("137");
     await axe(page, "run-detail");
     await saveShot(page, "infra-failure");
 
@@ -364,9 +412,19 @@ test("day of factory", async ({ browser }) => {
       `${JSON.stringify({ op: "webhook", match: false, uid })}\n`,
     );
     if (!unmatched.startsWith("status 2")) throw new Error(`step 10: unmatched ${unmatched}`);
+    await page.getByRole("button", { name: "ci", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Recent deliveries" })).toBeVisible();
+    await expect(page.getByText(/m5-wh-/).first()).toBeVisible();
     await openSection(page, "Deliveries");
     await axe(page, "deliveries");
     await page.getByRole("tab", { name: /Unmatched/ }).click();
+    await page.locator("table").getByRole("button", { name: /^m5-pr-/ }).click();
+    const normalized = page.getByRole("region", { name: "Normalized event" });
+    await expect(normalized).toBeVisible();
+    await expect(normalized).toContainText("github");
+    await expect(normalized).toContainText("pull_request_opened");
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
     const delivery = page.locator("table").getByRole("button", { name: /^m5-wh-/ });
     await expect(delivery).toBeVisible();
     await delivery.click();
@@ -436,14 +494,5 @@ test("day of factory", async ({ browser }) => {
 });
 
 test.describe("after T47b", () => {
-  test.fixme("run list Started column and created_at order", async () => {});
-  test.fixme("failure cell shows failure_code and exit", async () => {});
-  test.fixme("worker and source filters use real row fields", async () => {});
-  test.fixme("run detail shows exit_code, created and started times, and cost_cents", async () => {});
-  test.fixme("recent steers list shows the interrupt and follow-up with delivered_at", async () => {});
-  test.fixme("board and inbox runs are fetched with factory_id", async () => {});
-  test.fixme("board latest run is chosen by created_at", async () => {});
   test.fixme("git definition shows a View on forge link when forge_url is https", async () => {});
-  test.fixme("delivery detail shows a Normalized event section", async () => {});
-  test.fixme("webhook page shows per-webhook delivery history", async () => {});
 });
