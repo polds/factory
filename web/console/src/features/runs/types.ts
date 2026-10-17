@@ -5,18 +5,9 @@ import type { FailureClass, Run, RunDetail, TimelinePhase } from "../../api/type
 export type RunRow = Run & {
   failure_class?: FailureClass | "";
   failure_summary?: string;
-  cost_cents?: number;
-  worker?: string;
-  source?: string;
 };
 
-// Exit code and the kubernetes snapshot are not on RunDetail yet (T47b).
-// The snapshot table renders only when a later response adds this map.
-export type RunDetailWire = RunDetail & {
-  cost_cents?: number;
-  worker?: string;
-  kubernetes_snapshot?: Record<string, string>;
-};
+export type RunDetailWire = RunDetail;
 
 export type RunFilters = {
   agent: string;

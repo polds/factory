@@ -21,6 +21,7 @@ import type {
   SecretPresence,
   SteerAccepted,
   SteerMessage,
+  SteerRecord,
   Task,
   TaskCreate,
   TimelinePhase,
@@ -112,6 +113,7 @@ export class ConsoleClient {
   listRuns(query: RunListQuery = {}): Promise<Run[]> {
     return this.request(
       withQuery("/api/v1/agent/runs", {
+        factory_id: query.factory_id,
         failure_class: query.failure_class,
         source: query.source,
         parent_run_id: query.parent_run_id,
@@ -122,6 +124,10 @@ export class ConsoleClient {
         model: query.model,
       }),
     );
+  }
+
+  listRunSteers(id: string): Promise<SteerRecord[]> {
+    return this.request(`/api/v1/agent/runs/${segment(id)}/steers`);
   }
 
   getRun(id: string): Promise<RunDetail> {
@@ -195,6 +201,23 @@ export class ConsoleClient {
 
   listWebhooks(factoryId: string): Promise<Webhook[]> {
     return this.request(`/api/v1/factory/${segment(factoryId)}/webhooks`);
+  }
+
+  listWebhookDeliveries(
+    factoryId: string,
+    webhookUid: string,
+    query: { status?: string; limit?: number; include?: string } = {},
+  ): Promise<Delivery[]> {
+    return this.request(
+      withQuery(
+        `/api/v1/factory/${segment(factoryId)}/webhooks/${segment(webhookUid)}/deliveries`,
+        {
+          status: query.status,
+          limit: query.limit === undefined ? undefined : String(query.limit),
+          include: query.include,
+        },
+      ),
+    );
   }
 
   listWorkers(): Promise<ConnectedWorkers> {

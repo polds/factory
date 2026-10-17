@@ -34,6 +34,7 @@ type Delivery struct {
 	Truncated          bool              `json:"truncated"`
 	Status             string            `json:"status"`
 	MatchedAutomations []string          `json:"matched_automations"`
+	NormalizedEvents   []json.RawMessage `json:"normalized_events,omitempty"`
 }
 
 // Schedule is one cron schedule.
@@ -89,6 +90,32 @@ func (c *Client) ListDeliveries(ctx context.Context, factory string, f DeliveryF
 	}
 	var rows []Delivery
 	err := c.doJSONQuery(ctx, http.MethodGet, factoryPath(factory, "deliveries"), q, nil, &rows, http.StatusOK)
+	return rows, err
+}
+
+// ListWebhookDeliveries lists one webhook's deliveries, newest first.
+func (c *Client) ListWebhookDeliveries(ctx context.Context, factory, webhookUID string, f DeliveryFilter) ([]Delivery, error) {
+	if err := requireFactory(factory); err != nil {
+		return nil, err
+	}
+	if err := requireID(webhookUID, "webhook id"); err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	switch {
+	case f.Unmatched:
+		q.Set("status", "unmatched")
+	case f.Status != "":
+		q.Set("status", f.Status)
+	}
+	if f.IncludeBody {
+		q.Set("include", "body")
+	}
+	if f.Limit > 0 {
+		q.Set("limit", strconv.Itoa(f.Limit))
+	}
+	var rows []Delivery
+	err := c.doJSONQuery(ctx, http.MethodGet, factoryPath(factory, "webhooks", webhookUID, "deliveries"), q, nil, &rows, http.StatusOK)
 	return rows, err
 }
 

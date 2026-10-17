@@ -175,6 +175,47 @@ func (h *handler) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+func (h *handler) handleListWebhookDeliveries(w http.ResponseWriter, r *http.Request) {
+	db, ok := h.backend.(WebhookDeliveryBackend)
+	if !ok {
+		writeProblem(w, http.StatusNotFound, "not found")
+		return
+	}
+	q := r.URL.Query()
+	status := q.Get("status")
+	if !validDeliveryStatus(status) {
+		writeProblem(w, http.StatusBadRequest, "status is invalid")
+		return
+	}
+	include, ok := parseIncludeBody(q.Get("include"))
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "include is invalid")
+		return
+	}
+	if include && !h.authorized(r) {
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	limit, ok := parseListLimit(q.Get("limit"))
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "limit is invalid")
+		return
+	}
+	rows, err := db.ListWebhookDeliveries(r.Context(), r.PathValue("uid"), r.PathValue("webhookUID"), status, limit)
+	if err != nil {
+		h.writeStatusErr(w, err, "conflict")
+		return
+	}
+	if rows == nil {
+		rows = []Delivery{}
+	}
+	out := make([]Delivery, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, presentDelivery(row, include))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (h *handler) handleReplayDelivery(w http.ResponseWriter, r *http.Request) {
 	db, ok := h.requireDeliveries(w)
 	if !ok {

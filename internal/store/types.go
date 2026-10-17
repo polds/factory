@@ -137,6 +137,10 @@ type Run struct {
 	FailureClass string
 	FailureCode  string
 	AssignedAt   *time.Time
+	// Source is the linked work item's source. It is not a runs column.
+	// List queries fill it from the join. Single-run reads fill it with
+	// one extra query when WorkItemID is set.
+	Source string
 }
 
 // NewRun is the input to CreateRun. The store enqueues it in the same transaction.
@@ -350,6 +354,9 @@ type Delivery struct {
 	Status             string
 	MatchedAutomations []string
 	ExpiresAt          time.Time
+	// Normalized is the dispatcher event list with the raw key removed.
+	// Nil means the column is NULL. [] means normalization produced no events.
+	Normalized []byte
 }
 
 // WebhookRegistration is the live ingress config for one custom webhook.

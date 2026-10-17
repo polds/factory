@@ -1,0 +1,45 @@
+[
+  {
+    "id": "del_1",
+    "factory_id": "fac_1",
+    "provider": "github",
+    "webhook_uid": "wh_1",
+    "delivery_id": "gh-1",
+    "received_at": "2026-04-02T15:04:05Z",
+    "truncated": false,
+    "status": "matched",
+    "matched_automations": ["on-label"],
+    "normalized_events": [
+      {
+        "provider": "github",
+        "event": "issues.labeled",
+        "delivery_id": "del_1",
+        "occurred_at": "2026-04-02T15:04:05Z",
+        "actor": {
+          "provider_id": "1",
+          "handle": "octocat",
+          "factory_user_id": null
+        },
+        "subject": {
+          "kind": "issue",
+          "id": "9",
+          "number": 7,
+          "title": "bug",
+          "url": "https://github.com/acme/app/issues/7",
+          "repo": {
+            "code_forge": "github",
+            "owner": "acme",
+            "name": "app"
+          },
+          "labels": ["bug"],
+          "branch": null,
+          "base_branch": null
+        },
+        "thread": {
+          "kind": "github_issue",
+          "external_ref": "acme/app#7"
+        }
+      }
+    ]
+  }
+]

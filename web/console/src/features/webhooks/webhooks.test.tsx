@@ -67,10 +67,13 @@ describe("webhooks", () => {
 
   it("expands a row to deliveries for that webhook only", async () => {
     const user = userEvent.setup();
+    const deliveryPaths: string[] = [];
     server.use(
       http.get("/api/v1/factory/:uid/webhooks", () => HttpResponse.json(webhooks)),
-      http.get("/api/v1/factory/:uid/deliveries", () =>
-        HttpResponse.json([
+      http.get("/api/v1/factory/:uid/webhooks/:webhookUid/deliveries", ({ request, params }) => {
+        deliveryPaths.push(new URL(request.url).pathname);
+        if (params.webhookUid !== "wh_1") return HttpResponse.json([]);
+        return HttpResponse.json([
           {
             id: "dlv_github",
             provider: "github",
@@ -83,25 +86,14 @@ describe("webhooks", () => {
             status: "unmatched",
             matched_automations: [],
           },
-          {
-            id: "dlv_other",
-            provider: "slack",
-            webhook_uid: "wh_other",
-            delivery_id: "other-webhook-only",
-            received_at: "2026-04-02T15:00:00Z",
-            headers: {},
-            body: "nope",
-            truncated: false,
-            status: "matched",
-            matched_automations: ["elsewhere"],
-          },
-        ]),
-      ),
+        ]);
+      }),
     );
     renderWebhooks();
     await screen.findByRole("heading", { name: "Webhooks" });
     await user.click(screen.getByRole("button", { name: "github" }));
     expect(await screen.findByRole("heading", { name: "Recent deliveries" })).toBeInTheDocument();
+    expect(deliveryPaths).toEqual(["/api/v1/factory/fac_1/webhooks/wh_1/deliveries"]);
     expect(screen.getByText("gh-delivery-1")).toBeInTheDocument();
     expect(screen.getByText("Unmatched")).toBeInTheDocument();
     expect(screen.queryByText("other-webhook-only")).not.toBeInTheDocument();

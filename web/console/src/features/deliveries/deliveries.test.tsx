@@ -22,6 +22,16 @@ const unmatched = {
   truncated: true,
   status: "unmatched",
   matched_automations: [],
+  normalized_events: [
+    {
+      provider: "github",
+      event: "issues.labeled",
+      actor: { handle: "octocat", token: "PLANTED-ACTOR" },
+      subject: { kind: "issue", id: "77", number: 77, title: "Cutoff", raw: "PLANTED-RAW" },
+      thread: { kind: "issue", external_ref: "acme/factory#77" },
+      raw: { planted: "PLANTED-RAW" },
+    },
+  ],
 };
 
 const matched = {
@@ -85,7 +95,13 @@ describe("deliveries", () => {
     expect(dialog).toHaveTextContent("[redacted]");
     expect(dialog).toHaveTextContent("issues");
     expect(dialog).toHaveTextContent("truncated");
+    expect(dialog).toHaveTextContent("Normalized event");
+    expect(dialog).toHaveTextContent("issues.labeled");
+    expect(dialog).toHaveTextContent("octocat");
+    expect(dialog).toHaveTextContent("acme/factory#77");
     expect(document.body.innerHTML).not.toContain("PLANTED-SIGNATURE");
+    expect(document.body.innerHTML).not.toContain("PLANTED-RAW");
+    expect(document.body.innerHTML).not.toContain("PLANTED-ACTOR");
     await expectClean();
     await user.click(screen.getByRole("button", { name: "Replay delivery" }));
     await user.dblClick(await screen.findByRole("button", { name: "Replay" }));

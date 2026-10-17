@@ -85,6 +85,7 @@ func testE2EM5Agent(t *testing.T) {
 	if exit == nil || *exit != 10 {
 		t.Fatalf("exit %v", exit)
 	}
+	assertListMatchesDetail(t, env, runID)
 	walkPlanted(t, env, asg.EnvVars["FACTORY_RUN_TOKEN"])
 }
 
@@ -104,6 +105,7 @@ func testE2EM5Killed(t *testing.T) {
 	if detail.Failure.Class != "infrastructure" || detail.Failure.Code != "container_killed" {
 		t.Fatalf("class %s/%s", detail.Failure.Class, detail.Failure.Code)
 	}
+	assertListMatchesDetail(t, env, runID)
 }
 
 func testE2EM5IdleFollowup(t *testing.T) {
@@ -240,9 +242,12 @@ func waitEvent(t *testing.T, env *env, runID, typ string) {
 
 func walkPlanted(t *testing.T, env *env, token string) {
 	t.Helper()
+	runID, webhookUID, extra := plantNoSecretSurfaces(t, env)
 	paths := []string{
 		"/api/v1/factory/m2/definition",
 		"/api/v1/agent/runs",
+		"/api/v1/agent/runs/" + runID,
+		"/api/v1/agent/runs/" + runID + "/steers",
 		"/api/v1/factory/m2/secrets",
 		"/api/v1/agent/identities",
 		"/api/v1/agent/connected-self-hosted-workers",
@@ -250,6 +255,22 @@ func walkPlanted(t *testing.T, env *env, token string) {
 		"/api/v1/factory/m2/automations",
 		"/api/v1/factory/m2/inbox",
 		"/api/v1/factory/m2/summary?from=2026-04-01T00:00:00Z&to=2026-04-02T00:00:00Z",
+		"/api/v1/factory/m2/webhooks/" + webhookUID + "/deliveries?include=body",
+	}
+	code, raw := env.authed(t, http.MethodGet, "/api/v1/factory/m2/webhooks", "")
+	if code != http.StatusOK {
+		t.Fatalf("webhooks %d %s", code, raw)
+	}
+	var hooks []struct {
+		UID string `json:"uid"`
+	}
+	if err := json.Unmarshal(raw, &hooks); err != nil {
+		t.Fatal(err)
+	}
+	for _, hook := range hooks {
+		if hook.UID != "" {
+			paths = append(paths, "/api/v1/factory/m2/webhooks/"+hook.UID+"/deliveries?include=body")
+		}
 	}
 	for _, path := range paths {
 		code, raw := env.authed(t, http.MethodGet, path, "")
@@ -257,6 +278,11 @@ func walkPlanted(t *testing.T, env *env, token string) {
 			t.Fatalf("%s %d %s", path, code, raw)
 		}
 		forbidPlanted(t, path, string(raw), token)
+		for _, secret := range extra {
+			if strings.Contains(string(raw), secret) {
+				t.Fatalf("%s contains planted material", path)
+			}
+		}
 	}
 }
 

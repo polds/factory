@@ -30,6 +30,9 @@ type consoleRoute struct {
 	golden   string
 	runToken bool
 	status   int
+	// unwired is the status when the optional backend is missing.
+	// Zero means 501. The webhook delivery route uses 404.
+	unwired int
 }
 
 func consoleRoutes() []consoleRoute {
@@ -40,6 +43,8 @@ func consoleRoutes() []consoleRoute {
 		{name: "interrupt", pattern: "POST /api/v1/agent/runs/{runId}/interrupt", method: http.MethodPost, sample: "/api/v1/agent/runs/run_1/interrupt", golden: "interrupt.json", status: http.StatusAccepted},
 		{name: "followup", pattern: "POST /api/v1/agent/runs/{runId}/followups", method: http.MethodPost, sample: "/api/v1/agent/runs/run_1/followups", body: `{"text":"try the other file"}`, golden: "followup.json", status: http.StatusAccepted},
 		{name: "steer", pattern: "GET /api/v1/agent/runs/{runId}/steer", method: http.MethodGet, sample: "/api/v1/agent/runs/run_1/steer?after=steer_00", golden: "steer.json", runToken: true, status: http.StatusOK},
+		{name: "steers", pattern: "GET /api/v1/agent/runs/{runId}/steers", method: http.MethodGet, sample: "/api/v1/agent/runs/run_1/steers", golden: "steers.json", status: http.StatusOK},
+		{name: "webhook-deliveries", pattern: "GET /api/v1/factory/{uid}/webhooks/{webhookUID}/deliveries", method: http.MethodGet, sample: "/api/v1/factory/fac_1/webhooks/wh_1/deliveries", golden: "webhook-deliveries.json", status: http.StatusOK, unwired: http.StatusNotFound},
 		{name: "events", pattern: "GET /api/v1/factory/{uid}/events", method: http.MethodGet, sample: "/api/v1/factory/fac_1/events", status: http.StatusOK},
 		{name: "inbox", pattern: "GET /api/v1/factory/{uid}/inbox", method: http.MethodGet, sample: "/api/v1/factory/fac_1/inbox", golden: "inbox.json", status: http.StatusOK},
 		{name: "automations", pattern: "GET /api/v1/factory/{uid}/automations", method: http.MethodGet, sample: "/api/v1/factory/fac_1/automations", golden: "automations.json", status: http.StatusOK},
@@ -55,22 +60,24 @@ func consoleRoutes() []consoleRoute {
 
 func (h *handler) registerConsole(m *http.ServeMux) {
 	handlers := map[string]http.HandlerFunc{
-		"definition":  h.handleDefinition,
-		"timeline":    h.handleTimeline,
-		"usage":       h.handleUsage,
-		"interrupt":   h.handleInterrupt,
-		"followup":    h.handleFollowup,
-		"steer":       h.handleSteer,
-		"events":      h.handleFactoryEvents,
-		"inbox":       h.handleInbox,
-		"automations": h.handleAutomations,
-		"pause":       h.handlePauseAutomation,
-		"resume":      h.handleResumeAutomation,
-		"webhooks":    h.handleWebhooks,
-		"workers":     h.handleWorkers,
-		"secrets":     h.handleSecrets,
-		"identities":  h.handleIdentities,
-		"summary":     h.handleSummary,
+		"definition":         h.handleDefinition,
+		"timeline":           h.handleTimeline,
+		"usage":              h.handleUsage,
+		"interrupt":          h.handleInterrupt,
+		"followup":           h.handleFollowup,
+		"steer":              h.handleSteer,
+		"steers":             h.handleListSteers,
+		"webhook-deliveries": h.handleListWebhookDeliveries,
+		"events":             h.handleFactoryEvents,
+		"inbox":              h.handleInbox,
+		"automations":        h.handleAutomations,
+		"pause":              h.handlePauseAutomation,
+		"resume":             h.handleResumeAutomation,
+		"webhooks":           h.handleWebhooks,
+		"workers":            h.handleWorkers,
+		"secrets":            h.handleSecrets,
+		"identities":         h.handleIdentities,
+		"summary":            h.handleSummary,
 	}
 	for _, rt := range consoleRoutes() {
 		fn, ok := handlers[rt.name]
@@ -222,6 +229,20 @@ func (h *handler) handleSteer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, orEmpty(steers))
+}
+
+func (h *handler) handleListSteers(w http.ResponseWriter, r *http.Request) {
+	hist, ok := h.backend.(SteerHistory)
+	if !ok {
+		writeProblem(w, http.StatusNotImplemented, consoleUnwiredDetail)
+		return
+	}
+	rows, err := hist.ListSteers(r.Context(), r.PathValue("runId"))
+	if err != nil {
+		h.writeConsoleErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, orEmpty(rows))
 }
 
 func (h *handler) handleFactoryEvents(w http.ResponseWriter, r *http.Request) {

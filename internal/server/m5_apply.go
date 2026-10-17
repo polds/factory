@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/polds/factory/internal/api"
@@ -118,10 +119,45 @@ func (s *Server) ApplyDefinitionTree(ctx context.Context, factoryID string, tree
 	return api.DefinitionRef{ID: id}, toDiagnostics(diags), nil
 }
 
+// errSwapIncomplete means a mounted definition tree was left mid-rename.
+// The error text names the staging directory, which is kept for the retry.
+var errSwapIncomplete = errors.New("definition swap incomplete")
+
+// copyFile and renameFile are the mounted-swap seams. Nil uses the
+// fsync copy and os.Rename. Tests replace them under definitionOpMu.
+var (
+	definitionOpMu sync.Mutex
+	copyFile       = copyFileSynced
+	renameFile     = os.Rename
+)
+
+func copyDefinitionSeam(src, dst string) error {
+	definitionOpMu.Lock()
+	fn := copyFile
+	definitionOpMu.Unlock()
+	if fn == nil {
+		fn = copyFileSynced
+	}
+	return fn(src, dst)
+}
+
+func renamePath(old, newName string) error {
+	definitionOpMu.Lock()
+	fn := renameFile
+	definitionOpMu.Unlock()
+	if fn == nil {
+		fn = os.Rename
+	}
+	return fn(old, newName)
+}
+
 // installDefinitionDir replaces dest with a complete copy of src. The copy
 // is written to a sibling temp directory and renamed into place, so a crash
-// leaves the previous tree or the new one. A mount point cannot be renamed;
-// that case replaces the files inside dest from the completed temp tree.
+// leaves the previous tree or the new one. A mount point cannot be renamed.
+// That case copies each staged file into a sibling temp inside dest, then
+// renames those temps into place. During the rename each file is the old
+// one or the new one. A successful return never leaves a mixed tree or a
+// temp file. A rename failure keeps the staging directory and names it.
 func installDefinitionDir(src, dest string) error {
 	if src == "" || dest == "" || src == dest {
 		return nil
@@ -140,7 +176,7 @@ func installDefinitionDir(src, dest string) error {
 	}
 	backup := filepath.Join(parent, "."+filepath.Base(dest)+".prev")
 	_ = os.RemoveAll(backup)
-	if err := os.Rename(dest, backup); err != nil {
+	if err := renamePath(dest, backup); err != nil {
 		if os.IsNotExist(err) {
 			return moveStaging(staging, dest)
 		}
@@ -172,10 +208,131 @@ func moveStaging(staging, dest string) error {
 }
 
 func replaceMountedDefinition(staging, dest string) error {
-	err := replaceDefinitionTree(staging, dest)
-	_ = os.RemoveAll(staging)
+	err := swapMountedDefinition(staging, dest)
 	if err != nil {
+		if errors.Is(err, errSwapIncomplete) {
+			return fmt.Errorf("server: install definition: %w", err)
+		}
+		_ = os.RemoveAll(staging)
 		return fmt.Errorf("server: install definition: %w", err)
+	}
+	_ = os.RemoveAll(staging)
+	return nil
+}
+
+// swapMountedDefinition copies staged files onto temps inside dest, then
+// renames each temp into place. A copy failure removes the temps and
+// returns with dest still the old tree. A rename failure returns
+// errSwapIncomplete and leaves staging in place. Extra files are removed
+// only after every rename succeeds.
+func swapMountedDefinition(staging, dest string) error {
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return err
+	}
+	type stagedFile struct {
+		rel    string
+		temp   string
+		target string
+	}
+	var staged []stagedFile
+	walkErr := filepath.WalkDir(staging, func(filePath string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(staging, filePath)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if !filepath.IsLocal(rel) {
+			return fmt.Errorf("server: install definition: %s escapes the tree", rel)
+		}
+		target := filepath.Join(dest, filepath.FromSlash(rel))
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		temp := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".m5new")
+		if err := copyDefinitionSeam(filePath, temp); err != nil {
+			return err
+		}
+		staged = append(staged, stagedFile{rel: rel, temp: temp, target: target})
+		return nil
+	})
+	if walkErr != nil {
+		for _, file := range staged {
+			_ = os.Remove(file.temp)
+		}
+		return walkErr
+	}
+	keep := make(map[string]struct{}, len(staged))
+	for _, file := range staged {
+		if err := renamePath(file.temp, file.target); err != nil {
+			return fmt.Errorf("%w (%s)", errSwapIncomplete, staging)
+		}
+		keep[file.rel] = struct{}{}
+	}
+	return removeExtraDefinitionFiles(dest, keep)
+}
+
+func removeExtraDefinitionFiles(dest string, keep map[string]struct{}) error {
+	var extra []string
+	err := filepath.WalkDir(dest, func(filePath string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return walkErr
+		}
+		rel, err := filepath.Rel(dest, filePath)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if _, ok := keep[rel]; !ok {
+			extra = append(extra, filePath)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, filePath := range extra {
+		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyFileSynced(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(dst)
+		return err
 	}
 	return nil
 }
@@ -224,97 +381,6 @@ func copyDefinitionFile(src, dst string) error {
 		return err
 	}
 	return out.Close()
-}
-
-func replaceDefinitionTree(staging, dest string) error {
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return err
-	}
-	keep := map[string]struct{}{}
-	err := filepath.WalkDir(staging, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		rel, err := filepath.Rel(staging, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
-		if !filepath.IsLocal(rel) {
-			return fmt.Errorf("server: install definition: %s escapes the tree", rel)
-		}
-		target := filepath.Join(dest, filepath.FromSlash(rel))
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		if err := placeDefinitionFile(path, target); err != nil {
-			return err
-		}
-		keep[rel] = struct{}{}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	var extra []string
-	err = filepath.WalkDir(dest, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil || d.IsDir() {
-			return walkErr
-		}
-		rel, err := filepath.Rel(dest, path)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-		if _, ok := keep[rel]; !ok {
-			extra = append(extra, path)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	for _, path := range extra {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
-}
-
-func placeDefinitionFile(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	tmp := dst + ".tmp"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, dst)
 }
 
 func parseUploadedTree(body []byte) (uploadedTree, bool) {

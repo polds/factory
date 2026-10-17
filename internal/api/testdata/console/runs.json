@@ -7,17 +7,24 @@
     "work_item_id": "task_01",
     "parent_run_id": "run_parent",
     "failure_reason": "container_exit",
+    "created_at": "2026-04-02T15:30:00Z",
+    "started_at": "2026-04-02T15:30:01Z",
+    "worker": "local-1",
+    "source": "issue",
     "failure_class": "agent",
+    "failure_code": "agent_reported",
     "failure_summary": "The agent reported the run as failed",
     "queue_wait_ms": 1200,
     "exec_ms": 45000,
-    "cost_cents": 3
+    "cost_cents": 3,
+    "exit_code": 10
   },
   {
     "id": "run_01M53XJ9A6NZ62RF26AK9ZDNQL",
     "status": "running",
     "factory_id": "fac_1",
     "agent": "implementer",
+    "created_at": "2026-04-02T15:31:00Z",
     "queue_wait_ms": 0,
     "exec_ms": 0
   },
@@ -26,6 +33,7 @@
     "status": "succeeded",
     "factory_id": "fac_1",
     "agent": "implementer",
+    "created_at": "2026-04-02T15:32:00Z",
     "queue_wait_ms": 10,
     "exec_ms": 20,
     "cost_cents": 0

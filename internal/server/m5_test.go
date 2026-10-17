@@ -1447,10 +1447,12 @@ func TestM5SecretWalk(t *testing.T) {
 	runID := env.startRun(t, "secrets")
 	asg := w.readAssignment(t)
 	token := asg.EnvVars["FACTORY_RUN_TOKEN"]
+	plantedRun, webhookUID, _ := plantNoSecretSurfaces(t, env)
 	paths := []string{
 		"/api/v1/factory/m2/definition",
 		"/api/v1/agent/runs",
 		"/api/v1/agent/runs/" + runID,
+		"/api/v1/agent/runs/" + plantedRun + "/steers",
 		"/api/v1/agent/runs/" + runID + "/timeline",
 		"/api/v1/agent/runs/" + runID + "/harness-usage",
 		"/api/v1/factory/m2/inbox",
@@ -1460,6 +1462,7 @@ func TestM5SecretWalk(t *testing.T) {
 		"/api/v1/factory/m2/secrets",
 		"/api/v1/agent/identities",
 		"/api/v1/factory/m2/summary?from=2026-04-01T00:00:00Z&to=2026-04-02T00:00:00Z",
+		"/api/v1/factory/m2/webhooks/" + webhookUID + "/deliveries?include=body",
 	}
 	for _, path := range paths {
 		code, raw := env.authed(t, http.MethodGet, path, "")
@@ -1480,7 +1483,7 @@ func TestM5SecretWalk(t *testing.T) {
 
 func forbidPlanted(t *testing.T, where, body, token string) {
 	t.Helper()
-	for _, secret := range []string{plantedGH, plantedNPM, plantedOpenAI, token} {
+	for _, secret := range []string{plantedGH, plantedNPM, plantedOpenAI, token, plantedGitUser, plantedSnapName, plantedSnapText, plantedHeaderHold} {
 		if secret != "" && strings.Contains(body, secret) {
 			t.Fatalf("%s contains a planted secret", where)
 		}

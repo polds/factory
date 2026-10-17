@@ -95,6 +95,7 @@ describe("run detail", () => {
     expect(raw).not.toHaveAttribute("open");
     expect([...(raw?.querySelectorAll("dt") ?? [])].map((node) => node.textContent)).toEqual([
       "failure_reason",
+      "exit_code",
       "code",
       "retryable",
       "evidence",

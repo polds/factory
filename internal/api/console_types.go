@@ -74,6 +74,18 @@ type ConsoleBackend interface {
 	Summary(ctx context.Context, factory string, from, to time.Time) (Summary, error)
 }
 
+// SteerHistory lists steers for a run. API-key auth, not the run token.
+// A backend that does not implement it answers 501.
+type SteerHistory interface {
+	ListSteers(ctx context.Context, runID string) ([]SteerRecord, error)
+}
+
+// WebhookDeliveryBackend lists one webhook's deliveries.
+// A backend that does not implement it answers 404, matching DeliveryBackend.
+type WebhookDeliveryBackend interface {
+	ListWebhookDeliveries(ctx context.Context, factoryID, webhookUID, status string, limit int) ([]Delivery, error)
+}
+
 const (
 	// DefinitionGit is a git-backed factory. The editor is read-only.
 	DefinitionGit = "git"
@@ -128,6 +140,7 @@ type DefinitionView struct {
 	GitSHA        string           `json:"git_sha"`
 	ProductionRef string           `json:"production_ref"`
 	Editable      bool             `json:"editable"`
+	ForgeURL      string           `json:"forge_url,omitempty"`
 	Files         []DefinitionFile `json:"files"`
 	HeldValue     hidden           `json:"-"`
 	HeldSign      hidden           `json:"-"`
@@ -164,11 +177,14 @@ type SteerState struct {
 // route keeps returning Run.
 type RunDetail struct {
 	Run
-	Failure     Failure    `json:"failure"`
-	QueueWaitMS int64      `json:"queue_wait_ms"`
-	ExecMS      int64      `json:"exec_ms"`
-	Steer       SteerState `json:"steer"`
-	PRURL       string     `json:"pr_url,omitempty"`
+	Failure            Failure           `json:"failure"`
+	QueueWaitMS        int64             `json:"queue_wait_ms"`
+	ExecMS             int64             `json:"exec_ms"`
+	Steer              SteerState        `json:"steer"`
+	PRURL              string            `json:"pr_url,omitempty"`
+	ExitCode           *int              `json:"exit_code,omitempty"`
+	CostCents          *int64            `json:"cost_cents,omitempty"`
+	KubernetesSnapshot map[string]string `json:"kubernetes_snapshot,omitempty"`
 }
 
 // RunRow is one GET /agent/runs element when ConsoleBackend is wired.
@@ -179,10 +195,23 @@ type RunDetail struct {
 type RunRow struct {
 	Run
 	FailureClass   string `json:"failure_class,omitempty"`
+	FailureCode    string `json:"failure_code,omitempty"`
 	FailureSummary string `json:"failure_summary,omitempty"`
 	QueueWaitMS    int64  `json:"queue_wait_ms"`
 	ExecMS         int64  `json:"exec_ms"`
 	CostCents      *int64 `json:"cost_cents,omitempty"`
+	ExitCode       *int   `json:"exit_code,omitempty"`
+}
+
+// SteerRecord is one row of GET /agent/runs/{id}/steers.
+// Text is present even when empty. DeliveredAt is omitted until the harness acks.
+type SteerRecord struct {
+	ID          string     `json:"id"`
+	Kind        string     `json:"kind"`
+	Text        string     `json:"text"`
+	Actor       string     `json:"actor"`
+	CreatedAt   time.Time  `json:"created_at"`
+	DeliveredAt *time.Time `json:"delivered_at,omitempty"`
 }
 
 // Phase is one row of GET /agent/runs/{id}/timeline.

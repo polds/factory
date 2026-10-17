@@ -38,6 +38,10 @@ describe("definition", () => {
     renderDefinition();
     expect(await screen.findByRole("heading", { name: "Definition" })).toBeInTheDocument();
     expect(screen.getByText("Read-only. Changes go through a pull request.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View on forge" })).toHaveAttribute(
+      "href",
+      "https://github.com/polds/factory/tree/1f55a9fb2873481d8fcfa519cba9cafc3c8d1fa8",
+    );
     expect(screen.getByText("main")).toBeInTheDocument();
     expect(screen.getByText("1f55a9f")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Validate" })).toBeNull();

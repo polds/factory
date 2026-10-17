@@ -3,5 +3,6 @@
   "git_sha": "abc123",
   "production_ref": "main",
   "editable": false,
+  "forge_url": "https://github.com/polds/factory/tree/abc123",
   "files": [{ "path": "factory.yaml", "content": "name: payments\n" }]
 }

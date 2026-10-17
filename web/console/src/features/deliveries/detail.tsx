@@ -85,6 +85,29 @@ export function DeliveryDetail({
           </table>
         )}
       </section>
+      {delivery.events.length > 0 ? (
+        <section aria-label="Normalized event">
+          <h3 className="mb-1 text-xs font-semibold tracking-wide text-[var(--muted-foreground)]">
+            Normalized event
+          </h3>
+          <ul className="space-y-2">
+            {delivery.events.map((event, index) => (
+              <li key={`${event.provider}-${event.event}-${index}`}>
+                <dl className="grid grid-cols-[8rem_1fr] gap-x-2 text-sm">
+                  {eventLine("provider", event.provider)}
+                  {eventLine("event", event.event)}
+                  {eventLine("subject kind", event.subjectKind)}
+                  {eventLine("subject id", event.subjectId)}
+                  {eventLine("subject number", event.subjectNumber)}
+                  {eventLine("subject title", event.subjectTitle)}
+                  {eventLine("actor handle", event.actorHandle)}
+                  {eventLine("thread", event.thread)}
+                </dl>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <section>
         <h3 className="mb-1 flex items-center gap-2 text-xs font-semibold tracking-wide text-[var(--muted-foreground)]">
           Body
@@ -119,4 +142,14 @@ export function DeliveryDetail({
 
 export function Replayed() {
   return <span className="inline-flex items-center gap-1">Replayed just now</span>;
+}
+
+function eventLine(label: string, value: string) {
+  if (!value) return null;
+  return (
+    <>
+      <dt className="text-[var(--muted-foreground)]">{label}</dt>
+      <dd className="break-all">{value}</dd>
+    </>
+  );
 }

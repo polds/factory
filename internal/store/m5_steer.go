@@ -153,6 +153,35 @@ func (s *Store) MarkSteerDelivered(ctx context.Context, id string) error {
 	return nil
 }
 
+// ListSteers returns every steer for runID, oldest first.
+// It does not claim a row, touch a lease, or set delivered_at.
+func (s *Store) ListSteers(ctx context.Context, runID string) ([]Steer, error) {
+	if runID == "" {
+		return nil, fmt.Errorf("store: run is required")
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+steerColumns+`
+		FROM steer_requests
+		WHERE run_id = $1
+		ORDER BY created_at ASC, id ASC`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list steers: %w", err)
+	}
+	defer rows.Close()
+	out := []Steer{}
+	for rows.Next() {
+		st, err := scanSteer(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: list steers: %w", err)
+		}
+		out = append(out, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list steers: %w", err)
+	}
+	return out, nil
+}
+
 func isForeignKey(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23503"

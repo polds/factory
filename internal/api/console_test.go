@@ -101,6 +101,20 @@ func TestConsoleGoldens(t *testing.T) {
 	if f.queryFilter.FailureClass != "agent" {
 		t.Fatalf("list filter %+v", f.queryFilter)
 	}
+	res = call(t, h, http.MethodGet, "/api/v1/agent/runs?factory_id=fac_b", "", apiHeaders())
+	_ = decode[[]RunRow](t, res, http.StatusOK)
+	if f.lastFilter.FactoryID != "fac_b" {
+		t.Fatalf("factory query %+v", f.lastFilter)
+	}
+	res = call(t, h, http.MethodGet, "/api/v1/factory/fac_1/runs?factory_id=fac_b", "", apiHeaders())
+	if res.status != http.StatusBadRequest {
+		t.Fatalf("mismatch status %d body %s", res.status, res.body)
+	}
+	res = call(t, h, http.MethodGet, "/api/v1/factory/fac_1/runs?factory_id=fac_1", "", apiHeaders())
+	_ = decode[[]RunRow](t, res, http.StatusOK)
+	if f.lastFilter.FactoryID != "fac_1" {
+		t.Fatalf("matching factory query %+v", f.lastFilter)
+	}
 	res = call(t, h, http.MethodGet, "/api/v1/factory/fac_1/runs", "", apiHeaders())
 	assertGolden(t, res.body, "runs.json")
 	if f.lastFilter.FactoryID != "fac_1" {
@@ -132,10 +146,17 @@ func TestConsoleAuthNotFoundAndUnwired(t *testing.T) {
 		t.Run(rt.name+"/501", func(t *testing.T) {
 			h := NewHandler(newFake(), testAPIKey, nil)
 			res := call(t, h, rt.method, rt.sample, rt.body, consoleAuth(rt))
-			if res.status != http.StatusNotImplemented {
+			want := http.StatusNotImplemented
+			if rt.unwired != 0 {
+				want = rt.unwired
+			}
+			if res.status != want {
 				t.Fatalf("status %d body %s", res.status, res.body)
 			}
 			assertProblem(t, res)
+			if want != http.StatusNotImplemented {
+				return
+			}
 			var p Problem
 			if err := json.Unmarshal(res.body, &p); err != nil {
 				t.Fatal(err)
@@ -608,65 +629,69 @@ type consoleFake struct {
 	leakErr  bool
 	unauth   bool
 
-	definition   DefinitionView
-	detail       RunDetail
-	rows         []RunRow
-	detailCalls  int
-	timeline     []Phase
-	usage        Usage
-	steerID      string
-	followID     string
-	interruptErr error
-	followErr    error
-	actor        string
-	followText   string
-	followCalls  int
-	steers       []Steer
-	steerToken   string
-	steerAfter   string
-	steerRun     string
-	steerWait    time.Duration
-	blockSteer   bool
-	events       []FactoryEvent
-	gate         chan struct{}
-	closeAfter   bool
-	inclusive    bool
-	started      chan int64
-	inbox        []InboxItem
-	autos        []Automation
-	paused       []string
-	resumed      []string
-	hooks        []Webhook
-	workers      WorkersView
-	secrets      []Secret
-	identities   []Identity
-	summary      Summary
-	sumFrom      time.Time
-	sumTo        time.Time
-	summaryCalls int
+	definition     DefinitionView
+	detail         RunDetail
+	rows           []RunRow
+	detailCalls    int
+	timeline       []Phase
+	usage          Usage
+	steerID        string
+	followID       string
+	interruptErr   error
+	followErr      error
+	actor          string
+	followText     string
+	followCalls    int
+	steers         []Steer
+	steerToken     string
+	steerAfter     string
+	steerRun       string
+	steerWait      time.Duration
+	blockSteer     bool
+	events         []FactoryEvent
+	gate           chan struct{}
+	closeAfter     bool
+	inclusive      bool
+	started        chan int64
+	inbox          []InboxItem
+	autos          []Automation
+	paused         []string
+	resumed        []string
+	hooks          []Webhook
+	workers        WorkersView
+	secrets        []Secret
+	identities     []Identity
+	summary        Summary
+	steerHistory   []SteerRecord
+	hookDeliveries []Delivery
+	sumFrom        time.Time
+	sumTo          time.Time
+	summaryCalls   int
 }
 
 func newConsole(t *testing.T) *consoleFake {
 	t.Helper()
 	f := &consoleFake{
-		fakeBackend: newFake(),
-		planted:     plantedSecret,
-		started:     make(chan int64, 4),
-		definition:  decodeGolden[DefinitionView](t, "definition.json"),
-		detail:      decodeGolden[RunDetail](t, "run.json"),
-		rows:        decodeGolden[[]RunRow](t, "runs.json"),
-		timeline:    decodeGolden[[]Phase](t, "timeline.json"),
-		usage:       decodeGolden[Usage](t, "harness-usage.json"),
-		steerID:     decodeGolden[SteerAck](t, "interrupt.json").SteerID,
-		followID:    decodeGolden[SteerAck](t, "followup.json").SteerID,
-		steers:      decodeGolden[[]Steer](t, "steer.json"),
-		inbox:       decodeGolden[[]InboxItem](t, "inbox.json"),
-		autos:       decodeGolden[[]Automation](t, "automations.json"),
-		hooks:       decodeGolden[[]Webhook](t, "webhooks.json"),
-		workers:     decodeGolden[WorkersView](t, "workers.json"),
-		secrets:     decodeGolden[[]Secret](t, "secrets.json"),
-		identities:  decodeGolden[[]Identity](t, "identities.json"),
-		summary:     decodeGolden[Summary](t, "summary.json"),
+		fakeBackend:    newFake(),
+		planted:        plantedSecret,
+		started:        make(chan int64, 4),
+		definition:     decodeGolden[DefinitionView](t, "definition.json"),
+		detail:         decodeGolden[RunDetail](t, "run.json"),
+		rows:           decodeGolden[[]RunRow](t, "runs.json"),
+		timeline:       decodeGolden[[]Phase](t, "timeline.json"),
+		usage:          decodeGolden[Usage](t, "harness-usage.json"),
+		steerID:        decodeGolden[SteerAck](t, "interrupt.json").SteerID,
+		followID:       decodeGolden[SteerAck](t, "followup.json").SteerID,
+		steers:         decodeGolden[[]Steer](t, "steer.json"),
+		inbox:          decodeGolden[[]InboxItem](t, "inbox.json"),
+		autos:          decodeGolden[[]Automation](t, "automations.json"),
+		hooks:          decodeGolden[[]Webhook](t, "webhooks.json"),
+		workers:        decodeGolden[WorkersView](t, "workers.json"),
+		secrets:        decodeGolden[[]Secret](t, "secrets.json"),
+		identities:     decodeGolden[[]Identity](t, "identities.json"),
+		summary:        decodeGolden[Summary](t, "summary.json"),
+		steerHistory:   decodeGolden[[]SteerRecord](t, "steers.json"),
+		hookDeliveries: decodeGolden[[]Delivery](t, "webhook-deliveries.json"),
 	}
 	return f
 }
@@ -791,6 +816,16 @@ func (f *consoleFake) NextSteers(ctx context.Context, runToken, runID, after str
 	return f.steers, nil
 }
 
+func (f *consoleFake) ListSteers(ctx context.Context, runID string) ([]SteerRecord, error) {
+	if err := f.fail(runID); err != nil {
+		return nil, err
+	}
+	if err := f.blocked(ctx); err != nil {
+		return nil, err
+	}
+	return f.steerHistory, nil
+}
+
 func (f *consoleFake) FactoryEvents(ctx context.Context, factory string, from int64) (<-chan FactoryEvent, error) {
 	if err := f.fail(factory); err != nil {
 		return nil, err
@@ -893,6 +928,19 @@ func (f *consoleFake) Webhooks(ctx context.Context, factory string) ([]Webhook, 
 		return nil, err
 	}
 	return f.hooks, nil
+}
+
+func (f *consoleFake) ListWebhookDeliveries(ctx context.Context, factoryID, webhookUID, status string, limit int) ([]Delivery, error) {
+	if err := f.fail(factoryID); err != nil {
+		return nil, err
+	}
+	if err := f.fail(webhookUID); err != nil {
+		return nil, err
+	}
+	if err := f.blocked(ctx); err != nil {
+		return nil, err
+	}
+	return f.hookDeliveries, nil
 }
 
 func (f *consoleFake) Workers(ctx context.Context) (WorkersView, error) {
