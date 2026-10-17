@@ -645,8 +645,22 @@ watch_signals() {
   done
 }
 
+wipe_dir() {
+  local path="$1"
+  if [[ ! -e "$path" ]]; then
+    return 0
+  fi
+  if rm -rf "$path" 2>/dev/null; then
+    return 0
+  fi
+  docker run --rm --user 0 -v "$path:/wipe" golang:1.26-alpine \
+    sh -c 'find /wipe -mindepth 1 -depth -exec rm -rf {} +'
+}
+
 copy_e2e() {
-  rm -rf "$WORK/e2e" "$SIGNAL" "$EVIDENCE"
+  wipe_dir "$WORK/e2e"
+  wipe_dir "$SIGNAL"
+  wipe_dir "$EVIDENCE"
   mkdir -p "$WORK/e2e" "$EVIDENCE" "$SIGNAL"
   chmod 777 "$EVIDENCE" "$SIGNAL"
   cp "$ROOT/spike/m5/e2e/package.json" \
@@ -762,7 +776,9 @@ if har_path.is_file():
     text = json.dumps(har)
     if api_key:
         text = text.replace(api_key.decode(), "REDACTED")
-    har_path.write_text(text, encoding="utf-8")
+    rewritten = har_path.with_name(har_path.name + ".next")
+    rewritten.write_text(text, encoding="utf-8")
+    os.replace(rewritten, har_path)
 
 trace = root / "day-trace.zip"
 if trace.is_file() and api_key:

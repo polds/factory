@@ -251,7 +251,7 @@ test("day of factory", async ({ browser }) => {
       timeout: 240_000,
     });
     await done.getByRole("link", { name: "m5-day" }).click();
-    await expect(page.getByText("Handoff")).toBeVisible();
+    await expect(page.getByRole("strong", { name: "Handoff" })).toBeVisible();
     const prAck = await signal("deliver", '{"op":"pr"}\n');
     if (!prAck.startsWith("status 2")) throw new Error(`step 6: pr delivery ${prAck}`);
     await expect(page.getByRole("link", { name: prURL })).toBeVisible({ timeout: 60_000 });
@@ -347,7 +347,7 @@ test("day of factory", async ({ browser }) => {
     await page.getByRole("row", { name: /\bci\b/ }).click();
     await page.getByRole("button", { name: "Replay delivery" }).click();
     await page.getByRole("dialog", { name: "Replay this delivery?" }).getByRole("button", { name: "Replay" }).click();
-    await expect(page.getByText("Replayed just now")).toBeVisible();
+    await expect(page.getByText("Replayed just now").first()).toBeVisible();
     expect(replayPosts).toBe(1);
     await saveShot(page, "replay");
     const matched = await signal(
