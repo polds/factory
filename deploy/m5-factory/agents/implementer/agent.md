@@ -2,7 +2,7 @@
 description: Carries out the plan.
 agentType: IMPLEMENT
 model: m5-building
-idleTimeoutMinutes: 1
+idleTimeoutMinutes: 5
 ---
 
 # Implement

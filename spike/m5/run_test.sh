@@ -217,6 +217,92 @@ case_spec_static() {
   done
 }
 
+case_failure_routes_on_building() {
+  python3 - "$ROOT/spike/m5/router.py" <<'PY'
+import importlib.util
+import sys
+
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("m5router", path)
+if spec is None or spec.loader is None:
+    raise SystemExit("router import failed")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+route = mod.Router._route
+
+def check(model, text, want):
+    got = route(None, model, text)
+    if got != want:
+        raise SystemExit(f"{model} {text!r} -> {got}, want {want}")
+
+check("m5-triage", "title m5-agent-failure", "triage")
+check("m5-planning", "title m5-agent-failure", "planning")
+check("m5-building", "m5-agent-failure the agent should report failure", "agent")
+check("m5-triage", "m5-infra-kill wait for the container to stop", "triage")
+check("m5-building", "m5-infra-kill wait for the container to stop", "hold-infra")
+check("m5-reviewing", "m5-infra-kill", "reviewing")
+check("m5-building", "m5-day without follow", "hold-day")
+check("m5-building", "m5-day and m5-follow-up", "building")
+check("m5-triage", "m5-question which staging", "question")
+PY
+}
+
+case_spec_drives_step8() {
+  local spec="$ROOT/spike/m5/e2e/day.spec.ts"
+  local impl="$ROOT/deploy/m5-factory/agents/implementer/agent.md"
+  local triage="$ROOT/deploy/m5-factory/agents/triage/agent.md"
+  grep -F 'm5-infra-kill wait for the container to stop' "$spec" >/dev/null
+  grep -F 'm5-agent-failure the agent should report failure' "$spec" >/dev/null
+  grep -F 'attempt <= 2' "$spec" >/dev/null
+  grep -F 'step 8: infrastructure kill did not land after two attempts' "$spec" >/dev/null
+  grep -F 'step 8: agent failure was not agent / agent_reported after two attempts' "$spec" >/dev/null
+  grep -F 'approveOnly(page, title)' "$spec" >/dev/null
+  grep -F 'failed_by_agent' "$impl" >/dev/null
+  grep -F 'idleTimeoutMinutes: 5' "$impl" >/dev/null
+  grep -F 'wait for the container to stop' "$impl" >/dev/null
+  if grep -F 'failed_by_agent' "$triage" >/dev/null; then
+    echo "triage prompt owns the agent failure" >&2
+    return 1
+  fi
+}
+
+case_prepare_definition_locked_tree() {
+  local tree=""
+  tree="$(mktemp -d)"
+  set +e
+  (
+    DEFS="$tree"
+    MODE=offline
+    mkdir -p "$DEFS/m5-factory"
+    docker run --rm --user 0 -v "$DEFS:/defs" golang:1.26-alpine \
+      sh -c 'mkdir -p /defs/m5-factory/kept && echo locked >/defs/m5-factory/kept/file && chown -R 65532:65532 /defs/m5-factory && chmod 700 /defs/m5-factory'
+    if rm -rf "$DEFS/m5-factory" 2>/dev/null; then
+      echo "host removed the mode-700 tree; fixture is not locked" >&2
+      exit 1
+    fi
+    prepare_definition
+    if [[ ! -f "$DEFS/m5-factory/factory.yaml" ]]; then
+      echo "first prepare did not replace the locked tree" >&2
+      exit 1
+    fi
+    docker run --rm --user 0 -v "$DEFS:/defs" golang:1.26-alpine \
+      sh -c 'mkdir -p /defs/m5-factory/kept && echo locked >/defs/m5-factory/kept/file && chown -R 65532:65532 /defs/m5-factory && chmod 700 /defs/m5-factory'
+    prepare_definition
+    if [[ ! -f "$DEFS/m5-factory/factory.yaml" ]]; then
+      echo "second prepare did not replace the locked tree" >&2
+      exit 1
+    fi
+  )
+  local code=$?
+  set -e
+  if ! rm -rf "$tree" 2>/dev/null; then
+    docker run --rm --user 0 -v "$tree:/wipe" golang:1.26-alpine \
+      sh -c 'find /wipe -mindepth 1 -depth -exec rm -rf {} +'
+    rm -rf "$tree"
+  fi
+  return "$code"
+}
+
 case_compose_config() {
   local out defs gitdir
   defs="$(mktemp -d)"
@@ -273,6 +359,9 @@ run_case task-host-override case_task_host_override
 run_case no-gnu-flags case_no_gnu_flags
 run_case build-flags case_build_flags
 run_case spec-static case_spec_static
+run_case failure-routes-on-building case_failure_routes_on_building
+run_case spec-drives-step8 case_spec_drives_step8
+run_case prepare-locked-tree case_prepare_definition_locked_tree
 run_case compose-config case_compose_config
 
 if [[ "$fails" -ne 0 ]]; then

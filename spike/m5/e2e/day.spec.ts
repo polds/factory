@@ -99,7 +99,7 @@ async function createItem(page: Page, title: string, body: string): Promise<void
   await dialog.getByLabel("Body").fill(body);
   await dialog.getByRole("button", { name: "Create" }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.getByRole("link", { name: title })).toBeVisible();
+  await expect(page.getByRole("link", { name: title }).first()).toBeVisible();
 }
 
 async function openRunningRun(page: Page, title: string): Promise<string> {
@@ -107,7 +107,8 @@ async function openRunningRun(page: Page, title: string): Promise<string> {
   const row = page
     .locator("tr[data-run]")
     .filter({ hasText: title })
-    .filter({ hasText: "Running" });
+    .filter({ hasText: "Running" })
+    .filter({ hasText: "building" });
   await expect(row.first()).toBeVisible({ timeout: 180_000 });
   const runId = (await row.first().getAttribute("data-run")) ?? "";
   if (runId === "") throw new Error(`no run id for ${title}`);
@@ -137,11 +138,55 @@ async function seqs(page: Page): Promise<string[]> {
 async function approveOnly(page: Page, title: string): Promise<void> {
   await openSection(page, "Inbox");
   await axe(page, "inbox");
-  const row = page.locator("li.inbox-row").filter({ hasText: title });
+  const row = page
+    .locator("li.inbox-row")
+    .filter({ hasText: title })
+    .filter({ hasNotText: "Approved by you" });
   await expect(row).toBeVisible({ timeout: 180_000 });
   await row.getByRole("button").first().click();
   await row.getByRole("button", { name: "Approve" }).click();
   await expect(row.getByText("Approved by you")).toBeVisible();
+}
+
+async function failureVisible(page: Page, title: string, code: string): Promise<boolean> {
+  await openSection(page, "Runs");
+  const row = page.locator("tr[data-run]").filter({ hasText: title }).filter({ hasText: code });
+  try {
+    await expect(row.first()).toBeVisible({ timeout: 120_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Live and live-ci use the same path as offline. The failure prompts are on
+// the implementer, so each item is approved through the spec gate first.
+// Two attempts, then a step 8 failure. No skip.
+async function driveInfraKill(page: Page): Promise<void> {
+  const title = "m5-infra-kill wait for the container to stop";
+  const body = "Stay in the model call until the container stops.";
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await createItem(page, title, body);
+    await approveOnly(page, title);
+    try {
+      await killWhenLive(page, title);
+      return;
+    } catch {
+      // The building call was not killed. One more item, then step 8.
+    }
+  }
+  throw new Error("step 8: infrastructure kill did not land after two attempts");
+}
+
+async function driveAgentFailure(page: Page): Promise<void> {
+  const title = "m5-agent-failure the agent should report failure";
+  const body = "Report the failure and stop.";
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await createItem(page, title, body);
+    await approveOnly(page, title);
+    if (await failureVisible(page, title, "agent_reported")) return;
+  }
+  throw new Error("step 8: agent failure was not agent / agent_reported after two attempts");
 }
 
 // Steer comes from the run snapshot, and the harness emits run.capabilities
@@ -178,18 +223,8 @@ test("day of factory", async ({ browser }) => {
     await signIn(page);
     await chooseFactory(page, "m5");
 
-    await createItem(
-      page,
-      "m5-infra-kill",
-      "Stay in the model call until the container stops.",
-    );
-    await killWhenLive(page, "m5-infra-kill");
-
-    await createItem(
-      page,
-      "m5-agent-failure",
-      "Report the failure and stop.",
-    );
+    await driveInfraKill(page);
+    await driveAgentFailure(page);
     await createItem(page, "m5-scratch", "Scratch item. Leave it at the spec gate.");
     await saveShot(page, "board");
     await axe(page, "work-items");
@@ -302,12 +337,13 @@ test("day of factory", async ({ browser }) => {
       page
         .locator("tr[data-run]")
         .filter({ hasText: "m5-agent-failure" })
+        .first()
         .locator("td")
         .last()
         .locator("time"),
     ).toHaveAttribute("datetime", /^\d{4}-/);
     await page.locator("#filter-source").selectOption("manual");
-    await expect(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" })).toBeVisible();
+    await expect(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" }).first()).toBeVisible();
     await expect(page.locator("tr[data-run]").filter({ hasText: "m5-day" })).toHaveCount(0);
     await page.getByRole("button", { name: "Clear filters" }).click();
     await page.locator("#filter-worker").selectOption("local-1");
@@ -315,13 +351,20 @@ test("day of factory", async ({ browser }) => {
     await page.getByRole("button", { name: "Clear filters" }).click();
     const failureGroup = page.getByRole("group", { name: "Failure class" });
     await failureGroup.getByRole("button", { name: "Agent" }).click();
-    const agentListRow = page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" });
+    const agentListRow = page
+      .locator("tr[data-run]")
+      .filter({ hasText: "m5-agent-failure" })
+      .filter({ hasText: "agent_reported" })
+      .first();
     await expect(agentListRow).toBeVisible({ timeout: 60_000 });
     await expect(agentListRow).toContainText("agent_reported");
     await expect(page.locator("tr[data-run]").filter({ hasText: "m5-infra-kill" })).toHaveCount(0);
-    await page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" }).getByRole("link").click();
+    await agentListRow.getByRole("link").click();
     const agentPanel = page.getByRole("region", { name: "Failure" });
     await expect(agentPanel).toHaveAttribute("data-failure-class", "agent");
+    await expect(page.locator(".meta-row > div").filter({ hasText: "Stage" }).locator("dd")).toHaveText(
+      "building",
+    );
     await expect(agentPanel.locator("code", { hasText: "agent_reported" })).toBeVisible();
     await expect(agentPanel.getByText("Agent reported this run as failed")).toBeVisible();
     await expect(agentPanel.getByRole("list", { name: "Evidence" }).getByRole("listitem").first()).toBeVisible();
@@ -332,14 +375,21 @@ test("day of factory", async ({ browser }) => {
 
     await openSection(page, "Runs");
     await failureGroup.getByRole("button", { name: "Infrastructure" }).click();
-    const infraListRow = page.locator("tr[data-run]").filter({ hasText: "m5-infra-kill" });
+    const infraListRow = page
+      .locator("tr[data-run]")
+      .filter({ hasText: "m5-infra-kill" })
+      .filter({ hasText: "container_killed" })
+      .first();
     await expect(infraListRow).toBeVisible();
     await expect(infraListRow).toContainText("container_killed");
     await expect(infraListRow).toContainText("exit 137");
     await expect(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" })).toHaveCount(0);
-    await page.locator("tr[data-run]").filter({ hasText: "m5-infra-kill" }).getByRole("link").click();
+    await infraListRow.getByRole("link").click();
     const infraPanel = page.getByRole("region", { name: "Failure" });
     await expect(infraPanel).toHaveAttribute("data-failure-class", "infrastructure");
+    await expect(page.locator(".meta-row > div").filter({ hasText: "Stage" }).locator("dd")).toHaveText(
+      "building",
+    );
     await expect(infraPanel.locator("code", { hasText: "container_killed" })).toBeVisible();
     await expect(infraPanel.getByRole("list", { name: "Evidence" }).getByRole("listitem").first()).toBeVisible();
     await expect(page.locator(".meta-row > div").filter({ hasText: "Created" }).locator("time")).toHaveAttribute(

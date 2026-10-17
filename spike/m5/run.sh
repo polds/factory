@@ -346,7 +346,9 @@ compose() {
 }
 
 prepare_definition() {
-  rm -rf "$DEFS"
+  # factoryd (uid 65532) replaces this tree with mode 700. A later run
+  # cannot rm it as the host user. wipe_dir falls back to a root container.
+  wipe_dir "$DEFS"
   mkdir -p "$DEFS"
   cp -R "$ROOT/deploy/m5-factory" "$DEFS/m5-factory"
   if [[ "$MODE" != offline ]]; then
@@ -850,6 +852,9 @@ cleanup() {
   mkdir -p "$SIGNAL"
   touch "$SIGNAL/done" 2>/dev/null || true
   stop_background
+  # Drop the definition tree after the mount is gone so the next prep
+  # is not the first thing that has to delete a mode-700 directory.
+  wipe_dir "$DEFS" || true
   if [[ -d "$EVIDENCE" && ! -f "$EVIDENCE/compose.log" ]]; then
     save_logs || true
   fi

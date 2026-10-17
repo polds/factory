@@ -7,7 +7,9 @@ ask_input, then a final. This process forwards every m5-question call to
 that stub and never restarts it, so the parked run and the resumed
 execution share one script cursor.
 
-Other routes:
+Other routes, and only on the building model. Triage and planning
+finish normally so the spec gate is what lets those items reach the
+implementer, matching live and live-ci:
 - m5-agent-failure goes to the agent stub, whose only step is the
   failed_by_agent JSON object.
 - m5-infra-kill is held open until the client disconnects so a docker
@@ -34,7 +36,7 @@ from typing import ClassVar
 
 MODELS = ("m5-triage", "m5-planning", "m5-building", "m5-reviewing")
 HOLD_SECONDS = 55
-INFRA_HOLD_SECONDS = 50
+INFRA_HOLD_SECONDS = 120
 
 
 def blob(body: dict) -> str:
@@ -121,9 +123,9 @@ class Router(BaseHTTPRequestHandler):
     def _route(self, model: str, text: str) -> str:
         if "m5-question" in text:
             return "question"
-        if "m5-agent-failure" in text:
+        if model == "m5-building" and "m5-agent-failure" in text:
             return "agent"
-        if "m5-infra-kill" in text:
+        if model == "m5-building" and "m5-infra-kill" in text:
             return "hold-infra"
         if model == "m5-building" and "m5-day" in text and "m5-follow-up" not in text:
             return "hold-day"
