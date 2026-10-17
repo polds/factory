@@ -605,27 +605,27 @@ func TestSteerFollowupAfterEmptyDrainRunsAtIdleZero(t *testing.T) {
 		}
 		writeAssistant(w, "test added")
 	}
-	var polls int
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		polls++
-		n := polls
-		mu.Unlock()
-		if n == 1 {
-			// The long-poll is in flight and the hub is still empty.
-			// Hold the body until the drain has observed that, then
-			// leave with the poller. The follow-up is on the next poll.
-			select {
-			case <-sawDrain:
-			case <-r.Context().Done():
-				return
-			}
-			<-r.Context().Done()
+		// Idle 0 reads once with wait=0 after it stops the long-poller.
+		// That request is the one that must carry the follow-up. A call
+		// counter treats it as the in-flight long-poll when the poller
+		// has not entered the handler yet, then holds the request until
+		// its own 250ms timeout and the follow-up is never sent.
+		if r.URL.Query().Get("wait") == "0" {
+			writeSteers(w, []map[string]string{
+				{"id": "fu-missed", "kind": "followup", "text": follow},
+			})
 			return
 		}
-		writeSteers(w, []map[string]string{
-			{"id": "fu-missed", "kind": "followup", "text": follow},
-		})
+		// The long-poll is in flight and the hub is still empty.
+		// Hold the body until the drain has observed that, then
+		// leave with the poller.
+		select {
+		case <-sawDrain:
+		case <-r.Context().Done():
+			return
+		}
+		<-r.Context().Done()
 	})
 	code, events, stderr := runSteer(t, ctx, plane.eventsURL, token, prompt, "0s", model, nil)
 	if code != ExitOK {
