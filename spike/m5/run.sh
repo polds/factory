@@ -366,7 +366,7 @@ prepare_git_repo() {
   local bare="$WORK/git/factory.git" wt="$WORK/git-wt"
   rm -rf "$WORK/git" "$wt"
   mkdir -p "$WORK/git" "$wt"
-  git init --bare "$bare"
+  git init --bare -b main "$bare"
   git -C "$wt" init -b main
   cp -R "$ROOT/spike/m5/git-factory/." "$wt/"
   git -C "$wt" add .

@@ -1,8 +1,9 @@
 # factoryd plus git, for the read-only definition factory.
-# factoryd:dev has no git binary. This image copies that binary onto a
-# pinned Alpine that has git, and leaves the checkout directory writable
-# by uid 65532 so a fresh volume inherits that owner.
-FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+# factoryd:dev has no git binary. This image copies that binary onto the
+# same Alpine the worker build uses, which is the one that ships
+# git=2.54.0-r0 and ca-certificates=20260909-r0. The checkout directory
+# is writable by uid 65532 so a fresh volume inherits that owner.
+FROM golang:1.26-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade
 
 RUN apk add --no-cache \
     ca-certificates=20260909-r0 \
