@@ -1,0 +1,11 @@
+[
+  {
+    "name": "labeled-intake",
+    "enabled": true,
+    "runtime_paused": false,
+    "triggers": [{ "provider": "github", "event": "issue_labeled" }],
+    "last_fired_at": "2026-10-17T00:00:00Z",
+    "match_count": 2,
+    "runs_started": 1
+  }
+]

@@ -1,0 +1,4 @@
+[
+  { "id": "fac_payments", "name": "payments", "alias": "pay" },
+  { "id": "fac_platform", "name": "platform" }
+]

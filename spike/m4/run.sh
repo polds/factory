@@ -61,6 +61,10 @@ SRC_DEF="$ROOT/deploy/m4-factory"
 HARNESS_IMAGE="factory-harness:dev"
 TASK_IMAGE="factory-m1-task:dev"
 MODE="${MODE:-offline}"
+PROGRESS_OPEN=0
+PROGRESS_PHASE=""
+SLACK_OPERATOR_PRINTED=0
+SUGGESTED_REPLY="also add a test for an empty name"
 
 OFFLINE_DUMMY_KEY="m4-offline-dummy-7f3c9a"
 OFFLINE_GH="m4-offline-gh-7f3c9a2e"
@@ -651,6 +655,7 @@ fail() {
   local reason="$*"
   trap - ERR
   set +e
+  progress_end
   save_compose_logs
   if ! scan_logs_for_secrets; then
     announce_leak
@@ -1265,25 +1270,80 @@ PY
 }
 
 slack_root_ts() {
-  python3 - "$WORK/slack-state.json" "$PR_URL" <<'PY'
+  slack_card_check handoff
+}
+
+slack_followup_ok() {
+  slack_card_check followup
+}
+
+# slack_card_check reads the fake Slack transcript.
+# handoff: one root card, at least one edit, the PR reply, one Done, no ack.
+# followup: that shape plus exactly one Got it. A later Done from the
+# revision run is allowed. Coalescing can fold stage edits, so the latest
+# card must name every stage rather than one update per stage.
+slack_card_check() {
+  local phase="$1"
+  python3 - "$WORK/slack-state.json" "$PR_URL" "$phase" <<'PY'
 import json
 import sys
 
 doc = json.load(open(sys.argv[1], encoding="utf-8"))
 pr = sys.argv[2]
+phase = sys.argv[3]
 msgs = doc["messages"]
+labels = ["Triage", "Planning", "Building", "Reviewing", "Handoff"]
+
+
+def fail(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def has_blocks(msg):
+    blocks = msg.get("blocks")
+    return isinstance(blocks, list) and len(blocks) > 0
+
+
+def kind(text):
+    if "Pull request opened:" in text and pr in text:
+        return "pr"
+    if "\nDone." in text:
+        return "done"
+    if "Got it" in text:
+        return "ack"
+    return "other"
+
+
 roots = [m for m in msgs if m["op"] == "post" and m["thread_ts"] == ""]
 updates = [m for m in msgs if m["op"] == "update"]
-milestone = [
-    m
-    for m in msgs
-    if m["op"] == "post" and "Pull request opened:" in m["text"] and pr in m["text"]
-]
+threads = [m for m in msgs if m["op"] == "post" and m["thread_ts"]]
+if len(roots) != 1:
+    fail("slack roots %d" % len(roots))
+if not updates:
+    fail("slack card was not edited")
+if not has_blocks(roots[0]) or not has_blocks(updates[-1]):
+    fail("slack card has no blocks")
+latest = updates[-1]["text"]
+missing = [label for label in labels if label not in latest]
+if missing:
+    fail("latest card missing %s" % ", ".join(missing))
+kinds = [kind(m["text"]) for m in threads]
 blob = "\n".join(m["text"] for m in msgs)
-if len(roots) == 1 and updates and milestone and "implementer" in blob and "m4-" in blob:
+if "implementer" not in blob or "m4-" not in blob:
+    fail("slack transcript missing attribution")
+if kinds.count("pr") != 1 or any(k == "other" for k in kinds):
+    fail("slack thread posts %s" % kinds)
+if phase == "handoff":
+    if kinds.count("done") != 1 or kinds.count("ack") != 0:
+        fail("slack thread posts at handoff %s" % kinds)
     print(roots[0]["ts"])
     sys.exit(0)
-sys.exit(1)
+if phase == "followup":
+    if kinds.count("ack") != 1 or kinds.count("done") < 1:
+        fail("slack thread posts after reply %s" % kinds)
+    sys.exit(0)
+fail("unknown slack check %s" % phase)
 PY
 }
 
@@ -2017,6 +2077,53 @@ PY
     >"$WORK/live-issue.json"
 }
 
+stdout_is_tty() {
+  [[ -t 1 ]]
+}
+
+# progress_begin prints one line for a wait. On a TTY later ticks rewrite
+# that line. Off a TTY ticks stay quiet so a log keeps a single line.
+progress_begin() {
+  local phase="$1"
+  PROGRESS_PHASE="$phase"
+  if stdout_is_tty; then
+    printf '\r%s' "$phase"
+    PROGRESS_OPEN=1
+    return 0
+  fi
+  printf '%s\n' "$phase"
+  PROGRESS_OPEN=0
+}
+
+progress_tick() {
+  local phase="${1:-$PROGRESS_PHASE}"
+  if [[ -z "$phase" ]]; then
+    return 0
+  fi
+  if stdout_is_tty; then
+    printf '\r\033[2K%s' "$phase"
+    PROGRESS_OPEN=1
+  fi
+}
+
+progress_end() {
+  if [[ "$PROGRESS_OPEN" -eq 1 ]] && stdout_is_tty; then
+    printf '\n'
+  fi
+  PROGRESS_OPEN=0
+}
+
+print_slack_operator() {
+  local permalink="$1"
+  if [[ "$SLACK_OPERATOR_PRINTED" -eq 1 ]]; then
+    return 0
+  fi
+  SLACK_OPERATOR_PRINTED=1
+  progress_end
+  printf '\n%s\n' "Slack thread: ${permalink}"
+  printf '%s\n' "Suggested reply: ${SUGGESTED_REPLY}"
+}
+
 live_wait_hint() {
   printf '%s\n' "https://github.com/${M4_REPO}/issues/${ISSUE_LIVE}"
   printf '%s\n' "no work item yet: check webhook delivery and sender"
@@ -2285,11 +2392,12 @@ finish_wait_draft_pull() {
 }
 
 wait_draft_pull() {
-  local attempt=0 work_state="" select_rc=0
+  local attempt=0 work_state="" select_rc=0 hint_printed=0
   PR_LIVE_URL=""
   PR_LIVE_SHA=""
   PR_LIVE_NUMBER=""
   PR_LIVE_BRANCH=""
+  progress_begin "waiting for a draft pull request"
   for _ in $(seq 1 360); do
     attempt=$((attempt + 1))
     GH_TOKEN="$LIVE_TOKEN" gh pr list --repo "$M4_REPO" --state open \
@@ -2297,21 +2405,33 @@ wait_draft_pull() {
     select_rc=0
     take_selected_draft "$WORK/live-pr.json" "$ISSUE_LIVE" || select_rc=$?
     if [[ "$select_rc" -eq 0 ]]; then
+      progress_end
       return 0
     fi
     if [[ "$select_rc" -eq 3 ]]; then
+      progress_end
       return 3
     fi
     poll_live_work >"$WORK/live-wait-state"
     work_state="$(cat "$WORK/live-wait-state")"
     case "$work_state" in
-      failed) return 2 ;;
+      failed)
+        progress_end
+        return 2
+        ;;
     esac
     if live_wait_note "$attempt" "$work_state"; then
-      live_wait_hint
+      if [[ "$hint_printed" -eq 0 ]]; then
+        progress_end
+        live_wait_hint
+        hint_printed=1
+        progress_begin "waiting for a draft pull request"
+      fi
     fi
+    progress_tick "waiting for a draft pull request"
     sleep 10
   done
+  progress_end
   return 1
 }
 
@@ -2331,7 +2451,7 @@ if not doc.get("ok"):
     sys.exit(1)
 for msg in doc.get("messages") or []:
     text = msg.get("text") or ""
-    if "Work item" in text and needle in text:
+    if text.startswith("Factory") and needle in text:
         print(msg.get("ts") or "")
         sys.exit(0)
 sys.exit(1)
@@ -2672,13 +2792,16 @@ if [[ "$MODE" == offline ]]; then
   fi
   echo "redelivery deduped"
 
+  progress_begin "waiting for a work item"
   for _ in $(seq 1 60); do
+    progress_tick "waiting for a work item"
     if TASK_ID="$(one_task_id)"; then
       break
     fi
     TASK_ID=""
     sleep 1
   done
+  progress_end
   if [[ -z "$TASK_ID" ]]; then
     fail "labeled delivery did not create exactly one work item"
   fi
@@ -2718,7 +2841,9 @@ if [[ "$MODE" == offline ]]; then
   HEAD_SHA=""
   ROOT_TS=""
   ready=0
+  progress_begin "waiting for handoff"
   for _ in $(seq 1 900); do
+    progress_tick "waiting for handoff"
     fetch_github_state || true
     commits="$(commit_count 2>/dev/null || echo 0)"
     if [[ "$PR_POSTED" -eq 0 && "$commits" -ge 1 ]]; then
@@ -2742,10 +2867,12 @@ if [[ "$MODE" == offline ]]; then
     fi
     sleep 1
   done
+  progress_end
   if [[ "$ready" -ne 1 ]]; then
     fail "pipeline did not reach handoff with a check run and Slack thread"
   fi
   echo "handoff complete; slack root ${ROOT_TS}"
+  print_slack_operator "https://slack.com/archives/${OFFLINE_CHANNEL}/p${ROOT_TS//./}"
 
   schedules="$("$FACTORYCTL" schedules list --factory "$FACTORY_NAME" 2>>"$WORK/factoryctl-schedules.err" || true)"
   if [[ "$schedules" != *"name=hourly"* || "$schedules" != *'cron="@every 1h"'* ]]; then
@@ -2771,7 +2898,9 @@ if [[ "$MODE" == offline ]]; then
     fail "slack reply was not accepted (http ${code}, duplicate ${dup:-missing})"
   fi
   followed=0
+  progress_begin "waiting for a revision"
   for _ in $(seq 1 600); do
+    progress_tick "waiting for a revision"
     fetch_github_state || true
     commits="$(commit_count 2>/dev/null || echo 0)"
     rows="$(building_conversations || true)"
@@ -2783,10 +2912,15 @@ if [[ "$MODE" == offline ]]; then
     fi
     sleep 1
   done
+  progress_end
   if [[ "$followed" -ne 1 ]]; then
     fail "slack reply did not start a second building run on the same conversation"
   fi
   echo "continuation recorded a second commit"
+  fetch_slack_state || true
+  if ! slack_followup_ok; then
+    fail "slack thread did not ack the reply exactly once"
+  fi
 
   save_compose_logs
   if ! scan_logs_for_secrets; then
@@ -2824,7 +2958,7 @@ if [[ "$MODE" == live-ci ]]; then
 
   say "Slack thread"
   read_slack_permalink "$(live_ci_issue_title)" || fail "slack history has no factory root for this issue"
-  echo "slack thread: ${PERMALINK}"
+  print_slack_operator "$PERMALINK"
   write_live_ci_evidence
   save_compose_logs
   if ! scan_logs_for_secrets; then
@@ -2858,7 +2992,7 @@ echo "draft pull request: ${PR_LIVE_URL}"
 say "Slack thread"
 read_slack_permalink || fail "slack history has no factory root for this issue"
 permalink="$PERMALINK"
-echo "slack thread: ${permalink}"
+print_slack_operator "$permalink"
 
 if [[ -n "${REPLY_TEXT:-}" && -n "${SLACK_TEST_USER_TOKEN:-}" ]]; then
   python3 - "$WORK/live-reply.json" "$M4_SLACK_CHANNEL" "$LIVE_ROOT" "$REPLY_TEXT" <<'PY'
@@ -2875,13 +3009,13 @@ PY
     https://slack.com/api/chat.postMessage >"$WORK/live-reply-ack.json" ||
     fail "slack test user reply failed"
   echo "posted REPLY_TEXT into the thread"
-else
-  echo "Reply in the Slack thread. Suggested text: also add a test for an empty name"
 fi
 
 say "Wait for a new commit on the pull request"
 changed=0
+progress_begin "waiting for a revision"
 for _ in $(seq 1 360); do
+  progress_tick "waiting for a revision"
   GH_TOKEN="$LIVE_TOKEN" gh pr view --repo "$M4_REPO" "$PR_LIVE_URL" --json headRefOid \
     >"$WORK/live-head.json" || true
   now="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("headRefOid") or "")' "$WORK/live-head.json" 2>/dev/null || true)"
@@ -2891,6 +3025,7 @@ for _ in $(seq 1 360); do
   fi
   sleep 10
 done
+progress_end
 if [[ "$changed" -ne 1 ]]; then
   fail "pull request head did not change after the Slack reply"
 fi

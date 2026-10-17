@@ -75,6 +75,12 @@ func (c *Client) doJSONQuery(ctx context.Context, method, path string, q url.Val
 	if err := c.requireKey(); err != nil {
 		return err
 	}
+	return c.doBearer(ctx, c.APIKey, method, path, q, in, out, okStatus)
+}
+
+// doBearer is doJSONQuery with an explicit bearer. Steer uses the run token
+// here instead of the factory API key.
+func (c *Client) doBearer(ctx context.Context, token, method, path string, q url.Values, in any, out any, okStatus int) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -91,7 +97,7 @@ func (c *Client) doJSONQuery(ctx context.Context, method, path string, q url.Val
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")

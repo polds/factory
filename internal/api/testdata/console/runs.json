@@ -1,0 +1,33 @@
+[
+  {
+    "id": "run_01M53XJ9A6NZ62RF26AK9ZDNQK",
+    "status": "failed",
+    "factory_id": "fac_1",
+    "agent": "reviewer",
+    "work_item_id": "task_01",
+    "parent_run_id": "run_parent",
+    "failure_reason": "container_exit",
+    "failure_class": "agent",
+    "failure_summary": "The agent reported the run as failed",
+    "queue_wait_ms": 1200,
+    "exec_ms": 45000,
+    "cost_cents": 3
+  },
+  {
+    "id": "run_01M53XJ9A6NZ62RF26AK9ZDNQL",
+    "status": "running",
+    "factory_id": "fac_1",
+    "agent": "implementer",
+    "queue_wait_ms": 0,
+    "exec_ms": 0
+  },
+  {
+    "id": "run_01M53XJ9A6NZ62RF26AK9ZDNQM",
+    "status": "succeeded",
+    "factory_id": "fac_1",
+    "agent": "implementer",
+    "queue_wait_ms": 10,
+    "exec_ms": 20,
+    "cost_cents": 0
+  }
+]

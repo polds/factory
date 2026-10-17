@@ -1,0 +1,8 @@
+[
+  {
+    "subject": "app:factory",
+    "kind": "github_app",
+    "scope": "contents:read",
+    "last_used_at": "2026-10-17T00:00:00Z"
+  }
+]

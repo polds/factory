@@ -120,6 +120,12 @@ func TestE2EM4(t *testing.T) {
 	}
 
 	postSlack(t, env.base+"/api/v1/ingress/slack", e2eSlack, slackReply(root))
+	env.srv.integ.notifier.Settle()
+	slack.waitFor(t, "Got it —")
+	slack.waitFor(t, "Revision requested by U0HUMAN")
+	if n := slack.count("Got it —"); n != 1 {
+		t.Fatalf("ack posts %d", n)
+	}
 	third, ok := worker.readAssignmentWithin(t, 15*time.Second)
 	if !ok {
 		t.Fatal("no continuation assignment")
@@ -752,7 +758,7 @@ func (f *slackFake) serve(w http.ResponseWriter, r *http.Request) {
 	if ts == "" {
 		ts = "1700000000." + strconv.Itoa(f.n)
 	}
-	if r.URL.Path == "/chat.postMessage" {
+	if r.URL.Path == "/chat.postMessage" || r.URL.Path == "/chat.update" {
 		f.posts = append(f.posts, slackPost{channel: msg.Channel, thread: msg.ThreadTS, text: msg.Text, ts: ts})
 	}
 	f.mu.Unlock()
@@ -776,6 +782,18 @@ func (f *slackFake) waitFor(t *testing.T, needle string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	t.Fatalf("slack missing %q in %+v", needle, f.posts)
+}
+
+func (f *slackFake) count(needle string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, post := range f.posts {
+		if strings.Contains(post.text, needle) {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *slackFake) rootTS() string {

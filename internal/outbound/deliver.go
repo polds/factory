@@ -48,13 +48,23 @@ func (n *Notifier) deliverSlack(ctx context.Context, notice Notice) error {
 	if thread.Channel != "" {
 		channel = thread.Channel
 	}
+	mem, err := n.loadCard(ctx, notice.WorkItemID)
+	if err != nil {
+		return err
+	}
+	notice = applyCard(notice, mem)
 	link := n.link(notice.RunID)
+	findings := mem.Findings
+	if notice.Kind == KindFindings {
+		findings = findingsLine(notice.Text, link)
+	}
+	text, blocks := renderCard(notice, link, findings)
+	fresh := false
 	if thread.RootRef == "" {
 		var ts string
-		text := renderRoot(notice, link)
 		if err := n.retry(ctx, func(ctx context.Context) error {
 			var postErr error
-			ts, postErr = n.slack.Post(ctx, channel, "", text, nil)
+			ts, postErr = n.slack.Post(ctx, channel, "", text, blocks)
 			return postErr
 		}); err != nil {
 			return err
@@ -64,48 +74,52 @@ func (n *Notifier) deliverSlack(ctx context.Context, notice Notice) error {
 		if err := n.save(ctx, thread); err != nil {
 			return err
 		}
+		n.markSent(slotKey(key, "card"))
 		n.log.Info("outbound posted", "work_item", notice.WorkItemID, "provider", ProviderSlack, "kind", "root")
+		fresh = true
 	}
 	if err := n.bindSlack(ctx, notice, channel, thread.RootRef); err != nil {
 		return err
 	}
-	if thread.StatusMsgRef == "" {
-		var ts string
-		text := renderStatus(notice, link)
+	if !fresh {
+		target := thread.RootRef
+		slot := "card"
+		if legacyStatus(thread.StatusMsgRef) {
+			target = thread.StatusMsgRef
+			slot = "status"
+		}
+		ts := target
+		if err := n.edit(ctx, slotKey(key, slot), func(ctx context.Context) error {
+			return n.slack.Update(ctx, channel, ts, text, blocks)
+		}); err != nil {
+			return err
+		}
+	}
+	mem, changed := rememberCard(mem, notice, findings)
+	if slackReply(notice.Kind) {
+		if notice.Kind == KindReplyReceived && notice.RunID != "" && mem.acked(notice.RunID) {
+			if changed {
+				return n.saveCard(ctx, notice.WorkItemID, mem)
+			}
+			return nil
+		}
+		reply, replyBlocks := renderThreadReply(notice, link)
 		root := thread.RootRef
 		if err := n.retry(ctx, func(ctx context.Context) error {
-			var postErr error
-			ts, postErr = n.slack.Post(ctx, channel, root, text, nil)
+			_, postErr := n.slack.Post(ctx, channel, root, reply, replyBlocks)
 			return postErr
 		}); err != nil {
 			return err
 		}
-		thread.StatusMsgRef = ts
-		if err := n.save(ctx, thread); err != nil {
-			return err
-		}
-		n.markSent(slotKey(key, "status"))
 		n.log.Info("outbound posted", "work_item", notice.WorkItemID, "provider", ProviderSlack, "kind", string(notice.Kind))
-	} else {
-		statusTS := thread.StatusMsgRef
-		if err := n.edit(ctx, slotKey(key, "status"), func(ctx context.Context) error {
-			return n.slack.Update(ctx, channel, statusTS, renderStatus(notice, link), nil)
-		}); err != nil {
-			return err
+		if notice.Kind == KindReplyReceived && notice.RunID != "" && !mem.acked(notice.RunID) {
+			mem.Acked = append(mem.Acked, notice.RunID)
+			changed = true
 		}
 	}
-	if !milestone(notice.Kind) {
-		return nil
+	if changed {
+		return n.saveCard(ctx, notice.WorkItemID, mem)
 	}
-	text := renderMilestone(notice, link)
-	root := thread.RootRef
-	if err := n.retry(ctx, func(ctx context.Context) error {
-		_, postErr := n.slack.Post(ctx, channel, root, text, nil)
-		return postErr
-	}); err != nil {
-		return err
-	}
-	n.log.Info("outbound posted", "work_item", notice.WorkItemID, "provider", ProviderSlack, "kind", string(notice.Kind))
 	return nil
 }
 

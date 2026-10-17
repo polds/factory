@@ -6,18 +6,22 @@
 // shutdown can stop the caller.
 //
 // Each work item has one thread row per provider (Thread). Slack posts one
-// root and then edits one status message in the thread. GitHub keeps one
-// marker comment and one check run, both edited in place. Linear keeps one
-// comment and edits it. Question, pull-request, and done events also post a
-// new thread reply. Status edits are coalesced to at most one per two
-// seconds per message. Each attempt backs off exponentially, at most eight
-// tries, and never waits longer than five minutes.
+// Block Kit status card as the thread root and edits that message in place.
+// A thread that already stored StatusMsgRef keeps editing that older status
+// message. New threads leave StatusMsgRef empty. GitHub keeps one marker
+// comment and one check run, both edited in place. Linear keeps one comment
+// and edits it. Slack thread replies are only the events a person must see:
+// a question, an approval, a pull request, a failure, handoff, and the
+// "Got it" ack for a follow-up. Those edits are coalesced to at most one per
+// two seconds per message. Each attempt backs off exponentially, at most
+// eight tries, and never waits longer than five minutes.
 //
 // Slack posts for a GitHub-originated item use Config.SlackChannel, copied
 // from definition.SlackIntegration.Channel (json channel). T30 also sets
 // Notice.Channel from the live definition so a later sync is visible
 // without rebuilding the notifier. Every post names the agent and the model
-// and links the run under Config.ExternalURL (FACTORY_EXTERNAL_URL).
+// and links the run. Config.RunURL, when set, replaces the API link with the
+// console run page. Nil keeps Config.ExternalURL + /api/v1/agent/runs/{id}.
 //
 // When Config.Refs, Notice.SlackTeam, and Notice.ConversationID are set, the
 // Slack root is bound as slack:<team>/<channel>/<root ts> so a reply

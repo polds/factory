@@ -1,0 +1,7 @@
+{
+  "source": "git",
+  "git_sha": "abc123",
+  "production_ref": "main",
+  "editable": false,
+  "files": [{ "path": "factory.yaml", "content": "name: payments\n" }]
+}

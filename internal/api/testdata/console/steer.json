@@ -1,0 +1,12 @@
+[
+  {
+    "id": "steer_01",
+    "kind": "interrupt",
+    "text": ""
+  },
+  {
+    "id": "steer_02",
+    "kind": "followup",
+    "text": "try the other file"
+  }
+]

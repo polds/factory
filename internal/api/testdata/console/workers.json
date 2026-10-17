@@ -1,0 +1,24 @@
+{
+  "workers": [
+    {
+      "id": "w1",
+      "pool": "default",
+      "platform": "linux/amd64",
+      "backend": "docker",
+      "version": "1.0.0",
+      "in_flight": 1,
+      "capacity": 2,
+      "heartbeat_age_ms": 500,
+      "reconnects": 0,
+      "rejected_1h": 1
+    }
+  ],
+  "pools": [
+    {
+      "pool": "default",
+      "queue_depth": 3,
+      "p50_time_to_assign_ms": 800,
+      "rejected_1h": 1
+    }
+  ]
+}
