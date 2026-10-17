@@ -277,6 +277,7 @@ case_live_model_url() {
   [[ "$text" == *"Check suite"* ]] || return 1
   [[ "$text" == *"A trycloudflare quick tunnel changes URL on every restart."* ]] || return 1
   [[ "$text" == *"Set M4_LIVE_MODEL to an id the server lists."* ]] || return 1
+  [[ "$text" == *"This machine lists models on 127.0.0.1 at that port."* ]] || return 1
   [[ "$text" == *"M4_LIVE_MODEL_TRIAGE"* ]] || return 1
   [[ "$text" == *"M4_LIVE_MODEL_PLANNING"* ]] || return 1
   [[ "$text" == *"M4_LIVE_MODEL_BUILDING"* ]] || return 1
@@ -1185,6 +1186,217 @@ PY
   return "$rc"
 }
 
+case_host_catalog_probe() {
+  local dir="" bin="" log="" rc=0
+  local saved_path="$PATH" saved_task="${TASK_HOST:-}" had_task=0
+  local saved_url="" saved_key="" saved_model=""
+  local had_url=0 had_key=0 had_model=0
+  local saved_triage="" saved_planning="" saved_building="" saved_reviewing=""
+  local had_triage=0 had_planning=0 had_building=0 had_reviewing=0
+  if [[ -n "${TASK_HOST+x}" ]]; then
+    had_task=1
+  fi
+  if [[ -n "${OPENAI_BASE_URL+x}" ]]; then
+    had_url=1
+    saved_url="$OPENAI_BASE_URL"
+  fi
+  if [[ -n "${OPENAI_API_KEY+x}" ]]; then
+    had_key=1
+    saved_key="$OPENAI_API_KEY"
+  fi
+  if [[ -n "${M4_LIVE_MODEL+x}" ]]; then
+    had_model=1
+    saved_model="$M4_LIVE_MODEL"
+  fi
+  if [[ -n "${M4_LIVE_MODEL_TRIAGE+x}" ]]; then
+    had_triage=1
+    saved_triage="$M4_LIVE_MODEL_TRIAGE"
+  fi
+  if [[ -n "${M4_LIVE_MODEL_PLANNING+x}" ]]; then
+    had_planning=1
+    saved_planning="$M4_LIVE_MODEL_PLANNING"
+  fi
+  if [[ -n "${M4_LIVE_MODEL_BUILDING+x}" ]]; then
+    had_building=1
+    saved_building="$M4_LIVE_MODEL_BUILDING"
+  fi
+  if [[ -n "${M4_LIVE_MODEL_REVIEWING+x}" ]]; then
+    had_reviewing=1
+    saved_reviewing="$M4_LIVE_MODEL_REVIEWING"
+  fi
+  dir="$(mktemp -d)"
+  bin="$dir/bin"
+  log="$dir/curl.log"
+  mkdir -p "$bin"
+  cat >"$bin/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_CURL_LOG"
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    out=$arg
+  fi
+  prev=$arg
+done
+if [ -n "$out" ]; then
+  printf '%s\n' '{"data":[{"id":"claude-sonnet-5-5"}]}' > "$out"
+fi
+if [ "$FAKE_CURL_FAIL" = 1 ]; then
+  exit 1
+fi
+exit 0
+EOF
+  chmod +x "$bin/curl"
+  export PATH="$bin:$PATH"
+  export FAKE_CURL_LOG="$log"
+  export FAKE_CURL_FAIL=0
+  export M4_LIVE_MODEL=claude-sonnet-5-5
+  unset M4_LIVE_MODEL_TRIAGE M4_LIVE_MODEL_PLANNING M4_LIVE_MODEL_BUILDING M4_LIVE_MODEL_REVIEWING
+  unset OPENAI_API_KEY
+  unset TASK_HOST
+  assert_eq "$(host_catalog_probe_url "http://host.docker.internal:8317/v1" "")" "http://127.0.0.1:8317/v1" || rc=1
+  assert_eq "$(host_catalog_probe_url "http://172.17.0.1:8317/v1" "172.17.0.1")" "http://127.0.0.1:8317/v1" || rc=1
+  assert_eq "$(host_catalog_probe_url "https://models.example.com/v1" "host.docker.internal")" "https://models.example.com/v1" || rc=1
+  export OPENAI_BASE_URL="http://host.docker.internal:8317/v1"
+  : >"$log"
+  if [[ "$rc" -eq 0 ]] && ! preflight_model_catalog; then
+    echo "loopback catalog probe failed" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q "http://127.0.0.1:8317/v1/models" "$log"; then
+    echo "catalog probe did not use 127.0.0.1:8317" >&2
+    cat "$log" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && grep -F -q "host.docker.internal" "$log"; then
+    echo "catalog probe dialed host.docker.internal" >&2
+    cat "$log" >&2
+    rc=1
+  fi
+  if [[ "$OPENAI_BASE_URL" != "http://host.docker.internal:8317/v1" ]]; then
+    echo "catalog probe rewrote OPENAI_BASE_URL" >&2
+    rc=1
+  fi
+  export OPENAI_API_KEY="sk-test-secret"
+  : >"$log"
+  if [[ "$rc" -eq 0 ]] && ! preflight_model_catalog; then
+    echo "authorized catalog probe failed" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q "Authorization: Bearer sk-test-secret" "$log"; then
+    echo "catalog probe dropped the Authorization header" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q "http://127.0.0.1:8317/v1/models" "$log"; then
+    echo "authorized catalog probe did not use 127.0.0.1:8317" >&2
+    rc=1
+  fi
+  export FAKE_CURL_FAIL=1
+  : >"$log"
+  if [[ "$rc" -eq 0 ]] && preflight_model_catalog >"$dir/fail.out" 2>"$dir/fail.err"; then
+    echo "a failed catalog probe was accepted" >&2
+    rc=1
+  elif [[ "$rc" -eq 0 ]] && ! grep -F -q "could not list models from host.docker.internal:8317 (probed 127.0.0.1:8317)" "$dir/fail.err"; then
+    echo "catalog probe failure did not name both hosts" >&2
+    cat "$dir/fail.err" >&2
+    rc=1
+  elif [[ "$rc" -eq 0 ]] && grep -F -q "sk-test-secret" "$dir/fail.err"; then
+    echo "catalog probe failure leaked the API key" >&2
+    rc=1
+  fi
+  unset OPENAI_API_KEY
+  export FAKE_CURL_FAIL=0
+  export OPENAI_BASE_URL="https://models.example.com/v1"
+  export TASK_HOST="host.docker.internal"
+  : >"$log"
+  if [[ "$rc" -eq 0 ]] && ! preflight_model_catalog; then
+    echo "remote catalog probe failed" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q "https://models.example.com/v1/models" "$log"; then
+    echo "remote catalog probe did not keep the container URL" >&2
+    cat "$log" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && grep -F -q "127.0.0.1" "$log"; then
+    echo "remote catalog probe dialed loopback" >&2
+    cat "$log" >&2
+    rc=1
+  fi
+  export FAKE_CURL_FAIL=1
+  if [[ "$rc" -eq 0 ]] && preflight_model_catalog >"$dir/remote.out" 2>"$dir/remote.err"; then
+    echo "a failed remote catalog probe was accepted" >&2
+    rc=1
+  elif [[ "$rc" -eq 0 ]] && ! grep -F -q "could not list models from models.example.com (probed models.example.com)" "$dir/remote.err"; then
+    echo "remote catalog failure did not name both hosts" >&2
+    cat "$dir/remote.err" >&2
+    rc=1
+  fi
+  export FAKE_CURL_FAIL=0
+  export OPENAI_BASE_URL="http://172.17.0.1:8317/v1"
+  export TASK_HOST="172.17.0.1"
+  : >"$log"
+  if [[ "$rc" -eq 0 ]] && ! preflight_model_catalog; then
+    echo "task-host catalog probe failed" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q "http://127.0.0.1:8317/v1/models" "$log"; then
+    echo "task-host catalog probe did not use 127.0.0.1:8317" >&2
+    cat "$log" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && grep -F -q "172.17.0.1" "$log"; then
+    echo "task-host catalog probe dialed the container host" >&2
+    cat "$log" >&2
+    rc=1
+  fi
+  PATH="$saved_path"
+  if [[ "$had_task" -eq 1 ]]; then
+    TASK_HOST="$saved_task"
+  else
+    unset TASK_HOST
+  fi
+  if [[ "$had_url" -eq 1 ]]; then
+    export OPENAI_BASE_URL="$saved_url"
+  else
+    unset OPENAI_BASE_URL
+  fi
+  if [[ "$had_key" -eq 1 ]]; then
+    export OPENAI_API_KEY="$saved_key"
+  else
+    unset OPENAI_API_KEY
+  fi
+  if [[ "$had_model" -eq 1 ]]; then
+    export M4_LIVE_MODEL="$saved_model"
+  else
+    unset M4_LIVE_MODEL
+  fi
+  if [[ "$had_triage" -eq 1 ]]; then
+    export M4_LIVE_MODEL_TRIAGE="$saved_triage"
+  else
+    unset M4_LIVE_MODEL_TRIAGE
+  fi
+  if [[ "$had_planning" -eq 1 ]]; then
+    export M4_LIVE_MODEL_PLANNING="$saved_planning"
+  else
+    unset M4_LIVE_MODEL_PLANNING
+  fi
+  if [[ "$had_building" -eq 1 ]]; then
+    export M4_LIVE_MODEL_BUILDING="$saved_building"
+  else
+    unset M4_LIVE_MODEL_BUILDING
+  fi
+  if [[ "$had_reviewing" -eq 1 ]]; then
+    export M4_LIVE_MODEL_REVIEWING="$saved_reviewing"
+  else
+    unset M4_LIVE_MODEL_REVIEWING
+  fi
+  unset FAKE_CURL_LOG FAKE_CURL_FAIL
+  rm -rf "$dir"
+  return "$rc"
+}
+
 case_no_gnu_flags() {
   if grep -n -E '(grep[[:space:]]+-P|sed[[:space:]]+-i|[[:space:]]mapfile[[:space:]]|^mapfile[[:space:]]|(^|[[:space:]])timeout[[:space:]])' \
     "$SCRIPT" "$HERE/run_test.sh"; then
@@ -1226,6 +1438,7 @@ run_case prepare_definition_offline case_prepare_definition_offline
 run_case prepare_definition_placeholders case_prepare_definition_placeholders
 run_case prepare_definition_models case_prepare_definition_models
 run_case live_label_sender case_live_label_sender
+run_case host_catalog_probe case_host_catalog_probe
 run_case no_gnu_flags case_no_gnu_flags
 
 echo

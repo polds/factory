@@ -19,8 +19,11 @@
 # loopback: host.docker.internal resolves inside a container, not on the
 # macOS host. The live model URL from a container is
 # http://host.docker.internal:8317/v1. This script does not rewrite a
-# loopback model URL. Live and live-ci rewrite the stub model ids in the
-# mounted copy from M4_LIVE_MODEL. Optional M4_LIVE_MODEL_TRIAGE,
+# loopback model URL into that container URL. The host catalog probe
+# dials 127.0.0.1 with the same scheme, port, and path when the container
+# URL names host.docker.internal or the task host. Live and live-ci
+# rewrite the stub model ids in the mounted copy from M4_LIVE_MODEL.
+# Optional M4_LIVE_MODEL_TRIAGE,
 # M4_LIVE_MODEL_PLANNING, M4_LIVE_MODEL_BUILDING, and
 # M4_LIVE_MODEL_REVIEWING override one role.
 #
@@ -656,6 +659,31 @@ host_router_probe_url() {
   fi
 }
 
+# host_catalog_probe_url is the model URL this process may curl.
+# host.docker.internal does not resolve on the macOS host under OrbStack
+# or Docker Desktop, and the task host is the container-facing name.
+# Those dial 127.0.0.1 with the same scheme, port, and path. Every other
+# host, including a live-ci endpoint, is unchanged. This does not rewrite
+# OPENAI_BASE_URL.
+host_catalog_probe_url() {
+  local raw="$1" task_host="${2:-}"
+  python3 - "$raw" "$task_host" <<'PY'
+import sys
+from urllib.parse import urlparse, urlunparse
+
+raw, task_host = sys.argv[1], sys.argv[2]
+parts = urlparse(raw)
+host = parts.hostname or ""
+if host != "host.docker.internal" and not (task_host and host == task_host):
+    print(raw)
+    raise SystemExit(0)
+netloc = "127.0.0.1"
+if parts.port is not None:
+    netloc = "127.0.0.1:%d" % parts.port
+print(urlunparse((parts.scheme, netloc, parts.path, parts.params, parts.query, "")))
+PY
+}
+
 model_id_safe() {
   [[ "$1" =~ ^[A-Za-z0-9_.:/+-]+$ ]]
 }
@@ -767,39 +795,50 @@ for model_id in ids:
 PY
 }
 
+catalog_probe_error() {
+  local container_host="${1:-unknown}" probe_host="${2:-unknown}"
+  printf 'could not list models from %s (probed %s)\n' "$container_host" "$probe_host"
+}
+
 preflight_model_catalog() {
-  local catalog="" host="" url="" err=""
+  local catalog="" container_host="" probe_url="" probe_host="" url="" err=""
   local triage="" planning="" building="" reviewing=""
+  local -a curl_args=()
   MODEL_CATALOG_ERROR=""
-  host="$(url_log_host "${OPENAI_BASE_URL:-}")"
+  container_host="$(url_log_host "${OPENAI_BASE_URL:-}")"
+  probe_url="$(host_catalog_probe_url "${OPENAI_BASE_URL:-}" "${TASK_HOST:-}")"
+  probe_host="$(url_log_host "$probe_url")"
   case "${OPENAI_BASE_URL:-}" in
     http://* | https://*) ;;
     *)
-      MODEL_CATALOG_ERROR="could not list models from ${host:-unknown}"
+      MODEL_CATALOG_ERROR="$(catalog_probe_error "${container_host:-unknown}" "${probe_host:-unknown}")"
       echo "$MODEL_CATALOG_ERROR" >&2
       return 1
       ;;
   esac
-  if [[ -z "$host" || "${OPENAI_BASE_URL}" == *"@"* ]]; then
-    MODEL_CATALOG_ERROR="could not list models from ${host:-unknown}"
+  if [[ -z "$container_host" || -z "$probe_host" || "${OPENAI_BASE_URL}" == *"@"* || "$probe_url" == *"@"* ]]; then
+    MODEL_CATALOG_ERROR="$(catalog_probe_error "${container_host:-unknown}" "${probe_host:-unknown}")"
     echo "$MODEL_CATALOG_ERROR" >&2
     return 1
   fi
-  catalog="$(mktemp)"
-  url="${OPENAI_BASE_URL%/}/models"
-  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
-    if ! curl -fsS --connect-timeout 5 -m 20 \
-      -H "Authorization: Bearer ${OPENAI_API_KEY}" \
-      -o "$catalog" \
-      "$url"; then
-      rm -f "$catalog"
-      MODEL_CATALOG_ERROR="could not list models from ${host}"
+  case "$probe_url" in
+    http://* | https://*) ;;
+    *)
+      MODEL_CATALOG_ERROR="$(catalog_probe_error "$container_host" "${probe_host:-unknown}")"
       echo "$MODEL_CATALOG_ERROR" >&2
       return 1
-    fi
-  elif ! curl -fsS --connect-timeout 5 -m 20 -o "$catalog" "$url"; then
+      ;;
+  esac
+  catalog="$(mktemp)"
+  url="${probe_url%/}/models"
+  curl_args=(-fsS --connect-timeout 5 -m 20)
+  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    curl_args+=(-H "Authorization: Bearer ${OPENAI_API_KEY}")
+  fi
+  curl_args+=(-o "$catalog" "$url")
+  if ! curl "${curl_args[@]}"; then
     rm -f "$catalog"
-    MODEL_CATALOG_ERROR="could not list models from ${host}"
+    MODEL_CATALOG_ERROR="$(catalog_probe_error "$container_host" "$probe_host")"
     echo "$MODEL_CATALOG_ERROR" >&2
     return 1
   fi
@@ -1560,6 +1599,7 @@ Live checklist
   4. Point the model server at ${LIVE_MODEL_URL}
      (FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL). Containers on Docker
      Desktop reach the Mac through host.docker.internal.
+     This machine lists models on 127.0.0.1 at that port.
      Set M4_LIVE_MODEL to an id the server lists. It replaces m4-triage,
      m4-planning, m4-building, and m4-reviewing. Optional overrides:
      M4_LIVE_MODEL_TRIAGE, M4_LIVE_MODEL_PLANNING, M4_LIVE_MODEL_BUILDING,
