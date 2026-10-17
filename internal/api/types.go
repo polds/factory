@@ -281,8 +281,9 @@ type Delivery struct {
 	Status             string            `json:"status"`
 	MatchedAutomations []string          `json:"matched_automations"`
 	// NormalizedEvents is the persisted event list with the raw key removed.
-	// Nil (column NULL) is omitted. An empty list encodes as [].
-	NormalizedEvents []json.RawMessage `json:"normalized_events,omitempty"`
+	// Nil (column NULL) is omitted. A non-nil empty slice encodes as [].
+	// omitempty would drop both, so the tag is omitzero.
+	NormalizedEvents []json.RawMessage `json:"normalized_events,omitzero"`
 }
 
 // Schedule is one cron schedule. Paused is always present so false is visible.

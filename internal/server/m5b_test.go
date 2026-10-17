@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -152,6 +153,36 @@ func TestM5bMountedSwap(t *testing.T) {
 			t.Fatal("temps or staging left behind")
 		}
 	})
+	t.Run("copy fault removes new nested dirs", func(t *testing.T) {
+		src, dest := definitionPair(t)
+		writeFile(t, filepath.Join(dest, "keep", "old.txt"), "old")
+		writeFile(t, filepath.Join(src, "agents", "a.txt"), "new-a")
+		writeFile(t, filepath.Join(src, "agents", "b.txt"), "new-b")
+		setDefinitionOps(t, func(from, to string) error {
+			if filepath.Base(from) == "b.txt" {
+				return errors.New("copy fault")
+			}
+			return copyFileSynced(from, to)
+		}, func(old, newName string) error {
+			if old == dest {
+				return syscall.EBUSY
+			}
+			return os.Rename(old, newName)
+		})
+		err := installDefinitionDir(src, dest)
+		if err == nil || errors.Is(err, errSwapIncomplete) {
+			t.Fatalf("err %v", err)
+		}
+		if _, statErr := os.Stat(filepath.Join(dest, "agents")); !os.IsNotExist(statErr) {
+			t.Fatalf("new agents dir left behind: %v", statErr)
+		}
+		if readFile(t, filepath.Join(dest, "keep", "old.txt")) != "old" {
+			t.Fatal("existing tree changed")
+		}
+		if definitionTemps(t, filepath.Dir(dest)) != 0 {
+			t.Fatal("temps or staging left behind")
+		}
+	})
 	t.Run("rename fault keeps staging", func(t *testing.T) {
 		src, dest := definitionPair(t)
 		writeFile(t, filepath.Join(dest, "a.txt"), "old-a")
@@ -202,6 +233,10 @@ func TestM5bMountedSwap(t *testing.T) {
 		src, dest := definitionPair(t)
 		writeFile(t, filepath.Join(dest, "a.txt"), "old-a")
 		writeFile(t, filepath.Join(dest, "c.txt"), "extra")
+		writeFile(t, filepath.Join(dest, "old", "c.txt"), "extra-nested")
+		if err := os.MkdirAll(filepath.Join(dest, "empty"), 0o755); err != nil {
+			t.Fatal(err)
+		}
 		writeFile(t, filepath.Join(src, "a.txt"), "new-a")
 		writeFile(t, filepath.Join(src, "b.txt"), "new-b")
 		setDefinitionOps(t, nil, func(old, newName string) error {
@@ -218,6 +253,12 @@ func TestM5bMountedSwap(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(dest, "c.txt")); !os.IsNotExist(err) {
 			t.Fatalf("extra file err %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dest, "old")); !os.IsNotExist(err) {
+			t.Fatalf("empty extra dir err %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dest, "empty")); !os.IsNotExist(err) {
+			t.Fatalf("empty dir err %v", err)
 		}
 		if definitionTemps(t, filepath.Dir(dest)) != 0 {
 			t.Fatal("temps left behind")
@@ -537,6 +578,10 @@ func TestM5bSteerHistory(t *testing.T) {
 	if _, err := env.srv.ListSteers(ctx, "missing"); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("missing %v", err)
 	}
+	code, raw = env.authed(t, http.MethodGet, "/api/v1/agent/runs/missing/steers", "")
+	if code != http.StatusNotFound {
+		t.Fatalf("missing steers %d %s", code, raw)
+	}
 }
 
 func TestM5bNormalizedEvents(t *testing.T) {
@@ -651,6 +696,115 @@ func TestM5bNormalizedEvents(t *testing.T) {
 	code, raw = env.authed(t, http.MethodGet, "/api/v1/factory/m4/webhooks/missing/deliveries", "")
 	if code != http.StatusNotFound {
 		t.Fatalf("missing webhook %d %s", code, raw)
+	}
+
+	nullRow, _, err := env.srv.store.InsertDelivery(ctx, store.Delivery{
+		FactoryID: factoryID, Provider: store.ProviderWebhook, WebhookUID: reg.UID,
+		DeliveryID: "ci-null", Body: []byte(`{"ok":true}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyRow, _, err := env.srv.store.InsertDelivery(ctx, store.Delivery{
+		FactoryID: factoryID, Provider: store.ProviderWebhook, WebhookUID: reg.UID,
+		DeliveryID: "ci-empty", Body: []byte(`{"ok":true}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.srv.store.SetDeliveryNormalized(ctx, emptyRow.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, include := range []string{"", "?include=body"} {
+		code, raw = env.authed(t, http.MethodGet, "/api/v1/factory/m4/webhooks/"+reg.UID+"/deliveries"+include, "")
+		if code != http.StatusOK {
+			t.Fatalf("shapes %s %d %s", include, code, raw)
+		}
+		var raws []json.RawMessage
+		if err := json.Unmarshal(raw, &raws); err != nil {
+			t.Fatal(err)
+		}
+		byID := map[string]json.RawMessage{}
+		for _, item := range raws {
+			var id struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(item, &id); err != nil {
+				t.Fatal(err)
+			}
+			byID[id.ID] = item
+		}
+		if strings.Contains(string(byID[nullRow.ID]), "normalized_events") {
+			t.Fatalf("null column kept the key (%s): %s", include, byID[nullRow.ID])
+		}
+		if !bytes.Contains(byID[emptyRow.ID], []byte(`"normalized_events":[]`)) {
+			t.Fatalf("empty list omitted (%s): %s", include, byID[emptyRow.ID])
+		}
+		if !bytes.Contains(byID[stored.ID], []byte(`"normalized_events":[`)) || bytes.Contains(byID[stored.ID], []byte(`"raw"`)) {
+			t.Fatalf("events (%s): %s", include, byID[stored.ID])
+		}
+		for _, id := range []string{nullRow.ID, emptyRow.ID, stored.ID} {
+			hasBody := bytes.Contains(byID[id], []byte(`"body":`))
+			if hasBody != (include != "") {
+				t.Fatalf("body %s include %q: %s", id, include, byID[id])
+			}
+		}
+	}
+}
+
+func TestM5bWebhookDeliveryPage(t *testing.T) {
+	skipNoDB(t)
+	env := boot(t, bootOpts{})
+	ctx := context.Background()
+	factoryID, _ := env.factoryAgent(t)
+	reg, err := env.srv.store.UpsertWebhookRegistration(ctx, store.WebhookRegistration{
+		FactoryID: factoryID, Name: "page", AuthMode: store.WebhookAuthToken, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 4, 2, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 60; i++ {
+		_, _, err := env.srv.store.InsertDelivery(ctx, store.Delivery{
+			FactoryID:  factoryID,
+			Provider:   store.ProviderWebhook,
+			WebhookUID: reg.UID,
+			DeliveryID: fmt.Sprintf("d-%02d", i),
+			ReceivedAt: base.Add(time.Duration(i) * time.Second),
+			Body:       []byte(`{}`),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, raw := env.authed(t, http.MethodGet, "/api/v1/factory/"+factoryID+"/webhooks/"+reg.UID+"/deliveries", "")
+	if code != http.StatusOK {
+		t.Fatalf("page %d %s", code, raw)
+	}
+	var rows []api.Delivery
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 50 {
+		t.Fatalf("page len %d", len(rows))
+	}
+	if rows[0].DeliveryID != "d-59" || rows[49].DeliveryID != "d-10" {
+		t.Fatalf("order %s .. %s", rows[0].DeliveryID, rows[49].DeliveryID)
+	}
+	if _, err := env.raw.Exec(ctx, `
+		INSERT INTO factories (id, name, schema_version, definition_source)
+		VALUES ('fac_other', 'other', 'v1alpha1', 'local')`); err != nil {
+		t.Fatal(err)
+	}
+	other, err := env.srv.store.UpsertWebhookRegistration(ctx, store.WebhookRegistration{
+		FactoryID: "fac_other", Name: "other", AuthMode: store.WebhookAuthToken, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, raw = env.authed(t, http.MethodGet, "/api/v1/factory/"+factoryID+"/webhooks/"+other.UID+"/deliveries", "")
+	if code != http.StatusNotFound {
+		t.Fatalf("other factory webhook %d %s", code, raw)
 	}
 }
 

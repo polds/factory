@@ -320,6 +320,63 @@ func TestDeliveryListStripsCredentialHeaders(t *testing.T) {
 	}
 }
 
+// TestDeliveryNormalizedEventsWire checks the bytes writeJSON emits.
+// SQL NULL omits normalized_events. A stored [] encodes as [].
+// include=body changes only the body key.
+func TestDeliveryNormalizedEventsWire(t *testing.T) {
+	event := json.RawMessage(`{"event":"received","provider":"webhook"}`)
+	payload := json.RawMessage(`{"ok":true}`)
+	when := time.Date(2026, 4, 2, 15, 4, 5, 0, time.UTC)
+	row := func(id string, events []json.RawMessage) Delivery {
+		return Delivery{
+			ID: id, FactoryID: "fac_1", Provider: "webhook", DeliveryID: id,
+			ReceivedAt: when, Status: ingress.StatusReceived, Body: payload,
+			NormalizedEvents: events,
+		}
+	}
+	b := newM4()
+	b.listed = []Delivery{
+		row("del_null", nil),
+		row("del_empty", []json.RawMessage{}),
+		row("del_event", []json.RawMessage{event}),
+	}
+	h := NewHandler(b, testAPIKey, nil)
+	for _, include := range []bool{false, true} {
+		name := "without body"
+		path := "/api/v1/factory/fac_1/deliveries"
+		if include {
+			name = "with body"
+			path += "?include=body"
+		}
+		t.Run(name, func(t *testing.T) {
+			res := call(t, h, http.MethodGet, path, "", apiHeaders())
+			raws := decode[[]json.RawMessage](t, res, http.StatusOK)
+			if len(raws) != 3 {
+				t.Fatalf("rows %d %s", len(raws), res.body)
+			}
+			if strings.Contains(string(raws[0]), "normalized_events") {
+				t.Fatalf("null column kept the key: %s", raws[0])
+			}
+			if !bytes.Contains(raws[1], []byte(`"normalized_events":[]`)) {
+				t.Fatalf("empty list omitted: %s", raws[1])
+			}
+			if !bytes.Contains(raws[2], []byte(`"normalized_events":[{"event":"received","provider":"webhook"}]`)) {
+				t.Fatalf("events %s", raws[2])
+			}
+			rows := decode[[]Delivery](t, res, http.StatusOK)
+			if rows[0].NormalizedEvents != nil || rows[1].NormalizedEvents == nil || len(rows[1].NormalizedEvents) != 0 || len(rows[2].NormalizedEvents) != 1 {
+				t.Fatalf("decoded %+v", rows)
+			}
+			for i, raw := range raws {
+				hasBody := bytes.Contains(raw, []byte(`"body":{"ok":true}`))
+				if hasBody != include {
+					t.Fatalf("row %d include=%v body %s", i, include, raw)
+				}
+			}
+		})
+	}
+}
+
 func TestSchedulesCRUDPauseAndResume(t *testing.T) {
 	b := newM4()
 	h := NewHandler(b, testAPIKey, nil)

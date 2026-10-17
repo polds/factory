@@ -17,6 +17,9 @@ const (
 	replaySuffix = ":replay"
 	includeBody  = "body"
 	maxListLimit = 1000
+	// defaultWebhookDeliveryLimit is the page when the per-webhook list
+	// omits limit. The store treats 0 as 100, so the handler sets this.
+	defaultWebhookDeliveryLimit = 50
 )
 
 // DeliveryBackend lists and replays persisted deliveries.
@@ -200,6 +203,9 @@ func (h *handler) handleListWebhookDeliveries(w http.ResponseWriter, r *http.Req
 	if !ok {
 		writeProblem(w, http.StatusBadRequest, "limit is invalid")
 		return
+	}
+	if limit == 0 {
+		limit = defaultWebhookDeliveryLimit
 	}
 	rows, err := db.ListWebhookDeliveries(r.Context(), r.PathValue("uid"), r.PathValue("webhookUID"), status, limit)
 	if err != nil {

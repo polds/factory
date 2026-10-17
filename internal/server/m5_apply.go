@@ -221,9 +221,10 @@ func replaceMountedDefinition(staging, dest string) error {
 }
 
 // swapMountedDefinition copies staged files onto temps inside dest, then
-// renames each temp into place. A copy failure removes the temps and
-// returns with dest still the old tree. A rename failure returns
-// errSwapIncomplete and leaves staging in place. Extra files are removed
+// renames each temp into place. A copy failure removes the temps and any
+// directories this attempt created, and returns with dest still the old
+// tree. A rename failure returns errSwapIncomplete and leaves staging in
+// place. Extra files and directories that no longer hold a file are removed
 // only after every rename succeeds.
 func swapMountedDefinition(staging, dest string) error {
 	if err := os.MkdirAll(dest, 0o755); err != nil {
@@ -235,6 +236,7 @@ func swapMountedDefinition(staging, dest string) error {
 		target string
 	}
 	var staged []stagedFile
+	var created []string
 	walkErr := filepath.WalkDir(staging, func(filePath string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -252,7 +254,7 @@ func swapMountedDefinition(staging, dest string) error {
 		}
 		target := filepath.Join(dest, filepath.FromSlash(rel))
 		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
+			return mkdirTracked(dest, rel, &created)
 		}
 		if !d.Type().IsRegular() {
 			return nil
@@ -268,6 +270,7 @@ func swapMountedDefinition(staging, dest string) error {
 		for _, file := range staged {
 			_ = os.Remove(file.temp)
 		}
+		removeCreatedDirs(created)
 		return walkErr
 	}
 	keep := make(map[string]struct{}, len(staged))
@@ -302,6 +305,71 @@ func removeExtraDefinitionFiles(dest string, keep map[string]struct{}) error {
 	for _, filePath := range extra {
 		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
 			return err
+		}
+	}
+	return pruneEmptyDefinitionDirs(dest)
+}
+
+// mkdirTracked creates rel under root and records directories that did not
+// already exist. root itself is never recorded.
+func mkdirTracked(root, rel string, created *[]string) error {
+	var missing []string
+	cur := root
+	for _, part := range strings.Split(rel, "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		cur = filepath.Join(cur, part)
+		_, err := os.Stat(cur)
+		if err == nil {
+			continue
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		missing = append(missing, cur)
+	}
+	for _, dir := range missing {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			return err
+		}
+		*created = append(*created, dir)
+	}
+	return nil
+}
+
+func removeCreatedDirs(dirs []string) {
+	for i := len(dirs) - 1; i >= 0; i-- {
+		_ = os.Remove(dirs[i])
+	}
+}
+
+// pruneEmptyDefinitionDirs removes directories under dest that contain no
+// entries, deepest first. dest itself stays.
+func pruneEmptyDefinitionDirs(dest string) error {
+	var dirs []string
+	err := filepath.WalkDir(dest, func(filePath string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil || !d.IsDir() || filePath == dest {
+			return walkErr
+		}
+		dirs = append(dirs, filePath)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for i := len(dirs) - 1; i >= 0; i-- {
+		entries, err := os.ReadDir(dirs[i])
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if len(entries) == 0 {
+			if err := os.Remove(dirs[i]); err != nil && !os.IsNotExist(err) {
+				return err
+			}
 		}
 	}
 	return nil

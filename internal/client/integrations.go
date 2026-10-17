@@ -34,7 +34,9 @@ type Delivery struct {
 	Truncated          bool              `json:"truncated"`
 	Status             string            `json:"status"`
 	MatchedAutomations []string          `json:"matched_automations"`
-	NormalizedEvents   []json.RawMessage `json:"normalized_events,omitempty"`
+	// NormalizedEvents uses omitzero so a stored [] survives a remarshal.
+	// A nil slice (SQL NULL) is omitted.
+	NormalizedEvents []json.RawMessage `json:"normalized_events,omitzero"`
 }
 
 // Schedule is one cron schedule.
