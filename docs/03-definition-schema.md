@@ -160,8 +160,8 @@ channel id that outbound threads post to. Omit it when there is no default chann
 
 **M3 applied.** The loader applies `pipeline:`, routers, and skills. It no
 longer warns that those keys are not applied in M2. Automations, scorers, and
-webhooks are loaded and validated; their engines are later milestones. Unknown
-keys are errors. The YAML JSON Schemas are in
+webhooks are loaded and validated. The automation and webhook engines shipped
+in M4. Scorers are M6. Unknown keys are errors. The YAML JSON Schemas are in
 [`schemas/v1alpha1`](../schemas/v1alpha1), and `factoryd` serves them with no
 authentication.
 

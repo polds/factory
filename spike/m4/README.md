@@ -22,7 +22,7 @@ Scratch is `spike/m4/.work/`, which is gitignored.
 
 Peter's Mac runs OrbStack. `docker info --format '{{.OperatingSystem}}'` prints `OrbStack`.
 
-macOS probes use `127.0.0.1`. Containers use `host.docker.internal`. That name resolves inside a container. On the Mac, the host process uses `127.0.0.1` for the same port. Task containers reach factoryd at `http://host.docker.internal:8080` (`FACTORY_TASK_SERVER_URL`). The model server from a container is `http://host.docker.internal:8317/v1` (`FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL`). The script's catalog probe dials `127.0.0.1` on that port and requests `/models`. Every curl the script makes uses `--connect-timeout 2 -m 5`.
+macOS probes use `127.0.0.1`. Containers use `host.docker.internal`. That name resolves inside a container. On the Mac, the host process uses `127.0.0.1` for the same port. Task containers reach factoryd at `http://host.docker.internal:8080` (`FACTORY_TASK_SERVER_URL`). The model server from a container is `http://host.docker.internal:8317/v1` (`FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL`). The script's catalog probe dials `127.0.0.1` on that port and requests `/models`. That probe, `wait_http`, factoryd `/healthz`, the bridge-container health curls, and the live work-item polls use `--connect-timeout 2 -m 5`.
 
 `M4_LIVE_MODEL` must be a model id taken from the server's `/models` list. The local proxy forwards an id it does not list, and that upstream response is HTTP 403. Offline stub ids (`m4-triage`, `m4-planning`, `m4-building`, `m4-reviewing`) stay in `deploy/m4-factory`. Live rewrites those four ids in the mounted copy from `M4_LIVE_MODEL`. Optional `M4_LIVE_MODEL_TRIAGE`, `M4_LIVE_MODEL_PLANNING`, `M4_LIVE_MODEL_BUILDING`, and `M4_LIVE_MODEL_REVIEWING` override one role. An empty override uses `M4_LIVE_MODEL`.
 
@@ -75,7 +75,7 @@ The pasted record does not include a delivery id, a Slack permalink, a reply tim
 Incidents:
 
 - The first reviewer run, `run_01M53XJ9A6NZ62RF26AK9ZDNQK`, exited 10 (`container_exit`). The factory rebuilt and the second reviewer run passed. The root cause is not investigated yet.
-- An earlier attempt on [issue #83](https://github.com/polds/factory/issues/83) produced two draft PRs, [#84](https://github.com/polds/factory/pull/84) and [#85](https://github.com/polds/factory/pull/85). [PR #91](https://github.com/polds/factory/pull/91) (`M4 T35a: one building run per work item`) merged at `8c42691` on 2026-10-16 9:30 PM PT.
+- An earlier attempt on [issue #83](https://github.com/polds/factory/issues/83) produced two draft PRs, [#84](https://github.com/polds/factory/pull/84) and [#85](https://github.com/polds/factory/pull/85). [PR #91](https://github.com/polds/factory/pull/91) (`M4 T35a: one building run per work item`) merged at `8c42691` (`2026-10-17T04:26:44Z`, 9:26 PM PT on 2026-10-16).
 - That earlier attempt also hit a GitHub token timeout, which showed up as `config_invalid`. PR #91 retries transient token errors.
 - [PR #79](https://github.com/polds/factory/pull/79) (`spike/m4: fix live slack placeholder check`, including a failure when more than one draft PR matches) merged at `138eb68`.
 

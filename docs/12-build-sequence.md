@@ -190,8 +190,9 @@ That root cause is still open. An earlier attempt on
 [issue #83](https://github.com/polds/factory/issues/83) opened draft
 [PR #84](https://github.com/polds/factory/pull/84) and
 [PR #85](https://github.com/polds/factory/pull/85).
-[PR #91](https://github.com/polds/factory/pull/91) merged at `8c42691` on
-2026-10-16 9:30 PM PT and keeps one building run per work item. The same change
+[PR #91](https://github.com/polds/factory/pull/91) merged at `8c42691`
+(`2026-10-17T04:26:44Z`, 9:26 PM PT on 2026-10-16) and keeps one building run
+per work item. The same change
 retries a transient GitHub token error that had shown up as `config_invalid`.
 [PR #79](https://github.com/polds/factory/pull/79) merged at `138eb68`. Leftover
 live-test issues and PRs #77–#90, except #79, were closed on 2026-10-16 with
