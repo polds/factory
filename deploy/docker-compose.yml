@@ -357,7 +357,8 @@ services:
       GIT_TERMINAL_PROMPT: "0"
     volumes:
       - ${M5_GIT_HOST:-/tmp/m5-git}:/git:ro
-      - factory-git-definition:/var/lib/factory/definition
+      # Parent of the definition directory, so defsync can rename it.
+      - factory-git-definition:/var/lib/factory
     healthcheck:
       test: ["CMD", "/factoryd", "healthcheck"]
       interval: 5s

@@ -10,9 +10,13 @@ RUN apk add --no-cache \
     git=2.54.0-r0
 
 COPY --from=factoryd:dev /factoryd /factoryd
+COPY entrypoint.sh /entrypoint.sh
 
-RUN mkdir -p /var/lib/factory/definition \
-    && chown -R 65532:65532 /var/lib/factory
+# The named volume mounts the parent. A new volume inherits this owner,
+# and defsync renames the definition directory inside it.
+RUN mkdir -p /var/lib/factory \
+    && chown -R 65532:65532 /var/lib/factory \
+    && chmod 755 /entrypoint.sh
 
 USER 65532:65532
-ENTRYPOINT ["/factoryd"]
+ENTRYPOINT ["/entrypoint.sh"]
