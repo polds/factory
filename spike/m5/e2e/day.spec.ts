@@ -318,7 +318,9 @@ test("day of factory", async ({ browser }) => {
     await openSection(page, "Work items");
     const done = page.getByRole("region", { name: "Done" });
     const dayCard = done.getByRole("link", { name: "m5-day" });
-    await expect(dayCard).toBeVisible({ timeout: 240_000 });
+    // The harness emits the terminal event after idleTimeoutMinutes (5), and
+    // reviewing starts only then. This wait covers that idle plus the review run.
+    await expect(dayCard).toBeVisible({ timeout: 8 * 60 * 1000 });
     await expect(dayCard).toContainText("m5-reviewing");
     await dayCard.click();
     await expect(page.locator("strong").filter({ hasText: /^Handoff$/ })).toBeVisible();

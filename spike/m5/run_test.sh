@@ -259,6 +259,7 @@ case_spec_drives_step8() {
   grep -F 'approveOnly(page, title)' "$spec" >/dev/null
   grep -F 'failed_by_agent' "$impl" >/dev/null
   grep -F 'idleTimeoutMinutes: 5' "$impl" >/dev/null
+  grep -F 'timeout: 8 * 60 * 1000' "$spec" >/dev/null
   grep -F 'wait for the container to stop' "$impl" >/dev/null
   if grep -F 'failed_by_agent' "$triage" >/dev/null; then
     echo "triage prompt owns the agent failure" >&2
