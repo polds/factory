@@ -122,7 +122,10 @@ Rules that matter:
 - **`usage` is per model call,** not per run, so router decisions can be attributed and
   `cost per PR` is computable by stage ([08](08-measure-and-self-improvement.md)).
 - **`question` suspends the run** without consuming a worker slot once emitted with
-  `--idle-on-complete` still pending.
+  `--idle-on-complete` still pending. `generic-openai` emits it when the model
+  calls `ask_input` with `{"text":"…"}`. `text` is the question and `gate` is
+  `clarification`. The control plane reads `text`, parks the run, and on answer
+  appends the question and answer to the prompt for the next execution.
 
 **v1 workers: event push.** An unmodified v1 worker delivers harness events only
 when the run ends. When `FACTORY_EVENTS_URL` and `FACTORY_RUN_TOKEN` are both
@@ -159,7 +162,7 @@ Everything else is infrastructure, and must not enter scoring.
 | `claude-code` | Wraps the Claude Code CLI; maps NDJSON from its stream output; auth via `ANTHROPIC_API_KEY` or Bedrock/Vertex role |
 | `codex` | Wraps the Codex CLI; `reasoningLevel` → effort flag; auth via `OPENAI_API_KEY` |
 | `warp-agent` | Wraps Warp Agent CLI where an operator has a license; the one adapter we cannot ship an image for |
-| `generic-openai` | Minimal built-in loop against any OpenAI-compatible endpoint, with a fixed tool set (bash, read, write, edit, grep, glob) — the escape hatch that keeps the system usable with local models |
+| `generic-openai` | Minimal built-in loop against any OpenAI-compatible endpoint, with a fixed tool set (bash, read, write, edit, grep, glob, ask_input) — the escape hatch that keeps the system usable with local models |
 | `custom:<name>` | Operator-built image honoring this contract |
 
 `generic-openai` exists so the project has **no** required proprietary dependency. A
@@ -254,8 +257,10 @@ The M1 live run did not write `task.json`. `cmd/m0-spike` copied
 and the harness read them from the process environment. That run used model
 `claude-sonnet-5-5` and opened [PR #12](https://github.com/polds/factory/pull/12).
 
-`bash`, `read`, `write`, `edit`, `grep`, and `glob` are the tool set. `write` and
-`edit` refuse a path outside the workspace. `bash` is not jailed by the process.
+`bash`, `read`, `write`, `edit`, `grep`, `glob`, and `ask_input` are the tool set.
+`ask_input` takes `{"text":"<question>"}` and emits one `question` event, then
+ends the conversation. `write` and `edit` refuse a path outside the workspace.
+`bash` is not jailed by the process.
 The task container is that boundary. Tool subprocesses do not receive
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FACTORY_SECRET_VALUES`, or names listed in
 `task.json` `harness_auth_env`.

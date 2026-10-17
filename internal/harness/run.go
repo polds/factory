@@ -14,7 +14,12 @@ import (
 
 const adapterName = "generic-openai"
 
-const systemPrompt = "You are a coding agent. The working directory is the workspace. Use the tools to complete the task. When you are finished, reply with a short summary and no tool calls. If you cannot complete the task, reply with only this JSON object and no other text: {\"status\":\"failed_by_agent\",\"summary\":\"what failed\"}."
+const systemPrompt = "You are a coding agent. The working directory is the workspace. Use the tools to complete the task. When you are finished, reply with a short summary and no tool calls. If you cannot complete the task, reply with only this JSON object and no other text: {\"status\":\"failed_by_agent\",\"summary\":\"what failed\"}. When the task needs a decision from a person, call ask_input with the question and stop."
+
+const (
+	toolAskInput = "ask_input"
+	questionGate = "clarification"
+)
 
 // Options is the process boundary for one harness invocation.
 type Options struct {
@@ -449,15 +454,22 @@ func (c conversation) oneTurn(ctx context.Context, turn int, messages []chatMess
 			return c.finishInterrupt(ctx, turn, gen, messages)
 		}
 		rawIn := visibleInput(call.Function.Name, call.Function.Arguments)
+		redacted := Redact(rawIn, c.secrets)
 		_ = c.log.Emit(Event{
 			Type:          "tool.call",
 			Turn:          turn,
 			Tool:          call.Function.Name,
-			RedactedInput: Redact(rawIn, c.secrets),
+			RedactedInput: redacted,
 			InputDigest:   Digest(rawIn),
 		})
 		start := time.Now()
-		result := c.box.run(turnCtx, call.Function.Name, call.Function.Arguments)
+		var result toolResult
+		asked := false
+		if call.Function.Name == toolAskInput {
+			result, asked = askInputResult(call.Function.Arguments)
+		} else {
+			result = c.box.run(turnCtx, call.Function.Name, call.Function.Arguments)
+		}
 		ms := time.Since(start).Milliseconds()
 		output := result.Output
 		ok := result.OK
@@ -488,6 +500,13 @@ func (c conversation) oneTurn(ctx context.Context, turn int, messages []chatMess
 			ToolCallID: call.ID,
 			Content:    output,
 		})
+		if asked && !c.turnInterrupted(ctx, turnCtx) {
+			// factoryd parks on this event and resumeIfParked starts the
+			// next execution with the answer in the prompt. Staying in
+			// this process would be a second wait.
+			_ = c.log.Emit(Event{Type: "question", Turn: turn, Gate: questionGate, Text: redacted})
+			return messages, false, ExitOK, "succeeded", "waiting for an answer"
+		}
 		if c.turnInterrupted(ctx, turnCtx) {
 			messages = interruptedTools(messages, msg.ToolCalls[i+1:])
 			return c.finishInterrupt(ctx, turn, gen, messages)
@@ -571,13 +590,39 @@ func interruptedTools(messages []chatMessage, calls []toolCall) []chatMessage {
 	return messages
 }
 
+func askInputResult(args string) (toolResult, bool) {
+	if _, ok := askText(args); !ok {
+		return toolResult{Output: "ask_input requires text"}, false
+	}
+	return toolResult{OK: true, Output: "asked"}, true
+}
+
+func askText(args string) (string, bool) {
+	var p struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal([]byte(args), &p) != nil {
+		return "", false
+	}
+	text := strings.TrimSpace(p.Text)
+	if text == "" {
+		return "", false
+	}
+	return text, true
+}
+
 func visibleInput(name, args string) string {
-	if name == "bash" {
+	switch name {
+	case "bash":
 		var p struct {
 			Command string `json:"command"`
 		}
 		if json.Unmarshal([]byte(args), &p) == nil && p.Command != "" {
 			return p.Command
+		}
+	case toolAskInput:
+		if text, ok := askText(args); ok {
+			return text
 		}
 	}
 	return args
