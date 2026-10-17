@@ -1,0 +1,8 @@
+{
+  "gid": 10,
+  "role": "assistant",
+  "run_id": "run_1",
+  "seq": 4,
+  "text": "hello",
+  "turn": 1
+}

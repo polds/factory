@@ -17,6 +17,7 @@ import (
 
 	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/artifacts"
+	"github.com/polds/factory/internal/console"
 	"github.com/polds/factory/internal/defsync"
 	"github.com/polds/factory/internal/events"
 	"github.com/polds/factory/internal/gateway"
@@ -87,6 +88,8 @@ type Config struct {
 	// the loop immediately. Tests close it after a claim hook and a worker
 	// are ready, so the first tick cannot park a seeded run before assignOne.
 	ScheduleGate <-chan struct{}
+	// Console is "on" or "off". Empty means on. Anything else is a startup error.
+	Console string
 }
 
 // Server is one factoryd process: REST, SSE, the worker gateway, and the
@@ -115,6 +118,8 @@ type Server struct {
 
 	pings      chan beat
 	wake       chan struct{}
+	steerWake  chan struct{}
+	gitSHA     string
 	mu         sync.Mutex
 	leaseMu    sync.Mutex
 	scheduleMu sync.Mutex
@@ -245,6 +250,7 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		cancel:       cancel,
 		pings:        make(chan beat, 32),
 		wake:         make(chan struct{}, 1),
+		steerWake:    make(chan struct{}, 1),
 		live:         map[string]execRec{},
 		byRun:        map[string]string{},
 		idleSince:    map[string]time.Time{},
@@ -260,6 +266,10 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 	}
 	s.api = api.NewHandler(apiFacade{s}, cfg.APIKey, problemSSE(events.Handler(logSource{s: s}, s.hub)))
 	if err := s.applyBoot(runCtx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	if err := s.sweepFailureClasses(runCtx); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -343,6 +353,14 @@ func normalize(cfg Config) (Config, error) {
 	if cfg.ScheduleCatchUp <= 0 {
 		cfg.ScheduleCatchUp = defaultScheduleCatchUp
 	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Console)) {
+	case "", "on":
+		cfg.Console = "on"
+	case "off":
+		cfg.Console = "off"
+	default:
+		return Config{}, errors.New("server: FACTORY_CONSOLE must be on or off")
+	}
 	if strings.TrimSpace(cfg.S3.Endpoint) != "" {
 		if cfg.S3.Region == "" {
 			cfg.S3.Region = "us-east-1"
@@ -354,13 +372,25 @@ func normalize(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-// Handler serves /metrics, the worker websocket, and the REST API.
+// Handler serves metrics, the worker websocket, the API, and the console.
+// /api/ and /healthz stay on the API handler. The console is the catch-all
+// when FACTORY_CONSOLE is on (the default). Off keeps today's API catch-all.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.Handle("GET /api/v1/selfhosted/worker/ws", s.gw)
-	mux.Handle("/", s.api)
+	mux.Handle("/api/", s.api)
+	mux.Handle("GET /healthz", s.api)
+	if s.consoleOn() {
+		mux.Handle("/", console.Handler(s.api))
+	} else {
+		mux.Handle("/", s.api)
+	}
 	return mux
+}
+
+func (s *Server) consoleOn() bool {
+	return s.cfg.Console != "off"
 }
 
 // Close stops loops and releases database connections.

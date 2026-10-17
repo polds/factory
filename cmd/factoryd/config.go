@@ -70,6 +70,10 @@ func configFromEnv(getenv func(string) string, environ []string) (processConfig,
 	if err != nil {
 		return processConfig{}, err
 	}
+	console, err := parseConsole(getenv("FACTORY_CONSOLE"))
+	if err != nil {
+		return processConfig{}, err
+	}
 	return processConfig{
 		server: server.Config{
 			DatabaseURL:         strings.TrimSpace(getenv("FACTORY_DATABASE_URL")),
@@ -113,6 +117,7 @@ func configFromEnv(getenv func(string) string, environ []string) (processConfig,
 			LinearAPIBase:              strings.TrimSpace(getenv("FACTORY_LINEAR_API_BASE")),
 			DeliveryRetention:          retention,
 			ScheduleCatchUp:            catchup,
+			Console:                    console,
 		},
 		addr:    httpAddr(getenv),
 		level:   logLevel(getenv("FACTORY_LOG_LEVEL")),
@@ -132,6 +137,17 @@ func validateServe(cfg server.Config) error {
 		return errors.New("FACTORY_DEFINITION_PATH is required")
 	default:
 		return nil
+	}
+}
+
+func parseConsole(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "on":
+		return "on", nil
+	case "off":
+		return "off", nil
+	default:
+		return "", errors.New("FACTORY_CONSOLE must be on or off")
 	}
 }
 

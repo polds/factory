@@ -251,3 +251,41 @@ func TestConfigReadsM4(t *testing.T) {
 		t.Fatalf("duration error %v", err)
 	}
 }
+
+func TestConsoleFlag(t *testing.T) {
+	base := func(console string) func(string) string {
+		return func(k string) string {
+			switch k {
+			case "FACTORY_DATABASE_URL":
+				return "postgres://example"
+			case "FACTORY_API_KEY":
+				return "api-key-value"
+			case "FACTORY_WORKER_API_KEY":
+				return "worker-key-value"
+			case "FACTORY_DEFINITION_PATH":
+				return "/definitions"
+			case "FACTORY_CONSOLE":
+				return console
+			default:
+				return ""
+			}
+		}
+	}
+	cfg, err := configFromEnv(base(""), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.server.Console != "on" {
+		t.Fatalf("default console %q", cfg.server.Console)
+	}
+	cfg, err = configFromEnv(base("off"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.server.Console != "off" {
+		t.Fatalf("console %q", cfg.server.Console)
+	}
+	if _, err := configFromEnv(base("sometimes"), nil); err == nil || !strings.Contains(err.Error(), "FACTORY_CONSOLE") {
+		t.Fatalf("error %v", err)
+	}
+}

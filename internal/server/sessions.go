@@ -11,6 +11,11 @@ import (
 	"github.com/polds/factory/internal/store"
 )
 
+// docs/04's worker handshake is worker_id plus the bearer token. It does not
+// send a backend or a version. Version is the User-Agent when the worker
+// sends one, otherwise empty. Backend is the backend query parameter when
+// the worker sends one, otherwise empty. Neither value is invented.
+
 type beat struct {
 	workerID string
 	at       time.Time
@@ -34,6 +39,10 @@ func (s *Server) WorkerConnected(ctx context.Context, w gateway.WorkerInfo) erro
 	}); err != nil {
 		return err
 	}
+	if err := s.store.MarkWorkerConnected(ctx, w.WorkerID, w.Version, w.Backend); err != nil {
+		return err
+	}
+	s.syncInFlight(ctx, w.WorkerID)
 	s.mu.Lock()
 	if _, ok := s.idleSince[w.WorkerID]; !ok {
 		s.idleSince[w.WorkerID] = s.now()
@@ -65,14 +74,23 @@ func (s *Server) Terminal(ctx context.Context, workerID string, m any) error {
 	switch msg := m.(type) {
 	case protocol.TaskCompleted:
 		s.log.Info("task_completed", "task_id", msg.TaskID, "worker_id", workerID, "execution_id", msg.ExecutionID)
-		s.finish(ctx, msg.TaskID, msg.ExecutionID, store.ExecCompleted, "", msg.Message, nil, msg.TaskState)
+		s.finish(ctx, msg.TaskID, msg.ExecutionID, store.ExecCompleted, "", msg.Message, nil, msg.TaskState, nil)
 	case protocol.TaskFailed:
 		s.log.Info("task_failed", "task_id", msg.TaskID, "worker_id", workerID, "execution_id", msg.ExecutionID, "failure_reason", msg.FailureReason)
 		code := msg.ExitCode
-		s.finish(ctx, msg.TaskID, msg.ExecutionID, store.ExecFailed, msg.FailureReason, msg.Message, &code, msg.TaskState)
+		var details json.RawMessage
+		if msg.FailureDetails != nil {
+			raw, err := json.Marshal(msg.FailureDetails)
+			if err != nil {
+				return err
+			}
+			details = raw
+		}
+		s.finish(ctx, msg.TaskID, msg.ExecutionID, store.ExecFailed, msg.FailureReason, msg.Message, &code, msg.TaskState, details)
 	default:
 		s.log.Info("terminal ignored", "worker_id", workerID)
 	}
+	s.syncInFlight(ctx, workerID)
 	return nil
 }
 
@@ -85,6 +103,16 @@ func (s *Server) Rejected(ctx context.Context, m protocol.TaskRejected) error {
 		s.log.Error("reject run", "task_id", m.TaskID, "err", err)
 		return err
 	}
+	workerID := run.WorkerID
+	if workerID == "" {
+		workerID = s.workerForRun(m.TaskID)
+	}
+	if workerID != "" {
+		if err := s.store.RecordRejection(ctx, workerID, m.TaskID); err != nil {
+			s.log.Error("record rejection", "task_id", m.TaskID, "worker_id", workerID, "err", err)
+		}
+	}
+	defer s.syncInFlight(ctx, workerID)
 	if run.CancelRequested || isTerminalStatus(run.Status) {
 		s.settleCancel(ctx, m.TaskID)
 		return nil
@@ -115,6 +143,24 @@ func (s *Server) Rejected(ctx context.Context, m protocol.TaskRejected) error {
 	s.log.Info("requeued", "task_id", m.TaskID)
 	s.nudge()
 	return nil
+}
+
+// syncInFlight stores the sum of live gateway tasks for workerID. Several
+// connections may share one worker id. Gateway.Rejected does not carry the
+// worker id; callers pass the run's worker.
+func (s *Server) syncInFlight(ctx context.Context, workerID string) {
+	if workerID == "" || s.gw == nil || s.store == nil {
+		return
+	}
+	n := 0
+	for _, info := range s.gw.Connected() {
+		if info.WorkerID == workerID {
+			n += info.InFlight
+		}
+	}
+	if err := s.store.SetWorkerInFlight(ctx, workerID, n); err != nil && ctx.Err() == nil {
+		s.log.Error("worker in flight", "worker_id", workerID, "err", err)
+	}
 }
 
 func (s *Server) WorkerGone(ctx context.Context, connID string) {

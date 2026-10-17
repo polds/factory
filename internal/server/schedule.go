@@ -19,8 +19,15 @@ func (s *Server) tick(ctx context.Context) {
 	if !s.isLeader(ctx) {
 		return
 	}
+	// ExpireLeases marks the execution orphaned and requeues the run. The
+	// requeued row stays unclassified: worker_lost describes the attempt,
+	// and a queued run with no reason is not a failure. Classify that
+	// attempt only when a terminal outcome is persisted.
 	if _, err := s.store.ExpireLeases(ctx, s.now()); err != nil {
 		s.log.Error("expire leases", "err", err)
+	}
+	if err := s.sweepFailureClasses(ctx); err != nil {
+		s.log.Error("failure class sweep", "err", err)
 	}
 	s.schedule(ctx)
 }
@@ -244,7 +251,7 @@ func (s *Server) assignOne(ctx context.Context, run store.Run, workerID string, 
 		}
 		return
 	}
-	asg := s.assignment(run, exec, bound, env)
+	asg := s.assignment(ctx, run, exec, bound, env)
 	s.track(execRec{runID: run.ID, execID: exec.ID, workerID: workerID})
 	if err := s.gw.Assign(ctx, workerID, asg); err != nil {
 		if s.tracked(exec.ID) {
@@ -254,6 +261,7 @@ func (s *Server) assignOne(ctx context.Context, run store.Run, workerID string, 
 			s.untrack(exec.ID)
 		}
 		s.log.Error("assign", "run_id", run.ID, "worker_id", workerID, "err", err)
+		s.syncInFlight(ctx, workerID)
 		return
 	}
 	wait := s.now().Sub(run.CreatedAt)
@@ -263,6 +271,7 @@ func (s *Server) assignOne(ctx context.Context, run store.Run, workerID string, 
 	s.mu.Lock()
 	s.idleSince[workerID] = s.now()
 	s.mu.Unlock()
+	s.syncInFlight(ctx, workerID)
 }
 
 func (s *Server) pingLoop() {

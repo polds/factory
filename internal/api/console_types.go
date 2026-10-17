@@ -3,8 +3,16 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"time"
 )
+
+// DefinitionTreeApplier applies an uploaded definition tree. An empty apply
+// body still uses Backend.ApplyDefinition. A backend that does not implement
+// this answers 501 when the body is non-empty.
+type DefinitionTreeApplier interface {
+	ApplyDefinitionTree(ctx context.Context, factoryID string, tree io.Reader) (DefinitionRef, []Diagnostic, error)
+}
 
 // consoleUnwiredDetail is the 501 problem detail when Backend does not
 // implement ConsoleBackend. T47 wires the implementation.

@@ -236,6 +236,9 @@ type RunRow struct {
 	WorkItemID     string `json:"work_item_id,omitempty"`
 	ParentRunID    string `json:"parent_run_id,omitempty"`
 	FailureReason  string `json:"failure_reason,omitempty"`
+	ModelID        string `json:"model_id,omitempty"`
+	Stage          string `json:"stage,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
 	FailureClass   string `json:"failure_class,omitempty"`
 	FailureSummary string `json:"failure_summary,omitempty"`
 	QueueWaitMS    int64  `json:"queue_wait_ms"`

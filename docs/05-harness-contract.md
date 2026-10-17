@@ -113,7 +113,17 @@ mirrors human-readable logs to stderr). The worker relays these to the control p
  "cost_cents":31}
 {"ts":"…","type":"question","gate":"clarification","text":"Which staging env?"}
 {"ts":"…","type":"terminal","status":"succeeded","summary":"Opened PR #1182"}
+{"ts":"…","type":"run.capabilities","steer":true}
+{"ts":"…","type":"turn.interrupted"}
+{"ts":"…","type":"followup.received","steer_id":"str_…"}
 ```
+
+`run.capabilities` with `"steer": true` is the first successful steer poll. The
+harness long-polls `GET /api/v1/agent/runs/{id}/steer`. The `after` query
+parameter is the acknowledgement: an interrupt is acknowledged when it is
+accepted, and a follow-up is acknowledged when the harness takes it, so every
+steer id at or before `after` for that run has been applied. There is no
+separate ack call.
 
 Rules that matter:
 

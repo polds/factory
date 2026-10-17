@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/polds/factory/internal/api"
@@ -31,25 +30,6 @@ func (s *Server) GetFactory(ctx context.Context, id string) (api.Factory, error)
 		return api.Factory{}, err
 	}
 	return toAPIFactory(fac), nil
-}
-
-func (s *Server) ValidateDefinition(ctx context.Context, factoryID string, tarball io.Reader) ([]api.Diagnostic, error) {
-	if tarball != nil {
-		if _, err := io.Copy(io.Discard, tarball); err != nil {
-			return nil, err
-		}
-	}
-	if _, err := s.factory(ctx, factoryID); err != nil {
-		return nil, err
-	}
-	_, diags, err := loadTree(s.cfg.DefinitionPath)
-	if len(diags) > 0 {
-		return toDiagnostics(diags), nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return []api.Diagnostic{}, nil
 }
 
 func (s *Server) ApplyDefinition(ctx context.Context, factoryID string) (api.DefinitionRef, []api.Diagnostic, error) {
@@ -147,41 +127,13 @@ func (s *Server) GetRun(ctx context.Context, id string) (api.Run, error) {
 }
 
 func (s *Server) ListRuns(ctx context.Context, f api.RunFilter) ([]api.Run, error) {
-	snap := s.snapshot()
-	sf := store.RunFilter{Status: f.Status, Limit: 200}
-	if f.FactoryID != "" {
-		fac, err := s.factory(ctx, f.FactoryID)
-		if err != nil {
-			return nil, err
-		}
-		sf.FactoryID = fac.ID
-	}
-	if f.Agent != "" {
-		id, ok := snap.byName[f.Agent]
-		if !ok {
-			if _, exists := snap.byID[f.Agent]; exists {
-				id = f.Agent
-			} else {
-				return []api.Run{}, nil
-			}
-		}
-		sf.AgentID = id
-	}
-	rows, err := s.store.ListRuns(ctx, sf)
+	rows, err := s.selectRuns(ctx, f)
 	if err != nil {
 		return nil, err
 	}
+	snap := s.snapshot()
 	out := make([]api.Run, 0, len(rows))
 	for _, run := range rows {
-		if f.Worker != "" && run.WorkerID != f.Worker {
-			continue
-		}
-		if f.Model != "" {
-			bound, ok := snap.byID[run.AgentID]
-			if !ok || bound.agent.Model != f.Model {
-				continue
-			}
-		}
 		out = append(out, toAPIRun(run, snap))
 	}
 	return out, nil
@@ -245,6 +197,7 @@ func (s *Server) IngestEvents(ctx context.Context, runID, bearer string, startId
 		s.noteQuestion(ctx, runID, lines)
 	}
 	s.noteIngest(ctx, runID, lines)
+	s.reclassifyAfterHarness(ctx, runID, lines)
 	return nil
 }
 
