@@ -39,6 +39,12 @@
 
 .runs-feature a {
   color: var(--ring);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.runs-feature a.run-link,
+.runs-feature a.button {
   text-decoration: none;
 }
 
