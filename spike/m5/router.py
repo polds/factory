@@ -30,6 +30,7 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import ClassVar
 
 MODELS = ("m5-triage", "m5-planning", "m5-building", "m5-reviewing")
 HOLD_SECONDS = 55
@@ -67,12 +68,12 @@ def final_message(text: str) -> dict:
 
 class Router(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    stubs: dict[str, str] = {}
+    stubs: ClassVar[dict[str, str]] = {}
 
     def log_message(self, fmt: str, *args) -> None:
         sys.stderr.write("%s\n" % (fmt % args))
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         if self.path in ("/healthz", "/v1/healthz"):
             self._send(200, b"ok\n", "text/plain")
             return
@@ -86,7 +87,7 @@ class Router(BaseHTTPRequestHandler):
             return
         self._send(404, b"not found\n", "text/plain")
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         if self.path not in ("/v1/chat/completions", "/chat/completions"):
             self._send(404, b"not found\n", "text/plain")
             return
@@ -103,7 +104,7 @@ class Router(BaseHTTPRequestHandler):
         text = blob(body)
         model = str(body.get("model") or "")
         route = self._route(model, text)
-        sys.stderr.write("route model=%s choice=%s\n" % (model, route))
+        sys.stderr.write(f"route model={model} choice={route}\n")
         if route == "hold-infra":
             self._hold(INFRA_HOLD_SECONDS)
             return
@@ -124,11 +125,7 @@ class Router(BaseHTTPRequestHandler):
             return "agent"
         if "m5-infra-kill" in text:
             return "hold-infra"
-        if (
-            model == "m5-building"
-            and "m5-day" in text
-            and "m5-follow-up" not in text
-        ):
+        if model == "m5-building" and "m5-day" in text and "m5-follow-up" not in text:
             return "hold-day"
         return {
             "m5-triage": "triage",
@@ -202,7 +199,7 @@ def main() -> None:
         "reviewing": os.environ["M5_STUB_REVIEWING"],
     }
     server = ThreadingHTTPServer((host or "0.0.0.0", int(port)), Router)
-    sys.stderr.write("listening addr=%s\n" % args.addr)
+    sys.stderr.write(f"listening addr={args.addr}\n")
     server.serve_forever()
 
 
