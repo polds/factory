@@ -6,5 +6,5 @@
 CREATE UNIQUE INDEX IF NOT EXISTS runs_one_building_inflight
 ON runs (work_item_id)
 WHERE stage = 'building'
-  AND status IN ('queued', 'assigned', 'running')
-  AND work_item_id IS NOT NULL;
+AND status IN ('queued', 'assigned', 'running')
+AND work_item_id IS NOT NULL;
