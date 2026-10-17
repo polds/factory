@@ -138,9 +138,11 @@ async function seqs(page: Page): Promise<string[]> {
 async function approveOnly(page: Page, title: string): Promise<void> {
   await openSection(page, "Inbox");
   await axe(page, "inbox");
+  // Gate detail is "spec". A failed run of the same title has no Approve button.
   const row = page
     .locator("li.inbox-row")
     .filter({ hasText: title })
+    .filter({ hasText: "spec" })
     .filter({ hasNotText: "Approved by you" });
   await expect(row).toBeVisible({ timeout: 180_000 });
   await row.getByRole("button").first().click();
@@ -152,13 +154,14 @@ async function approveOnly(page: Page, title: string): Promise<void> {
 
 async function failureVisible(page: Page, title: string, code: string): Promise<boolean> {
   await openSection(page, "Runs");
-  const row = page.locator("tr[data-run]").filter({ hasText: title }).filter({ hasText: code });
-  try {
-    await expect(row.first()).toBeVisible({ timeout: 120_000 });
-    return true;
-  } catch {
-    return false;
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const row = page.locator("tr[data-run]").filter({ hasText: title }).filter({ hasText: code }).first();
+    if (await row.isVisible()) return true;
+    await page.reload();
+    await delay(1000);
   }
+  return false;
 }
 
 // Live and live-ci use the same path as offline. The failure prompts are on
