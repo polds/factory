@@ -1,0 +1,24 @@
+{
+  "id": "run_01M53XJ9A6NZ62RF26AK9ZDNQK",
+  "status": "failed",
+  "factory_id": "fac_1",
+  "agent": "reviewer",
+  "work_item_id": "task_01",
+  "parent_run_id": "run_parent",
+  "failure_reason": "container_exit",
+  "failure": {
+    "class": "agent",
+    "code": "agent_reported",
+    "summary": "The agent reported the run as failed",
+    "retryable": false,
+    "evidence": ["exit code 10", "harness status failed_by_agent"]
+  },
+  "queue_wait_ms": 1200,
+  "exec_ms": 45000,
+  "steer": {
+    "enabled": false,
+    "reason": "run finished; idle window ended at 2026-04-02T15:30:00Z",
+    "idle_until": "2026-04-02T15:30:00Z"
+  },
+  "pr_url": "https://github.com/polds/factory/pull/94"
+}

@@ -1,3 +1,11 @@
+import { useParams } from "@tanstack/react-router";
+import { WorkItemBoard } from "./board";
+import { WorkItemDetail } from "./detail";
+
 export default function WorkItemsPage() {
-  return <p>Coming in T45</p>;
+  const params = useParams({ strict: false });
+  const factoryId = typeof params.factory === "string" ? params.factory : "";
+  const id = typeof params.id === "string" ? params.id : "";
+  if (id) return <WorkItemDetail factoryId={factoryId} id={id} />;
+  return <WorkItemBoard factoryId={factoryId} />;
 }

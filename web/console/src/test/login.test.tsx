@@ -24,7 +24,7 @@ describe("login", () => {
     await user.click(screen.getByRole("button", { name: "Sign in" }));
     expect(await screen.findByRole("navigation", { name: "Sections" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /payments/ })).toBeInTheDocument();
-    expect(await screen.findByText("Coming in T45")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(sessionStorage.getItem(SESSION_KEY)).toBe(demoAPIKey);
     expect(document.body.textContent).not.toContain(demoAPIKey);
 
