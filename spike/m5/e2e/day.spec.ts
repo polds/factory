@@ -375,6 +375,8 @@ test("day of factory", async ({ browser }) => {
     await expect(page.getByText("Replayed just now").first()).toBeVisible();
     expect(replayPosts).toBe(1);
     await saveShot(page, "replay");
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
     const matched = await signal(
       "deliver",
       `${JSON.stringify({ op: "webhook", match: true, uid })}\n`,
