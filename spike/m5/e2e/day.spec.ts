@@ -274,7 +274,9 @@ test("day of factory", async ({ browser }) => {
     await expect(agentPanel.locator("code", { hasText: "agent_reported" })).toBeVisible();
     await expect(agentPanel.getByText("Agent reported this run as failed")).toBeVisible();
     await expect(agentPanel.getByRole("list", { name: "Evidence" }).getByRole("listitem").first()).toBeVisible();
-    await expect(page.getByRole("log", { name: "Run transcript" }).getByText("m5 agent failure")).toBeVisible();
+    await expect(
+      page.getByRole("log", { name: "Run transcript" }).getByText("m5 agent failure").first(),
+    ).toBeVisible();
     await saveShot(page, "agent-failure");
 
     await page.getByRole("link", { name: "Runs" }).click();
@@ -396,7 +398,9 @@ test("day of factory", async ({ browser }) => {
     await question.getByRole("button", { name: "Send answer" }).click();
     await expect(question.getByText("Which staging env?")).toBeHidden({ timeout: 30_000 });
     if (runHref) await page.goto(runHref);
-    await expect(page.getByRole("log", { name: "Run transcript" }).getByText("staging noted")).toBeVisible({
+    await expect(
+      page.getByRole("log", { name: "Run transcript" }).getByText("staging noted").first(),
+    ).toBeVisible({
       timeout: 120_000,
     });
     await saveShot(page, "question");
