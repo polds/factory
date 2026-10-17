@@ -329,6 +329,8 @@ test("day of factory", async ({ browser }) => {
     const apply = page.getByRole("dialog", { name: "Apply definition" });
     await expect(apply.getByText("factory.yaml")).toBeVisible();
     await apply.getByRole("button", { name: "Confirm apply" }).click();
+    await expect(apply).toBeHidden({ timeout: 30_000 });
+    await expect(page.getByText("The server applied a different definition than your edits")).toHaveCount(0);
     await page.reload();
     await page.getByRole("tree", { name: "Definition files" }).getByRole("treeitem", { name: "factory.yaml" }).click();
     await expect(page.getByRole("textbox", { name: "Contents of factory.yaml" })).toHaveValue(
