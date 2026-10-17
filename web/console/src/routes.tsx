@@ -113,25 +113,6 @@ const secretsRoute = createRoute({
   component: SecretsPage,
 });
 
-const lazyPages = [
-  DashboardPage,
-  WorkItemsPage,
-  RunsPage,
-  InboxPage,
-  DefinitionPage,
-  AutomationsPage,
-  WebhooksPage,
-  DeliveriesPage,
-  WorkersPage,
-  SecretsPage,
-];
-
-export function preloadAppRoutes(): Promise<void> {
-  return Promise.all(lazyPages.map((page) => page.preload?.() ?? Promise.resolve())).then(
-    () => undefined,
-  );
-}
-
 const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,

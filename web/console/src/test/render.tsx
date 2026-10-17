@@ -2,14 +2,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { render } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { createAppRouter, preloadAppRoutes } from "../routes";
 import { ThemeProvider } from "../lib/theme";
+import { createAppRouter } from "../routes";
 
 export async function renderApp(initialPath = "/") {
-  // Lazy route chunks and router.load() both finish after Testing Library's
-  // render() returns. findBy's 1000ms budget was spent on that cold start, so
-  // a busy runner still showed "Loading run". Settle both before returning.
-  await preloadAppRoutes();
+  // render() returns before the router finishes loading. load() preloads the
+  // matched lazy route (component.preload()), and that import was landing
+  // inside findBy's 1000ms budget, so a busy runner still showed "Loading run".
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
   });
