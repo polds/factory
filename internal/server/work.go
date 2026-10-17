@@ -599,8 +599,24 @@ func (s *Server) startStageRun(ctx context.Context, item store.WorkItem, stage, 
 
 const noPullRequest = "Do not open a pull request."
 
+// withNoPullRequest puts the trusted sentence in the agent instructions,
+// which BuildPrompt writes before the work-item body and its untrusted fence.
+func withNoPullRequest(body string) string {
+	if strings.Contains(body, noPullRequest) {
+		return body
+	}
+	if body != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	return body + noPullRequest + "\n"
+}
+
 func (s *Server) stagePrompt(ctx context.Context, item store.WorkItem, stage string, bound boundAgent) string {
-	prompt := handoff.BuildPrompt(bound.agent, handoff.Context{
+	agent := bound.agent
+	if stage != store.StageBuilding {
+		agent.Body = withNoPullRequest(agent.Body)
+	}
+	prompt := handoff.BuildPrompt(agent, handoff.Context{
 		WorkItemID:     item.ID,
 		ConversationID: item.ConversationID,
 		Source:         item.Source,
@@ -611,12 +627,6 @@ func (s *Server) stagePrompt(ctx context.Context, item store.WorkItem, stage str
 		Env:            s.redactEnv(),
 	})
 	if stage != store.StageBuilding {
-		if !strings.Contains(bound.agent.Body, noPullRequest) {
-			if !strings.HasSuffix(prompt, "\n") {
-				prompt += "\n"
-			}
-			prompt += noPullRequest + "\n"
-		}
 		return prompt
 	}
 	if s.store == nil || item.ID == "" {

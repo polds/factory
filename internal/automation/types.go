@@ -175,7 +175,9 @@ type IntakeResult struct {
 //
 // FollowUp inserts the run, moves the work item to stage/status, and
 // inserts delivery_effects in one transaction. A conflicting delivery_id
-// returns the existing run and created=false.
+// returns the existing run and created=false. When a building run is
+// already in flight, created is false, no second run is inserted, and the
+// prompt is kept on that run and on the work item body.
 //
 // AppendContext appends text once per delivery_id and updates
 // work_items.body. server.stagePrompt passes that column as Body into

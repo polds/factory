@@ -395,6 +395,9 @@ func (a *Automation) GetExternalRef(ctx context.Context, provider, externalRef s
 
 // FollowUp inserts the run, moves stage and status, and records the effect
 // in one transaction. The same delivery id returns that run and created=false.
+// A building run already in flight is also created=false: the reply is
+// appended to that run's prompt and to the work item body, and no second
+// run is inserted.
 func (a *Automation) FollowUp(ctx context.Context, deliveryID string, run automation.NewRun, stage, status string) (automation.Run, bool, error) {
 	if err := a.need(); err != nil {
 		return automation.Run{}, false, err
@@ -451,14 +454,13 @@ func (a *Automation) FollowUp(ctx context.Context, deliveryID string, run automa
 	if uniqueOn(err, "runs") {
 		saved := err
 		_ = tx.Rollback(ctx)
-		return a.lostBuildingRun(ctx, run.WorkItemID, saved)
+		return a.lostBuildingRun(ctx, deliveryID, run, saved)
 	}
 	if err != nil {
 		return automation.Run{}, false, err
 	}
 	if !inserted {
-		a.logInFlight(run.WorkItemID, created.ID)
-		return created, false, nil
+		return a.keepLostFollowUp(ctx, tx, deliveryID, item, created, run.Prompt)
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE work_items SET stage = $2, status = $3 WHERE id = $1`,
@@ -860,16 +862,102 @@ func inflightAuto(ctx context.Context, q rowQuery, workItemID string) (automatio
 	return loaded, true, nil
 }
 
-func (a *Automation) lostBuildingRun(ctx context.Context, workItemID string, saved error) (automation.Run, bool, error) {
-	loaded, ok, err := inflightAuto(ctx, a.Store.pool, workItemID)
+func (a *Automation) lostBuildingRun(ctx context.Context, deliveryID string, run automation.NewRun, saved error) (automation.Run, bool, error) {
+	tx, err := a.Store.pool.Begin(ctx)
+	if err != nil {
+		return automation.Run{}, false, fmt.Errorf("store: follow up: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	item, err := lockWorkItem(ctx, tx, run.WorkItemID)
+	if errors.Is(err, ErrNotFound) {
+		return automation.Run{}, false, automation.ErrNotFound
+	}
+	if err != nil {
+		return automation.Run{}, false, fmt.Errorf("store: follow up: %w", err)
+	}
+	if prev, ok, err := effectByDelivery(ctx, tx, deliveryID); err != nil {
+		return automation.Run{}, false, err
+	} else if ok {
+		if prev.kind != "follow_up" {
+			return automation.Run{}, false, errors.New("store: delivery already applied")
+		}
+		loaded, err := loadAutoRun(ctx, tx, prev.runID)
+		if err != nil {
+			return automation.Run{}, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return automation.Run{}, false, fmt.Errorf("store: follow up: %w", err)
+		}
+		return loaded, false, nil
+	}
+	loaded, ok, err := inflightAuto(ctx, tx, run.WorkItemID)
 	if err != nil {
 		return automation.Run{}, false, err
 	}
 	if !ok {
 		return automation.Run{}, false, saved
 	}
-	a.logInFlight(workItemID, loaded.ID)
+	return a.keepLostFollowUp(ctx, tx, deliveryID, item, loaded, run.Prompt)
+}
+
+// keepLostFollowUp stores the reply that lost the building-run race.
+// The in-flight run's prompt gains the text, and the work item body gains
+// it for the next building run. created stays false, so no second run starts.
+func (a *Automation) keepLostFollowUp(ctx context.Context, tx pgx.Tx, deliveryID string, item WorkItem, existing automation.Run, prompt string) (automation.Run, bool, error) {
+	if err := keepLostReply(ctx, tx, deliveryID, item, existing.ID, existing.Prompt, prompt); uniqueOn(err, "delivery_effects") {
+		_ = tx.Rollback(ctx)
+		return a.replayFollowUp(ctx, deliveryID)
+	} else if err != nil {
+		return automation.Run{}, false, fmt.Errorf("store: follow up: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return automation.Run{}, false, fmt.Errorf("store: follow up: %w", err)
+	}
+	loaded, err := loadAutoRun(ctx, a.Store.pool, existing.ID)
+	if err != nil {
+		return automation.Run{}, false, err
+	}
+	a.logInFlight(item.ID, loaded.ID)
 	return loaded, false, nil
+}
+
+func keepLostReply(ctx context.Context, tx pgx.Tx, deliveryID string, item WorkItem, runID, existingPrompt, extra string) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO delivery_effects (delivery_id, work_item_id, kind, run_id, note)
+		VALUES ($1, $2, 'follow_up', $3, $4)`,
+		deliveryID, item.ID, runID, extra); err != nil {
+		return err
+	}
+	if extra == "" {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE work_items SET body = $2 WHERE id = $1`,
+		item.ID, joinPrompt(item.Body, extra)); err != nil {
+		return fmt.Errorf("store: follow up: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE runs SET prompt = $2
+		WHERE id = $1 AND status IN ('queued', 'assigned', 'running')`,
+		runID, joinPrompt(existingPrompt, extra))
+	if err != nil {
+		return fmt.Errorf("store: follow up: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return nil
+	}
+	return nil
+}
+
+func joinPrompt(existing, extra string) string {
+	if extra == "" {
+		return existing
+	}
+	if existing == "" || strings.HasSuffix(existing, "\n") {
+		return existing + extra
+	}
+	return existing + "\n" + extra
 }
 
 func (a *Automation) logInFlight(workItemID, runID string) {

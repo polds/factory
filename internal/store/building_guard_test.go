@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -269,6 +270,217 @@ func TestFollowUpDoesNotStackBuildingRuns(t *testing.T) {
 		WHERE work_item_id = $1 AND stage = 'building'
 		  AND status IN ('queued', 'assigned', 'running')`, item.ID); n != 1 {
 		t.Fatalf("in flight %d", n)
+	}
+}
+
+func TestMigrateSupersedesDuplicateBuildingRuns(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+	item := createWorkItem(t, h, factoryID, store.NewWorkItem{
+		Source: store.SourceIssue,
+		Title:  "duplicates",
+	})
+	other := createWorkItem(t, h, factoryID, store.NewWorkItem{
+		Source: store.SourceIssue,
+		Title:  "single",
+	})
+	if _, err := h.raw.Exec(ctx, `DROP INDEX runs_one_building_inflight`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.raw.Exec(ctx, `
+		DELETE FROM schema_migrations WHERE filename = '0005_building_guard.sql'`); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		olderID = "run_older_building"
+		newerID = "run_newer_building"
+		keptID  = "run_kept_building"
+		doneID  = "run_done_building"
+		execID  = "exec_older_building"
+	)
+	if _, err := h.raw.Exec(ctx, `
+		INSERT INTO runs (
+		    id, factory_id, agent_id, status, priority, pool, prompt, title,
+		    work_item_id, stage, created_at)
+		VALUES
+		    ($1, $2, $3, 'running', 2, 'default', 'older prompt', 'duplicates',
+		     $4, 'building', '2026-10-17T02:56:00Z'),
+		    ($5, $2, $3, 'queued', 2, 'default', 'newer prompt', 'duplicates',
+		     $4, 'building', '2026-10-17T02:56:30Z'),
+		    ($6, $2, $3, 'queued', 2, 'default', 'only prompt', 'single',
+		     $7, 'building', '2026-10-17T02:56:10Z'),
+		    ($8, $2, $3, 'succeeded', 2, 'default', 'done', 'duplicates',
+		     $4, 'building', '2026-10-17T02:50:00Z')`,
+		olderID, factoryID, agentID, item.ID, newerID, keptID, other.ID, doneID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.raw.Exec(ctx, `
+		INSERT INTO executions (
+		    id, run_id, attempt, worker_id, state, run_token_sha256)
+		VALUES ($1, $2, 1, 'worker-1', 'running', $3)`,
+		execID, olderID, tokenHash("older")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.raw.Exec(ctx, `
+		INSERT INTO run_queue (run_id, factory_id, pool, priority, enqueued_at)
+		VALUES
+		    ($1, $2, 'default', 2, '2026-10-17T02:56:00Z'),
+		    ($3, $2, 'default', 2, '2026-10-17T02:56:30Z'),
+		    ($4, $2, 'default', 2, '2026-10-17T02:56:10Z')`,
+		olderID, factoryID, newerID, keptID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	var status, reason string
+	var ended bool
+	if err := h.raw.QueryRow(ctx, `
+		SELECT status, COALESCE(failure_reason, ''), ended_at IS NOT NULL
+		FROM runs WHERE id = $1`, olderID).Scan(&status, &reason, &ended); err != nil {
+		t.Fatal(err)
+	}
+	if status != store.StatusFailed || reason != "superseded_duplicate_building_run" || !ended {
+		t.Fatalf("older run status %s reason %s ended %v", status, reason, ended)
+	}
+	var execState, execReason string
+	var execEnded bool
+	if err := h.raw.QueryRow(ctx, `
+		SELECT state, COALESCE(failure_reason, ''), ended_at IS NOT NULL
+		FROM executions WHERE id = $1`, execID).Scan(&execState, &execReason, &execEnded); err != nil {
+		t.Fatal(err)
+	}
+	if execState != "failed" || execReason != "superseded_duplicate_building_run" || !execEnded {
+		t.Fatalf("execution state %s reason %s ended %v", execState, execReason, execEnded)
+	}
+	if n := countRows(t, h, `SELECT count(*) FROM run_queue WHERE run_id = $1`, olderID); n != 0 {
+		t.Fatalf("older queue rows %d", n)
+	}
+	if err := h.raw.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1`, newerID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != store.StatusQueued {
+		t.Fatalf("newest status %s", status)
+	}
+	if n := countRows(t, h, `
+		SELECT count(*) FROM runs
+		WHERE work_item_id = $1 AND stage = 'building'
+		  AND status IN ('queued', 'assigned', 'running')`, item.ID); n != 1 {
+		t.Fatalf("in flight %d", n)
+	}
+	if err := h.raw.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1`, keptID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != store.StatusQueued {
+		t.Fatalf("other item status %s", status)
+	}
+	if err := h.raw.QueryRow(ctx, `
+		SELECT status, COALESCE(failure_reason, '') FROM runs WHERE id = $1`, doneID).Scan(&status, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if status != store.StatusSucceeded || reason != "" {
+		t.Fatalf("finished run status %s reason %s", status, reason)
+	}
+}
+
+func TestFollowUpLoserKeepsReply(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, _ := h.seed(t)
+	a := &store.Automation{Store: h.st}
+	item, _, err := a.OpenWorkItem(ctx, store.ProviderGitHub, "acme/repo#85", automation.NewWorkItem{
+		FactoryID: factoryID,
+		Source:    store.ProviderGitHub,
+		SourceRef: "acme/repo#85",
+		Title:     "follow",
+		Body:      "original request\n",
+		Stage:     store.StageReviewing,
+		Status:    store.WorkItemOpen,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := followWithPrompt(factoryID, item, "build the feature\n")
+	winner, created, err := a.FollowUp(ctx, "dlv_win", first, store.StageBuilding, store.WorkItemOpen)
+	if err != nil || !created {
+		t.Fatalf("winner %+v created %v err %v", winner, created, err)
+	}
+	const reply = "also add a test for an empty name\n"
+	loser, created, err := a.FollowUp(ctx, "dlv_lose", followWithPrompt(factoryID, item, reply), store.StageBuilding, store.WorkItemOpen)
+	if err != nil || created || loser.ID != winner.ID {
+		t.Fatalf("loser %+v created %v err %v", loser, created, err)
+	}
+	if !strings.Contains(loser.Prompt, "build the feature") || !strings.Contains(loser.Prompt, reply) {
+		t.Fatalf("in-flight prompt dropped the reply:\n%s", loser.Prompt)
+	}
+	loaded, err := h.st.GetWorkItem(ctx, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(loaded.Body, reply) != 1 {
+		t.Fatalf("body %q", loaded.Body)
+	}
+	if n := countRows(t, h, `
+		SELECT count(*) FROM runs
+		WHERE work_item_id = $1 AND stage = 'building'
+		  AND status IN ('queued', 'assigned', 'running')`, item.ID); n != 1 {
+		t.Fatalf("in flight %d", n)
+	}
+	again, created, err := a.FollowUp(ctx, "dlv_lose", followWithPrompt(factoryID, item, reply), store.StageBuilding, store.WorkItemOpen)
+	if err != nil || created || again.ID != winner.ID {
+		t.Fatalf("replay %+v created %v err %v", again, created, err)
+	}
+	loaded, err = h.st.GetWorkItem(ctx, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(loaded.Body, reply) != 1 || strings.Count(again.Prompt, reply) != 1 {
+		t.Fatalf("replay duplicated the reply body %q prompt %q", loaded.Body, again.Prompt)
+	}
+
+	if _, err := h.raw.Exec(ctx, `
+		UPDATE runs SET status = 'succeeded', ended_at = clock_timestamp() WHERE id = $1`, winner.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.raw.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, winner.ID); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = h.st.GetWorkItem(ctx, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(loaded.Body, reply) != 1 {
+		t.Fatalf("body lost the reply after the in-flight run finished: %q", loaded.Body)
+	}
+	next, created, err := a.FollowUp(ctx, "dlv_next", followWithPrompt(factoryID, item, loaded.Body), store.StageBuilding, store.WorkItemOpen)
+	if err != nil || !created || next.ID == winner.ID {
+		t.Fatalf("next %+v created %v err %v", next, created, err)
+	}
+	if !strings.Contains(next.Prompt, reply) {
+		t.Fatalf("next building run missed the reply:\n%s", next.Prompt)
+	}
+	if n := countRows(t, h, `
+		SELECT count(*) FROM runs
+		WHERE work_item_id = $1 AND stage = 'building'
+		  AND status IN ('queued', 'assigned', 'running')`, item.ID); n != 1 {
+		t.Fatalf("in flight %d", n)
+	}
+}
+
+func followWithPrompt(factoryID string, item automation.WorkItem, prompt string) automation.NewRun {
+	return automation.NewRun{
+		FactoryID:      factoryID,
+		Agent:          "implementer",
+		Pool:           "default",
+		Priority:       automation.PriorityPipeline,
+		Prompt:         prompt,
+		Title:          item.Title,
+		WorkItemID:     item.ID,
+		ConversationID: item.ConversationID,
+		Stage:          store.StageBuilding,
 	}
 }
 
