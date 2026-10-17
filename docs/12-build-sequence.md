@@ -151,7 +151,7 @@ evidence that the four stage runs used different model ids and were linked
 parent to child. The laptop `factoryd` is not reachable from here, and the
 pasted log does not include the model id strings, so they are not repeated.
 
-## M4 — Integrations (weeks)
+## M4 — Integrations ✅ **done**
 
 - Ingress with signature verification, delivery dedup, normalization.
 - GitHub first (App installation, scoped tokens, check runs), then Slack, then Linear.
@@ -162,8 +162,40 @@ pasted log does not include the model id strings, so they are not repeated.
 - Outbound: thread-per-work-item, progress editing, reply continuation.
 - Unmatched-delivery visibility.
 
-**Exit criterion:** label an issue `factory-ready` and a PR appears, with progress in a
-Slack thread and a reply there continuing the work.
+**Exit criterion met.** Label an issue `factory-ready` and a PR appears, with progress
+in a Slack thread and a reply there continuing the work. The laptop record is
+[`spike/m4` live exit](../spike/m4/README.md#live-exit).
+
+Peter's personal Mac (OrbStack, VibeProxy on port 8317, a cloudflared quick tunnel),
+`MODE=live ./spike/m4/run.sh`, reported `M4 LIVE PASS` at 2026-10-16 8:15 PM PT.
+The run was local branch `polds/m4-slack-placeholder-check-eb47` at `02f2960`
+([PR #79](https://github.com/polds/factory/pull/79)). Model `claude-sonnet-5-5`
+via `M4_LIVE_MODEL`. This environment has no live credentials, so `MODE=live` is
+not re-run here. `m4-live.yml` has no workflow runs.
+
+[polds](https://github.com/polds) labeled
+[issue #89](https://github.com/polds/factory/issues/89) `factory-ready`. Work item
+`task_01M53XGMHEQYS587SZPZWBZHSV` went through triage, planning, building, and
+reviewing, then `human_handoff`. The factory opened draft
+[PR #90](https://github.com/polds/factory/pull/90) at `237f0a8`
+(`M4: emphasize Hello`, 2026-10-17 03:12:14Z). Slack posted a thread root and
+stage edits. Peter's thread reply started a revision that pushed `ca6e41c`
+(`M4: add test for empty name in Hello`, 2026-10-17 03:15:05Z). The script saw
+the head change, and its log secret scan was clean. The pasted record has no
+delivery id, Slack permalink, reply timestamp, or continuation run id.
+
+The first reviewer run, `run_01M53XJ9A6NZ62RF26AK9ZDNQK`, exited 10
+(`container_exit`). The factory rebuilt and the second reviewer run passed.
+That root cause is still open. An earlier attempt on
+[issue #83](https://github.com/polds/factory/issues/83) opened draft
+[PR #84](https://github.com/polds/factory/pull/84) and
+[PR #85](https://github.com/polds/factory/pull/85).
+[PR #91](https://github.com/polds/factory/pull/91) merged at `8c42691` on
+2026-10-16 9:30 PM PT and keeps one building run per work item. The same change
+retries a transient GitHub token error that had shown up as `config_invalid`.
+[PR #79](https://github.com/polds/factory/pull/79) merged at `138eb68`. Leftover
+live-test issues and PRs #77–#90, except #79, were closed on 2026-10-16 with
+Peter's approval. #90 is a closed draft.
 
 ## M5 — Console (weeks)
 
