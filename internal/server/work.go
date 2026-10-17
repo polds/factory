@@ -11,6 +11,7 @@ import (
 
 	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/definition"
+	"github.com/polds/factory/internal/failure"
 	"github.com/polds/factory/internal/handoff"
 	"github.com/polds/factory/internal/orchestrator"
 	"github.com/polds/factory/internal/store"
@@ -239,7 +240,10 @@ func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
 	case store.StatusSucceeded:
 		ev = orchestrator.RunSucceeded{Stage: run.Stage}
 	case store.StatusFailed:
-		ev = orchestrator.RunFailed{Stage: run.Stage}
+		ev = orchestrator.RunFailed{
+			Stage: run.Stage,
+			Infra: reviewerInfra(run.Status, run.FailureReason, run.ExitCode),
+		}
 	default:
 		return
 	}
@@ -254,6 +258,21 @@ func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
 		s.orchMu.Unlock()
 		return
 	}
+	// A reviewing infrastructure failure restarts that stage once. The
+	// budget and the new run commit in one transaction. A used budget falls
+	// through and revises, which is today's reviewing-failure behaviour.
+	if failed, ok := ev.(orchestrator.RunFailed); ok && failed.Infra && run.Stage == store.StageReviewing {
+		handled, retryErr := s.retryReviewerOnce(ctx, item, run)
+		if retryErr != nil {
+			s.orchMu.Unlock()
+			s.log.Error("reviewer retry", "work_item_id", item.ID, "run_id", runID, "err", retryErr)
+			return
+		}
+		if handled {
+			s.orchMu.Unlock()
+			return
+		}
+	}
 	def, err := s.pipelineDef()
 	if err != nil {
 		s.orchMu.Unlock()
@@ -265,6 +284,11 @@ func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
 		s.orchMu.Unlock()
 		s.log.Error("work item state", "work_item_id", item.ID, "err", err)
 		return
+	}
+	// retryReviewerOnce returns unhandled only when the one retry is already
+	// recorded, so Step must revise instead of starting another review.
+	if failed, ok := ev.(orchestrator.RunFailed); ok && failed.Infra && run.Stage == store.StageReviewing {
+		state.ReviewerRetryUsed = true
 	}
 	next, effects, err := step(def, state, ev)
 	if err != nil {
@@ -303,6 +327,20 @@ func (s *Server) onQuestion(ctx context.Context, runID string) {
 	if err != nil {
 		s.log.Error("question", "run_id", runID, "err", err)
 		return
+	}
+	if item.SuspendedRunID != "" {
+		cleared, clearErr := s.clearStaleSuspension(ctx, item.SuspendedRunID)
+		if clearErr != nil {
+			s.log.Error("question", "work_item_id", item.ID, "err", clearErr)
+			return
+		}
+		if cleared {
+			item, err = s.store.GetWorkItem(ctx, run.WorkItemID)
+			if err != nil {
+				s.log.Error("question", "run_id", runID, "err", err)
+				return
+			}
+		}
 	}
 	if item.Status == store.WorkItemAwaitingInput && item.SuspendedRunID == run.ID {
 		if err := s.parkSuspendedRun(ctx, run.ID); err != nil {
@@ -375,12 +413,30 @@ func (s *Server) AnswerInput(ctx context.Context, workItemID, answer, answeredBy
 	if err != nil {
 		return store.InputRequest{}, orchErr(err)
 	}
+	if item.SuspendedRunID != "" {
+		if _, err := s.clearStaleSuspension(ctx, item.SuspendedRunID); err != nil {
+			return store.InputRequest{}, err
+		}
+	}
 	pending, pendErr := s.store.PendingInputRequest(ctx, workItemID)
 	if pendErr != nil && !errors.Is(pendErr, store.ErrNotFound) {
 		return store.InputRequest{}, pendErr
 	}
 	agentID := ""
 	if pendErr == nil {
+		// A question whose run already finished is not a pending suspension.
+		// Record nothing and do not resume that run. Callers then take the
+		// same path as a work item that has no input request.
+		dead, deadErr := s.runIsTerminal(ctx, pending.RunID)
+		if deadErr != nil {
+			return store.InputRequest{}, deadErr
+		}
+		if dead {
+			if _, err := s.clearStaleSuspension(ctx, pending.RunID); err != nil {
+				return store.InputRequest{}, err
+			}
+			return store.InputRequest{}, api.ErrNotFound
+		}
 		agentID, err = s.stageAgentID(item, item.FactoryID)
 		if err != nil {
 			return store.InputRequest{}, err
@@ -550,30 +606,35 @@ func (s *Server) applyEffects(ctx context.Context, item store.WorkItem, effects 
 	return cancel, nil
 }
 
-func (s *Server) startStageRun(ctx context.Context, item store.WorkItem, stage, agentName, parentRunID string) (store.Run, error) {
+func (s *Server) prepareStageRun(ctx context.Context, item store.WorkItem, stage, agentName, parentRunID string) (store.NewRun, error) {
 	snap := s.snapshot()
 	agentID, bound, err := s.resolveAgent(agentName, item.FactoryID, snap)
 	if err != nil {
-		return store.Run{}, err
+		return store.NewRun{}, err
 	}
 	pool := bound.agent.Pool
 	if pool == "" {
 		pool = s.cfg.WorkerPool
 	}
-	prompt := s.stagePrompt(ctx, item, stage, bound)
-	model := resolveModelID(snap.tree, bound.agent)
-	newRun := store.NewRun{
+	return store.NewRun{
 		FactoryID:      item.FactoryID,
 		AgentID:        agentID,
 		Pool:           pool,
 		Priority:       store.PriorityPipeline,
-		Prompt:         prompt,
+		Prompt:         s.stagePrompt(ctx, item, stage, bound),
 		Title:          item.Title,
 		WorkItemID:     item.ID,
 		ParentRunID:    parentRunID,
 		ConversationID: item.ConversationID,
 		Stage:          stage,
-		ModelID:        model,
+		ModelID:        resolveModelID(snap.tree, bound.agent),
+	}, nil
+}
+
+func (s *Server) startStageRun(ctx context.Context, item store.WorkItem, stage, agentName, parentRunID string) (store.Run, error) {
+	newRun, err := s.prepareStageRun(ctx, item, stage, agentName, parentRunID)
+	if err != nil {
+		return store.Run{}, err
 	}
 	if stage == store.StageBuilding {
 		run, created, err := s.store.BeginBuildingRun(ctx, newRun)
@@ -584,7 +645,7 @@ func (s *Server) startStageRun(ctx context.Context, item store.WorkItem, stage, 
 			s.log.Info("building run already in flight", "work_item_id", item.ID, "run_id", run.ID)
 			return run, nil
 		}
-		s.log.Info("stage run", "work_item_id", item.ID, "stage", stage, "run_id", run.ID, "agent", agentName, "model_id", model)
+		s.log.Info("stage run", "work_item_id", item.ID, "stage", stage, "run_id", run.ID, "agent", agentName, "model_id", newRun.ModelID)
 		s.nudge()
 		return run, nil
 	}
@@ -592,7 +653,7 @@ func (s *Server) startStageRun(ctx context.Context, item store.WorkItem, stage, 
 	if err != nil {
 		return store.Run{}, err
 	}
-	s.log.Info("stage run", "work_item_id", item.ID, "stage", stage, "run_id", run.ID, "agent", agentName, "model_id", model)
+	s.log.Info("stage run", "work_item_id", item.ID, "stage", stage, "run_id", run.ID, "agent", agentName, "model_id", newRun.ModelID)
 	s.nudge()
 	return run, nil
 }
@@ -811,7 +872,17 @@ func (s *Server) suspendedSnapshot() map[string]struct{} {
 	if s.store == nil {
 		return out
 	}
-	ids, err := s.store.ListSuspendedRunIDs(context.WithoutCancel(s.ctx))
+	// The leader's first tick is process startup. Clearing here, and again
+	// on later ticks, drops suspensions whose runs migration 0005 already
+	// marked terminal. A second pass matches no rows.
+	sweepCtx := context.WithoutCancel(s.ctx)
+	if err := s.sweepStaleSuspensions(sweepCtx); err != nil && s.ctx.Err() == nil && s.log != nil {
+		s.log.Error("stale suspensions", "err", err)
+	}
+	if err := s.recoverReviewerRetries(sweepCtx); err != nil && s.ctx.Err() == nil && s.log != nil {
+		s.log.Error("reviewer retry", "err", err)
+	}
+	ids, err := s.store.ListSuspendedRunIDs(sweepCtx)
 	if err != nil {
 		if s.ctx.Err() == nil && s.log != nil {
 			s.log.Error("suspended runs", "err", err)
@@ -871,6 +942,13 @@ func (s *Server) settleParkedCancel(ctx context.Context, runID string) error {
 }
 
 func (s *Server) runSuspended(ctx context.Context, runID string) bool {
+	if cleared, err := s.clearStaleSuspension(ctx, runID); err != nil {
+		if s.log != nil && ctx.Err() == nil {
+			s.log.Error("stale suspension", "run_id", runID, "err", err)
+		}
+	} else if cleared {
+		return false
+	}
 	s.mu.Lock()
 	_, ok := s.suspended[runID]
 	s.mu.Unlock()
@@ -880,6 +958,365 @@ func (s *Server) runSuspended(ctx context.Context, runID string) bool {
 	var n int
 	err := s.db.QueryRow(ctx, `SELECT count(*) FROM work_items WHERE suspended_run_id = $1`, runID).Scan(&n)
 	return err == nil && n > 0
+}
+
+// clearStaleSuspensionSQL drops a suspended_run_id that names a terminal run.
+// The predicate is the current value, so a concurrent answer or a newer
+// suspension of a different run is left alone. Repeating it changes nothing.
+const clearStaleSuspensionSQL = `
+UPDATE work_items
+SET suspended_run_id = '',
+    suspended_execution_id = '',
+    suspended_at = NULL
+WHERE suspended_run_id = $1
+  AND EXISTS (
+    SELECT 1 FROM runs
+    WHERE id = $1
+      AND status IN ($2, $3, $4)
+  )`
+
+func clearStaleSuspensionTx(ctx context.Context, tx pgx.Tx, runID string) (bool, error) {
+	if runID == "" {
+		return false, nil
+	}
+	tag, err := tx.Exec(ctx, clearStaleSuspensionSQL,
+		runID, store.StatusSucceeded, store.StatusFailed, store.StatusCancelled)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// clearStaleSuspension treats a suspended_run_id whose run is terminal as no
+// suspension. The update is one transaction guarded on that id.
+func (s *Server) clearStaleSuspension(ctx context.Context, runID string) (bool, error) {
+	if runID == "" || s.db == nil {
+		return false, nil
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	cleared, err := clearStaleSuspensionTx(ctx, tx, runID)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	if cleared {
+		s.clearSuspended(runID)
+	}
+	return cleared, nil
+}
+
+// sweepStaleSuspensions clears every suspended_run_id that names a terminal
+// run. Each update is guarded on the id read in this transaction. A second
+// call matches no rows.
+func (s *Server) sweepStaleSuspensions(ctx context.Context) error {
+	if s.db == nil {
+		return nil
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `
+		SELECT w.suspended_run_id
+		FROM work_items w
+		JOIN runs r ON r.id = w.suspended_run_id
+		WHERE w.suspended_run_id <> ''
+		  AND r.status IN ($1, $2, $3)
+		FOR UPDATE OF w`,
+		store.StatusSucceeded, store.StatusFailed, store.StatusCancelled)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	cleared := make([]string, 0, len(ids))
+	for _, id := range ids {
+		ok, err := clearStaleSuspensionTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if ok {
+			cleared = append(cleared, id)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	for _, id := range cleared {
+		s.clearSuspended(id)
+	}
+	return nil
+}
+
+// reviewerInfra reports whether this run is an infrastructure failure.
+// Class comes from failure.Classify. The runs row carries status,
+// failure_reason, and exit_code. Harness status and
+// executions.failure_details_json are not columns of runs, so they are
+// not passed.
+func reviewerInfra(status, reason string, exit *int) bool {
+	return failure.Classify(failure.Input{
+		RunStatus:     status,
+		FailureReason: reason,
+		ExitCode:      exit,
+	}).Class == failure.ClassInfrastructure
+}
+
+// priorReviewerInfraFails counts infrastructure-failed reviewing runs for the
+// work item since the latest building run, excluding currentRunID.
+//
+// The count is derived from committed run rows, not from a column and not
+// from process memory. A restart reads the same rows, so a retry that
+// already happened is visible and is not started again. The caller runs this
+// in the same transaction that inserts the retry, under a lock on the work
+// item, so two processes cannot both observe an unused budget and both insert.
+func (s *Server) priorReviewerInfraFails(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, workItemID, currentRunID string) (int, error) {
+	rows, err := q.Query(ctx, `
+		SELECT r.status, COALESCE(r.failure_reason, ''), r.exit_code
+		FROM runs r
+		WHERE r.work_item_id = $1
+		  AND r.stage = $2
+		  AND r.status = $3
+		  AND r.id <> $4
+		  AND NOT EXISTS (
+		    SELECT 1 FROM runs b
+		    WHERE b.work_item_id = r.work_item_id
+		      AND b.stage = $5
+		      AND (b.created_at, b.id) > (r.created_at, r.id)
+		  )`,
+		workItemID, store.StageReviewing, store.StatusFailed, currentRunID, store.StageBuilding)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var status, reason string
+		var exit *int
+		if err := rows.Scan(&status, &reason, &exit); err != nil {
+			return 0, err
+		}
+		if reviewerInfra(status, reason, exit) {
+			n++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// retryReviewerOnce starts one more reviewing run when this infrastructure
+// failure is the first since the latest building run. handled is true when
+// the retry was started or is already in flight. handled is false when the
+// budget is used; the caller then revises.
+func (s *Server) retryReviewerOnce(ctx context.Context, item store.WorkItem, failed store.Run) (bool, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var stage, status string
+	if err := tx.QueryRow(ctx, `
+		SELECT stage, status FROM work_items WHERE id = $1 FOR UPDATE`, item.ID).Scan(&stage, &status); err != nil {
+		return false, err
+	}
+	if stage != store.StageReviewing || status != store.WorkItemOpen {
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	var inflight bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM runs
+			WHERE work_item_id = $1
+			  AND stage = $2
+			  AND status IN ($3, $4, $5)
+		)`, item.ID, store.StageReviewing, store.StatusQueued, store.StatusAssigned, store.StatusRunning).Scan(&inflight); err != nil {
+		return false, err
+	}
+	if inflight {
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	// Count before building a prompt. A used budget, including one noticed
+	// on a later startup tick, inserts nothing.
+	prior, err := s.priorReviewerInfraFails(ctx, tx, item.ID, failed.ID)
+	if err != nil {
+		return false, err
+	}
+	if prior > 0 {
+		return false, nil
+	}
+
+	def, err := s.pipelineDef()
+	if err != nil {
+		return false, err
+	}
+	state, err := s.loadState(ctx, item)
+	if err != nil {
+		return false, err
+	}
+	state.ReviewerRetryUsed = false
+	next, effects, err := step(def, state, orchestrator.RunFailed{Stage: store.StageReviewing, Infra: true})
+	if err != nil {
+		return false, err
+	}
+	if len(effects) != 1 {
+		return false, fmt.Errorf("server: reviewer retry effects %d", len(effects))
+	}
+	start, ok := effects[0].(orchestrator.StartRun)
+	if !ok || start.Stage != orchestrator.StageReviewing {
+		return false, fmt.Errorf("server: reviewer retry effect %T", effects[0])
+	}
+	if next.Stage != orchestrator.StageReviewing || next.RevisionCount != item.RevisionCount {
+		return false, fmt.Errorf("server: reviewer retry state stage %s revision %d", next.Stage, next.RevisionCount)
+	}
+	newRun, err := s.prepareStageRun(ctx, item, start.Stage, start.Agent, failed.ID)
+	if err != nil {
+		return false, err
+	}
+	id, err := store.NewID(store.PrefixRun)
+	if err != nil {
+		return false, err
+	}
+	if err := insertQueuedRun(ctx, tx, id, newRun); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	s.log.Info("stage run", "work_item_id", item.ID, "stage", start.Stage, "run_id", id, "agent", start.Agent, "model_id", newRun.ModelID)
+	s.nudge()
+	return true, nil
+}
+
+// recoverReviewerRetries starts the one reviewer retry when the failure
+// committed and the process stopped before the retry run did. A retry that
+// is already queued is left alone. A used budget is not revised here; that
+// decision stays on advanceAfterTerminal for the failure that used it.
+func (s *Server) recoverReviewerRetries(ctx context.Context) error {
+	if s.db == nil || s.store == nil {
+		return nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT r.id, r.status, COALESCE(r.failure_reason, ''), r.exit_code
+		FROM work_items w
+		JOIN LATERAL (
+			SELECT id, status, failure_reason, exit_code
+			FROM runs
+			WHERE work_item_id = w.id AND stage = $1
+			ORDER BY created_at DESC, id DESC
+			LIMIT 1
+		) r ON true
+		WHERE w.status = $2 AND w.stage = $1 AND r.status = $3`,
+		store.StageReviewing, store.WorkItemOpen, store.StatusFailed)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type failedReview struct {
+		id     string
+		status string
+		reason string
+		exit   *int
+	}
+	var pending []failedReview
+	for rows.Next() {
+		var row failedReview
+		if err := rows.Scan(&row.id, &row.status, &row.reason, &row.exit); err != nil {
+			return err
+		}
+		pending = append(pending, row)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	for _, row := range pending {
+		if !reviewerInfra(row.status, row.reason, row.exit) {
+			continue
+		}
+		run, err := s.store.GetRun(ctx, row.id)
+		if err != nil {
+			return err
+		}
+		item, err := s.store.GetWorkItem(ctx, run.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if _, err := s.retryReviewerOnce(ctx, item, run); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertQueuedRun(ctx context.Context, tx pgx.Tx, id string, r store.NewRun) error {
+	var agentID any
+	if r.AgentID != "" {
+		agentID = r.AgentID
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO runs (
+		    id, factory_id, agent_id, status, priority, pool, prompt, title, repo,
+		    work_item_id, parent_run_id, conversation_id, stage, model_id)
+		VALUES (
+		    $1, $2, $3, $4, $5, $6, $7, $8, $9,
+		    NULLIF($10, ''), NULLIF($11, ''), $12, $13, $14)`,
+		id, r.FactoryID, agentID, store.StatusQueued, int(r.Priority), r.Pool, r.Prompt, r.Title, r.Repo,
+		r.WorkItemID, r.ParentRunID, r.ConversationID, r.Stage, r.ModelID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO run_queue (run_id, factory_id, pool, priority, enqueued_at)
+		VALUES ($1, $2, $3, $4, clock_timestamp())`,
+		id, r.FactoryID, r.Pool, int(r.Priority)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_notify('run_queue', $1)`, id); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) runIsTerminal(ctx context.Context, runID string) (bool, error) {
+	if runID == "" {
+		return false, nil
+	}
+	run, err := s.store.GetRun(ctx, runID)
+	if errors.Is(err, store.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return isTerminalStatus(run.Status), nil
 }
 
 func (s *Server) latestQuestion(ctx context.Context, runID string) (string, error) {
@@ -959,7 +1396,14 @@ func (s *Server) parkSuspendedRun(ctx context.Context, runID string) error {
 	}
 	switch status {
 	case store.StatusSucceeded, store.StatusFailed, store.StatusCancelled:
-		return tx.Commit(ctx)
+		if _, err := clearStaleSuspensionTx(ctx, tx, runID); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		s.clearSuspended(runID)
+		return nil
 	}
 	still, err := s.runStillSuspended(ctx, tx, runID)
 	if err != nil {
@@ -1065,7 +1509,14 @@ func (s *Server) resumeIfParked(ctx context.Context, run store.Run, agentID, que
 	}
 	switch status {
 	case store.StatusSucceeded, store.StatusFailed, store.StatusCancelled:
-		return tx.Commit(ctx)
+		if _, err := clearStaleSuspensionTx(ctx, tx, run.ID); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		s.clearSuspended(run.ID)
+		return nil
 	}
 	var live bool
 	if err := tx.QueryRow(ctx, `
