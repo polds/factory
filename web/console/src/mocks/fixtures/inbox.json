@@ -1,0 +1,12 @@
+[
+  {
+    "kind": "approval",
+    "id": "apr_01",
+    "work_item_id": "task_01",
+    "run_id": "run_01",
+    "created_at": "2026-10-17T00:00:00Z",
+    "title": "Spec gate",
+    "detail": "Waiting on approval",
+    "action": "approve"
+  }
+]

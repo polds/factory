@@ -1,0 +1,11 @@
+[
+  {
+    "uid": "wh_01",
+    "name": "ci",
+    "ingress_path": "/api/v1/webhooks/wh_01",
+    "auth_mode": "hmac",
+    "signature_scheme": "sha256",
+    "enabled": true,
+    "last_delivery_at": null
+  }
+]

@@ -10,6 +10,25 @@
 # Build from the repo root:
 #
 #   docker build -t factoryd:dev -f deploy/factoryd/Dockerfile .
+#
+# The node stage installs from the lockfile before the UI source is copied,
+# so a source-only change does not re-run npm ci. The digest is the
+# multi-arch index (linux/amd64 and linux/arm64):
+#   amd64 sha256:2c752226d477b4a886378baa95b9af252be59301b725fdb0b7e15208131505a8
+#   arm64 sha256:85cdd100016a2e09927c0776bb7ebebcfefce5cd0af49893ada91cbc4d78ee22
+
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS console
+
+WORKDIR /src/web/console
+
+COPY web/console/package.json web/console/package-lock.json ./
+RUN npm ci --no-audit --no-fund && npm cache clean --force
+
+COPY web/console/index.html web/console/vite.config.ts web/console/tsconfig.json ./
+COPY web/console/src ./src
+COPY web/console/scripts ./scripts
+RUN npm run build
+
 FROM golang:1.26-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS build
 
 WORKDIR /src
@@ -18,7 +37,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o /factoryd ./cmd/factoryd
+COPY --from=console /src/internal/console/dist ./internal/console/dist
+
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    go build -trimpath -tags console -o /factoryd ./cmd/factoryd
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 

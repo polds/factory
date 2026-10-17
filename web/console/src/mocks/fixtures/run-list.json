@@ -1,0 +1,18 @@
+[
+  {
+    "id": "run_01",
+    "status": "failed",
+    "factory_id": "fac_payments",
+    "agent": "implementer",
+    "work_item_id": "task_01",
+    "failure": {
+      "class": "agent",
+      "code": "agent_reported",
+      "summary": "The agent reported a failure (exit 10).",
+      "retryable": false,
+      "evidence": ["exit code 10"]
+    },
+    "queue_wait_ms": 660000,
+    "exec_ms": 40000
+  }
+]

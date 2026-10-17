@@ -18,3 +18,9 @@ harness/generic-openai/factory-harness
 
 # Session trails and captured command logs. CI re-runs the checks.
 .audit/
+
+# console dependencies and Vite output. The embed copy is produced by
+# `npm run build` and must not be committed.
+web/console/node_modules/
+web/console/dist/
+internal/console/dist/
