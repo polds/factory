@@ -320,8 +320,14 @@ test("day of factory", async ({ browser }) => {
       "description: Day of factory. m5-applied-marker",
     );
     await editor.fill(fixed);
+    await expect(editor).toHaveValue(/m5-applied-marker/);
     await page.getByRole("button", { name: "Validate" }).click();
-    await expect(page.getByText("No errors. Ready to apply.")).toBeVisible();
+    try {
+      await expect(page.getByText("No errors. Ready to apply.")).toBeVisible({ timeout: 30_000 });
+    } catch (err) {
+      const diag = await page.getByRole("region", { name: /Diagnostics/ }).innerText();
+      throw new Error(`step 11: ${diag}`, { cause: err });
+    }
     await page.getByRole("button", { name: "Apply" }).click();
     const apply = page.getByRole("dialog", { name: "Apply definition" });
     await expect(apply.getByText("factory.yaml")).toBeVisible();
