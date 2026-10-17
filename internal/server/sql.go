@@ -12,12 +12,18 @@ import (
 	"github.com/polds/factory/internal/store"
 )
 
-func (s *Server) claim(ctx context.Context, runID string, ttl time.Duration) (bool, error) {
+// claim leases the queue row and marks the run assigned.
+// The returned prompt is the runs.prompt value committed in this same
+// transaction, under the queue-row lock and the runs-row lock taken by
+// the status update. A resume that already committed a new prompt is
+// visible here. A resume that still needs the queue row waits until this
+// transaction ends, in this process or another.
+func (s *Server) claim(ctx context.Context, runID string, ttl time.Duration) (string, bool, error) {
 	s.leaseMu.Lock()
 	defer s.leaseMu.Unlock()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -36,24 +42,26 @@ func (s *Server) claim(ctx context.Context, runID string, ttl time.Duration) (bo
 		WHERE q.run_id = picked.run_id
 		RETURNING q.run_id`, runID, ttl.Milliseconds()).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return "", false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("server: claim: %w", err)
+		return "", false, fmt.Errorf("server: claim: %w", err)
 	}
-	tag, err := tx.Exec(ctx, `
+	var prompt string
+	err = tx.QueryRow(ctx, `
 		UPDATE runs SET status = 'assigned'
-		WHERE id = $1 AND status = 'queued'`, runID)
-	if err != nil {
-		return false, fmt.Errorf("server: claim: %w", err)
+		WHERE id = $1 AND status = 'queued'
+		RETURNING prompt`, runID).Scan(&prompt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
 	}
-	if tag.RowsAffected() == 0 {
-		return false, nil
+	if err != nil {
+		return "", false, fmt.Errorf("server: claim: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("server: claim: %w", err)
+		return "", false, fmt.Errorf("server: claim: %w", err)
 	}
-	return true, nil
+	return prompt, true, nil
 }
 
 func (s *Server) releaseClaim(ctx context.Context, runID string) error {
