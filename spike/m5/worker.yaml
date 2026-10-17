@@ -1,0 +1,10 @@
+# Upstream worker config (oz-agent-worker 63dbb8a).
+# idle_on_complete stays 0s so a stage without idleTimeoutMinutes exits.
+# The implementer sets idleTimeoutMinutes, which wins over this value.
+# The overlay command does not pass --idle-on-complete=0s.
+cleanup: true
+max_concurrent_tasks: 3
+idle_on_complete: 0s
+backend:
+  docker:
+    image_pull_policy: IfNotPresent

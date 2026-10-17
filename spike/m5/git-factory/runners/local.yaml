@@ -1,0 +1,6 @@
+description: Local Docker runner for the read-only factory
+platform:
+  os: linux
+  arch: x86_64
+  linux:
+    dockerImage: factory-m1-task:dev
