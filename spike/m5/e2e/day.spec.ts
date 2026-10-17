@@ -66,6 +66,10 @@ async function signIn(page: Page, start = "/", shot = "dashboard"): Promise<void
   await saveShot(page, shot);
 }
 
+async function openSection(page: Page, name: string): Promise<void> {
+  await page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name, exact: true }).click();
+}
+
 async function chooseFactory(page: Page, name: string): Promise<void> {
   const nav = page.getByRole("navigation", { name: "Factories" });
   await expect(nav.getByRole("button", { name, exact: true })).toBeVisible({ timeout: 60_000 });
@@ -73,7 +77,7 @@ async function chooseFactory(page: Page, name: string): Promise<void> {
 }
 
 async function createItem(page: Page, title: string, body: string): Promise<void> {
-  await page.getByRole("link", { name: "Work items" }).click();
+  await openSection(page, "Work items");
   await page.getByRole("button", { name: "New work item" }).click();
   const dialog = page.getByRole("dialog", { name: "New work item" });
   await dialog.getByLabel("Title").fill(title);
@@ -84,7 +88,7 @@ async function createItem(page: Page, title: string, body: string): Promise<void
 }
 
 async function openRunningRun(page: Page, title: string): Promise<string> {
-  await page.getByRole("link", { name: "Runs" }).click();
+  await openSection(page, "Runs");
   const row = page
     .locator("tr[data-run]")
     .filter({ hasText: title })
@@ -116,7 +120,7 @@ async function seqs(page: Page): Promise<string[]> {
 }
 
 async function approveOnly(page: Page, title: string): Promise<void> {
-  await page.getByRole("link", { name: "Inbox" }).click();
+  await openSection(page, "Inbox");
   await axe(page, "inbox");
   const row = page.locator("li.inbox-row").filter({ hasText: title });
   await expect(row).toBeVisible({ timeout: 180_000 });
@@ -178,7 +182,7 @@ test("day of factory", async ({ browser }) => {
 
     await approveOnly(page, "m5-day");
 
-    await page.getByRole("link", { name: "Runs" }).click();
+    await openSection(page, "Runs");
     const building = page
       .locator("tr[data-run]")
       .filter({ hasText: "m5-day" })
@@ -211,7 +215,7 @@ test("day of factory", async ({ browser }) => {
     const idleAck = await signal("idle", `${dayRun}\n`);
     if (idleAck !== "running") throw new Error(`step 5: container was ${idleAck} during idle`);
 
-    await page.getByRole("link", { name: "Workers" }).click();
+    await openSection(page, "Workers");
     await expect(page.getByRole("heading", { name: "Workers" })).toBeVisible();
     const worker = page.getByRole("row", { name: /local-1/ });
     await expect(worker).toBeVisible({ timeout: 60_000 });
@@ -221,7 +225,7 @@ test("day of factory", async ({ browser }) => {
     await axe(page, "workers");
     await saveShot(page, "workers");
 
-    await page.getByRole("link", { name: "Secrets" }).click();
+    await openSection(page, "Secrets");
     await expect(page.getByRole("heading", { name: "Secrets" })).toBeVisible();
     await expect(
       page.getByText("Values are never shown. This page lists names, providers and presence only."),
@@ -233,7 +237,7 @@ test("day of factory", async ({ browser }) => {
     await saveDom(page, "secrets");
     await saveShot(page, "secrets");
 
-    await page.getByRole("link", { name: "Automations" }).click();
+    await openSection(page, "Automations");
     await expect(
       page.getByText("Runtime override: survives definition applies and doesn't edit the definition."),
     ).toBeVisible();
@@ -245,7 +249,7 @@ test("day of factory", async ({ browser }) => {
     await page.getByRole("dialog", { name: "Resume issue-intake?" }).getByRole("button", { name: "Resume" }).click();
     await expect(page.getByText("Paused at runtime")).toHaveCount(0);
 
-    await page.getByRole("link", { name: "Work items" }).click();
+    await openSection(page, "Work items");
     const done = page.getByRole("region", { name: "Done" });
     await expect(done.getByRole("link", { name: "m5-day" })).toBeVisible({
       timeout: 240_000,
@@ -260,7 +264,7 @@ test("day of factory", async ({ browser }) => {
     await axe(page, "work-item");
     await saveShot(page, "handoff");
 
-    await page.getByRole("link", { name: "Runs" }).click();
+    await openSection(page, "Runs");
     await axe(page, "runs");
     const failureGroup = page.getByRole("group", { name: "Failure class" });
     await failureGroup.getByRole("button", { name: "Agent" }).click();
@@ -279,7 +283,7 @@ test("day of factory", async ({ browser }) => {
     ).toBeVisible();
     await saveShot(page, "agent-failure");
 
-    await page.getByRole("link", { name: "Runs" }).click();
+    await openSection(page, "Runs");
     await failureGroup.getByRole("button", { name: "Infrastructure" }).click();
     await expect(page.locator("tr[data-run]").filter({ hasText: "m5-infra-kill" })).toBeVisible();
     await expect(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" })).toHaveCount(0);
@@ -291,7 +295,7 @@ test("day of factory", async ({ browser }) => {
     await axe(page, "run-detail");
     await saveShot(page, "infra-failure");
 
-    await page.getByRole("link", { name: "Definition" }).click();
+    await openSection(page, "Definition");
     await chooseFactory(page, "m5");
     await page.getByRole("tree", { name: "Definition files" }).getByRole("treeitem", { name: "factory.yaml" }).click();
     const editor = page.getByRole("textbox", { name: "Contents of factory.yaml" });
@@ -322,7 +326,7 @@ test("day of factory", async ({ browser }) => {
 
     await signIn(page, `${gitURL}/`, "dashboard-git");
     await chooseFactory(page, "m5-git");
-    await page.getByRole("link", { name: "Definition" }).click();
+    await openSection(page, "Definition");
     await expect(page.getByText(/Read-only\. Changes go through a pull request\./)).toBeVisible({
       timeout: 90_000,
     });
@@ -334,7 +338,7 @@ test("day of factory", async ({ browser }) => {
 
     await page.goto("/");
     await chooseFactory(page, "m5");
-    await page.getByRole("link", { name: "Webhooks" }).click();
+    await openSection(page, "Webhooks");
     await axe(page, "webhooks");
     const ingress = page.getByText(/\/api\/v1\/webhooks\/whk_[0-9A-Z]+/);
     await expect(ingress).toBeVisible();
@@ -345,7 +349,7 @@ test("day of factory", async ({ browser }) => {
       `${JSON.stringify({ op: "webhook", match: false, uid })}\n`,
     );
     if (!unmatched.startsWith("status 2")) throw new Error(`step 10: unmatched ${unmatched}`);
-    await page.getByRole("link", { name: "Deliveries" }).click();
+    await openSection(page, "Deliveries");
     await axe(page, "deliveries");
     await page.getByRole("tab", { name: /Unmatched/ }).click();
     await page.getByRole("row", { name: /\bci\b/ }).click();
@@ -360,7 +364,7 @@ test("day of factory", async ({ browser }) => {
     );
     if (!matched.startsWith("status 2")) throw new Error(`step 10: match ${matched}`);
 
-    await page.getByRole("link", { name: "Inbox" }).click();
+    await openSection(page, "Inbox");
     await page.getByRole("group", { name: "Filter by kind" }).getByRole("button", { name: "Questions" }).click();
     const question = page.locator("li.inbox-row").filter({ hasText: "m5-question" });
     const sawQuestion = await question
@@ -369,13 +373,13 @@ test("day of factory", async ({ browser }) => {
       .then(() => true)
       .catch(() => false);
     if (!sawQuestion) {
-      await page.getByRole("link", { name: "Runs" }).click();
+      await openSection(page, "Runs");
       const rows = page.locator("tr[data-run]").filter({ hasText: "m5-question" });
       await expect(rows.first()).toBeVisible({ timeout: 30_000 });
       const count = await rows.count();
       const chunks: string[] = [];
       for (let i = 0; i < count; i += 1) {
-        await page.getByRole("link", { name: "Runs" }).click();
+        await openSection(page, "Runs");
         await page
           .locator("tr[data-run]")
           .filter({ hasText: "m5-question" })
