@@ -10,6 +10,7 @@ const apiKey = process.env.M5_API_KEY ?? "";
 const prURL = "https://github.com/polds/m5/pull/7";
 
 let replayPosts = 0;
+const axeFindings: string[] = [];
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -30,9 +31,18 @@ async function axe(page: Page, name: string): Promise<void> {
   const bad = results.violations.filter(
     (row) => row.impact === "serious" || row.impact === "critical",
   );
-  if (bad.length > 0) {
-    const lines = bad.map((row) => `${row.impact ?? "unknown"} ${row.id}: ${row.help}`);
-    throw new Error(`axe ${name}\n${lines.join("\n")}`);
+  for (const row of bad) {
+    const targets = row.nodes
+      .slice(0, 3)
+      .map((node) => node.target.join(" "))
+      .join("; ");
+    axeFindings.push(`${name}: ${row.impact ?? "unknown"} ${row.id}: ${row.help} (${targets})`);
+  }
+}
+
+function assertAxe(): void {
+  if (axeFindings.length > 0) {
+    throw new Error(`axe\n${axeFindings.join("\n")}`);
   }
 }
 
@@ -408,6 +418,7 @@ test("day of factory", async ({ browser }) => {
       timeout: 120_000,
     });
     await saveShot(page, "question");
+    assertAxe();
   } finally {
     await fs.writeFile(path.join(signalDir, "done"), "done\n");
     await context.tracing.stop({ path: path.join(evidence, "day-trace.zip") });
