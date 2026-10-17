@@ -299,7 +299,12 @@ test("day of factory", async ({ browser }) => {
       throw new Error(`created_at order question ${questionAt} agent ${agentAt}`);
     }
     await expect(
-      page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" }).locator("time"),
+      page
+        .locator("tr[data-run]")
+        .filter({ hasText: "m5-agent-failure" })
+        .locator("td")
+        .last()
+        .locator("time"),
     ).toHaveAttribute("datetime", /^\d{4}-/);
     await page.locator("#filter-source").selectOption("manual");
     await expect(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" })).toBeVisible();
