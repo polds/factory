@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -681,8 +682,8 @@ Do the task.
 	defer w.close()
 	runID := env.startRun(t, "idle")
 	asg := w.readAssignment(t)
-	if asg.Task != nil && asg.Task.AgentConfigSnapshot != nil && asg.Task.AgentConfigSnapshot.IdleTimeoutMinutes != nil {
-		t.Fatal("assignment carried idleTimeoutMinutes; the worker does not receive it")
+	if asg.Task == nil || asg.Task.AgentConfigSnapshot == nil || asg.Task.AgentConfigSnapshot.IdleTimeoutMinutes == nil || *asg.Task.AgentConfigSnapshot.IdleTimeoutMinutes != 15 {
+		t.Fatalf("snapshot idle %+v", asg.Task)
 	}
 	postEvents(t, asg.EnvVars["FACTORY_EVENTS_URL"], asg.EnvVars["FACTORY_RUN_TOKEN"], 0, []string{
 		`{"type":"run.capabilities","steer":true}`,
@@ -1167,12 +1168,210 @@ func TestM5ApplyTree(t *testing.T) {
 	}
 }
 
+func TestM5FinishClassAgrees(t *testing.T) {
+	skipNoDB(t)
+	t.Run("agent", func(t *testing.T) {
+		env := boot(t, bootOpts{definition: func(t *testing.T) string { return writePipeline(t, 3) }})
+		w := dialWorker(t, env, "local-1")
+		defer w.close()
+		task, review := reachReviewing(t, env, w)
+		postEvents(t, review.EnvVars["FACTORY_EVENTS_URL"], review.EnvVars["FACTORY_RUN_TOKEN"], 0, []string{
+			`{"type":"terminal","status":"failed_by_agent","summary":"tests failed"}`,
+		})
+		failAssignment(t, w, review, "container_exit", 1)
+		env.waitStatus(t, review.TaskID, "failed")
+		assertFinishClass(t, env, review.TaskID, "agent", "agent_reported", false)
+		env.assertRunCountStable(t, task.ID, "reviewing", 1)
+	})
+	t.Run("infra", func(t *testing.T) {
+		env := boot(t, bootOpts{definition: func(t *testing.T) string { return writePipeline(t, 3) }})
+		w := dialWorker(t, env, "local-1")
+		defer w.close()
+		task, review := reachReviewing(t, env, w)
+		failAssignment(t, w, review, "container_exit", 137)
+		env.waitStatus(t, review.TaskID, "failed")
+		assertFinishClass(t, env, review.TaskID, "infrastructure", "container_killed", true)
+		env.waitRunCount(t, task.ID, "reviewing", 2)
+	})
+}
+
+func assertFinishClass(t *testing.T, env *env, runID, class, code string, infra bool) {
+	t.Helper()
+	var storedClass, storedCode string
+	if err := env.raw.QueryRow(context.Background(), `
+		SELECT COALESCE(failure_class, ''), COALESCE(failure_code, '')
+		FROM runs WHERE id = $1`, runID).Scan(&storedClass, &storedCode); err != nil {
+		t.Fatal(err)
+	}
+	if storedClass != class || storedCode != code {
+		t.Fatalf("stored %s/%s", storedClass, storedCode)
+	}
+	detail := env.runDetail(t, runID)
+	if detail.Failure.Class != class || detail.Failure.Code != code {
+		t.Fatalf("detail %s/%s", detail.Failure.Class, detail.Failure.Code)
+	}
+	listed := ""
+	for _, row := range env.listRows(t, "status=failed") {
+		if row.ID == runID {
+			listed = row.FailureClass
+		}
+	}
+	if listed != class {
+		t.Fatalf("list %q", listed)
+	}
+	in, err := env.srv.classInput(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewerInfra(in) != infra {
+		t.Fatalf("reviewerInfra %v harness %q", reviewerInfra(in), in.HarnessStatus)
+	}
+}
+
+func TestM5ApplyTreeSurvivesRestart(t *testing.T) {
+	skipNoDB(t)
+	env := boot(t, bootOpts{})
+	marker := "survives-restart-body"
+	code, raw := env.authed(t, http.MethodPost, "/api/v1/factory/m2/definition:apply", treeBody(t, marker))
+	if code != http.StatusOK {
+		t.Fatalf("apply %d %s", code, raw)
+	}
+	disk, err := os.ReadFile(filepath.Join(env.srv.cfg.DefinitionPath, "agents", "implementer", "agent.md"))
+	if err != nil || !strings.Contains(string(disk), marker) {
+		t.Fatalf("disk %q %v", disk, err)
+	}
+	env.restart(t)
+	code, raw = env.authed(t, http.MethodGet, "/api/v1/factory/m2/definition", "")
+	if code != http.StatusOK || !strings.Contains(string(raw), marker) {
+		t.Fatalf("after restart %d %s", code, raw)
+	}
+}
+
+func TestM5ApplySyncErrorKeepsDir(t *testing.T) {
+	skipNoDB(t)
+	env := boot(t, bootOpts{})
+	marker := "sync-failed-body"
+	code, raw := env.authed(t, http.MethodPost, "/api/v1/factory/m2/definition:apply", treeBodyBadCron(t, marker))
+	if code == http.StatusOK {
+		t.Fatalf("sync error was success %s", raw)
+	}
+	code, raw = env.authed(t, http.MethodGet, "/api/v1/factory/m2/definition", "")
+	if code != http.StatusOK || !strings.Contains(string(raw), marker) {
+		t.Fatalf("listing lost the uploaded tree %d %s", code, raw)
+	}
+	disk, err := os.ReadFile(filepath.Join(env.srv.cfg.DefinitionPath, "agents", "implementer", "agent.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(disk), marker) {
+		t.Fatal("failed sync replaced DefinitionPath")
+	}
+}
+
+func TestM5AutomationIdleAndOverrides(t *testing.T) {
+	skipNoDB(t)
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		t.Helper()
+		root := writeDefinition(t)
+		mustWrite(t, root+"/agents/implementer/agent.md", `
+---
+description: Implements the requested change.
+agentType: IMPLEMENT
+model: test-model
+secrets:
+  - NPM_TOKEN
+maxTurns: 7
+idleTimeoutMinutes: 15
+---
+
+Do the task.
+`)
+		mustWrite(t, root+"/automations/nightly/automation.md", `
+---
+enabled: true
+agent: implementer
+model: override-model
+runner: local
+pool: batch
+secrets:
+  - GH_TOKEN
+idleTimeoutMinutes: 3
+---
+
+Nightly.
+`)
+		return root
+	}})
+	var rawOverrides string
+	if err := env.raw.QueryRow(context.Background(), `
+		SELECT overrides_json::text FROM automations WHERE name = 'nightly'`).Scan(&rawOverrides); err != nil {
+		t.Fatal(err)
+	}
+	var overrides struct {
+		Model              string   `json:"model"`
+		Runner             string   `json:"runner"`
+		Pool               string   `json:"pool"`
+		Secrets            []string `json:"secrets"`
+		IdleTimeoutMinutes int      `json:"idleTimeoutMinutes"`
+	}
+	if err := json.Unmarshal([]byte(rawOverrides), &overrides); err != nil {
+		t.Fatal(err)
+	}
+	if overrides.Model != "override-model" || overrides.Runner != "local" || overrides.Pool != "batch" || overrides.IdleTimeoutMinutes != 3 || len(overrides.Secrets) != 1 || overrides.Secrets[0] != "GH_TOKEN" {
+		t.Fatalf("overrides %+v", overrides)
+	}
+	if strings.Contains(rawOverrides, plantedGH) || strings.Contains(rawOverrides, plantedNPM) {
+		t.Fatalf("overrides contain a secret value %s", rawOverrides)
+	}
+	runID := env.startRun(t, "auto idle")
+	workID, err := store.NewID(store.PrefixWorkItem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	factoryID, _ := env.factoryAgent(t)
+	if _, err := env.raw.Exec(context.Background(), `
+		INSERT INTO work_items (id, factory_id, source, title, stage, status)
+		VALUES ($1, $2, 'manual', 'nightly', 'triage', 'open')`, workID, factoryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.raw.Exec(context.Background(), `
+		INSERT INTO intake_slots (work_item_id, automation, delivery_id, run_id)
+		VALUES ($1, 'nightly', 'slot-1', $2)`, workID, runID); err != nil {
+		t.Fatal(err)
+	}
+	w := dialWorker(t, env, "local-1")
+	defer w.close()
+	asg := w.readAssignment(t)
+	if asg.TaskID != runID || asg.Task == nil || asg.Task.AgentConfigSnapshot == nil || asg.Task.AgentConfigSnapshot.IdleTimeoutMinutes == nil || *asg.Task.AgentConfigSnapshot.IdleTimeoutMinutes != 3 {
+		idle := any(nil)
+		if asg.Task != nil && asg.Task.AgentConfigSnapshot != nil {
+			idle = asg.Task.AgentConfigSnapshot.IdleTimeoutMinutes
+		}
+		t.Fatalf("run %s assignment %s idle %v", runID, asg.TaskID, idle)
+	}
+}
+
 func treeBody(t *testing.T, marker string) string {
 	t.Helper()
 	files := []api.DefinitionFile{
 		{Path: "factory.yaml", Content: "schemaVersion: v1alpha1\nname: m2\nsecrets:\n  - GH_TOKEN\nagentDefaults:\n  model: auto\n  runner: local\n  pool: standard\n"},
 		{Path: "runners/local.yaml", Content: "description: Local docker runner\nplatform:\n  os: linux\n  arch: x86_64\n  linux:\n    dockerImage: factory-m1-task:dev\n"},
 		{Path: "agents/implementer/agent.md", Content: "---\ndescription: Implements the requested change.\nagentType: IMPLEMENT\nmodel: test-model\nsecrets:\n  - NPM_TOKEN\nmaxTurns: 7\n---\n\n" + marker + "\n"},
+	}
+	raw, err := json.Marshal(map[string]any{"files": files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func treeBodyBadCron(t *testing.T, marker string) string {
+	t.Helper()
+	files := []api.DefinitionFile{
+		{Path: "factory.yaml", Content: "schemaVersion: v1alpha1\nname: m2\nsecrets:\n  - GH_TOKEN\nagentDefaults:\n  model: auto\n  runner: local\n  pool: standard\n"},
+		{Path: "runners/local.yaml", Content: "description: Local docker runner\nplatform:\n  os: linux\n  arch: x86_64\n  linux:\n    dockerImage: factory-m1-task:dev\n"},
+		{Path: "agents/implementer/agent.md", Content: "---\ndescription: Implements the requested change.\nagentType: IMPLEMENT\nmodel: test-model\nsecrets:\n  - NPM_TOKEN\nmaxTurns: 7\n---\n\n" + marker + "\n"},
+		{Path: "automations/bad/automation.md", Content: "---\nenabled: true\nagent: implementer\ntriggers:\n  - provider: schedule\n    event: cron_fired\n    schedule:\n      name: bad\n      cron: not-a-cron\n---\n\n" + marker + "\n"},
 	}
 	raw, err := json.Marshal(map[string]any{"files": files})
 	if err != nil {
@@ -1365,6 +1564,7 @@ func assertBackfillParity(t *testing.T, env *env) {
 			execID, runID, execState, reason, rule.Input.ExitCode, details, []byte("token")); err != nil {
 			t.Fatalf("%s exec: %v", rule.Name, err)
 		}
+		seq := 1
 		if rule.Input.HarnessStatus != "" {
 			payload, err := json.Marshal(map[string]string{"type": "terminal", "status": rule.Input.HarnessStatus})
 			if err != nil {
@@ -1375,6 +1575,22 @@ func assertBackfillParity(t *testing.T, env *env) {
 				VALUES ($1, 1, $2, 1, clock_timestamp(), 'terminal', $3::jsonb)`,
 				runID, execID, payload); err != nil {
 				t.Fatalf("%s event: %v", rule.Name, err)
+			}
+			seq = 2
+		}
+		if isTerminalStatus(status) {
+			// commitFinish writes run.terminal after the harness event, with
+			// status set to the run status. A higher seq must not shadow the
+			// harness terminal row.
+			payload, err := json.Marshal(map[string]string{"type": "run.terminal", "status": status})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := env.raw.Exec(ctx, `
+				INSERT INTO run_events (run_id, seq, execution_id, idx, ts, type, payload_json)
+				VALUES ($1, $2, $3, $4, clock_timestamp(), 'run.terminal', $5::jsonb)`,
+				runID, seq, execID, serverEventBase, payload); err != nil {
+				t.Fatalf("%s run.terminal: %v", rule.Name, err)
 			}
 		}
 		if isTerminalStatus(status) {
@@ -1400,7 +1616,7 @@ func assertBackfillParity(t *testing.T, env *env) {
 			            COALESCE((
 			                SELECT e.payload_json->>'status'
 			                FROM run_events e
-			                WHERE e.run_id = r.id AND e.type IN ('terminal', 'run.terminal')
+			                WHERE e.run_id = r.id AND e.type = 'terminal'
 			                ORDER BY e.seq DESC
 			                LIMIT 1
 			            ), '') AS harness_status,

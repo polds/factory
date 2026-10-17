@@ -63,7 +63,7 @@ func (s *Server) loadClassRow(ctx context.Context, runID string) (classRow, erro
 		    COALESCE((
 		        SELECT e.payload_json->>'status'
 		        FROM run_events e
-		        WHERE e.run_id = r.id AND e.type IN ('terminal', 'run.terminal')
+		        WHERE e.run_id = r.id AND e.type = 'terminal'
 		        ORDER BY e.seq DESC
 		        LIMIT 1
 		    ), ''),
@@ -271,13 +271,15 @@ func detailsArg(details json.RawMessage) any {
 	return []byte(details)
 }
 
-// harnessStatusTx reads the newest terminal event visible on tx.
+// harnessStatusTx reads the newest harness terminal event visible on tx.
+// run.terminal.status is the factory run status, written after the harness
+// event, so it must not be read as a harness status.
 func harnessStatusTx(ctx context.Context, tx pgx.Tx, runID string) (string, error) {
 	var status string
 	err := tx.QueryRow(ctx, `
 		SELECT COALESCE(payload_json->>'status', '')
 		FROM run_events
-		WHERE run_id = $1 AND type IN ('terminal', 'run.terminal')
+		WHERE run_id = $1 AND type = 'terminal'
 		ORDER BY seq DESC
 		LIMIT 1`, runID).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {

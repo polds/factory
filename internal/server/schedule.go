@@ -247,7 +247,7 @@ func (s *Server) assignOne(ctx context.Context, run store.Run, workerID string, 
 		}
 		return
 	}
-	asg := s.assignment(run, exec, bound, env)
+	asg := s.assignment(ctx, run, exec, bound, env)
 	s.track(execRec{runID: run.ID, execID: exec.ID, workerID: workerID})
 	if err := s.gw.Assign(ctx, workerID, asg); err != nil {
 		if s.tracked(exec.ID) {

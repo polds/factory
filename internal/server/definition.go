@@ -24,8 +24,8 @@ type loaded struct {
 	factory store.Factory
 	byName  map[string]string
 	byID    map[string]boundAgent
-	// dir is the tree on disk. Boot and git-sync use DefinitionPath.
-	// An uploaded tree keeps its temp directory until the next apply.
+	// dir is the tree on disk. Boot, git-sync, and a successful upload all
+	// use DefinitionPath. A failed upload may still reference its temp dir.
 	dir string
 }
 
@@ -206,11 +206,16 @@ func (s *Server) appliedDefinition(tree *definition.Tree) (store.AppliedDefiniti
 		if auto.Triggers == nil {
 			triggers = []byte(`[]`)
 		}
+		overrides, err := automationOverrides(auto)
+		if err != nil {
+			return store.AppliedDefinition{}, err
+		}
 		automations = append(automations, store.DefinedAutomation{
-			Name:         name,
-			Enabled:      auto.Enabled,
-			TriggersJSON: triggers,
-			Prompt:       auto.Body,
+			Name:          name,
+			Enabled:       auto.Enabled,
+			TriggersJSON:  triggers,
+			Prompt:        auto.Body,
+			OverridesJSON: overrides,
 		})
 	}
 	return store.AppliedDefinition{
@@ -223,6 +228,29 @@ func (s *Server) appliedDefinition(tree *definition.Tree) (store.AppliedDefiniti
 		Runners:          runners,
 		Automations:      automations,
 	}, nil
+}
+
+// automationOverrides is the execution settings stored on
+// automations.overrides_json. Secrets are names. Values are not on the
+// definition type and are not written here.
+func automationOverrides(auto definition.Automation) (json.RawMessage, error) {
+	raw, err := json.Marshal(struct {
+		Model              string   `json:"model,omitempty"`
+		Runner             string   `json:"runner,omitempty"`
+		Pool               string   `json:"pool,omitempty"`
+		Secrets            []string `json:"secrets,omitempty"`
+		IdleTimeoutMinutes int      `json:"idleTimeoutMinutes,omitempty"`
+	}{
+		Model:              auto.Model,
+		Runner:             auto.Runner,
+		Pool:               auto.Pool,
+		Secrets:            auto.Secrets,
+		IdleTimeoutMinutes: auto.IdleTimeoutMinutes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 func errorTexts(diags []definition.Diagnostic) []string {

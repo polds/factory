@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -55,6 +56,7 @@ func TestE2EM5(t *testing.T) {
 		env := boot(t, bootOpts{})
 		assertBackfillParity(t, env)
 	})
+	t.Run("idle_followup", func(t *testing.T) { testE2EM5IdleFollowup(t) })
 }
 
 func testE2EM5Agent(t *testing.T) {
@@ -102,6 +104,60 @@ func testE2EM5Killed(t *testing.T) {
 	if detail.Failure.Class != "infrastructure" || detail.Failure.Code != "container_killed" {
 		t.Fatalf("class %s/%s", detail.Failure.Class, detail.Failure.Code)
 	}
+}
+
+func testE2EM5IdleFollowup(t *testing.T) {
+	t.Helper()
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		t.Helper()
+		root := writeDefinition(t)
+		mustWrite(t, root+"/agents/implementer/agent.md", `
+---
+description: Implements the requested change.
+agentType: IMPLEMENT
+model: test-model
+secrets:
+  - NPM_TOKEN
+maxTurns: 7
+idleTimeoutMinutes: 1
+---
+
+Do the task.
+`)
+		return root
+	}})
+	w := dialWorker(t, env, "local-1")
+	defer w.close()
+	runID := env.startRun(t, "stay up")
+	asg := w.readAssignment(t)
+	if asg.Task == nil || asg.Task.AgentConfigSnapshot == nil || asg.Task.AgentConfigSnapshot.IdleTimeoutMinutes == nil || *asg.Task.AgentConfigSnapshot.IdleTimeoutMinutes != 1 {
+		t.Fatalf("snapshot %+v", asg.Task)
+	}
+	token := asg.EnvVars["FACTORY_RUN_TOKEN"]
+	postEvents(t, asg.EnvVars["FACTORY_EVENTS_URL"], token, 100, []string{
+		`{"type":"run.capabilities","steer":true}`,
+	})
+	started := make(chan struct{})
+	var once sync.Once
+	model := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		rw.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(rw, `{"choices":[{"message":{"role":"assistant","content":"done"}}]}`)
+		once.Do(func() { close(started) })
+	}))
+	t.Cleanup(model.Close)
+	cmd := startHarness(t, asg, model.URL, fmt.Sprintf("%dm", *asg.Task.AgentConfigSnapshot.IdleTimeoutMinutes))
+	select {
+	case <-started:
+	case <-time.After(8 * time.Second):
+		t.Fatal(harnessOutput(cmd, token))
+	}
+	time.Sleep(500 * time.Millisecond)
+	code, raw := env.authed(t, http.MethodPost, "/api/v1/agent/runs/"+runID+"/followups", `{"text":"keep going"}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("followup %d %s\n%s", code, raw, harnessOutput(cmd, token))
+	}
+	waitEvent(t, env, runID, "followup.received")
 }
 
 func testE2EM5NoCapability(t *testing.T) {

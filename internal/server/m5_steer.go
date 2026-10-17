@@ -14,11 +14,11 @@ import (
 // arrives. Another factoryd instance has no shared wake channel.
 const steerTick = 200 * time.Millisecond
 
-// The worker assignment does not set AgentConfigSnapshot.IdleTimeoutMinutes
-// and does not pass --idle-on-complete. The container therefore does not stay
-// up for the agent's idle window. A finished run reports "idle window ended"
-// as soon as the run is terminal. idle_until below is still computed while
-// the run is running and a harness terminal event has been stored.
+// A positive idle timeout is copied onto AgentConfigSnapshot so the worker
+// can pass --idle-on-complete. factoryd does not build that argv. A finished
+// run still reports "idle window ended" once the run is terminal. idle_until
+// below is computed while the run is running and a harness terminal event
+// has been stored.
 
 func (s *Server) Interrupt(ctx context.Context, id, actor string) (string, error) {
 	return s.enqueueSteer(ctx, id, store.SteerInterrupt, "", actor)
@@ -99,8 +99,6 @@ func (s *Server) steerCapable(ctx context.Context, runID string) bool {
 
 // idleUntil is the harness terminal timestamp plus the agent's
 // idleTimeoutMinutes. It is set only while the run is still running.
-// See the comment above Interrupt: the worker is not given that timeout,
-// so the process usually ends with the harness and this window is empty.
 func (s *Server) idleUntil(ctx context.Context, run store.Run) (time.Time, bool) {
 	if run.Status != store.StatusRunning {
 		return time.Time{}, false
