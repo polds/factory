@@ -38,7 +38,11 @@ func (s *Server) WorkerConnected(ctx context.Context, w gateway.WorkerInfo) erro
 	if _, ok := s.idleSince[w.WorkerID]; !ok {
 		s.idleSince[w.WorkerID] = s.now()
 	}
+	hook := s.afterWorkerConnect
 	s.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	s.nudge()
 	return nil
 }

@@ -716,9 +716,26 @@ func TestE2EReviewerSameIDReconnectBeforeSweep(t *testing.T) {
 	gate := make(chan struct{})
 	env.srv.cfg.ScheduleGate = gate
 	env.start(t)
+	// The dial returns when the handshake is written, which is before the
+	// gateway registers the socket. Wait until that registration is done
+	// so the sweep runs against a worker this process can already see.
+	connected := make(chan struct{}, 1)
+	env.srv.mu.Lock()
+	env.srv.afterWorkerConnect = func() {
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
+	}
+	env.srv.mu.Unlock()
 	// The worker id matches the stale run. The dial sends no execution.
 	w = dialWorker(t, env, "local-1")
 	defer w.close()
+	select {
+	case <-connected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("local-1 did not connect")
+	}
 	if !workerConnected(env.srv, "local-1") {
 		t.Fatal("local-1 was not connected before the sweep")
 	}

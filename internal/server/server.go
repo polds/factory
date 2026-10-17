@@ -137,6 +137,11 @@ type Server struct {
 	// in that gap. The hook runs without leaseMu and must not call assignOne.
 	beforeClaim func(runID string)
 
+	// afterWorkerConnect runs at the end of WorkerConnected, after the
+	// gateway has registered the socket. Nil in production. A test waits
+	// on it so a reconnect is visible before the sweep.
+	afterWorkerConnect func()
+
 	// scheduleGate blocks loop until closed. Nil in production.
 	scheduleGate <-chan struct{}
 
