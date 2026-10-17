@@ -267,16 +267,183 @@ case_spec_drives_step8() {
   fi
 }
 
+lock_mode700() {
+  local parent="$1"
+  docker run --rm --user 0 -v "$parent:/defs" golang:1.26-alpine \
+    sh -c 'mkdir -p /defs/m5-factory/kept && echo locked >/defs/m5-factory/kept/file && chown -R 65532:65532 /defs/m5-factory && chmod 700 /defs/m5-factory'
+}
+
+case_wipe_refuses_outside() {
+  local outside="" err=""
+  outside="$(mktemp -d)"
+  err="$(mktemp)"
+  lock_mode700 "$outside"
+  if rm -rf "$outside/m5-factory" 2>/dev/null; then
+    echo "host removed the outside fixture; it is not locked" >&2
+    rm -rf "$outside"
+    return 1
+  fi
+  if wipe_dir "$outside/m5-factory" 2>"$err"; then
+    echo "wipe_dir accepted a path outside .work" >&2
+    return 1
+  fi
+  if ! grep -F "wipe_dir: refusing" "$err" >/dev/null; then
+    echo "outside refusal missing" >&2
+    cat "$err" >&2
+    return 1
+  fi
+  if [[ ! -d "$outside/m5-factory" ]]; then
+    echo "outside locked directory was removed" >&2
+    return 1
+  fi
+  if ! docker run --rm --user 0 -v "$outside:/probe:ro" golang:1.26-alpine \
+    sh -c 'test -f /probe/m5-factory/kept/file'; then
+    echo "outside locked file was removed" >&2
+    return 1
+  fi
+  # The fixture sits outside .work so this case can prove wipe_dir left it.
+  # Removing it is the test's own cleanup.
+  docker run --rm --user 0 -v "$outside:/probe" golang:1.26-alpine \
+    sh -c 'rm -rf /probe/m5-factory'
+  rm -rf "$outside"
+  rm -f "$err"
+}
+
+case_wipe_refuses_symlink() {
+  local outside="" link="$WORK/wipe-escape" err=""
+  outside="$(mktemp -d)"
+  err="$(mktemp)"
+  echo keep >"$outside/keep"
+  rm -f "$link"
+  ln -s "$outside" "$link"
+  if wipe_dir "$link" 2>"$err"; then
+    echo "wipe_dir followed a symlink out of .work" >&2
+    rm -f "$link"
+    rm -rf "$outside"
+    return 1
+  fi
+  if ! grep -F "wipe_dir: refusing" "$err" >/dev/null; then
+    echo "symlink refusal missing" >&2
+    cat "$err" >&2
+    rm -f "$link"
+    rm -rf "$outside"
+    return 1
+  fi
+  if [[ ! -f "$outside/keep" || ! -L "$link" ]]; then
+    echo "symlink or its target was removed" >&2
+    rm -f "$link"
+    rm -rf "$outside"
+    return 1
+  fi
+  rm -f "$link" "$err"
+  rm -rf "$outside"
+}
+
+case_wipe_refuses_empty() {
+  local err=""
+  err="$(mktemp)"
+  if wipe_dir "" 2>"$err"; then
+    echo "wipe_dir accepted an empty path" >&2
+    rm -f "$err"
+    return 1
+  fi
+  if ! grep -F "wipe_dir: empty path" "$err" >/dev/null; then
+    echo "empty refusal missing" >&2
+    cat "$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  if wipe_dir 2>"$err"; then
+    echo "wipe_dir accepted a missing argument" >&2
+    rm -f "$err"
+    return 1
+  fi
+  grep -F "wipe_dir: empty path" "$err" >/dev/null
+  rm -f "$err"
+}
+
+case_wipe_refuses_work_and_root() {
+  local canary="$WORK/wipe-root-canary" err=""
+  err="$(mktemp)"
+  echo keep >"$canary"
+  if wipe_dir "$WORK" 2>"$err"; then
+    echo "wipe_dir accepted .work" >&2
+    rm -f "$canary" "$err"
+    return 1
+  fi
+  if ! grep -F "wipe_dir: refusing" "$err" >/dev/null; then
+    echo ".work refusal missing" >&2
+    cat "$err" >&2
+    rm -f "$canary" "$err"
+    return 1
+  fi
+  if [[ ! -f "$canary" ]]; then
+    echo ".work canary was removed" >&2
+    return 1
+  fi
+  rm -f "$canary"
+  if wipe_dir / 2>"$err"; then
+    echo "wipe_dir accepted /" >&2
+    rm -f "$err"
+    return 1
+  fi
+  if ! grep -F "wipe_dir: refusing" "$err" >/dev/null; then
+    echo "/ refusal missing" >&2
+    cat "$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  [[ -f "$ROOT/spike/m5/run.sh" ]]
+  rm -f "$err"
+}
+
+case_wipe_locked_inside_work() {
+  local tree="$WORK/wipe-locked"
+  mkdir -p "$tree"
+  lock_mode700 "$tree"
+  if rm -rf "$tree/m5-factory" 2>/dev/null; then
+    echo "host removed the mode-700 tree; fixture is not locked" >&2
+    return 1
+  fi
+  wipe_dir "$tree"
+  if [[ -e "$tree/m5-factory" || -e "$tree/m5-factory/kept/file" ]]; then
+    echo "locked tree inside .work survived wipe_dir" >&2
+    return 1
+  fi
+  rm -rf "$tree"
+}
+
+case_keep_up_skips_defs_wipe() {
+  local defs="$WORK/keep-up-defs"
+  mkdir -p "$defs" "$WORK/keep-up-evidence" "$WORK/keep-up-signal"
+  echo keep >"$defs/marker"
+  touch "$WORK/keep-up-evidence/compose.log"
+  (
+    KEEP_UP=1
+    DEFS="$defs"
+    EVIDENCE="$WORK/keep-up-evidence"
+    SIGNAL="$WORK/keep-up-signal"
+    COMPOSE_STARTED=0
+    WATCH_PID=""
+    ROUTER_PID=""
+    STUB_PIDS=""
+    cleanup
+  )
+  if [[ ! -f "$defs/marker" ]]; then
+    echo "KEEP_UP=1 wiped the definition tree" >&2
+    return 1
+  fi
+  rm -rf "$defs" "$WORK/keep-up-evidence" "$WORK/keep-up-signal"
+}
+
 case_prepare_definition_locked_tree() {
-  local tree=""
-  tree="$(mktemp -d)"
+  local tree="$WORK/prepare-locked" code=0
+  mkdir -p "$tree"
   set +e
   (
     DEFS="$tree"
     MODE=offline
-    mkdir -p "$DEFS/m5-factory"
-    docker run --rm --user 0 -v "$DEFS:/defs" golang:1.26-alpine \
-      sh -c 'mkdir -p /defs/m5-factory/kept && echo locked >/defs/m5-factory/kept/file && chown -R 65532:65532 /defs/m5-factory && chmod 700 /defs/m5-factory'
+    lock_mode700 "$DEFS"
     if rm -rf "$DEFS/m5-factory" 2>/dev/null; then
       echo "host removed the mode-700 tree; fixture is not locked" >&2
       exit 1
@@ -286,21 +453,17 @@ case_prepare_definition_locked_tree() {
       echo "first prepare did not replace the locked tree" >&2
       exit 1
     fi
-    docker run --rm --user 0 -v "$DEFS:/defs" golang:1.26-alpine \
-      sh -c 'mkdir -p /defs/m5-factory/kept && echo locked >/defs/m5-factory/kept/file && chown -R 65532:65532 /defs/m5-factory && chmod 700 /defs/m5-factory'
+    lock_mode700 "$DEFS"
     prepare_definition
     if [[ ! -f "$DEFS/m5-factory/factory.yaml" ]]; then
       echo "second prepare did not replace the locked tree" >&2
       exit 1
     fi
   )
-  local code=$?
+  code=$?
   set -e
-  if ! rm -rf "$tree" 2>/dev/null; then
-    docker run --rm --user 0 -v "$tree:/wipe" golang:1.26-alpine \
-      sh -c 'find /wipe -mindepth 1 -depth -exec rm -rf {} +'
-    rm -rf "$tree"
-  fi
+  wipe_dir "$tree" || true
+  rm -rf "$tree"
   return "$code"
 }
 
@@ -362,6 +525,12 @@ run_case build-flags case_build_flags
 run_case spec-static case_spec_static
 run_case failure-routes-on-building case_failure_routes_on_building
 run_case spec-drives-step8 case_spec_drives_step8
+run_case wipe-refuses-outside case_wipe_refuses_outside
+run_case wipe-refuses-symlink case_wipe_refuses_symlink
+run_case wipe-refuses-empty case_wipe_refuses_empty
+run_case wipe-refuses-work-and-root case_wipe_refuses_work_and_root
+run_case wipe-locked-inside case_wipe_locked_inside_work
+run_case keep-up-skips-defs case_keep_up_skips_defs_wipe
 run_case prepare-locked-tree case_prepare_definition_locked_tree
 run_case compose-config case_compose_config
 

@@ -347,7 +347,8 @@ compose() {
 
 prepare_definition() {
   # factoryd (uid 65532) replaces this tree with mode 700. A later run
-  # cannot rm it as the host user. wipe_dir falls back to a root container.
+  # cannot rm it as the host user. wipe_dir falls back to a root container
+  # and only for a resolved directory strictly inside spike/m5/.work.
   wipe_dir "$DEFS"
   mkdir -p "$DEFS"
   cp -R "$ROOT/deploy/m5-factory" "$DEFS/m5-factory"
@@ -647,15 +648,47 @@ watch_signals() {
   done
 }
 
+# resolve_wipe_path prints the physical path of one argument.
+# It refuses an empty path, /, spike/m5/.work itself, and anything that
+# realpath follows outside that directory, including a symlink.
+resolve_wipe_path() {
+  python3 - "$WORK" "${1-}" <<'PY'
+import os, sys
+
+work = os.path.realpath(sys.argv[1])
+raw = sys.argv[2]
+if raw == "":
+    sys.stderr.write("wipe_dir: empty path\n")
+    raise SystemExit(1)
+if work in ("", "/"):
+    sys.stderr.write("wipe_dir: refusing work root %s\n" % work)
+    raise SystemExit(1)
+resolved = os.path.realpath(raw)
+try:
+    inside = os.path.commonpath([work, resolved]) == work
+except ValueError:
+    inside = False
+if resolved in ("", "/") or resolved == work or not inside:
+    sys.stderr.write("wipe_dir: refusing %s\n" % resolved)
+    raise SystemExit(1)
+print(resolved)
+PY
+}
+
 wipe_dir() {
-  local path="$1"
-  if [[ ! -e "$path" ]]; then
+  local path="${1-}" resolved=""
+  if ! resolved="$(resolve_wipe_path "$path")"; then
+    return 1
+  fi
+  if [[ ! -e "$resolved" ]]; then
     return 0
   fi
-  if rm -rf "$path" 2>/dev/null; then
+  if rm -rf "$resolved" 2>/dev/null; then
     return 0
   fi
-  docker run --rm --user 0 -v "$path:/wipe" golang:1.26-alpine \
+  # Bind the resolved directory itself. A parent mount would let the
+  # root find walk sideways out of the tree we agreed to delete.
+  docker run --rm --user 0 -v "$resolved:/wipe" golang:1.26-alpine \
     sh -c 'find /wipe -mindepth 1 -depth -exec rm -rf {} +'
 }
 
@@ -854,7 +887,11 @@ cleanup() {
   stop_background
   # Drop the definition tree after the mount is gone so the next prep
   # is not the first thing that has to delete a mode-700 directory.
-  wipe_dir "$DEFS" || true
+  # KEEP_UP leaves factoryd running, so the bind is still live.
+  # --manual sets KEEP_UP and also clears this trap.
+  if [[ "${KEEP_UP:-}" != 1 ]]; then
+    wipe_dir "$DEFS" || true
+  fi
   if [[ -d "$EVIDENCE" && ! -f "$EVIDENCE/compose.log" ]]; then
     save_logs || true
   fi
