@@ -12,6 +12,10 @@ func (s *Server) tick(ctx context.Context) {
 	if err := ctx.Err(); err != nil {
 		return
 	}
+	// One tick at a time. A test holds this across a session drop so the
+	// sweep cannot run until the replacement lock is in place.
+	s.scheduleMu.Lock()
+	defer s.scheduleMu.Unlock()
 	if !s.isLeader(ctx) {
 		return
 	}

@@ -95,15 +95,21 @@ type Config struct {
 // Server is one factoryd process: REST, SSE, the worker gateway, and the
 // scheduler leader loop.
 type Server struct {
-	cfg     Config
-	log     *slog.Logger
-	store   *store.Store
-	db      *pgxpool.Pool
-	leader  *pgx.Conn
-	gw      *gateway.Gateway
-	hub     *events.Hub
-	api     http.Handler
-	schemas http.Handler
+	cfg         Config
+	log         *slog.Logger
+	store       *store.Store
+	db          *pgxpool.Pool
+	leader      *pgx.Conn
+	leaderMu    sync.Mutex
+	session     *pgx.Conn
+	sessionID   string
+	sessionHeld bool
+	sessionMu   sync.Mutex
+	sessionCfg  *pgx.ConnConfig
+	gw          *gateway.Gateway
+	hub         *events.Hub
+	api         http.Handler
+	schemas     http.Handler
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -116,6 +122,7 @@ type Server struct {
 	gitSHA     string
 	mu         sync.Mutex
 	leaseMu    sync.Mutex
+	scheduleMu sync.Mutex
 	countersMu sync.Mutex
 	counters   scheduler.Counters
 
@@ -138,6 +145,15 @@ type Server struct {
 	// before claim leases it. Nil in production. A test commits a new prompt
 	// in that gap. The hook runs without leaseMu and must not call assignOne.
 	beforeClaim func(runID string)
+
+	// afterWorkerConnect runs at the end of WorkerConnected, after the
+	// gateway has registered the socket. Nil in production. A test waits
+	// on it so a reconnect is visible before the sweep.
+	afterWorkerConnect func()
+
+	// afterSessionRecover runs after a replacement session lock is held
+	// and tracked rows have been restamped. Nil in production.
+	afterSessionRecover func()
 
 	// scheduleGate blocks loop until closed. Nil in production.
 	scheduleGate <-chan struct{}
@@ -192,6 +208,31 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		st.Close()
 		return nil, fmt.Errorf("server: leader: %w", err)
 	}
+	sessionID, err := newServerSessionID()
+	if err != nil {
+		_ = leader.Close(ctx)
+		pool.Close()
+		st.Close()
+		return nil, fmt.Errorf("server: session: %w", err)
+	}
+	// The session lock lives on its own connection. Closing the leader
+	// connection drops leadership and leaves this lock held. watchSession
+	// replaces the connection when this one dies.
+	sessionCfg := poolCfg.ConnConfig.Copy()
+	session, err := pgx.ConnectConfig(ctx, sessionCfg.Copy())
+	if err != nil {
+		_ = leader.Close(ctx)
+		pool.Close()
+		st.Close()
+		return nil, fmt.Errorf("server: session: %w", err)
+	}
+	if err := lockServerSession(ctx, session, sessionID); err != nil {
+		_ = session.Close(ctx)
+		_ = leader.Close(ctx)
+		pool.Close()
+		st.Close()
+		return nil, fmt.Errorf("server: session: %w", err)
+	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	s := &Server{
@@ -200,6 +241,10 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		store:        st,
 		db:           pool,
 		leader:       leader,
+		session:      session,
+		sessionID:    sessionID,
+		sessionHeld:  true,
+		sessionCfg:   sessionCfg,
 		hub:          events.NewHub(),
 		ctx:          runCtx,
 		cancel:       cancel,
@@ -228,8 +273,8 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		_ = s.Close()
 		return nil, err
 	}
-	// Scheduler loops plus the dispatcher and the leader-elected cron ticker.
-	loops := 5
+	// Scheduler loops, the session watch, the dispatcher, and the cron ticker.
+	loops := 6
 	if cfg.DefinitionGitURL != "" {
 		loops++
 	}
@@ -237,6 +282,7 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 	go s.loop()
 	go s.listenQueue()
 	go s.pingLoop()
+	go s.watchSession()
 	go s.dispatchLoop()
 	go s.cronLoop()
 	if cfg.DefinitionGitURL != "" {
@@ -361,6 +407,7 @@ func (s *Server) Close() error {
 			delete(s.grace, id)
 		}
 		s.mu.Unlock()
+		s.leaderMu.Lock()
 		if s.leader != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			if _, err := s.leader.Exec(ctx, `SELECT pg_advisory_unlock($1::int4, $2::int4)`, leaderLockClass, leaderLockObj); err != nil && s.log != nil {
@@ -372,6 +419,23 @@ func (s *Server) Close() error {
 			cancel()
 			s.leader = nil
 		}
+		s.leaderMu.Unlock()
+		s.sessionMu.Lock()
+		if s.session != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if s.sessionHeld && s.sessionID != "" {
+				if _, err := s.session.Exec(ctx, `SELECT pg_advisory_unlock(hashtextextended($1, $2::bigint))`, serverSessionLockKey(s.sessionID), serverSessionLockSalt); err != nil && s.log != nil {
+					s.log.Debug("session unlock", "err", err)
+				}
+			}
+			if err := s.session.Close(ctx); err != nil && s.log != nil {
+				s.log.Debug("session close", "err", err)
+			}
+			cancel()
+			s.session = nil
+			s.sessionHeld = false
+		}
+		s.sessionMu.Unlock()
 		if s.db != nil {
 			s.db.Close()
 		}
