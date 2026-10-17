@@ -1,0 +1,7 @@
+{
+  "type": "about:blank",
+  "title": "conflict",
+  "status": 409,
+  "detail": "worker/harness does not support steering",
+  "reason": "worker/harness does not support steering"
+}

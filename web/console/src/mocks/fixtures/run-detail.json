@@ -1,0 +1,27 @@
+{
+  "id": "run_01",
+  "status": "failed",
+  "factory_id": "fac_payments",
+  "agent": "implementer",
+  "title": "Fix the retry",
+  "work_item_id": "task_01",
+  "parent_run_id": "run_parent",
+  "stage": "building",
+  "model_id": "stub-model",
+  "failure_reason": "container_exit",
+  "failure": {
+    "class": "agent",
+    "code": "agent_reported",
+    "summary": "The agent reported a failure (exit 10).",
+    "retryable": false,
+    "evidence": ["exit code 10"]
+  },
+  "queue_wait_ms": 660000,
+  "exec_ms": 40000,
+  "steer": {
+    "enabled": false,
+    "reason": "run finished; idle window ended at 2026-10-17T00:00:00Z",
+    "idle_until": "2026-10-17T00:00:00Z"
+  },
+  "pr_url": "https://example.test/pr/1"
+}

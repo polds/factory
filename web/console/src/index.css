@@ -1,0 +1,243 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f7f6f3;
+  --foreground: #1c1917;
+  --muted: #f0eeea;
+  --muted-foreground: #44403c;
+  --border: #d6d3d1;
+  --ring: #1d4ed8;
+  --card: #ffffff;
+  --danger: #9f1239;
+  --danger-foreground: #fff1f2;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --background: #1c1917;
+  --foreground: #fafaf9;
+  --muted: #292524;
+  --muted-foreground: #e7e5e4;
+  --border: #57534e;
+  --ring: #93c5fd;
+  --card: #292524;
+  --danger: #fecdd3;
+  --danger-foreground: #4c0519;
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--background);
+  color: var(--foreground);
+  font:
+    16px/1.5 ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+a {
+  color: inherit;
+}
+
+.skip-link {
+  position: absolute;
+  left: 0.5rem;
+  top: 0.5rem;
+  transform: translateY(-200%);
+  background: var(--card);
+  color: var(--foreground);
+  padding: 0.4rem 0.6rem;
+}
+
+.skip-link:focus {
+  transform: none;
+}
+
+.shell {
+  display: grid;
+  min-height: 100vh;
+  grid-template-columns: 16rem minmax(0, 1fr);
+}
+
+.sidebar,
+.topbar,
+.dialog-content,
+.login,
+.state-block {
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.sidebar {
+  border-right: 1px solid var(--border);
+  padding: 1rem;
+}
+
+.sidebar h1,
+.sidebar h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.sidebar ul,
+.workspace ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sidebar li + li,
+.filter {
+  margin-top: 0.25rem;
+}
+
+.sidebar a,
+.sidebar button,
+.sidebar [aria-disabled="true"] {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.35rem 0.4rem;
+}
+
+.sidebar [aria-current="page"],
+.sidebar [aria-current="true"] {
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.muted {
+  color: var(--muted-foreground);
+}
+
+.workspace {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  justify-content: flex-end;
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 1rem;
+}
+
+main {
+  padding: 1rem;
+}
+
+.login {
+  max-width: 28rem;
+  margin: 4rem auto;
+  padding: 1.5rem;
+  border: 1px solid var(--border);
+}
+
+.login form {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.login input,
+.button,
+.filter > button,
+.topbar button,
+.sidebar button,
+.login > button {
+  font: inherit;
+  color: var(--foreground);
+  background: var(--muted);
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.6rem;
+}
+
+.button-danger {
+  background: var(--danger);
+  color: var(--danger-foreground);
+  border-color: var(--danger);
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-weight: 650;
+}
+
+.filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.duration-pair {
+  margin: 0;
+}
+
+.virtual-list {
+  height: 20rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+}
+
+.virtual-list-inner {
+  position: relative;
+  width: 100%;
+}
+
+.virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(28 25 23 / 45%);
+}
+
+.dialog-content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: min(32rem, calc(100vw - 2rem));
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--border);
+  padding: 1rem;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.state-block {
+  border: 1px solid var(--border);
+  padding: 1rem;
+}
+
+@media (max-width: 720px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+}

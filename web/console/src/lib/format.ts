@@ -1,0 +1,16 @@
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "unknown";
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 1) return `${Math.round(ms)}ms`;
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  if (minutes > 0) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  return `${seconds}s`;
+}
+
+export function durationDateTime(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "PT0S";
+  return `PT${Math.round(ms / 1000)}S`;
+}

@@ -1,0 +1,9 @@
+{
+  "runs_by_status": { "running": 1, "failed": 2 },
+  "runs_by_failure_class": { "agent": 1, "infrastructure": 1 },
+  "queue_wait_p50_ms": 12000,
+  "active_runs": 1,
+  "waiting_on_human": 2,
+  "prs_opened": 1,
+  "deliveries_unmatched": 0
+}
