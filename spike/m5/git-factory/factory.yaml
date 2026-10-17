@@ -1,0 +1,12 @@
+schemaVersion: v1alpha1
+name: m5-git
+description: Read-only git definition for the M5 day.
+agentDefaults:
+  model: m5-git-triage
+  runner: local
+  pool: standard
+  maxTurns: 4
+pipeline:
+  stages: [triage]
+  agents:
+    triage: triage

@@ -1,0 +1,5 @@
+authMode: signature
+signatureScheme: github
+secretName: M5_WEBHOOK
+deliveryIdHeader: X-Request-Id
+enabled: true

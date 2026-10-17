@@ -30,6 +30,11 @@
 # FACTORY_DEFINITION_PATH (see spike/m3/run.sh). The default tree is
 # deploy/m2-factory.
 #
+# Profile m5 adds factoryd-git (console on 8081, its own database) for
+# spike/m5/run.sh. That script also passes spike/m5/compose.yml, which
+# mounts a writable definition parent and drops the worker idle flag.
+# The default project does not start the git factory.
+#
 # Profile m4 adds fake-github and fake-slack for spike/m4/run.sh. That
 # script also passes spike/m4/compose.yml, which injects the M4 environment
 # into factoryd and mounts the App private key. The default project does
@@ -281,6 +286,87 @@ services:
     restart: "no"
     logging: *logging
 
+  # Creates factory_git, then stays up. An exited init container fails
+  # `up --wait`. factoryd-git migrates this database on boot.
+  factory-git-db:
+    profiles: ["m5"]
+    image: postgres:16-alpine
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-factory}
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        until pg_isready -h postgres -U factory -d factory; do sleep 1; done;
+        psql -h postgres -U factory -d factory -v ON_ERROR_STOP=1 -tc
+        "SELECT 1 FROM pg_database WHERE datname='factory_git'" | grep -q 1
+        || psql -h postgres -U factory -d factory -v ON_ERROR_STOP=1 -c
+        "CREATE DATABASE factory_git";
+        touch /tmp/factory-git-ready;
+        sleep infinity
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test -f /tmp/factory-git-ready && pg_isready -h postgres -U factory -d factory_git",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    logging: *logging
+
+  # Second factoryd with git, read-only definition. No worker attaches.
+  factoryd-git:
+    profiles: ["m5"]
+    image: factoryd-git:dev
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio-init: { condition: service_healthy }
+      factory-git-db: { condition: service_healthy }
+    ports:
+      - "8081:8080"
+    environment:
+      FACTORY_HTTP_ADDR: ":8080"
+      FACTORY_EXTERNAL_URL: http://localhost:8081
+      FACTORY_DATABASE_URL: postgres://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory_git?sslmode=disable
+      FACTORY_API_KEY: ${FACTORY_API_KEY:-m5-dev-api-key}
+      FACTORY_WORKER_API_KEY: ${FACTORY_WORKER_API_KEY:-m5-dev-worker-key}
+      FACTORY_S3_ENDPOINT: http://minio:9000
+      FACTORY_S3_BUCKET: factory
+      FACTORY_S3_ACCESS_KEY: ${S3_ACCESS_KEY:-factoryadmin}
+      FACTORY_S3_SECRET_KEY: ${S3_SECRET_KEY:-factorysecret}
+      FACTORY_S3_REGION: ${FACTORY_S3_REGION:-us-east-1}
+      FACTORY_S3_FORCE_PATH_STYLE: "true"
+      FACTORY_DEFINITION_PATH: /var/lib/factory/definition
+      FACTORY_DEFINITION_GIT_URL: file:///git/factory.git
+      FACTORY_DEFINITION_GIT_REF: main
+      FACTORY_DEFINITION_GIT_PRODUCTION_REF: main
+      FACTORY_DEFINITION_GIT_INTERVAL: 30s
+      FACTORY_CONSOLE: "on"
+      FACTORY_LOG_LEVEL: info
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: "*"
+      GIT_CONFIG_KEY_1: protocol.file.allow
+      GIT_CONFIG_VALUE_1: always
+      GIT_TERMINAL_PROMPT: "0"
+    volumes:
+      - ${M5_GIT_HOST:-/tmp/m5-git}:/git:ro
+      # Parent of the definition directory, so defsync can rename it.
+      - factory-git-definition:/var/lib/factory
+    healthcheck:
+      test: ["CMD", "/factoryd", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    logging: *logging
+
   # Optional public ingress. Not part of MODE=offline. The URL is not stable.
   tunnel:
     profiles: ["tunnel"]
@@ -298,3 +384,4 @@ services:
 volumes:
   pgdata:
   miniodata:
+  factory-git-definition:

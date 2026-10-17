@@ -1,0 +1,36 @@
+# spike/m5 overlay. Merged after deploy/docker-compose.yml.
+# Profile m5 (factoryd-git, factory-git-db) stays in the base file.
+# This overlay makes the local definition writable and lets the
+# implementer's idleTimeoutMinutes win over a worker idle of 0s.
+services:
+  factoryd:
+    environment:
+      FACTORY_DEFINITION_PATH: /definitions/m5-factory
+      FACTORY_API_KEY: ${FACTORY_API_KEY:-m5-dev-api-key}
+      FACTORY_WORKER_API_KEY: ${FACTORY_WORKER_API_KEY:-m5-dev-worker-key}
+      FACTORY_WORKER_MAX_CONCURRENT: "3"
+      FACTORY_TASK_SERVER_URL: ${FACTORY_TASK_SERVER_URL:-http://172.17.0.1:8080}
+      FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL: ${FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL:-}
+      FACTORY_INFERENCE_OPENAI_API_KEY: ${FACTORY_INFERENCE_OPENAI_API_KEY:-}
+      FACTORY_GITHUB_WEBHOOK_SECRET: ${FACTORY_GITHUB_WEBHOOK_SECRET:-}
+      FACTORY_SECRET_M5_WEBHOOK: ${FACTORY_SECRET_M5_WEBHOOK:-}
+      FACTORY_SECRET_M5_PLANTED: ${FACTORY_SECRET_M5_PLANTED:-}
+      FACTORY_S3_SECRET_KEY: ${S3_SECRET_KEY:-factorysecret}
+      FACTORY_CONSOLE: "on"
+    volumes: !override
+      - ${M5_DEFS_HOST:-/tmp/m5-defs}:/definitions
+  worker:
+    command: !override
+      - --worker-id=local-1
+      - --backend=docker
+      - --config-file=/etc/factory/worker.yaml
+      - --max-concurrent-tasks=3
+      - --web-socket-url=ws://factoryd:8080/api/v1/selfhosted/worker/ws
+      - --server-root-url=http://factoryd:8080
+      - --log-level=info
+    environment:
+      WARP_API_KEY: ${FACTORY_WORKER_API_KEY:-m5-dev-worker-key}
+    volumes: !override
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Relative to deploy/docker-compose.yml, the project directory.
+      - ../spike/m5/worker.yaml:/etc/factory/worker.yaml:ro
