@@ -21,20 +21,36 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeProblem(w http.ResponseWriter, status int, detail string) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(Problem{
+	writeProblemBody(w, Problem{
 		Type:   "about:blank",
 		Title:  http.StatusText(status),
 		Status: status,
 		Detail: detail,
-	}); err != nil {
+	})
+}
+
+// writeProblemReason is the steer 409 body. reason is copied into both
+// detail and reason so a problem client and a steer client see the same text.
+func writeProblemReason(w http.ResponseWriter, status int, reason string) {
+	writeProblemBody(w, Problem{
+		Type:   "about:blank",
+		Title:  http.StatusText(status),
+		Status: status,
+		Detail: reason,
+		Reason: reason,
+	})
+}
+
+func writeProblemBody(w http.ResponseWriter, p Problem) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(p); err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(status)
+	w.WriteHeader(p.Status)
 	writeBuf(w, buf.Bytes())
 }
 

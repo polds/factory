@@ -224,12 +224,18 @@ type RunRequest struct {
 }
 
 // RunFilter selects runs for the list routes.
+// FailureClass, Source, ParentRunID, and WorkItemID are the console filters.
+// Empty fields match everything. Existing fields keep their meaning.
 type RunFilter struct {
-	FactoryID string
-	Agent     string
-	Status    string
-	Worker    string
-	Model     string
+	FactoryID    string
+	Agent        string
+	Status       string
+	Worker       string
+	Model        string
+	FailureClass string
+	Source       string
+	ParentRunID  string
+	WorkItemID   string
 }
 
 // ValidateResponse is the definition:validate body.
@@ -318,9 +324,12 @@ type InputAnswer struct {
 }
 
 // Problem is an RFC 9457 error body.
+// Reason is set only on steer conflicts. Other problems leave it empty,
+// and encoding omits it.
 type Problem struct {
 	Type   string `json:"type"`
 	Title  string `json:"title"`
 	Status int    `json:"status"`
 	Detail string `json:"detail"`
+	Reason string `json:"reason,omitempty"`
 }
