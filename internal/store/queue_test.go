@@ -38,6 +38,7 @@ func TestExportedStructsOmitSecrets(t *testing.T) {
 		reflect.TypeOf(store.AppliedDefinition{}),
 		reflect.TypeOf(store.DefinedAgent{}),
 		reflect.TypeOf(store.DefinedRunner{}),
+		reflect.TypeOf(store.DefinedAutomation{}),
 		reflect.TypeOf(store.Terminal{}),
 		reflect.TypeOf(store.RunFilter{}),
 		reflect.TypeOf(store.WorkItem{}),
@@ -707,7 +708,20 @@ func TestMigrateIdempotent(t *testing.T) {
 	assertColumns(t, h, "worker_rejections", []string{"id", "worker_id", "run_id", "at"})
 	assertColumns(t, h, "steer_requests", []string{
 		"id", "run_id", "kind", "text", "created_at", "delivered_at", "actor",
+		"claimed_by", "claim_expires_at",
 	})
+	var failureClassIdx bool
+	if err := h.raw.QueryRow(ctx, `
+		SELECT EXISTS (
+		    SELECT 1 FROM pg_indexes
+		    WHERE schemaname = current_schema()
+		      AND indexname = 'runs_failure_class_idx'
+		)`).Scan(&failureClassIdx); err != nil {
+		t.Fatal(err)
+	}
+	if !failureClassIdx {
+		t.Fatal("runs_failure_class_idx missing")
+	}
 	assertColumns(t, h, "automation_overrides", []string{
 		"factory_id", "name", "paused", "updated_at",
 	})

@@ -12,6 +12,9 @@ import (
 // ApplyDefinition upserts the factory and replaces its current definition in
 // one transaction. A runner reference that is not part of d fails the foreign
 // key and rolls back, so the previous definition and its agents stay current.
+// Each declared automation is inserted on the new definition. The same name
+// on that definition updates enabled, triggers, prompt, and overrides, and
+// does not touch automation_overrides, so a runtime pause survives.
 func (s *Store) ApplyDefinition(ctx context.Context, factoryName string, d AppliedDefinition) (string, error) {
 	if factoryName == "" {
 		return "", fmt.Errorf("store: factory name is required")
@@ -73,6 +76,31 @@ func (s *Store) ApplyDefinition(ctx context.Context, factoryName string, d Appli
 			agentID, factoryID, defID, agent.Name, agent.AgentType, []byte(jsonOr(agent.SpecJSON, `{}`)), agent.Runner,
 		); err != nil {
 			return "", fmt.Errorf("store: agent %s: %w", agent.Name, err)
+		}
+	}
+	for _, auto := range d.Automations {
+		if auto.Name == "" {
+			return "", fmt.Errorf("store: automation name is required")
+		}
+		autoID, err := NewID(PrefixAutomation)
+		if err != nil {
+			return "", err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO automations (
+			    id, definition_id, factory_id, name, enabled, triggers_json, prompt, overrides_json)
+			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb)
+			ON CONFLICT (definition_id, name) DO UPDATE
+			SET enabled = EXCLUDED.enabled,
+			    triggers_json = EXCLUDED.triggers_json,
+			    prompt = EXCLUDED.prompt,
+			    overrides_json = EXCLUDED.overrides_json`,
+			autoID, defID, factoryID, auto.Name, auto.Enabled,
+			[]byte(jsonOr(auto.TriggersJSON, `[]`)),
+			auto.Prompt,
+			[]byte(jsonOr(auto.OverridesJSON, `{}`)),
+		); err != nil {
+			return "", fmt.Errorf("store: automation %s: %w", auto.Name, err)
 		}
 	}
 	if _, err := tx.Exec(ctx, `

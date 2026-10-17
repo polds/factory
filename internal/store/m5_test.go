@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/polds/factory/internal/failure"
 	"github.com/polds/factory/internal/store"
 )
 
@@ -22,6 +25,51 @@ func TestFailureClassBackfillCASEMatchesMigration(t *testing.T) {
 	}
 	if !strings.Contains(string(body), store.FailureBackfillCASE) {
 		t.Fatal("0006_m5.sql does not contain store.FailureBackfillCASE verbatim")
+	}
+}
+
+func TestFailureClassBackfillMatchesClassify(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	rules := failure.Cases()
+	if len(rules) == 0 {
+		t.Fatal("failure.Cases returned no rows")
+	}
+	for _, rule := range rules {
+		var details []byte
+		if len(rule.Input.Details) > 0 {
+			details = []byte(rule.Input.Details)
+		}
+		var class, code string
+		err := h.raw.QueryRow(ctx, `
+			SELECT
+			    split_part(coalesce(classified.class_code, ''), '/', 1),
+			    split_part(coalesce(classified.class_code, ''), '/', 2)
+			FROM (
+			    SELECT `+store.FailureBackfillCASE+` AS class_code
+			    FROM (
+			        SELECT
+			            $1::text AS run_status,
+			            $2::text AS failure_reason,
+			            $3::int AS exit_code,
+			            $4::text AS harness_status,
+			            ''::text AS exec_state,
+			            $5::jsonb AS details
+			    ) AS shaped
+			) AS classified`,
+			rule.Input.RunStatus,
+			rule.Input.FailureReason,
+			rule.Input.ExitCode,
+			rule.Input.HarnessStatus,
+			details,
+		).Scan(&class, &code)
+		if err != nil {
+			t.Fatalf("%s: %v", rule.Name, err)
+		}
+		got := failure.Classify(rule.Input)
+		if class != string(got.Class) || code != got.Code {
+			t.Errorf("%s: backfill %s/%s classify %s/%s", rule.Name, class, code, got.Class, got.Code)
+		}
 	}
 }
 
@@ -81,7 +129,7 @@ func TestFailureClassBackfill(t *testing.T) {
 		}), "agent", "agent_reported"},
 		classCase{insertPreM5Run(t, h, factoryID, agentID, preM5Run{
 			status: "failed", execState: "failed",
-		}), "", ""},
+		}), "infrastructure", "unknown"},
 		classCase{insertPreM5Run(t, h, factoryID, agentID, preM5Run{
 			status: "succeeded", execState: "completed",
 		}), "", ""},
@@ -333,7 +381,7 @@ func TestSteerExactlyOnce(t *testing.T) {
 		t.Fatalf("missing run %v", err)
 	}
 	sort.Strings(ids)
-	page, err := h.st.NextSteers(ctx, cursorRun.ID, ids[0])
+	page, err := h.st.NextSteers(ctx, cursorRun.ID, ids[0], time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +396,7 @@ func TestSteerExactlyOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	left, err := h.st.NextSteers(ctx, cursorRun.ID, "")
+	left, err := h.st.NextSteers(ctx, cursorRun.ID, "", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +431,7 @@ func TestSteerExactlyOnce(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for {
-				batch, err := h.st.NextSteers(ctx, run.ID, "")
+				batch, err := h.st.NextSteers(ctx, run.ID, "", time.Now())
 				if err != nil {
 					errCh <- err
 					return
@@ -431,7 +479,7 @@ func TestSteerExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestSteerClaimRollsBackWhenStoreCloses(t *testing.T) {
+func TestSteerLeaseExpiresAcrossStores(t *testing.T) {
 	h := newHarness(t, true)
 	ctx := context.Background()
 	factoryID, agentID := h.seed(t)
@@ -440,26 +488,48 @@ func TestSteerClaimRollsBackWhenStoreCloses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	other := openSchemaStore(t, h)
-	claimed, err := other.NextSteers(ctx, run.ID, "")
+	if _, err := h.st.NextSteers(ctx, run.ID, "", time.Time{}); err == nil {
+		t.Fatal("zero now accepted")
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	claimed, err := h.st.NextSteers(ctx, run.ID, "", now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(claimed) != 1 || claimed[0].ID != st.ID {
 		t.Fatalf("claimed %+v", claimed)
 	}
-	other.Close()
-	again, err := h.st.NextSteers(ctx, run.ID, "")
+	other := openSchemaStore(t, h)
+	hidden, err := other.NextSteers(ctx, run.ID, "", now.Add(store.SteerLease-time.Microsecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hidden) != 0 {
+		t.Fatalf("visible during lease %+v", hidden)
+	}
+	again, err := other.NextSteers(ctx, run.ID, "", now.Add(store.SteerLease))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(again) != 1 || again[0].ID != st.ID {
-		t.Fatalf("after close %+v", again)
+		t.Fatalf("after expiry %+v", again)
+	}
+	if err := other.MarkSteerDelivered(ctx, st.ID); err != nil {
+		t.Fatal(err)
 	}
 	if err := h.st.MarkSteerDelivered(ctx, st.ID); err != nil {
 		t.Fatal(err)
 	}
-	empty, err := h.st.NextSteers(ctx, run.ID, "")
+	var delivered int
+	if err := h.raw.QueryRow(ctx, `
+		SELECT count(*) FROM steer_requests
+		WHERE id = $1 AND delivered_at IS NOT NULL`, st.ID).Scan(&delivered); err != nil {
+		t.Fatal(err)
+	}
+	if delivered != 1 {
+		t.Fatalf("delivered rows %d", delivered)
+	}
+	empty, err := other.NextSteers(ctx, run.ID, "", now.Add(store.SteerLease))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,6 +726,96 @@ func TestFactoryEventsResumeNoGap(t *testing.T) {
 	}
 	if _, err := h.st.FactoryEventsFrom(ctx, "fac_missing", 0, 1); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("missing factory %v", err)
+	}
+}
+
+func TestFactoryEventsLateCommit(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+	runA, execA := startRunning(t, h, factoryID, agentID, "late-a")
+	runB, execB := startRunning(t, h, factoryID, agentID, "late-b")
+
+	var schema string
+	if err := h.raw.QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := withSearchPath(os.Getenv("FACTORY_TEST_DATABASE_URL"), schema, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connA, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connB, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = connA.Close(context.Background())
+		_ = connB.Close(context.Background())
+	})
+
+	txA, err := connA.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = txA.Rollback(context.Background()) })
+	var gidA int64
+	if err := txA.QueryRow(ctx, `
+		INSERT INTO run_events (run_id, seq, execution_id, idx, ts, type, payload_json)
+		VALUES ($1, 1, $2, 1, clock_timestamp(), 'message.delta', '{"type":"message.delta","text":"a"}'::jsonb)
+		RETURNING gid`, runA.ID, execA.ID).Scan(&gidA); err != nil {
+		t.Fatal(err)
+	}
+
+	txB, err := connB.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gidB int64
+	if err := txB.QueryRow(ctx, `
+		INSERT INTO run_events (run_id, seq, execution_id, idx, ts, type, payload_json)
+		VALUES ($1, 1, $2, 1, clock_timestamp(), 'message.delta', '{"type":"message.delta","text":"b"}'::jsonb)
+		RETURNING gid`, runB.ID, execB.ID).Scan(&gidB); err != nil {
+		t.Fatal(err)
+	}
+	if err := txB.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if gidB <= gidA {
+		t.Fatalf("gid B %d is not after A %d", gidB, gidA)
+	}
+
+	held, err := h.st.FactoryEventsFrom(ctx, factoryID, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range held {
+		if ev.GID == gidA || ev.GID == gidB {
+			t.Fatalf("gid %d visible while %d is uncommitted", ev.GID, gidA)
+		}
+	}
+
+	if err := txA.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	released, err := h.st.FactoryEventsFrom(ctx, factoryID, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	posA, posB := -1, -1
+	for i, ev := range released {
+		if ev.GID == gidA {
+			posA = i
+		}
+		if ev.GID == gidB {
+			posB = i
+		}
+	}
+	if posA < 0 || posB < 0 || posA > posB {
+		t.Fatalf("after commit positions A %d B %d in %+v", posA, posB, released)
 	}
 }
 
@@ -871,6 +1031,109 @@ func TestAutomationPauseSurvivesApply(t *testing.T) {
 	}
 	if len(stats) != 1 || stats[0].Name != "nightly" || !stats[0].RuntimePaused {
 		t.Fatalf("after apply %+v", stats)
+	}
+}
+
+func TestApplyDefinitionWritesAutomations(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	def := validDefinition()
+	def.Automations = []store.DefinedAutomation{{
+		Name:          "nightly",
+		Enabled:       true,
+		TriggersJSON:  json.RawMessage(`["cron"]`),
+		Prompt:        "first",
+		OverridesJSON: json.RawMessage(`{"x":1}`),
+	}}
+	if _, err := h.st.ApplyDefinition(ctx, "acme", def); err != nil {
+		t.Fatal(err)
+	}
+	fac, err := h.st.GetFactory(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.SetAutomationPaused(ctx, fac.ID, "nightly", true); err != nil {
+		t.Fatal(err)
+	}
+
+	bad := validDefinition()
+	bad.Automations = []store.DefinedAutomation{{Name: ""}}
+	if _, err := h.st.ApplyDefinition(ctx, "acme", bad); err == nil {
+		t.Fatal("empty automation name accepted")
+	}
+	kept, err := h.st.GetFactory(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.CurrentDefinitionID != fac.CurrentDefinitionID {
+		t.Fatal("failed apply changed the current definition")
+	}
+
+	def.Automations[0].Enabled = false
+	def.Automations[0].Prompt = "second"
+	def.Automations[0].TriggersJSON = json.RawMessage(`["webhook"]`)
+	def.Automations = append(def.Automations, def.Automations[0])
+	if _, err := h.st.ApplyDefinition(ctx, "acme", def); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := h.st.AutomationStats(ctx, fac.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 1 || stats[0].Name != "nightly" || stats[0].Enabled || !stats[0].RuntimePaused {
+		t.Fatalf("reapplied %+v", stats)
+	}
+	if string(stats[0].Triggers) != `["webhook"]` {
+		t.Fatalf("triggers %s", stats[0].Triggers)
+	}
+	var prompt string
+	var rows int
+	if err := h.raw.QueryRow(ctx, `
+		SELECT automations.prompt, count(*) OVER ()
+		FROM automations
+		JOIN factories ON factories.current_definition_id = automations.definition_id
+		WHERE factories.id = $1`, fac.ID).Scan(&prompt, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if prompt != "second" || rows != 1 {
+		t.Fatalf("prompt %q rows %d", prompt, rows)
+	}
+
+	if _, err := h.st.ApplyDefinition(ctx, "acme", validDefinition()); err != nil {
+		t.Fatal(err)
+	}
+	stats, err = h.st.AutomationStats(ctx, fac.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 0 {
+		t.Fatalf("omitted automation still listed %+v", stats)
+	}
+	var paused bool
+	if err := h.raw.QueryRow(ctx, `
+		SELECT paused FROM automation_overrides
+		WHERE factory_id = $1 AND name = 'nightly'`, fac.ID).Scan(&paused); err != nil {
+		t.Fatal(err)
+	}
+	if !paused {
+		t.Fatal("pause was cleared")
+	}
+
+	def.Automations = []store.DefinedAutomation{{
+		Name:         "nightly",
+		Enabled:      true,
+		TriggersJSON: json.RawMessage(`["cron"]`),
+		Prompt:       "back",
+	}}
+	if _, err := h.st.ApplyDefinition(ctx, "acme", def); err != nil {
+		t.Fatal(err)
+	}
+	stats, err = h.st.AutomationStats(ctx, fac.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 1 || !stats[0].Enabled || !stats[0].RuntimePaused {
+		t.Fatalf("restored %+v", stats)
 	}
 }
 

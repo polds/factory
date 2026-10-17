@@ -29,11 +29,8 @@ type Store struct {
 	claimMu sync.Mutex
 	claims  map[string]*deliveryClaim
 
-	// steerClaims holds one transaction per NextSteers batch. The row
-	// locks stay until MarkSteerDelivered has seen every returned id.
-	// Close rolls them back so a crash leaves the steers undelivered.
-	steerMu     sync.Mutex
-	steerClaims map[string]*steerClaim
+	// steerOwner identifies this store on steer leases. It is not a credential.
+	steerOwner string
 }
 
 // SetPendingLookupHookForTest sets pendingLookupHook. Pass nil to clear it.
@@ -61,13 +58,18 @@ func Open(ctx context.Context, url string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("store: ping: %w", err)
 	}
-	return &Store{pool: pool}, nil
+	owner, err := newSteerOwner()
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return &Store{pool: pool, steerOwner: owner}, nil
 }
 
 // Close releases claim transactions, then the pool. It waits until acquired
-// connections are returned.
+// connections are returned. Steer leases are rows, so Close does not
+// release them.
 func (s *Store) Close() {
 	s.abortDeliveryClaims()
-	s.abortSteerClaims()
 	s.pool.Close()
 }

@@ -245,6 +245,18 @@ type AppliedDefinition struct {
 	SpecJSON         json.RawMessage
 	Agents           []DefinedAgent
 	Runners          []DefinedRunner
+	Automations      []DefinedAutomation
+}
+
+// DefinedAutomation is one automation declared by an applied definition.
+// Runtime pause is not a field: it lives in automation_overrides and
+// survives a later apply.
+type DefinedAutomation struct {
+	Name          string
+	Enabled       bool
+	TriggersJSON  json.RawMessage
+	Prompt        string
+	OverridesJSON json.RawMessage
 }
 
 // DefinedAgent is one agent in an applied definition.

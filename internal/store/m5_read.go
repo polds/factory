@@ -190,6 +190,12 @@ func usageCall(seq int64, payload []byte) (UsageCall, error) {
 // FactoryEventsFrom returns events for factoryID with gid greater than cursor,
 // oldest first. The cursor is exclusive. limit must be positive.
 //
+// gid is assigned at insert, which can be before that transaction commits.
+// A row is returned only when its inserting transaction is older than every
+// transaction that is still open. A reader therefore cannot advance the
+// cursor past a gid whose commit is still in the future. Any open transaction
+// in the database holds back later commits until it ends.
+//
 // The live tail is Listen(ctx, "run_events"). AppendEvents notifies that
 // channel with the run id after commit. Wake on the notification, then read
 // again from the last gid applied. Read once before Listen and once after
@@ -216,7 +222,9 @@ func (s *Store) FactoryEventsFrom(ctx context.Context, factoryID string, cursor 
 		    run_events.payload_json
 		FROM run_events
 		JOIN runs ON runs.id = run_events.run_id
-		WHERE runs.factory_id = $1 AND run_events.gid > $2
+		WHERE runs.factory_id = $1
+		  AND run_events.gid > $2
+		  AND run_events.xmin::text::xid8 < pg_snapshot_xmin(pg_current_snapshot())
 		ORDER BY run_events.gid
 		LIMIT $3`, factoryID, cursor, limit)
 	if err != nil {
@@ -333,8 +341,8 @@ func (s *Store) Inbox(ctx context.Context, factoryID string) ([]InboxItem, error
 // for this factory that stored a run id. last_fired_at is the later of
 // the latest schedule fire and the latest matching delivery.
 //
-// ApplyDefinition does not write the automations table. Rows have to be
-// inserted by a definition writer before this list is non-empty.
+// ApplyDefinition writes one automations row per declared automation on the
+// new definition. A factory whose applied tree lists none stays empty here.
 func (s *Store) AutomationStats(ctx context.Context, factoryID string) ([]AutomationStat, error) {
 	if err := s.requireFactory(ctx, s.pool, factoryID); err != nil {
 		return nil, err

@@ -13,74 +13,67 @@ package store
 //	details jsonb            // latest failure_details_json, or NULL
 //
 // The result is class || '/' || code, or NULL when no WHEN matches.
-// Codes do not contain '/'. An empty failure reason on a non-cancelled
-// run does not match, so the backfill leaves failure_class NULL.
-//
-// Exit 10 and harness status failed_by_agent are agent/agent_reported
-// before container_exit is considered. superseded_duplicate_building_run
-// is cancelled/superseded before a cancelled status becomes
-// cancelled/cancelled.
-//
-// worker_lost matches execution state orphaned and failure_reason
-// orphaned, lease_expired, lease_expiry, worker_gone, or worker_lost.
-// OOMKilled and Evicted match the kubernetes container termination
-// reason, the pod reason, or events[].reason.
+// Codes do not contain '/'. Precedence matches failure.Classify:
+// effective exit is exit_code, else the snapshot normalized exit, else
+// 128+signal; OOM and Evicted tokens are checked before a signal exit;
+// worker_lost is only orphaned, lease_expired, and worker_gone.
 //
 // harness_status is the payload status of the newest run_events row
 // whose type is terminal or run.terminal.
 const FailureBackfillCASE = `        CASE
-            WHEN harness_status = 'failed_by_agent' OR exit_code = 10
+            WHEN
+                harness_status = 'failed_by_agent'
+                OR failure_effective_exit(exit_code, details) = 10
                 THEN 'agent/agent_reported'
-            WHEN exit_code = 20 OR failure_reason = 'config_invalid'
+            WHEN
+                failure_effective_exit(exit_code, details) = 20
+                OR failure_reason = 'config_invalid'
+                OR harness_status = 'config_invalid'
                 THEN 'configuration/config_invalid'
-            WHEN exit_code = 21 OR failure_reason = 'model_unavailable'
+            WHEN
+                failure_effective_exit(exit_code, details) = 21
+                OR failure_reason = 'model_unavailable'
+                OR harness_status = 'model_unavailable'
                 THEN 'infrastructure/model_unavailable'
             WHEN
-                exit_code = 30
+                failure_effective_exit(exit_code, details) = 30
                 OR failure_reason = 'environment_setup_failed'
+                OR harness_status = 'environment_setup_failed'
                 THEN 'infrastructure/environment_setup_failed'
             WHEN
-                details #>> '{kubernetes,container,termination_reason}'
-                = 'OOMKilled'
-                OR details #>> '{kubernetes,pod,reason}' = 'OOMKilled'
-                OR jsonb_path_exists(
-                    details,
-                    (
-                        '$.kubernetes.events[*].reason'
-                        || ' ? (@ == "OOMKilled")'
-                    )::jsonpath
-                )
+                failure_snapshot_has(details, 'OOMKilled')
+                OR failure_snapshot_has(details, 'OOMKilling')
+                OR failure_reason = 'container_oom'
                 THEN 'infrastructure/oom_killed'
             WHEN
-                details #>> '{kubernetes,pod,reason}' = 'Evicted'
-                OR details #>> '{kubernetes,container,termination_reason}'
-                = 'Evicted'
-                OR jsonb_path_exists(
-                    details,
-                    (
-                        '$.kubernetes.events[*].reason'
-                        || ' ? (@ == "Evicted")'
-                    )::jsonpath
-                )
+                failure_snapshot_has(details, 'Evicted')
+                OR failure_reason = 'evicted'
                 THEN 'infrastructure/evicted'
-            WHEN exit_code >= 128
+            WHEN failure_effective_exit(exit_code, details) >= 128
                 THEN 'infrastructure/container_killed'
-            WHEN failure_reason = 'container_exit'
+            WHEN
+                failure_reason = 'container_exit'
+                OR (
+                    failure_effective_exit(exit_code, details) > 0
+                    AND failure_effective_exit(exit_code, details) < 128
+                    AND failure_reason = ''
+                )
                 THEN 'infrastructure/container_exit'
             WHEN
-                exec_state = 'orphaned'
+                exec_state IN (
+                    'orphaned', 'lease_expired', 'worker_gone'
+                )
                 OR failure_reason IN (
-                    'orphaned',
-                    'lease_expired',
-                    'lease_expiry',
-                    'worker_gone',
-                    'worker_lost'
+                    'orphaned', 'lease_expired', 'worker_gone'
+                )
+                OR run_status IN (
+                    'orphaned', 'lease_expired', 'worker_gone'
                 )
                 THEN 'infrastructure/worker_lost'
             WHEN failure_reason = 'superseded_duplicate_building_run'
                 THEN 'cancelled/superseded'
             WHEN run_status = 'cancelled'
                 THEN 'cancelled/cancelled'
-            WHEN failure_reason <> ''
+            WHEN failure_reason <> '' OR run_status = 'failed'
                 THEN 'infrastructure/unknown'
         END`

@@ -16,7 +16,11 @@
 -- The CASE expression below is store.FailureBackfillCASE. The Go
 -- constant is a verbatim copy. It reads run_status, failure_reason,
 -- exit_code, harness_status, exec_state, and details, and it returns
--- class/code or NULL.
+-- class/code or NULL. Precedence matches failure.Classify:
+-- failure_effective_exit uses exit_code, else normalized_exit_code,
+-- else 128+signal. failure_snapshot_has matches the kubernetes reason
+-- fields Classify reads. worker_lost is only orphaned, lease_expired,
+-- and worker_gone.
 
 ALTER TABLE runs
 ADD COLUMN IF NOT EXISTS failure_class text;
@@ -26,6 +30,9 @@ ADD COLUMN IF NOT EXISTS failure_code text;
 
 ALTER TABLE runs
 ADD COLUMN IF NOT EXISTS assigned_at timestamptz;
+
+CREATE INDEX IF NOT EXISTS runs_failure_class_idx
+ON runs (failure_class);
 
 ALTER TABLE workers
 ADD COLUMN IF NOT EXISTS backend text;
@@ -80,7 +87,9 @@ CREATE TABLE IF NOT EXISTS steer_requests (
     -- noqa: enable=RF04
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     delivered_at timestamptz,
-    actor text NOT NULL DEFAULT ''
+    actor text NOT NULL DEFAULT '',
+    claimed_by text NOT NULL DEFAULT '',
+    claim_expires_at timestamptz
 );
 
 CREATE INDEX IF NOT EXISTS steer_requests_pending_idx
@@ -105,6 +114,96 @@ ON run_events (gid);
 
 -- Backfill failed and cancelled runs once. A second apply leaves any
 -- class already stored, including a class SetRunClass wrote later.
+-- failure_effective_exit and failure_snapshot_has exist so the CASE
+-- can follow Classify without repeating the snapshot walk.
+
+CREATE OR REPLACE FUNCTION failure_effective_exit(
+    exit_code int,
+    details jsonb
+)
+RETURNS int
+LANGUAGE sql
+IMMUTABLE
+AS $$
+    SELECT coalesce(
+        exit_code,
+        CASE
+            WHEN
+                details #>> '{kubernetes,container,normalized_exit_code}'
+                ~ '^-?[0-9]+$'
+                THEN (
+                    details
+                    #>> '{kubernetes,container,normalized_exit_code}'
+                )::int
+        END,
+        CASE
+            WHEN
+                details #>> '{kubernetes,container,signal}' ~ '^[0-9]+$'
+                AND (
+                    details #>> '{kubernetes,container,signal}'
+                )::int > 0
+                THEN
+                    128
+                    + (details #>> '{kubernetes,container,signal}')::int
+        END
+    );
+$$;
+
+CREATE OR REPLACE FUNCTION failure_snapshot_has(
+    details jsonb,
+    token text
+)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS $$
+    SELECT
+        coalesce(
+            details #>> '{kubernetes,container,termination_reason}',
+            ''
+        ) = token
+        OR coalesce(
+            details #>> '{kubernetes,container,waiting_reason}',
+            ''
+        ) = token
+        OR coalesce(details #>> '{kubernetes,pod,reason}', '') = token
+        OR (
+            jsonb_typeof(details #> '{kubernetes,pod,conditions}')
+            = 'array'
+            AND EXISTS (
+                SELECT 1
+                FROM
+                    jsonb_array_elements(
+                        details #> '{kubernetes,pod,conditions}'
+                    ) AS cond
+                WHERE cond ->> 'reason' = token
+            )
+        )
+        OR (
+            jsonb_typeof(details #> '{kubernetes,job,conditions}')
+            = 'array'
+            AND EXISTS (
+                SELECT 1
+                FROM
+                    jsonb_array_elements(
+                        details #> '{kubernetes,job,conditions}'
+                    ) AS cond
+                WHERE cond ->> 'reason' = token
+            )
+        )
+        OR (
+            jsonb_typeof(details #> '{kubernetes,events}') = 'array'
+            AND EXISTS (
+                SELECT 1
+                FROM
+                    jsonb_array_elements(
+                        details #> '{kubernetes,events}'
+                    ) AS event
+                WHERE event ->> 'reason' = token
+            )
+        );
+$$;
+
 UPDATE runs
 SET
     failure_class = split_part(classified.class_code, '/', 1),
@@ -114,59 +213,60 @@ FROM (
         shaped.id,
         -- noqa: disable=RF03
         CASE
-            WHEN harness_status = 'failed_by_agent' OR exit_code = 10
+            WHEN
+                harness_status = 'failed_by_agent'
+                OR failure_effective_exit(exit_code, details) = 10
                 THEN 'agent/agent_reported'
-            WHEN exit_code = 20 OR failure_reason = 'config_invalid'
+            WHEN
+                failure_effective_exit(exit_code, details) = 20
+                OR failure_reason = 'config_invalid'
+                OR harness_status = 'config_invalid'
                 THEN 'configuration/config_invalid'
-            WHEN exit_code = 21 OR failure_reason = 'model_unavailable'
+            WHEN
+                failure_effective_exit(exit_code, details) = 21
+                OR failure_reason = 'model_unavailable'
+                OR harness_status = 'model_unavailable'
                 THEN 'infrastructure/model_unavailable'
             WHEN
-                exit_code = 30
+                failure_effective_exit(exit_code, details) = 30
                 OR failure_reason = 'environment_setup_failed'
+                OR harness_status = 'environment_setup_failed'
                 THEN 'infrastructure/environment_setup_failed'
             WHEN
-                details #>> '{kubernetes,container,termination_reason}'
-                = 'OOMKilled'
-                OR details #>> '{kubernetes,pod,reason}' = 'OOMKilled'
-                OR jsonb_path_exists(
-                    details,
-                    (
-                        '$.kubernetes.events[*].reason'
-                        || ' ? (@ == "OOMKilled")'
-                    )::jsonpath
-                )
+                failure_snapshot_has(details, 'OOMKilled')
+                OR failure_snapshot_has(details, 'OOMKilling')
+                OR failure_reason = 'container_oom'
                 THEN 'infrastructure/oom_killed'
             WHEN
-                details #>> '{kubernetes,pod,reason}' = 'Evicted'
-                OR details #>> '{kubernetes,container,termination_reason}'
-                = 'Evicted'
-                OR jsonb_path_exists(
-                    details,
-                    (
-                        '$.kubernetes.events[*].reason'
-                        || ' ? (@ == "Evicted")'
-                    )::jsonpath
-                )
+                failure_snapshot_has(details, 'Evicted')
+                OR failure_reason = 'evicted'
                 THEN 'infrastructure/evicted'
-            WHEN exit_code >= 128
+            WHEN failure_effective_exit(exit_code, details) >= 128
                 THEN 'infrastructure/container_killed'
-            WHEN failure_reason = 'container_exit'
+            WHEN
+                failure_reason = 'container_exit'
+                OR (
+                    failure_effective_exit(exit_code, details) > 0
+                    AND failure_effective_exit(exit_code, details) < 128
+                    AND failure_reason = ''
+                )
                 THEN 'infrastructure/container_exit'
             WHEN
-                exec_state = 'orphaned'
+                exec_state IN (
+                    'orphaned', 'lease_expired', 'worker_gone'
+                )
                 OR failure_reason IN (
-                    'orphaned',
-                    'lease_expired',
-                    'lease_expiry',
-                    'worker_gone',
-                    'worker_lost'
+                    'orphaned', 'lease_expired', 'worker_gone'
+                )
+                OR run_status IN (
+                    'orphaned', 'lease_expired', 'worker_gone'
                 )
                 THEN 'infrastructure/worker_lost'
             WHEN failure_reason = 'superseded_duplicate_building_run'
                 THEN 'cancelled/superseded'
             WHEN run_status = 'cancelled'
                 THEN 'cancelled/cancelled'
-            WHEN failure_reason <> ''
+            WHEN failure_reason <> '' OR run_status = 'failed'
                 THEN 'infrastructure/unknown'
         END AS class_code
         -- noqa: enable=RF03
