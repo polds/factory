@@ -1902,7 +1902,7 @@ progress_sample() {
 
 case_progress_offline() {
   local block=""
-  block="$(extract_between 'if [[ "$MODE" == offline ]]; then' 'M4 OFFLINE PASS')" || return 1
+  block="$(extract_between "if [[ \"\$MODE\" == offline ]]; then" "M4 OFFLINE PASS")" || return 1
   block_has "$block" 'progress_begin "waiting for a work item"' || return 1
   block_has "$block" 'progress_begin "waiting for handoff"' || return 1
   block_has "$block" 'progress_begin "waiting for a revision"' || return 1
@@ -1933,7 +1933,7 @@ case_progress_live() {
 
 case_progress_live_ci() {
   local block=""
-  block="$(extract_between 'if [[ "$MODE" == live-ci ]]; then' 'M4 LIVE-CI PASS')" || return 1
+  block="$(extract_between "if [[ \"\$MODE\" == live-ci ]]; then" "M4 LIVE-CI PASS")" || return 1
   block_has "$block" "print_slack_operator" || return 1
   block_has "$block" "finish_wait_draft_pull" || return 1
   if ! declare -f wait_draft_pull | grep -F -q 'progress_begin "waiting for a draft pull request"'; then

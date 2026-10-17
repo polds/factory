@@ -477,8 +477,8 @@ func (n *Notifier) loadCard(ctx context.Context, workItemID string) (cardMemory,
 		return cardMemory{}, nil
 	}
 	var mem cardMemory
-	if err := json.Unmarshal([]byte(thread.RootRef), &mem); err != nil {
-		return cardMemory{}, nil
+	if json.Unmarshal([]byte(thread.RootRef), &mem) != nil {
+		mem = cardMemory{}
 	}
 	return mem, nil
 }
