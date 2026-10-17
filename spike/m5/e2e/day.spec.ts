@@ -145,7 +145,9 @@ async function approveOnly(page: Page, title: string): Promise<void> {
   await expect(row).toBeVisible({ timeout: 180_000 });
   await row.getByRole("button").first().click();
   await row.getByRole("button", { name: "Approve" }).click();
-  await expect(row.getByText("Approved by you")).toBeVisible();
+  await expect(
+    page.locator("li.inbox-row").filter({ hasText: title }).getByText("Approved by you").first(),
+  ).toBeVisible();
 }
 
 async function failureVisible(page: Page, title: string, code: string): Promise<boolean> {
