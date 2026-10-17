@@ -34,6 +34,8 @@
 # Live applies the factory-ready label with the operator's gh auth. The
 # App token would send the label as a bot, and intake drops that actor.
 # Run gh auth login first. The App token stays on the other GitHub calls.
+# The draft-PR wait stops when that issue's run has failed or the work
+# item has escalated. The webhook hint is only for a missing work item.
 # live-ci reads M4_GITHUB_APP_PRIVATE_KEY (PEM text) and writes it to
 # spike/m4/.work/live-ci/github-app.pem (mode 644). It does not start a
 # tunnel. It signs a synthetic issues.labeled delivery with
@@ -74,6 +76,7 @@ PLANTED_DUMMY="m4-planted-dummy-7f3c9a"
 LIVE_MODEL_URL="http://host.docker.internal:8317/v1"
 LIVE_MODEL_ERROR=""
 MODEL_CATALOG_ERROR=""
+LIVE_WAIT_ERROR=""
 
 ISSUE_NUMBER=17
 PR_NUMBER=77
@@ -1889,8 +1892,265 @@ live_wait_should_hint() {
   [[ "$attempt" -eq 1 || $((attempt % 6)) -eq 0 ]]
 }
 
+# live_wait_note prints the webhook hint only when factoryd has no work
+# item for this issue. A running or failed item is not a delivery stall.
+live_wait_note() {
+  local attempt="$1" state="$2"
+  [[ "$state" == none ]] || return 1
+  live_wait_should_hint "$attempt"
+}
+
+# read_live_work_state classifies one external-ref response.
+# It prints none, open, unknown, or failed. On failed it writes the
+# redacted reason to the message path.
+read_live_work_state() {
+  local code="$1" external="$2" task="$3" events="$4" logs="$5" message_path="$6"
+  python3 - "$code" "$external" "$task" "$events" "$logs" "$message_path" <<'PY'
+import json
+import os
+import sys
+
+code, external_path, task_path, events_path, logs_path, message_path = sys.argv[1:7]
+
+
+def load_json(path):
+    try:
+        raw = open(path, encoding="utf-8").read()
+    except OSError:
+        return None
+    if not raw.strip():
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def secret_values():
+    names = (
+        "FACTORY_API_KEY",
+        "OPENAI_API_KEY",
+        "GH_TOKEN",
+        "LIVE_TOKEN",
+        "FACTORY_SECRET_GH_TOKEN",
+        "FACTORY_GITHUB_WEBHOOK_SECRET",
+        "FACTORY_SLACK_BOT_TOKEN",
+        "FACTORY_SLACK_SIGNING_SECRET",
+        "SLACK_TEST_USER_TOKEN",
+        "M4_GITHUB_APP_PRIVATE_KEY",
+    )
+    values = []
+    for name in names:
+        value = os.environ.get(name, "")
+        if len(value) >= 6:
+            values.append(value)
+    return values
+
+
+def redact(text, values):
+    for value in values:
+        text = text.replace(value, "***")
+    return text
+
+
+def read_text(path):
+    try:
+        return open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return ""
+
+
+def terminal_bits(text):
+    summaries = []
+    reasons = []
+    for line in text.splitlines():
+        if not line.startswith("data:"):
+            continue
+        raw = line[5:].strip()
+        try:
+            doc = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        summary = doc.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            summaries.append(summary.strip())
+        reason = doc.get("failure_reason")
+        if isinstance(reason, str) and reason.strip():
+            reasons.append(reason.strip())
+    return summaries, reasons
+
+
+def log_lines(text):
+    hits = []
+    for line in text.splitlines():
+        if "provider HTTP" in line or "task_failed" in line or "work item escalated" in line:
+            hits.append(line.strip())
+    return hits
+
+
+def finish(state, message=""):
+    if message:
+        message = redact(message, secret_values())
+        if len(message) > 500:
+            message = message[:500]
+        open(message_path, "w", encoding="utf-8").write(message)
+    print(state)
+
+
+if code == "404":
+    finish("none")
+    raise SystemExit(0)
+external = load_json(external_path)
+if code != "200" or not isinstance(external, dict) or not external.get("work_item_id"):
+    finish("unknown")
+    raise SystemExit(0)
+run = external.get("run")
+if not isinstance(run, dict):
+    finish("open")
+    raise SystemExit(0)
+status = run.get("status") or ""
+if status not in ("failed", "cancelled"):
+    finish("open")
+    raise SystemExit(0)
+
+task = load_json(task_path)
+stage = ""
+item_status = ""
+if isinstance(task, dict):
+    stage = task.get("stage") or ""
+    item_status = task.get("status") or ""
+summaries, reasons = terminal_bits(read_text(events_path))
+summary = summaries[-1] if summaries else ""
+if not summary:
+    hits = log_lines(read_text(logs_path))
+    http_lines = [line for line in hits if "provider HTTP" in line]
+    if http_lines:
+        summary = http_lines[-1]
+    elif hits:
+        summary = hits[-1]
+reason = run.get("failure_reason") or (reasons[-1] if reasons else "")
+work_id = external.get("work_item_id") or ""
+run_id = run.get("id") or ""
+if item_status in ("", "open"):
+    head = "work item %s escalated at stage %s" % (work_id, stage or "unknown")
+else:
+    head = "work item %s run failed at stage %s" % (work_id, stage or "unknown")
+parts = [head, "run %s %s" % (run_id, status)]
+if reason:
+    parts.append(reason)
+if summary:
+    parts.append(summary)
+finish("failed", ": ".join(parts))
+PY
+}
+
+live_json_field() {
+  python3 - "$1" "$2" <<'PY'
+import json
+import sys
+
+path, field = sys.argv[1], sys.argv[2]
+try:
+    cur = json.load(open(path, encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+for part in field.split("."):
+    if not isinstance(cur, dict):
+        raise SystemExit(0)
+    cur = cur.get(part)
+if isinstance(cur, str):
+    print(cur)
+PY
+}
+
+# poll_live_work asks factoryd whether this issue's work item has failed.
+# none: no work item. open: one exists and its latest run has not failed.
+# failed: the latest run failed or the item escalated; LIVE_WAIT_ERROR is set.
+# unknown: the API could not be read, so the wait keeps polling.
+poll_live_work() {
+  local dir="" code="" url="" ref="" body="" task="" events="" logs=""
+  local run_id="" run_status="" work_id="" state=""
+  LIVE_WAIT_ERROR=""
+  dir="$(mktemp -d)"
+  body="$dir/external.json"
+  task="$dir/task.json"
+  events="$dir/events.txt"
+  logs="$dir/logs.txt"
+  : >"$body"
+  : >"$task"
+  : >"$events"
+  : >"$logs"
+  ref="${M4_REPO}#${ISSUE_LIVE}"
+  url="$(
+    python3 - "$ref" <<'PY'
+import sys
+from urllib.parse import urlencode
+
+print(
+    "http://127.0.0.1:8080/api/v1/agent/run-by-external-reference?"
+    + urlencode({"provider": "github", "ref": sys.argv[1]})
+)
+PY
+  )"
+  if [[ -z "${FACTORY_API_KEY:-}" || -z "$url" ]]; then
+    rm -rf "$dir"
+    printf 'unknown\n'
+    return 0
+  fi
+  code="$(
+    curl -sS -o "$body" -w '%{http_code}' --connect-timeout 2 -m 10 \
+      -H "Authorization: Bearer ${FACTORY_API_KEY}" \
+      -H "Accept: application/json" \
+      "$url" 2>"$dir/curl.err"
+  )" || code=""
+  if [[ "$code" == "200" ]]; then
+    run_id="$(live_json_field "$body" "run.id")"
+    run_status="$(live_json_field "$body" "run.status")"
+    work_id="$(live_json_field "$body" "work_item_id")"
+    if [[ "$work_id" =~ ^[A-Za-z0-9_-]+$ && "${FACTORY_NAME}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+      curl -sS -o "$task" --connect-timeout 2 -m 10 \
+        -H "Authorization: Bearer ${FACTORY_API_KEY}" \
+        -H "Accept: application/json" \
+        "http://127.0.0.1:8080/api/v1/factory/${FACTORY_NAME}/tasks/${work_id}" \
+        >/dev/null 2>>"$dir/curl.err" || true
+    fi
+    if [[ "$run_id" =~ ^[A-Za-z0-9_-]+$ && ("$run_status" == failed || "$run_status" == cancelled) ]]; then
+      curl -sS --connect-timeout 2 -m 2 -o "$events" \
+        -H "Authorization: Bearer ${FACTORY_API_KEY}" \
+        -H "Accept: text/event-stream" \
+        "http://127.0.0.1:8080/api/v1/agent/runs/${run_id}/events" \
+        >/dev/null 2>>"$dir/curl.err" || true
+      if ! grep -F -q 'provider HTTP' "$events"; then
+        compose logs --tail 200 --no-color factoryd worker >"$logs" 2>/dev/null || true
+      fi
+    fi
+  fi
+  state="$(read_live_work_state "$code" "$body" "$task" "$events" "$logs" "$dir/message")" || state="unknown"
+  if [[ "$state" == failed && -f "$dir/message" ]]; then
+    LIVE_WAIT_ERROR="$(cat "$dir/message")"
+  fi
+  rm -rf "$dir"
+  printf '%s\n' "$state"
+}
+
+finish_wait_draft_pull() {
+  local wait_rc=0
+  wait_draft_pull || wait_rc=$?
+  case "$wait_rc" in
+    0) ;;
+    2)
+      fail "${LIVE_WAIT_ERROR:-work item failed before a draft pull request opened}"
+      ;;
+    *)
+      fail "draft pull request did not open"
+      ;;
+  esac
+}
+
 wait_draft_pull() {
-  local parsed="" attempt=0
+  local parsed="" attempt=0 work_state=""
   PR_LIVE_URL=""
   PR_LIVE_SHA=""
   PR_LIVE_NUMBER=""
@@ -1905,7 +2165,12 @@ wait_draft_pull() {
       PR_LIVE_NUMBER="$(printf '%s\n' "$parsed" | awk 'NR==3')" &&
       PR_LIVE_BRANCH="$(printf '%s\n' "$parsed" | awk 'NR==4')" &&
       [[ -n "$PR_LIVE_URL" ]] && return 0
-    if live_wait_should_hint "$attempt"; then
+    poll_live_work >"$WORK/live-wait-state"
+    work_state="$(cat "$WORK/live-wait-state")"
+    case "$work_state" in
+      failed) return 2 ;;
+    esac
+    if live_wait_note "$attempt" "$work_state"; then
       live_wait_hint
     fi
     sleep 10
@@ -2417,9 +2682,7 @@ if [[ "$MODE" == live-ci ]]; then
   echo "synthetic labeled delivery accepted for issue #${ISSUE_LIVE}"
 
   say "Wait for a draft pull request"
-  if ! wait_draft_pull; then
-    fail "draft pull request did not open"
-  fi
+  finish_wait_draft_pull
   echo "draft pull request: ${PR_LIVE_URL}"
 
   say "Slack thread"
@@ -2452,9 +2715,7 @@ esac
 echo "labeled issue #${ISSUE_LIVE}"
 
 say "Wait for a draft pull request"
-if ! wait_draft_pull; then
-  fail "draft pull request did not open"
-fi
+finish_wait_draft_pull
 echo "draft pull request: ${PR_LIVE_URL}"
 
 say "Slack thread"

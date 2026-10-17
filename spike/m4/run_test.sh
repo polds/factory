@@ -880,8 +880,35 @@ EOF
     rc=1
   fi
   MODE="$saved_mode"
-  if ! declare -f wait_draft_pull | grep -F -q live_wait_should_hint; then
+  MODE=live
+  if ! live_wait_note 1 none; then
+    echo "a missing work item did not schedule the stall hint" >&2
+    rc=1
+  fi
+  if live_wait_note 1 open; then
+    echo "an existing work item scheduled the webhook stall hint" >&2
+    rc=1
+  fi
+  if live_wait_note 1 failed; then
+    echo "a failed work item scheduled the webhook stall hint" >&2
+    rc=1
+  fi
+  if live_wait_note 1 unknown; then
+    echo "an unreadable factoryd response scheduled the webhook stall hint" >&2
+    rc=1
+  fi
+  MODE=live-ci
+  if live_wait_note 1 none; then
+    echo "live-ci scheduled the webhook stall hint" >&2
+    rc=1
+  fi
+  MODE="$saved_mode"
+  if ! declare -f wait_draft_pull | grep -F -q live_wait_note; then
     echo "wait_draft_pull does not gate the stall hint" >&2
+    rc=1
+  fi
+  if ! declare -f wait_draft_pull | grep -A2 -F 'failed)' | grep -F -q 'return 2'; then
+    echo "wait_draft_pull does not stop when the work item failed" >&2
     rc=1
   fi
   text="$(print_live_checklist)"
@@ -1397,6 +1424,165 @@ EOF
   return "$rc"
 }
 
+case_live_work_failure() {
+  local dir="" bin="" log="" rc=0 state="" message=""
+  local saved_path="$PATH" saved_work="$WORK" saved_repo="${M4_REPO:-}"
+  local saved_issue="${ISSUE_LIVE:-}" saved_key="" had_key=0 saved_name="${FACTORY_NAME:-}"
+  if [[ -n "${FACTORY_API_KEY+x}" ]]; then
+    had_key=1
+    saved_key="$FACTORY_API_KEY"
+  fi
+  dir="$(mktemp -d)"
+  bin="$dir/bin"
+  log="$dir/curl.log"
+  WORK="$dir/work"
+  mkdir -p "$bin" "$WORK"
+  cat >"$bin/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_CURL_LOG"
+out=""
+prev=""
+write_code=0
+url=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    out=$arg
+  fi
+  if [ "$arg" = "-w" ]; then
+    write_code=1
+  fi
+  prev=$arg
+  url=$arg
+done
+code=200
+body=""
+case "$url" in
+  *run-by-external-reference*)
+    if [ "$FAKE_WORK" = none ]; then
+      code=404
+      body='{"title":"not found"}'
+    else
+      body=$(cat "$FAKE_WORK_BODY")
+    fi
+    ;;
+  */tasks/*)
+    body=$(cat "$FAKE_TASK_BODY")
+    ;;
+  */events)
+    body=$(cat "$FAKE_EVENTS_BODY")
+    ;;
+esac
+if [ -n "$out" ]; then
+  printf '%s' "$body" > "$out"
+fi
+if [ "$write_code" = 1 ]; then
+  printf '%s' "$code"
+fi
+exit 0
+EOF
+  chmod +x "$bin/curl"
+  export PATH="$bin:$PATH"
+  export FAKE_CURL_LOG="$log"
+  export FACTORY_API_KEY="sk-test-secret"
+  export FACTORY_NAME="m4"
+  M4_REPO="polds/factory"
+  ISSUE_LIVE="77"
+  printf '%s\n' '{"id":"wi_1","stage":"triage","status":"open"}' >"$dir/task.json"
+  printf '%s\n' '{"provider":"github","external_ref":"polds/factory#77","work_item_id":"wi_1","run":{"id":"run_9","status":"running"}}' >"$dir/running.json"
+  printf '%s\n' '{"provider":"github","external_ref":"polds/factory#77","work_item_id":"wi_1","run":{"id":"run_9","status":"failed","failure_reason":"container_exit"}}' >"$dir/failed.json"
+  printf '%s\n' 'event: run.terminal
+data: {"type":"run.terminal","status":"failed","failure_reason":"container_exit","summary":"provider HTTP 503: sk-test-secret overloaded"}
+' >"$dir/events.txt"
+  : >"$log"
+  export FAKE_WORK=none
+  poll_live_work >"$WORK/live-wait-state"
+  state="$(cat "$WORK/live-wait-state")"
+  if [[ "$state" != none ]]; then
+    echo "missing work item state was ${state}" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q 'ref=polds%2Ffactory%2377' "$log"; then
+    echo "work item probe did not encode the issue ref" >&2
+    cat "$log" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q "Authorization: Bearer sk-test-secret" "$log"; then
+    echo "work item probe dropped the API key header" >&2
+    rc=1
+  fi
+  export FAKE_WORK=open
+  export FAKE_WORK_BODY="$dir/running.json"
+  export FAKE_TASK_BODY="$dir/task.json"
+  : >"$log"
+  poll_live_work >"$WORK/live-wait-state"
+  state="$(cat "$WORK/live-wait-state")"
+  if [[ "$state" != open ]]; then
+    echo "running work item state was ${state}" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && grep -F -q '/events' "$log"; then
+    echo "a running work item fetched terminal events" >&2
+    rc=1
+  fi
+  export FAKE_WORK=failed
+  export FAKE_WORK_BODY="$dir/failed.json"
+  export FAKE_EVENTS_BODY="$dir/events.txt"
+  : >"$log"
+  poll_live_work >"$WORK/live-wait-state"
+  state="$(cat "$WORK/live-wait-state")"
+  if [[ "$state" != failed ]]; then
+    echo "failed work item state was ${state}" >&2
+    printf '%s\n' "$LIVE_WAIT_ERROR" >&2
+    rc=1
+  fi
+  message="work item wi_1 escalated at stage triage: run run_9 failed: container_exit: provider HTTP 503: *** overloaded"
+  if [[ "$rc" -eq 0 && "$LIVE_WAIT_ERROR" != "$message" ]]; then
+    echo "failure reason was:" >&2
+    printf '%s\n' "$LIVE_WAIT_ERROR" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && grep -F -q "sk-test-secret" <<<"$LIVE_WAIT_ERROR"; then
+    echo "failure reason leaked the API key" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q '/api/v1/agent/runs/run_9/events' "$log"; then
+    echo "failed work item did not read run events" >&2
+    cat "$log" >&2
+    rc=1
+  fi
+  printf '%s\n' 'factory-harness: provider HTTP 503: down' >"$dir/logs.txt"
+  : >"$dir/empty-events.txt"
+  : >"$dir/empty-task.json"
+  state="$(read_live_work_state 200 "$dir/failed.json" "$dir/task.json" "$dir/empty-events.txt" "$dir/logs.txt" "$dir/message")"
+  if [[ "$rc" -eq 0 && "$state" != failed ]]; then
+    echo "log fallback state was ${state}" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q 'provider HTTP 503: down' "$dir/message"; then
+    echo "log fallback did not keep the provider status line" >&2
+    cat "$dir/message" >&2
+    rc=1
+  fi
+  state="$(read_live_work_state 404 "$dir/failed.json" "$dir/task.json" "$dir/events.txt" "$dir/logs.txt" "$dir/none-message")"
+  if [[ "$rc" -eq 0 && "$state" != none ]]; then
+    echo "404 state was ${state}" >&2
+    rc=1
+  fi
+  PATH="$saved_path"
+  WORK="$saved_work"
+  M4_REPO="$saved_repo"
+  ISSUE_LIVE="$saved_issue"
+  FACTORY_NAME="$saved_name"
+  if [[ "$had_key" -eq 1 ]]; then
+    export FACTORY_API_KEY="$saved_key"
+  else
+    unset FACTORY_API_KEY
+  fi
+  unset FAKE_CURL_LOG FAKE_WORK FAKE_WORK_BODY FAKE_TASK_BODY FAKE_EVENTS_BODY
+  rm -rf "$dir"
+  return "$rc"
+}
+
 case_no_gnu_flags() {
   if grep -n -E '(grep[[:space:]]+-P|sed[[:space:]]+-i|[[:space:]]mapfile[[:space:]]|^mapfile[[:space:]]|(^|[[:space:]])timeout[[:space:]])' \
     "$SCRIPT" "$HERE/run_test.sh"; then
@@ -1439,6 +1625,7 @@ run_case prepare_definition_placeholders case_prepare_definition_placeholders
 run_case prepare_definition_models case_prepare_definition_models
 run_case live_label_sender case_live_label_sender
 run_case host_catalog_probe case_host_catalog_probe
+run_case live_work_failure case_live_work_failure
 run_case no_gnu_flags case_no_gnu_flags
 
 echo
