@@ -1853,6 +1853,96 @@ case_failure_line_secrets() {
   return "$rc"
 }
 
+extract_between() {
+  python3 - "$SCRIPT" "$1" "$2" <<'PY'
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+start = text.rfind(sys.argv[2])
+end = text.find(sys.argv[3], start if start >= 0 else 0)
+if start < 0 or end < 0:
+    sys.exit(1)
+sys.stdout.write(text[start:end])
+PY
+}
+
+block_has() {
+  local block="$1" needle="$2"
+  if ! grep -F -q "$needle" <<<"$block"; then
+    echo "missing ${needle}" >&2
+    return 1
+  fi
+}
+
+progress_sample() {
+  local phase="$1"
+  local plain="" tty=""
+  plain="$(
+    stdout_is_tty() { return 1; }
+    progress_begin "$phase"
+    progress_tick "$phase"
+    progress_end
+  )"
+  assert_eq "$plain" "$phase" || return 1
+  tty="$(
+    stdout_is_tty() { return 0; }
+    progress_begin "$phase"
+    progress_tick "$phase"
+    progress_end
+  )"
+  assert_eq "$tty" "$(printf '\r%s\r\033[2K%s' "$phase" "$phase")" || return 1
+  local once=""
+  once="$(
+    SLACK_OPERATOR_PRINTED=0
+    print_slack_operator "https://slack.com/archives/C0M4FACTORY/p1700000000000100"
+    print_slack_operator "https://slack.com/archives/C0M4FACTORY/p2"
+  )"
+  assert_eq "$once" "$(printf '\n%s\n%s' "Slack thread: https://slack.com/archives/C0M4FACTORY/p1700000000000100" "Suggested reply: also add a test for an empty name")"
+}
+
+case_progress_offline() {
+  local block=""
+  block="$(extract_between 'if [[ "$MODE" == offline ]]; then' 'M4 OFFLINE PASS')" || return 1
+  block_has "$block" 'progress_begin "waiting for a work item"' || return 1
+  block_has "$block" 'progress_begin "waiting for handoff"' || return 1
+  block_has "$block" 'progress_begin "waiting for a revision"' || return 1
+  block_has "$block" "print_slack_operator" || return 1
+  if ! declare -f fail | grep -F -q progress_end; then
+    echo "fail does not end the progress line" >&2
+    return 1
+  fi
+  progress_sample "waiting for a work item"
+}
+
+case_progress_live() {
+  local block=""
+  block="$(extract_between 'say "Label the issue"' 'M4 LIVE PASS')" || return 1
+  block_has "$block" "print_slack_operator" || return 1
+  block_has "$block" 'progress_begin "waiting for a revision"' || return 1
+  block_has "$block" "finish_wait_draft_pull" || return 1
+  if ! declare -f wait_draft_pull | grep -F -q 'progress_begin "waiting for a draft pull request"'; then
+    echo "wait_draft_pull has no progress line" >&2
+    return 1
+  fi
+  if ! declare -f wait_draft_pull | grep -F -q live_wait_note; then
+    echo "wait_draft_pull dropped the stall hint" >&2
+    return 1
+  fi
+  progress_sample "waiting for a revision"
+}
+
+case_progress_live_ci() {
+  local block=""
+  block="$(extract_between 'if [[ "$MODE" == live-ci ]]; then' 'M4 LIVE-CI PASS')" || return 1
+  block_has "$block" "print_slack_operator" || return 1
+  block_has "$block" "finish_wait_draft_pull" || return 1
+  if ! declare -f wait_draft_pull | grep -F -q 'progress_begin "waiting for a draft pull request"'; then
+    echo "live-ci draft wait has no progress line" >&2
+    return 1
+  fi
+  progress_sample "waiting for a draft pull request"
+}
+
 case_no_gnu_flags() {
   if grep -n -E '(grep[[:space:]]+-P|sed[[:space:]]+-i|[[:space:]]mapfile[[:space:]]|^mapfile[[:space:]]|(^|[[:space:]])timeout[[:space:]])' \
     "$SCRIPT" "$HERE/run_test.sh"; then
@@ -1898,6 +1988,9 @@ run_case host_catalog_probe case_host_catalog_probe
 run_case live_work_failure case_live_work_failure
 run_case select_draft_pull case_select_draft_pull
 run_case failure_line_secrets case_failure_line_secrets
+run_case progress_offline case_progress_offline
+run_case progress_live case_progress_live
+run_case progress_live_ci case_progress_live_ci
 run_case no_gnu_flags case_no_gnu_flags
 
 echo

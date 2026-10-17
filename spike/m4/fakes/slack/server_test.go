@@ -49,6 +49,13 @@ func TestSlackFakeThread(t *testing.T) {
 	_ = postSlack(t, ts, token, "/chat.postMessage", map[string]string{
 		"channel": "C0M4FACTORY", "thread_ts": root.TS, "text": "Pull request opened: https://github.com/polds/factory/pull/77",
 	})
+	blocked := postSlackJSON(t, ts, token, "/chat.update", map[string]any{
+		"channel": "C0M4FACTORY", "ts": root.TS, "text": "card",
+		"blocks": []any{map[string]any{"type": "header", "text": map[string]string{"type": "plain_text", "text": "Hello"}}},
+	})
+	if !strings.Contains(blocked, `"ok":true`) {
+		t.Fatal("block update failed")
+	}
 
 	raw := getBody(t, ts.URL+"/_spike/state")
 	if strings.Contains(raw, token) || strings.Contains(logs.String(), token) {
@@ -73,6 +80,12 @@ func TestSlackFakeThread(t *testing.T) {
 			}
 		case "update":
 			updates++
+			if row.Text == "card" {
+				if !strings.Contains(string(row.Blocks), `"header"`) {
+					t.Fatalf("blocks %s", row.Blocks)
+				}
+				continue
+			}
 			if row.Text != "status edited" {
 				t.Fatalf("update text %q", row.Text)
 			}
@@ -80,9 +93,33 @@ func TestSlackFakeThread(t *testing.T) {
 			t.Fatalf("op %s", row.Op)
 		}
 	}
-	if posts != 3 || updates != 1 || !rootSeen || !milestone {
+	if posts != 3 || updates != 2 || !rootSeen || !milestone {
 		t.Fatalf("posts %d updates %d root %v milestone %v", posts, updates, rootSeen, milestone)
 	}
+}
+
+func postSlackJSON(t *testing.T, ts *httptest.Server, token, path string, body map[string]any) string {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+path, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	out, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }
 
 func postSlack(t *testing.T, ts *httptest.Server, token, path string, body map[string]string) string {
