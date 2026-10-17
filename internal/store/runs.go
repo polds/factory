@@ -39,34 +39,110 @@ func scanRun(row pgx.Row) (Run, error) {
 // CreateRun inserts the run and its queue row, then notifies channel run_queue
 // with the run id. The notification is delivered at commit.
 func (s *Store) CreateRun(ctx context.Context, r NewRun) (Run, error) {
-	if r.FactoryID == "" || r.Pool == "" {
-		return Run{}, fmt.Errorf("store: factory and pool are required")
-	}
-	switch r.Priority {
-	case PriorityBatch, PriorityPipeline, PriorityInteractive:
-	default:
-		return Run{}, fmt.Errorf("store: priority %d is not valid", r.Priority)
-	}
-	if err := validStage(r.Stage, true); err != nil {
+	if err := validateNewRun(r); err != nil {
 		return Run{}, err
 	}
 	id, err := NewID(PrefixRun)
 	if err != nil {
 		return Run{}, err
 	}
-	var agentID any
-	if r.AgentID != "" {
-		agentID = r.AgentID
-	}
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Run{}, fmt.Errorf("store: create run: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	if err := bindRunLinkage(ctx, tx, r); err != nil {
+	if err := insertRunTx(ctx, tx, id, r); err != nil {
 		return Run{}, err
+	}
+	if err := notifyRun(ctx, tx, id); err != nil {
+		return Run{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Run{}, fmt.Errorf("store: create run: %w", err)
+	}
+	return s.GetRun(ctx, id)
+}
+
+// BeginBuildingRun inserts one queued building run for the work item.
+// A work item already has a queued, assigned, or running building run when
+// created is false: the caller gets that run and inserts nothing. The
+// partial unique index runs_one_building_inflight rejects a second insert
+// that races past the row lock, including after a process restart.
+func (s *Store) BeginBuildingRun(ctx context.Context, r NewRun) (Run, bool, error) {
+	if r.Stage != StageBuilding {
+		return Run{}, false, fmt.Errorf("store: stage %q is not building", r.Stage)
+	}
+	if r.WorkItemID == "" {
+		return Run{}, false, errors.New("store: work item is required")
+	}
+	if err := validateNewRun(r); err != nil {
+		return Run{}, false, err
+	}
+	id, err := NewID(PrefixRun)
+	if err != nil {
+		return Run{}, false, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Run{}, false, fmt.Errorf("store: create run: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := lockWorkItem(ctx, tx, r.WorkItemID); errors.Is(err, ErrNotFound) {
+		return Run{}, false, ErrNotFound
+	} else if err != nil {
+		return Run{}, false, fmt.Errorf("store: create run: %w", err)
+	}
+	if existing, ok, err := inflightBuildingRun(ctx, tx, r.WorkItemID); err != nil {
+		return Run{}, false, err
+	} else if ok {
+		return existing, false, nil
+	}
+	if err := insertRunTx(ctx, tx, id, r); uniqueOn(err, "runs") {
+		saved := err
+		_ = tx.Rollback(ctx)
+		existing, ok, loadErr := inflightBuildingRun(ctx, s.pool, r.WorkItemID)
+		if loadErr != nil {
+			return Run{}, false, loadErr
+		}
+		if !ok {
+			return Run{}, false, saved
+		}
+		return existing, false, nil
+	} else if err != nil {
+		return Run{}, false, err
+	}
+	if err := notifyRun(ctx, tx, id); err != nil {
+		return Run{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Run{}, false, fmt.Errorf("store: create run: %w", err)
+	}
+	run, err := s.GetRun(ctx, id)
+	if err != nil {
+		return Run{}, false, err
+	}
+	return run, true, nil
+}
+
+func validateNewRun(r NewRun) error {
+	if r.FactoryID == "" || r.Pool == "" {
+		return fmt.Errorf("store: factory and pool are required")
+	}
+	switch r.Priority {
+	case PriorityBatch, PriorityPipeline, PriorityInteractive:
+	default:
+		return fmt.Errorf("store: priority %d is not valid", r.Priority)
+	}
+	return validStage(r.Stage, true)
+}
+
+func insertRunTx(ctx context.Context, tx pgx.Tx, id string, r NewRun) error {
+	if err := bindRunLinkage(ctx, tx, r); err != nil {
+		return err
+	}
+	var agentID any
+	if r.AgentID != "" {
+		agentID = r.AgentID
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO runs (
@@ -78,22 +154,46 @@ func (s *Store) CreateRun(ctx context.Context, r NewRun) (Run, error) {
 		id, r.FactoryID, agentID, StatusQueued, int(r.Priority), r.Pool, r.Prompt, r.Title, r.Repo,
 		r.WorkItemID, r.ParentRunID, r.ConversationID, r.Stage, r.ModelID,
 	); err != nil {
-		return Run{}, fmt.Errorf("store: create run: %w", err)
+		return fmt.Errorf("store: create run: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO run_queue (run_id, factory_id, pool, priority, enqueued_at)
 		VALUES ($1, $2, $3, $4, clock_timestamp())`,
 		id, r.FactoryID, r.Pool, int(r.Priority),
 	); err != nil {
-		return Run{}, fmt.Errorf("store: enqueue run: %w", err)
+		return fmt.Errorf("store: enqueue run: %w", err)
 	}
+	return nil
+}
+
+func notifyRun(ctx context.Context, tx pgx.Tx, id string) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_notify('run_queue', $1)`, id); err != nil {
-		return Run{}, fmt.Errorf("store: notify run: %w", err)
+		return fmt.Errorf("store: notify run: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return Run{}, fmt.Errorf("store: create run: %w", err)
+	return nil
+}
+
+// inflightBuildingRun is the queued, assigned, or running building run for
+// the work item. ok is false when there is none.
+func inflightBuildingRun(ctx context.Context, q rowQuery, workItemID string) (Run, bool, error) {
+	if workItemID == "" {
+		return Run{}, false, nil
 	}
-	return s.GetRun(ctx, id)
+	run, err := scanRun(q.QueryRow(ctx, `
+		SELECT `+runColumns+`
+		FROM runs
+		WHERE work_item_id = $1
+		  AND stage = $2
+		  AND status IN ($3, $4, $5)
+		ORDER BY created_at, id
+		LIMIT 1`, workItemID, StageBuilding, StatusQueued, StatusAssigned, StatusRunning))
+	if errors.Is(err, ErrNotFound) {
+		return Run{}, false, nil
+	}
+	if err != nil {
+		return Run{}, false, fmt.Errorf("store: building run: %w", err)
+	}
+	return run, true, nil
 }
 
 // bindRunLinkage checks optional work-item and parent references before insert.

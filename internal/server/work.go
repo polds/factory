@@ -560,9 +560,9 @@ func (s *Server) startStageRun(ctx context.Context, item store.WorkItem, stage, 
 	if pool == "" {
 		pool = s.cfg.WorkerPool
 	}
-	prompt := s.stagePrompt(ctx, item, bound)
+	prompt := s.stagePrompt(ctx, item, stage, bound)
 	model := resolveModelID(snap.tree, bound.agent)
-	run, err := s.store.CreateRun(ctx, store.NewRun{
+	newRun := store.NewRun{
 		FactoryID:      item.FactoryID,
 		AgentID:        agentID,
 		Pool:           pool,
@@ -574,7 +574,21 @@ func (s *Server) startStageRun(ctx context.Context, item store.WorkItem, stage, 
 		ConversationID: item.ConversationID,
 		Stage:          stage,
 		ModelID:        model,
-	})
+	}
+	if stage == store.StageBuilding {
+		run, created, err := s.store.BeginBuildingRun(ctx, newRun)
+		if err != nil {
+			return store.Run{}, err
+		}
+		if !created {
+			s.log.Info("building run already in flight", "work_item_id", item.ID, "run_id", run.ID)
+			return run, nil
+		}
+		s.log.Info("stage run", "work_item_id", item.ID, "stage", stage, "run_id", run.ID, "agent", agentName, "model_id", model)
+		s.nudge()
+		return run, nil
+	}
+	run, err := s.store.CreateRun(ctx, newRun)
 	if err != nil {
 		return store.Run{}, err
 	}
@@ -583,8 +597,10 @@ func (s *Server) startStageRun(ctx context.Context, item store.WorkItem, stage, 
 	return run, nil
 }
 
-func (s *Server) stagePrompt(ctx context.Context, item store.WorkItem, bound boundAgent) string {
-	return handoff.BuildPrompt(bound.agent, handoff.Context{
+const noPullRequest = "Do not open a pull request."
+
+func (s *Server) stagePrompt(ctx context.Context, item store.WorkItem, stage string, bound boundAgent) string {
+	prompt := handoff.BuildPrompt(bound.agent, handoff.Context{
 		WorkItemID:     item.ID,
 		ConversationID: item.ConversationID,
 		Source:         item.Source,
@@ -594,6 +610,27 @@ func (s *Server) stagePrompt(ctx context.Context, item store.WorkItem, bound bou
 		PriorStages:    s.priorStages(ctx, item.ID),
 		Env:            s.redactEnv(),
 	})
+	if stage != store.StageBuilding {
+		if !strings.Contains(bound.agent.Body, noPullRequest) {
+			if !strings.HasSuffix(prompt, "\n") {
+				prompt += "\n"
+			}
+			prompt += noPullRequest + "\n"
+		}
+		return prompt
+	}
+	if s.store == nil || item.ID == "" {
+		return prompt
+	}
+	url, ok, err := (&store.Automation{Store: s.store}).OpenPullRequest(ctx, item.ID)
+	if err != nil {
+		s.log.Error("pull request", "work_item_id", item.ID, "err", err)
+		return prompt
+	}
+	if !ok || url == "" {
+		return prompt
+	}
+	return "Pull request: " + url + "\nPush to this pull request. Do not open another pull request.\n\n" + prompt
 }
 
 func (s *Server) redactEnv() map[string]string {

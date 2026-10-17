@@ -6,7 +6,12 @@ import (
 
 	"github.com/polds/factory/internal/definition"
 	"github.com/polds/factory/internal/event"
+	"github.com/polds/factory/internal/orchestrator"
 )
+
+// noPullRequest is a trusted instruction. It is written before the untrusted
+// event fence so a provider body cannot ask a non-building stage to open one.
+const noPullRequest = "Do not open a pull request."
 
 // intakePrompt is the first stage run. The automation body is trusted.
 // item.Body is the fenced provider event.
@@ -18,6 +23,10 @@ func intakePrompt(auto definition.Automation, item WorkItem) string {
 	}
 	b.WriteString("\n# Instructions\n")
 	writeBody(&b, auto.Body)
+	if item.Stage != orchestrator.StageBuilding && !strings.Contains(auto.Body, noPullRequest) {
+		b.WriteString(noPullRequest)
+		b.WriteByte('\n')
+	}
 	b.WriteString("\n# Work item\n")
 	writeLine(&b, "Work item", item.ID)
 	writeLine(&b, "Conversation", item.ConversationID)

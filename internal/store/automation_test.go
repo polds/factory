@@ -334,6 +334,15 @@ func TestAutomationFollowUp(t *testing.T) {
 	if n := countRows(t, h, `SELECT count(*) FROM delivery_effects WHERE delivery_id = 'dlv_fu'`); n != 1 {
 		t.Fatalf("effects %d", n)
 	}
+	// The building run has to finish before another follow-up may start.
+	// A second delivery while it is queued is a no-op.
+	if _, err := h.raw.Exec(ctx, `
+		UPDATE runs SET status = 'succeeded', ended_at = clock_timestamp() WHERE id = $1`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.raw.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, run.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	start := make(chan struct{})
 	var wg sync.WaitGroup
