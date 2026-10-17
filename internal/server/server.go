@@ -80,6 +80,9 @@ type Config struct {
 	HTTPClient *http.Client
 	// OutboundSleep overrides notifier backoff and coalesce waits.
 	OutboundSleep func(context.Context, time.Duration) error
+	// TokenRetrySleep overrides the wait between installation-token retries
+	// during assignment. Tests advance a clock here instead of sleeping.
+	TokenRetrySleep func(context.Context, time.Duration) error
 }
 
 // Server is one factoryd process: REST, SSE, the worker gateway, and the
