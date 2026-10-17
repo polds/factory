@@ -666,6 +666,29 @@ func TestFactoryEventsResumeNoGap(t *testing.T) {
 	}
 	run, exec := startRunning(t, h, factoryID, agentID, "events-a")
 	_, otherExec := startRunning(t, h, beta.ID, betaAgents[0].ID, "events-b")
+	// An older transaction that does not touch run_events must not hide
+	// events that have already committed. A database-wide xmin horizon would.
+	var schema string
+	if err := h.raw.QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := withSearchPath(os.Getenv("FACTORY_TEST_DATABASE_URL"), schema, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unrelated.Close(context.Background()) })
+	unrelatedTx, err := unrelated.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unrelatedTx.Rollback(context.Background()) })
+	if _, err := unrelatedTx.Exec(ctx, `UPDATE factories SET alias = alias WHERE id = $1`, factoryID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := h.st.AppendEvents(ctx, run.ID, exec.ID, 0, eventBatch(0, 5)); err != nil {
 		t.Fatal(err)
 	}

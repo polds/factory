@@ -191,10 +191,11 @@ func usageCall(seq int64, payload []byte) (UsageCall, error) {
 // oldest first. The cursor is exclusive. limit must be positive.
 //
 // gid is assigned at insert, which can be before that transaction commits.
-// A row is returned only when its inserting transaction is older than every
-// transaction that is still open. A reader therefore cannot advance the
-// cursor past a gid whose commit is still in the future. Any open transaction
-// in the database holds back later commits until it ends.
+// A row is returned only when no older transaction still holds a lock on
+// run_events. A reader therefore cannot advance the cursor past a gid whose
+// writer has not committed. A transaction that never locks run_events does
+// not hold the tail back. A rolled-back insert releases its lock; the
+// identity value it consumed is a gap the cursor does not wait for.
 //
 // The live tail is Listen(ctx, "run_events"). AppendEvents notifies that
 // channel with the run id after commit. Wake on the notification, then read
@@ -224,7 +225,19 @@ func (s *Store) FactoryEventsFrom(ctx context.Context, factoryID string, cursor 
 		JOIN runs ON runs.id = run_events.run_id
 		WHERE runs.factory_id = $1
 		  AND run_events.gid > $2
-		  AND run_events.xmin::text::xid8 < pg_snapshot_xmin(pg_current_snapshot())
+		  AND NOT EXISTS (
+		      SELECT 1
+		      FROM pg_locks AS rel
+		      JOIN pg_locks AS tx
+		          ON tx.pid = rel.pid
+		         AND tx.locktype = 'transactionid'
+		         AND tx.mode = 'ExclusiveLock'
+		      WHERE rel.locktype = 'relation'
+		        AND rel.relation = 'run_events'::regclass
+		        AND rel.granted
+		        AND rel.pid <> pg_backend_pid()
+		        AND tx.transactionid::text::xid8 <= run_events.xmin::text::xid8
+		  )
 		ORDER BY run_events.gid
 		LIMIT $3`, factoryID, cursor, limit)
 	if err != nil {
