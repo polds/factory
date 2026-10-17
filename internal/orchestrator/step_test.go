@@ -173,6 +173,64 @@ func TestStepHappyPath(t *testing.T) {
 	}
 }
 
+func TestReviewerInfraRetriesOnce(t *testing.T) {
+	def := acmeDef()
+	preds := M3Predicates()
+	s := driveToReviewing(t, def, preds)
+	if s.RevisionCount != 0 || s.ReviewerRetryUsed {
+		t.Fatalf("reached %#v", s)
+	}
+
+	got, eff, err := Step(def, s, RunFailed{Stage: StageReviewing, Infra: true}, preds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireEffect(t, eff, StartRun{Stage: StageReviewing, Agent: "reviewer"})
+	forbidEffect[Escalate](t, eff)
+	if got.Stage != StageReviewing || got.Status != StatusOpen || got.RevisionCount != 0 || !got.ReviewerRetryUsed {
+		t.Fatalf("first infra failure: %#v", got)
+	}
+
+	// The returned state is what a caller passes after counting one prior
+	// infrastructure failure. A second one revises.
+	got, eff, err = Step(def, got, RunFailed{Stage: StageReviewing, Infra: true}, preds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireEffect(t, eff, StartRun{Stage: StageBuilding, Agent: "implementer"})
+	if got.Stage != StageBuilding || got.RevisionCount != 1 || got.ReviewerRetryUsed {
+		t.Fatalf("second infra failure: %#v", got)
+	}
+
+	// The building run opens a new window, so the next review can retry once.
+	got = mustStep(t, def, got, RunSucceeded{Stage: StageBuilding}, preds, StartRun{Stage: StageReviewing, Agent: "reviewer"})
+	if got.ReviewerRetryUsed || got.RevisionCount != 1 {
+		t.Fatalf("back to reviewing: %#v", got)
+	}
+	got, eff, err = Step(def, got, RunFailed{Stage: StageReviewing, Infra: true}, preds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireEffect(t, eff, StartRun{Stage: StageReviewing, Agent: "reviewer"})
+	if got.Stage != StageReviewing || got.RevisionCount != 1 || !got.ReviewerRetryUsed {
+		t.Fatalf("infra failure after the next build: %#v", got)
+	}
+}
+
+func TestReviewerAgentFailureStillRevises(t *testing.T) {
+	def := acmeDef()
+	preds := M3Predicates()
+	s := driveToReviewing(t, def, preds)
+	got, eff, err := Step(def, s, RunFailed{Stage: StageReviewing}, preds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireEffect(t, eff, StartRun{Stage: StageBuilding, Agent: "implementer"})
+	if got.RevisionCount != 1 || got.ReviewerRetryUsed || got.Stage != StageBuilding {
+		t.Fatalf("agent failure: %#v", got)
+	}
+}
+
 func TestRunFailedDoesNotRetry(t *testing.T) {
 	def := acmeDef()
 	preds := M3Predicates()
@@ -549,6 +607,66 @@ func stepCases() []stepCase {
 			event:   RunFailed{Stage: StageReviewing},
 			want:    State{Stage: StageBuilding, Status: StatusOpen, RevisionCount: 1, LastStageAgent: "implementer"},
 			effects: []Effect{StartRun{Stage: StageBuilding, Agent: "implementer"}},
+		},
+		{
+			name:  "reviewing infra failure retries reviewing once",
+			state: openStage(StageReviewing, "reviewer", 0),
+			event: RunFailed{Stage: StageReviewing, Infra: true},
+			want: State{
+				Stage: StageReviewing, Status: StatusOpen, LastStageAgent: "reviewer",
+				ReviewerRetryUsed: true,
+			},
+			effects: []Effect{StartRun{Stage: StageReviewing, Agent: "reviewer"}},
+		},
+		{
+			name:  "reviewing infra failure at the revision limit still retries",
+			state: openStage(StageReviewing, "reviewer", 3),
+			event: RunFailed{Stage: StageReviewing, Infra: true},
+			want: State{
+				Stage: StageReviewing, Status: StatusOpen, RevisionCount: 3,
+				LastStageAgent: "reviewer", ReviewerRetryUsed: true,
+			},
+			effects: []Effect{StartRun{Stage: StageReviewing, Agent: "reviewer"}},
+		},
+		{
+			name: "reviewing infra failure with the retry used starts building",
+			state: State{
+				Stage: StageReviewing, Status: StatusOpen, LastStageAgent: "reviewer",
+				ReviewerRetryUsed: true,
+			},
+			event:   RunFailed{Stage: StageReviewing, Infra: true},
+			want:    State{Stage: StageBuilding, Status: StatusOpen, RevisionCount: 1, LastStageAgent: "implementer"},
+			effects: []Effect{StartRun{Stage: StageBuilding, Agent: "implementer"}},
+		},
+		{
+			name:  "building infra failure does not retry",
+			state: openStage(StageBuilding, "implementer", 1),
+			event: RunFailed{Stage: StageBuilding, Infra: true},
+			want: State{
+				Stage: StageBuilding, Status: StatusOpen, RevisionCount: 1,
+				LastStageAgent: "implementer", LastRunOutcome: OutcomeFailed,
+			},
+			effects: []Effect{Escalate{}},
+		},
+		{
+			name:  "planning infra failure does not retry",
+			state: openStage(StagePlanning, "spec", 0),
+			event: RunFailed{Stage: StagePlanning, Infra: true},
+			want: State{
+				Stage: StagePlanning, Status: StatusOpen,
+				LastStageAgent: "spec", LastRunOutcome: OutcomeFailed,
+			},
+			effects: []Effect{Escalate{}},
+		},
+		{
+			name:  "triage infra failure does not retry",
+			state: openStage(StageTriage, "triage", 0),
+			event: RunFailed{Stage: StageTriage, Infra: true},
+			want: State{
+				Stage: StageTriage, Status: StatusOpen,
+				LastStageAgent: "triage", LastRunOutcome: OutcomeFailed,
+			},
+			effects: []Effect{Escalate{}},
 		},
 		{
 			name:    "reviewing failure at the limit still starts building",

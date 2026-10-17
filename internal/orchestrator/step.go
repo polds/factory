@@ -78,13 +78,21 @@ type Def struct {
 // State is one work item. PendingGate is non-empty only while status is
 // awaiting_approval. LastRunOutcome is succeeded, failed, or cancelled when
 // no run is in flight, and empty while a run started by Step is in flight.
+//
+// ReviewerRetryUsed is the one-shot reviewer retry budget for this call.
+// The caller sets it from committed run rows (infrastructure-failed
+// reviewing runs since the latest building run). Step does not store it.
+// A restarted process passes the same value because the count is still in
+// those rows. Step also sets it on the state it returns after consuming
+// the budget, so a pure chain of calls retries once.
 type State struct {
-	Stage          string
-	Status         string
-	RevisionCount  int
-	PendingGate    string
-	LastStageAgent string
-	LastRunOutcome string
+	Stage             string
+	Status            string
+	RevisionCount     int
+	PendingGate       string
+	LastStageAgent    string
+	LastRunOutcome    string
+	ReviewerRetryUsed bool
 }
 
 // Event is one input to Step.
@@ -108,9 +116,13 @@ type RunSucceeded struct {
 }
 
 // RunFailed is a stage run that finished unsuccessfully. Reviewing failure
-// is a revision. Any other failure escalates and does not retry.
+// is a revision, unless Infra is set and the reviewer retry budget is still
+// unused. Any other failure escalates and does not retry.
 type RunFailed struct {
 	Stage string
+	// Infra is true when the run failed for an infrastructure reason.
+	// Agent and configuration failures leave it false.
+	Infra bool
 }
 
 // Approved decides the pending gate.
@@ -290,7 +302,21 @@ func stepRunFailed(def Def, s State, e RunFailed) (State, []Effect, error) {
 		return s, nil, ErrStaleStage
 	}
 	if s.Stage == StageReviewing {
-		return stepRevision(def, s)
+		if e.Infra && !s.ReviewerRetryUsed {
+			started, eff, err := startRun(def, s, StageReviewing)
+			if err != nil {
+				return s, nil, err
+			}
+			started.ReviewerRetryUsed = true
+			return started, eff, nil
+		}
+		started, eff, err := stepRevision(def, s)
+		if err != nil {
+			return s, nil, err
+		}
+		// A new building run opens a new reviewer-retry window.
+		started.ReviewerRetryUsed = false
+		return started, eff, nil
 	}
 	out, eff := escalate(def, s, s.RevisionCount)
 	return out, eff, nil
