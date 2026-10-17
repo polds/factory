@@ -587,6 +587,15 @@ func TestSteerFollowupAfterEmptyDrainRunsAtIdleZero(t *testing.T) {
 	}
 	t.Cleanup(func() { followupMissedDrainHook = nil })
 
+	// The model must not finish until a long-poll is sitting in the
+	// handler. Counting accepted requests is not that signal: on a loaded
+	// runner the turn can return, and the poller can be stopped, before
+	// the server accepts the long-poll. The wait=0 poll is then the first
+	// request. Holding request 1 until it is canceled swallows that poll
+	// for the whole 250ms deadline, and the follow-up is never written.
+	longPollReady := make(chan struct{})
+	var longOnce sync.Once
+
 	var mu sync.Mutex
 	var calls int
 	var secondBody string
@@ -600,32 +609,36 @@ func TestSteerFollowupAfterEmptyDrainRunsAtIdleZero(t *testing.T) {
 		}
 		mu.Unlock()
 		if n == 1 {
+			select {
+			case <-longPollReady:
+			case <-r.Context().Done():
+				return
+			case <-time.After(3 * time.Second):
+				t.Errorf("long-poll was not in flight before the turn finished")
+				return
+			}
 			writeAssistant(w, "crates sorted")
 			return
 		}
 		writeAssistant(w, "test added")
 	}
-	var polls int
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		polls++
-		n := polls
-		mu.Unlock()
-		if n == 1 {
-			// The long-poll is in flight and the hub is still empty.
-			// Hold the body until the drain has observed that, then
-			// leave with the poller. The follow-up is on the next poll.
-			select {
-			case <-sawDrain:
-			case <-r.Context().Done():
-				return
-			}
-			<-r.Context().Done()
+		// The idle-0 poll is wait=0, whatever its arrival order. Answer
+		// it. A long-poll stays empty until the drain has observed that,
+		// then ends when the poller is stopped.
+		if r.URL.Query().Get("wait") == "0" {
+			writeSteers(w, []map[string]string{
+				{"id": "fu-missed", "kind": "followup", "text": follow},
+			})
 			return
 		}
-		writeSteers(w, []map[string]string{
-			{"id": "fu-missed", "kind": "followup", "text": follow},
-		})
+		longOnce.Do(func() { close(longPollReady) })
+		select {
+		case <-sawDrain:
+		case <-r.Context().Done():
+			return
+		}
+		<-r.Context().Done()
 	})
 	code, events, stderr := runSteer(t, ctx, plane.eventsURL, token, prompt, "0s", model, nil)
 	if code != ExitOK {
