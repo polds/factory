@@ -10,7 +10,7 @@ import { renderApp } from "./render";
 describe("login", () => {
   it("stores the API key and returns to login after a 401", async () => {
     const user = userEvent.setup();
-    const { queryClient } = renderApp("/");
+    const { queryClient } = await renderApp("/");
     const field = await screen.findByLabelText("API key");
 
     await user.type(field, "wrong-key");

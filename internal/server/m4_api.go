@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -57,6 +58,29 @@ func (s *Server) ListDeliveries(ctx context.Context, factoryID, status string, l
 		return nil, err
 	}
 	rows, err := s.store.ListDeliveries(ctx, fac.ID, status, limit)
+	if err != nil {
+		return nil, apiStoreErr(err)
+	}
+	out := make([]api.Delivery, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toAPIDelivery(row))
+	}
+	return out, nil
+}
+
+func (s *Server) ListWebhookDeliveries(ctx context.Context, factoryID, webhookUID, status string, limit int) ([]api.Delivery, error) {
+	fac, err := s.factory(ctx, factoryID)
+	if err != nil {
+		return nil, err
+	}
+	reg, err := s.store.GetWebhookRegistration(ctx, webhookUID)
+	if err != nil {
+		return nil, apiStoreErr(err)
+	}
+	if reg.FactoryID != fac.ID {
+		return nil, api.ErrNotFound
+	}
+	rows, err := s.store.ListWebhookDeliveries(ctx, fac.ID, webhookUID, status, limit)
 	if err != nil {
 		return nil, apiStoreErr(err)
 	}
@@ -208,7 +232,7 @@ func (s *Server) RunByExternalReference(ctx context.Context, provider, ref strin
 	if err != nil {
 		return api.ExternalRun{}, apiStoreErr(err)
 	}
-	apiRun := toAPIRun(run, s.snapshot())
+	apiRun := toAPIRun(s.withSource(ctx, run), s.snapshot())
 	out.Run = &apiRun
 	return out, nil
 }
@@ -283,7 +307,19 @@ func toAPIDelivery(row store.Delivery) api.Delivery {
 		Truncated:          row.Truncated,
 		Status:             row.Status,
 		MatchedAutomations: matched,
+		NormalizedEvents:   decodeNormalizedEvents(row.Normalized),
 	}
+}
+
+func decodeNormalizedEvents(raw []byte) []json.RawMessage {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	var events []json.RawMessage
+	if err := json.Unmarshal(raw, &events); err != nil {
+		return nil
+	}
+	return events
 }
 
 func toAPISchedules(rows []store.Schedule) []api.Schedule {
@@ -321,14 +357,16 @@ func apiStoreErr(err error) error {
 }
 
 var (
-	_ api.Backend               = apiFacade{}
-	_ api.WorkBackend           = apiFacade{}
-	_ api.SchemaCatalog         = apiFacade{}
-	_ api.DeliveryBackend       = apiFacade{}
-	_ api.ScheduleBackend       = apiFacade{}
-	_ api.ExternalRefBackend    = apiFacade{}
-	_ api.InputBackend          = apiFacade{}
-	_ api.IngressMounts         = apiFacade{}
-	_ api.ConsoleBackend        = apiFacade{}
-	_ api.DefinitionTreeApplier = apiFacade{}
+	_ api.Backend                = apiFacade{}
+	_ api.WorkBackend            = apiFacade{}
+	_ api.SchemaCatalog          = apiFacade{}
+	_ api.DeliveryBackend        = apiFacade{}
+	_ api.ScheduleBackend        = apiFacade{}
+	_ api.ExternalRefBackend     = apiFacade{}
+	_ api.InputBackend           = apiFacade{}
+	_ api.IngressMounts          = apiFacade{}
+	_ api.ConsoleBackend         = apiFacade{}
+	_ api.DefinitionTreeApplier  = apiFacade{}
+	_ api.SteerHistory           = apiFacade{}
+	_ api.WebhookDeliveryBackend = apiFacade{}
 )

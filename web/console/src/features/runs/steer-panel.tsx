@@ -1,6 +1,8 @@
+import { useQuery } from "@tanstack/react-query";
 import { Clock, Lock } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { SteerState } from "../../api/types";
+import { client } from "../../api/client";
+import type { SteerRecord, SteerState } from "../../api/types";
 import { Button } from "../../components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { formatDuration } from "../../lib/format";
@@ -12,8 +14,20 @@ type ShownSteer = {
   delivered: boolean;
 };
 
-function shownSteers(local: readonly LocalSteer[], signals: readonly SteerSignal[]): ShownSteer[] {
-  const rows: ShownSteer[] = local.map((steer) => ({ ...steer, delivered: false }));
+function shownSteers(
+  remote: readonly SteerRecord[],
+  local: readonly LocalSteer[],
+  signals: readonly SteerSignal[],
+): ShownSteer[] {
+  const rows: ShownSteer[] = remote.map((steer) => ({
+    id: steer.id,
+    kind: steer.kind,
+    delivered: Boolean(steer.delivered_at),
+  }));
+  for (const steer of local) {
+    if (rows.some((row) => row.id === steer.id)) continue;
+    rows.push({ id: steer.id, kind: steer.kind, delivered: false });
+  }
   for (const signal of signals) {
     if (signal.id) {
       const match = rows.find((row) => row.id === signal.id);
@@ -31,6 +45,7 @@ function shownSteers(local: readonly LocalSteer[], signals: readonly SteerSignal
 }
 
 export function SteerPanel({
+  runId,
   steer,
   local,
   signals,
@@ -41,6 +56,7 @@ export function SteerPanel({
   onFollowUp,
   onInterrupt,
 }: {
+  runId: string;
   steer: SteerState;
   local: readonly LocalSteer[];
   signals: readonly SteerSignal[];
@@ -73,7 +89,13 @@ export function SteerPanel({
     .filter((id) => id !== "")
     .join(" ");
   const described = describedBy || undefined;
-  const history = shownSteers(local, signals);
+  const historyQuery = useQuery({
+    queryKey: ["run-steers", runId],
+    queryFn: () => client.listRunSteers(runId),
+    enabled: runId.length > 0,
+  });
+  const remote = historyQuery.isError ? [] : (historyQuery.data ?? []);
+  const history = shownSteers(remote, local, signals);
 
   return (
     <aside className="steer-panel" aria-labelledby="steer-heading">

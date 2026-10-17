@@ -33,6 +33,7 @@ func (s *Server) Definition(ctx context.Context, factory string) (api.Definition
 		view.Editable = false
 		view.ProductionRef = s.cfg.DefinitionGitProductionRef
 		view.GitSHA = s.currentGitSHA(ctx, fac.ID)
+		view.ForgeURL = forgeTreeURL(s.cfg.DefinitionGitURL, view.GitSHA, s.cfg.DefinitionGitSubdir)
 	}
 	dir := snap.dir
 	if dir == "" {
@@ -126,6 +127,7 @@ func (s *Server) RunDetail(ctx context.Context, id string) (api.RunDetail, error
 		return api.RunDetail{}, err
 	}
 	now := s.now()
+	run = s.withSource(ctx, run)
 	detail := api.RunDetail{
 		Run:         toAPIRun(run, s.snapshot()),
 		Failure:     toFailure(result),
@@ -133,7 +135,20 @@ func (s *Server) RunDetail(ctx context.Context, id string) (api.RunDetail, error
 		ExecMS:      execMS(run, now),
 		Steer:       s.steerState(ctx, run),
 		PRURL:       s.pullRequestURL(ctx, run.WorkItemID),
+		ExitCode:    run.ExitCode,
 	}
+	costs, err := s.costByRun(ctx, []string{run.ID})
+	if err != nil {
+		return api.RunDetail{}, err
+	}
+	if cents, ok := costs[run.ID]; ok {
+		detail.CostCents = &cents
+	}
+	snap, err := s.kubernetesSnapshot(ctx, run.ID)
+	if err != nil {
+		return api.RunDetail{}, err
+	}
+	detail.KubernetesSnapshot = snap
 	return detail, nil
 }
 

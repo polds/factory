@@ -1,7 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -13,14 +15,16 @@ import (
 
 const deliveryColumns = `
     id, factory_id, provider, webhook_uid, delivery_id, received_at,
-    headers, body, truncated, status, matched_automations, expires_at`
+    headers, body, truncated, status, matched_automations, expires_at,
+    normalized_json`
 
 func scanDelivery(row pgx.Row) (Delivery, error) {
 	var d Delivery
-	var headers, matched []byte
+	var headers, matched, normalized []byte
 	err := row.Scan(
 		&d.ID, &d.FactoryID, &d.Provider, &d.WebhookUID, &d.DeliveryID, &d.ReceivedAt,
 		&headers, &d.Body, &d.Truncated, &d.Status, &matched, &d.ExpiresAt,
+		&normalized,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Delivery{}, ErrNotFound
@@ -39,6 +43,7 @@ func scanDelivery(row pgx.Row) (Delivery, error) {
 	if d.Body == nil {
 		d.Body = []byte{}
 	}
+	d.Normalized = normalized
 	return d, nil
 }
 
@@ -199,6 +204,74 @@ func (s *Store) ListDeliveries(ctx context.Context, factory, status string, limi
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: list deliveries: %w", err)
+	}
+	return out, nil
+}
+
+// SetDeliveryNormalized stores the dispatcher event list for id.
+// raw empty stores []. Invalid JSON is rejected. The update uses the
+// open ClaimReceived transaction when one exists, so it does not wait
+// on that claim's row lock.
+func (s *Store) SetDeliveryNormalized(ctx context.Context, id string, raw json.RawMessage) error {
+	if id == "" {
+		return fmt.Errorf("store: delivery id is required")
+	}
+	payload := bytes.TrimSpace(raw)
+	if len(payload) == 0 {
+		payload = []byte("[]")
+	}
+	if !json.Valid(payload) || payload[0] != '[' {
+		return fmt.Errorf("store: normalized events must be a json array")
+	}
+	db, unlock := s.deliveryDB(id)
+	defer unlock()
+	tag, err := db.Exec(ctx, `
+		UPDATE deliveries SET normalized_json = $2::jsonb WHERE id = $1`, id, payload)
+	if err != nil {
+		return fmt.Errorf("store: set normalized events: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListWebhookDeliveries returns one webhook's deliveries, newest first.
+// status empty matches every status. limit <= 0 uses 100.
+func (s *Store) ListWebhookDeliveries(ctx context.Context, factoryID, webhookUID, status string, limit int) ([]Delivery, error) {
+	if factoryID == "" || webhookUID == "" {
+		return nil, fmt.Errorf("store: factory and webhook are required")
+	}
+	if status != "" {
+		if err := validDeliveryStatus(status); err != nil {
+			return nil, err
+		}
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+deliveryColumns+`
+		FROM deliveries
+		WHERE factory_id = $1
+		  AND webhook_uid = $2
+		  AND ($3 = '' OR status = $3)
+		ORDER BY received_at DESC, id DESC
+		LIMIT $4`, factoryID, webhookUID, status, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list webhook deliveries: %w", err)
+	}
+	defer rows.Close()
+	out := []Delivery{}
+	for rows.Next() {
+		d, err := scanDelivery(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: list webhook deliveries: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list webhook deliveries: %w", err)
 	}
 	return out, nil
 }

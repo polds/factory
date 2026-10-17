@@ -56,7 +56,7 @@ describe("run transcript", () => {
           return bus.response(request);
         },
       });
-      renderApp(`/runs/${run.id}`);
+      await renderApp(`/runs/${run.id}`);
       await waitFor(() => expect(seqValues().sort()).toEqual(["1", "2", "3", "4", "5"]));
       await waitFor(() => expect(calls.length).toBeGreaterThan(1));
       expect(calls[1]).toEqual({ last: "5", from: "5" });
@@ -86,7 +86,7 @@ describe("run transcript", () => {
         events: (request) => holdStream(request, body),
       });
       const started = performance.now();
-      renderApp(`/runs/${goldenRun.id}`);
+      await renderApp(`/runs/${goldenRun.id}`);
       let elapsed = 0;
       try {
         await waitFor(
@@ -124,7 +124,7 @@ describe("run transcript", () => {
         },
         events: (request) => bus.response(request),
       });
-      renderApp(`/runs/${goldenRun.id}`);
+      await renderApp(`/runs/${goldenRun.id}`);
       await screen.findByRole("log", { name: "Run transcript" });
       bus.send(statusEvents(1, 40));
       await waitFor(() => expect(screen.getByText("marker-40")).toBeInTheDocument());
@@ -165,7 +165,7 @@ describe("run transcript", () => {
         return bus.response(request);
       },
     });
-    renderApp(`/runs/${goldenRun.id}`);
+    await renderApp(`/runs/${goldenRun.id}`);
     await screen.findByText("The agent reported the run as failed");
     bus.send(statusEvents(1, 2));
     await waitFor(() =>
@@ -190,7 +190,7 @@ describe("run transcript", () => {
         return bus.response(request);
       },
     });
-    renderApp(`/runs/${run.id}`);
+    await renderApp(`/runs/${run.id}`);
     await screen.findByRole("heading", { name: "Settle the batch" });
     bus.send(sseEvent(1, "terminal", { status: "idle" }));
     await waitFor(() =>

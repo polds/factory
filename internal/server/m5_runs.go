@@ -22,7 +22,8 @@ const listedRunColumns = `
     r.created_at, r.started_at, r.ended_at,
     COALESCE(r.work_item_id, ''), COALESCE(r.parent_run_id, ''), COALESCE(r.conversation_id, ''),
     COALESCE(r.stage, ''), COALESCE(r.model_id, ''),
-    COALESCE(r.failure_class, ''), COALESCE(r.failure_code, ''), r.assigned_at`
+    COALESCE(r.failure_class, ''), COALESCE(r.failure_code, ''), r.assigned_at,
+    COALESCE(w.source, '')`
 
 func scanListedRun(row pgx.Row) (store.Run, error) {
 	var run store.Run
@@ -32,7 +33,7 @@ func scanListedRun(row pgx.Row) (store.Run, error) {
 		&run.Prompt, &run.Title, &run.Repo, &run.WorkerID, &run.FailureReason,
 		&run.ExitCode, &run.CancelRequested, &run.CreatedAt, &run.StartedAt, &run.EndedAt,
 		&run.WorkItemID, &run.ParentRunID, &run.ConversationID, &run.Stage, &run.ModelID,
-		&run.FailureClass, &run.FailureCode, &run.AssignedAt,
+		&run.FailureClass, &run.FailureCode, &run.AssignedAt, &run.Source,
 	)
 	if err != nil {
 		return store.Run{}, err
@@ -173,7 +174,26 @@ func toRunRow(run store.Run, snap loaded, result failure.Result, cost *int64, no
 		row.FailureClass = string(result.Class)
 		row.FailureSummary = result.Summary
 	}
+	if result.Code != "" {
+		row.FailureCode = result.Code
+	}
+	row.ExitCode = run.ExitCode
 	return row
+}
+
+// withSource fills Source from the work item when the run is linked and
+// the caller did not already join it. A missing work item leaves Source empty.
+func (s *Server) withSource(ctx context.Context, run store.Run) store.Run {
+	if run.WorkItemID == "" || run.Source != "" || s.db == nil {
+		return run
+	}
+	var source string
+	err := s.db.QueryRow(ctx, `SELECT COALESCE(source, '') FROM work_items WHERE id = $1`, run.WorkItemID).Scan(&source)
+	if err != nil {
+		return run
+	}
+	run.Source = source
+	return run
 }
 
 func toFailure(result failure.Result) api.Failure {

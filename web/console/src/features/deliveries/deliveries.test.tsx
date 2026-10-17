@@ -22,6 +22,16 @@ const unmatched = {
   truncated: true,
   status: "unmatched",
   matched_automations: [],
+  normalized_events: [
+    {
+      provider: "github",
+      event: "issues.labeled",
+      actor: { handle: "octocat", token: "PLANTED-ACTOR" },
+      subject: { kind: "issue", id: "77", number: 77, title: "Cutoff", raw: "PLANTED-RAW" },
+      thread: { kind: "issue", external_ref: "acme/factory#77" },
+      raw: { planted: "PLANTED-RAW" },
+    },
+  ],
 };
 
 const matched = {
@@ -37,9 +47,9 @@ const matched = {
   matched_automations: ["on-label"],
 };
 
-function renderDeliveries() {
+async function renderDeliveries() {
   setAPIKey(demoAPIKey);
-  return renderApp("/f/fac_1/deliveries");
+  return await renderApp("/f/fac_1/deliveries");
 }
 
 async function expectClean() {
@@ -73,7 +83,7 @@ describe("deliveries", () => {
         },
       ),
     );
-    renderDeliveries();
+    await renderDeliveries();
     const unmatchedTab = await screen.findByRole("tab", { name: /Unmatched \(1\)/ });
     expect(unmatchedTab).toHaveAttribute("aria-selected", "true");
     expect(searches.some((search) => search.includes("status=unmatched"))).toBe(true);
@@ -85,7 +95,13 @@ describe("deliveries", () => {
     expect(dialog).toHaveTextContent("[redacted]");
     expect(dialog).toHaveTextContent("issues");
     expect(dialog).toHaveTextContent("truncated");
+    expect(dialog).toHaveTextContent("Normalized event");
+    expect(dialog).toHaveTextContent("issues.labeled");
+    expect(dialog).toHaveTextContent("octocat");
+    expect(dialog).toHaveTextContent("acme/factory#77");
     expect(document.body.innerHTML).not.toContain("PLANTED-SIGNATURE");
+    expect(document.body.innerHTML).not.toContain("PLANTED-RAW");
+    expect(document.body.innerHTML).not.toContain("PLANTED-ACTOR");
     await expectClean();
     await user.click(screen.getByRole("button", { name: "Replay delivery" }));
     await user.dblClick(await screen.findByRole("button", { name: "Replay" }));
@@ -106,7 +122,7 @@ describe("deliveries", () => {
         return HttpResponse.json([unmatched, matched]);
       }),
     );
-    renderDeliveries();
+    await renderDeliveries();
     const unmatchedTab = await screen.findByRole("tab", { name: /Unmatched/ });
     unmatchedTab.focus();
     await user.keyboard("{ArrowRight}");

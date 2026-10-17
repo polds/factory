@@ -9,9 +9,9 @@ import { server } from "../../mocks/server";
 import { renderApp } from "../../test/render";
 import automations from "./__fixtures__/automations.json";
 
-function renderAutomations() {
+async function renderAutomations() {
   setAPIKey(demoAPIKey);
-  return renderApp("/f/fac_1/automations");
+  return await renderApp("/f/fac_1/automations");
 }
 
 async function expectClean() {
@@ -45,7 +45,7 @@ describe("automations", () => {
         return new HttpResponse(null, { status: 204 });
       }),
     );
-    renderAutomations();
+    await renderAutomations();
     expect(await screen.findByRole("heading", { name: "Automations" })).toBeInTheDocument();
     expect(screen.getByText("github.label")).toBeInTheDocument();
     const enabled = screen.getAllByText("Enabled").find((element) => element.tagName === "SPAN");

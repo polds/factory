@@ -17,7 +17,7 @@ import type { Webhook as WebhookRecord } from "../../api/types";
 import { Button } from "../../components/Button";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
-import { listDeliveriesDetailed, type DeliveryRow } from "../deliveries/api";
+import { presentDelivery, type DeliveryRow } from "../deliveries/api";
 import { formatWhen } from "../deliveries/format";
 import { DeliveryStatus } from "../deliveries/status";
 
@@ -66,8 +66,12 @@ function WebhooksScreen({ factoryId }: { factoryId: string }) {
   });
   const [openUid, setOpenUid] = useState<string | null>(null);
   const deliveries = useQuery({
-    queryKey: ["webhook-deliveries", factoryId],
-    queryFn: () => listDeliveriesDetailed(factoryId, { limit: 50 }),
+    queryKey: ["webhook-deliveries", factoryId, openUid],
+    queryFn: async () => {
+      if (!openUid) return [];
+      const rows = await client.listWebhookDeliveries(factoryId, openUid, { limit: 50 });
+      return rows.map(presentDelivery);
+    },
     enabled: openUid !== null,
   });
 
@@ -115,9 +119,7 @@ function WebhooksScreen({ factoryId }: { factoryId: string }) {
                   webhook={row}
                   loading={deliveries.isPending}
                   error={deliveries.isError}
-                  rows={(deliveries.data ?? []).filter(
-                    (delivery) => delivery.webhook_uid === row.uid,
-                  )}
+                  rows={deliveries.data ?? []}
                   onRetry={() => void deliveries.refetch()}
                 />
               ) : null}

@@ -112,6 +112,13 @@ func (s *Server) handleDelivery(ctx context.Context, d ingress.Delivery) (bool, 
 	if err != nil {
 		return false, err
 	}
+	raw, err := normalizedEventJSON(evs)
+	if err != nil {
+		return false, err
+	}
+	if err := s.store.SetDeliveryNormalized(ctx, d.ID, raw); err != nil {
+		return false, err
+	}
 	if len(evs) == 0 {
 		return false, ingress.ErrIgnored
 	}
@@ -191,6 +198,34 @@ func normalizeDelivery(d ingress.Delivery) ([]event.Event, error) {
 	default:
 		return nil, fmt.Errorf("server: unknown provider %q", d.Provider)
 	}
+}
+
+// normalizedEventJSON is the event list with the raw key removed.
+// An empty input is [] so a delivery that produced no events is distinct
+// from NULL (never dispatched).
+func normalizedEventJSON(evs []event.Event) (json.RawMessage, error) {
+	if evs == nil {
+		evs = []event.Event{}
+	}
+	raw, err := json.Marshal(evs)
+	if err != nil {
+		return nil, err
+	}
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []map[string]json.RawMessage{}
+	}
+	for i := range rows {
+		delete(rows[i], "raw")
+	}
+	out, err := json.Marshal(rows)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func convertEvents(src any) ([]event.Event, error) {

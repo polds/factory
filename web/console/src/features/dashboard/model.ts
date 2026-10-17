@@ -95,10 +95,16 @@ export function latestByWorkItem(runs: readonly RunRow[]): Map<string, RunRow> {
   return latest;
 }
 
-function compareRunRecency(left: RunRow, right: RunRow): number {
-  const byTime = (left.created_at ?? "").localeCompare(right.created_at ?? "");
+export function compareRunRecency(left: RunRow, right: RunRow): number {
+  const byTime = createdAtMillis(left.created_at) - createdAtMillis(right.created_at);
   if (byTime !== 0) return byTime;
   return left.id.localeCompare(right.id);
+}
+
+function createdAtMillis(value: string | undefined): number {
+  if (!value) return Number.NEGATIVE_INFINITY;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
 
 export function rangeBounds(range: RangeKey, now = Date.now()): { from: string; to: string } {

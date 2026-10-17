@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/definition"
@@ -112,7 +113,7 @@ func (s *Server) StartRun(ctx context.Context, req api.RunRequest) (api.Run, err
 		return api.Run{}, err
 	}
 	s.nudge()
-	return toAPIRun(run, s.snapshot()), nil
+	return toAPIRun(s.withSource(ctx, run), s.snapshot()), nil
 }
 
 func (s *Server) GetRun(ctx context.Context, id string) (api.Run, error) {
@@ -123,7 +124,7 @@ func (s *Server) GetRun(ctx context.Context, id string) (api.Run, error) {
 		}
 		return api.Run{}, err
 	}
-	return toAPIRun(run, s.snapshot()), nil
+	return toAPIRun(s.withSource(ctx, run), s.snapshot()), nil
 }
 
 func (s *Server) ListRuns(ctx context.Context, f api.RunFilter) ([]api.Run, error) {
@@ -152,7 +153,7 @@ func (s *Server) CancelRun(ctx context.Context, id string) (api.Run, error) {
 	}
 	if isTerminalStatus(run.Status) {
 		s.settleCancel(ctx, id)
-		return toAPIRun(run, s.snapshot()), nil
+		return toAPIRun(s.withSource(ctx, run), s.snapshot()), nil
 	}
 	workerID := run.WorkerID
 	if workerID == "" {
@@ -164,7 +165,7 @@ func (s *Server) CancelRun(ctx context.Context, id string) (api.Run, error) {
 		}
 	}
 	s.armGrace(id)
-	return toAPIRun(run, s.snapshot()), nil
+	return toAPIRun(s.withSource(ctx, run), s.snapshot()), nil
 }
 
 func (s *Server) IngestEvents(ctx context.Context, runID, bearer string, startIdx int, lines [][]byte) error {
@@ -289,5 +290,17 @@ func toAPIRun(run store.Run, snap loaded) api.Run {
 		Stage:          run.Stage,
 		ModelID:        run.ModelID,
 		FailureReason:  run.FailureReason,
+		CreatedAt:      run.CreatedAt.UTC(),
+		StartedAt:      utcPtr(run.StartedAt),
+		Worker:         run.WorkerID,
+		Source:         run.Source,
 	}
+}
+
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }
