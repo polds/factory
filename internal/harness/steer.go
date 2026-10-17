@@ -157,6 +157,21 @@ func (h *steerHub) unbindTurn(gen int) {
 	}
 }
 
+// releaseTurn ends the bound turn and drops interrupts queued after that
+// turn was recorded. Their ids stay acknowledged.
+func (h *steerHub) releaseTurn(gen int) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.generation != gen {
+		return
+	}
+	h.turnCancel = nil
+	h.interrupts = nil
+}
+
 func (h *steerHub) takeFollowup() (steerMsg, bool) {
 	if h == nil {
 		return steerMsg{}, false

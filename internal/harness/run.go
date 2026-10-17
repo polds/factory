@@ -307,9 +307,20 @@ func (c conversation) run(ctx context.Context, prompt string) (int, string, stri
 			summary string
 		)
 		messages, cont, code, status, summary = c.oneTurn(ctx, turn, messages)
-		if !cont {
-			return code, status, summary
+		if cont {
+			continue
 		}
+		// The turn that ends the conversation can still have a follow-up
+		// queued. Append it here and keep going. A follow-up that arrives
+		// only after run returns stays queued for pollFollowup.
+		if code == ExitOK && turn < c.maxTurns {
+			continued := c.drainFollowups(messages)
+			if len(continued) > len(messages) {
+				messages = continued
+				continue
+			}
+		}
+		return code, status, summary
 	}
 	return ExitAgentReported, "failed_by_agent", fmt.Sprintf("stopped after %d model turns", c.maxTurns)
 }
@@ -320,8 +331,9 @@ func (c conversation) oneTurn(ctx context.Context, turn int, messages []chatMess
 	}
 	turnCtx, turnCancel := context.WithCancel(ctx)
 	defer turnCancel()
+	var gen int
 	if c.hub != nil {
-		gen := c.hub.bindTurn(turnCancel)
+		gen = c.hub.bindTurn(turnCancel)
 		defer c.hub.unbindTurn(gen)
 	}
 	resp, err := completeChat(turnCtx, c.baseURL, c.apiKey, chatRequest{
@@ -330,7 +342,7 @@ func (c conversation) oneTurn(ctx context.Context, turn int, messages []chatMess
 		Tools:    toolSchema,
 	})
 	if c.turnInterrupted(ctx, turnCtx) {
-		return c.finishInterrupt(ctx, turn, messages)
+		return c.finishInterrupt(ctx, turn, gen, messages)
 	}
 	if err != nil {
 		code := classifyProvider(err)
@@ -352,7 +364,7 @@ func (c conversation) oneTurn(ctx context.Context, turn int, messages []chatMess
 	}
 	if text := strings.TrimSpace(msg.Content); text != "" && len(msg.ToolCalls) == 0 {
 		if c.turnInterrupted(ctx, turnCtx) {
-			return c.finishInterrupt(ctx, turn, messages)
+			return c.finishInterrupt(ctx, turn, gen, messages)
 		}
 		red := Redact(text, c.secrets)
 		_ = c.log.Emit(Event{Type: "message.delta", Turn: turn, Role: "assistant", Text: red})
@@ -365,7 +377,7 @@ func (c conversation) oneTurn(ctx context.Context, turn int, messages []chatMess
 		return messages, false, ExitModelUnavailable, "model_unavailable", "model returned an empty message"
 	}
 	if c.turnInterrupted(ctx, turnCtx) {
-		return c.finishInterrupt(ctx, turn, messages)
+		return c.finishInterrupt(ctx, turn, gen, messages)
 	}
 	messages = append(messages, chatMessage{
 		Role:      "assistant",
@@ -375,7 +387,7 @@ func (c conversation) oneTurn(ctx context.Context, turn int, messages []chatMess
 	for i, call := range msg.ToolCalls {
 		if c.turnInterrupted(ctx, turnCtx) {
 			messages = interruptedTools(messages, msg.ToolCalls[i:])
-			return c.finishInterrupt(ctx, turn, messages)
+			return c.finishInterrupt(ctx, turn, gen, messages)
 		}
 		rawIn := visibleInput(call.Function.Name, call.Function.Arguments)
 		_ = c.log.Emit(Event{
@@ -419,7 +431,7 @@ func (c conversation) oneTurn(ctx context.Context, turn int, messages []chatMess
 		})
 		if c.turnInterrupted(ctx, turnCtx) {
 			messages = interruptedTools(messages, msg.ToolCalls[i+1:])
-			return c.finishInterrupt(ctx, turn, messages)
+			return c.finishInterrupt(ctx, turn, gen, messages)
 		}
 	}
 	return messages, true, 0, "", ""
@@ -429,14 +441,20 @@ func (c conversation) turnInterrupted(parent, turn context.Context) bool {
 	return c.hub != nil && turn.Err() != nil && parent.Err() == nil
 }
 
-func (c conversation) finishInterrupt(ctx context.Context, turn int, messages []chatMessage) ([]chatMessage, bool, int, string, string) {
-	saw := false
+func (c conversation) finishInterrupt(ctx context.Context, turn, gen int, messages []chatMessage) ([]chatMessage, bool, int, string, string) {
+	var queued []steerMsg
 	for {
 		msg, ok := c.hub.takeInterrupt()
 		if !ok {
 			break
 		}
-		saw = true
+		queued = append(queued, msg)
+	}
+	// Drop the binding before the wait. An interrupt that arrives while
+	// nothing is in flight is acknowledged and discarded, so the resumed
+	// turn is not canceled by it.
+	c.hub.releaseTurn(gen)
+	for _, msg := range queued {
 		_ = c.log.Emit(Event{
 			Type:    "turn.interrupted",
 			Turn:    turn,
@@ -444,7 +462,7 @@ func (c conversation) finishInterrupt(ctx context.Context, turn int, messages []
 			Text:    Redact(msg.Text, c.secrets),
 		})
 	}
-	if !saw {
+	if len(queued) == 0 {
 		return messages, false, ExitModelUnavailable, "model_unavailable", "model call canceled"
 	}
 	// The idle deadline bounds the wait. A follow-up that is already
