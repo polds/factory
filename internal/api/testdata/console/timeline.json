@@ -1,0 +1,26 @@
+[
+  {
+    "phase": "queued",
+    "at": "2026-04-02T15:00:00Z",
+    "duration_ms": 1200,
+    "execution_id": ""
+  },
+  {
+    "phase": "assigned",
+    "at": "2026-04-02T15:00:01Z",
+    "duration_ms": 50,
+    "execution_id": "exec_1"
+  },
+  {
+    "phase": "running",
+    "at": "2026-04-02T15:00:02Z",
+    "duration_ms": 45000,
+    "execution_id": "exec_1"
+  },
+  {
+    "phase": "terminal",
+    "at": "2026-04-02T15:00:47Z",
+    "duration_ms": 0,
+    "execution_id": "exec_1"
+  }
+]

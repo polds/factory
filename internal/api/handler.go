@@ -47,6 +47,10 @@ type handler struct {
 // ExternalRefBackend, and InputBackend. Ingress routes call IngressMounts.
 // Schema routes are mounted by RegisterSchemaRoutes and delegate to
 // SchemaCatalog when b implements it.
+//
+// Console routes call ConsoleBackend when b implements it, and respond
+// 501 problem+json when it does not. GET …/steer is excluded from the
+// API-key check and forwards its bearer token to NextSteers, like ingest.
 func NewHandler(b Backend, apiKey string, events http.Handler) http.Handler {
 	h := &handler{
 		backend: b,
@@ -104,6 +108,8 @@ func (h *handler) route() {
 	m.HandleFunc("POST /api/v1/ingress/linear", h.handleProviderIngress(ingress.ProviderLinear))
 	m.HandleFunc("POST /api/v1/webhooks/u/{urlToken}", h.handleWebhook)
 	m.HandleFunc("POST /api/v1/webhooks/{webhookUID}", h.handleWebhook)
+
+	h.registerConsole(m)
 
 	var schemas http.Handler
 	if cat, ok := h.backend.(SchemaCatalog); ok {
@@ -232,13 +238,27 @@ func (h *handler) handleListRuns(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) listRuns(w http.ResponseWriter, r *http.Request, factoryID string) {
 	q := r.URL.Query()
-	runs, err := h.backend.ListRuns(r.Context(), RunFilter{
-		FactoryID: factoryID,
-		Agent:     q.Get("agent"),
-		Status:    q.Get("status"),
-		Worker:    q.Get("worker"),
-		Model:     q.Get("model"),
-	})
+	filter := RunFilter{
+		FactoryID:    factoryID,
+		Agent:        q.Get("agent"),
+		Status:       q.Get("status"),
+		Worker:       q.Get("worker"),
+		Model:        q.Get("model"),
+		FailureClass: q.Get("failure_class"),
+		Source:       q.Get("source"),
+		ParentRunID:  q.Get("parent_run_id"),
+		WorkItemID:   q.Get("work_item_id"),
+	}
+	if cb, ok := h.backend.(ConsoleBackend); ok {
+		rows, err := cb.ListRunRows(r.Context(), filter)
+		if err != nil {
+			h.writeConsoleErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, orEmpty(rows))
+		return
+	}
+	runs, err := h.backend.ListRuns(r.Context(), filter)
 	if err != nil {
 		h.writeBackendErr(w, err)
 		return
@@ -272,6 +292,15 @@ func (h *handler) handleStartRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	if cb, ok := h.backend.(ConsoleBackend); ok {
+		detail, err := cb.RunDetail(r.Context(), r.PathValue("runId"))
+		if err != nil {
+			h.writeConsoleErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, normalizeRunDetail(detail))
+		return
+	}
 	run, err := h.backend.GetRun(r.Context(), r.PathValue("runId"))
 	if err != nil {
 		h.writeBackendErr(w, err)

@@ -38,6 +38,18 @@ func execute(args []string, stdout, stderr io.Writer, getenv func(string) string
 		return cmdDeliveries(args[1:], stdout, stderr, getenv)
 	case "schedules":
 		return cmdSchedules(args[1:], stdout, stderr, getenv)
+	case "runs":
+		return cmdRuns(args[1:], stdout, stderr, getenv)
+	case "inbox":
+		return cmdInbox(args[1:], stdout, stderr, getenv)
+	case "workers":
+		return cmdWorkers(args[1:], stdout, stderr, getenv)
+	case "automations":
+		return cmdAutomations(args[1:], stdout, stderr, getenv)
+	case "secrets":
+		return cmdSecrets(args[1:], stdout, stderr, getenv)
+	case "definition":
+		return cmdDefinition(args[1:], stdout, stderr, getenv)
 	default:
 		usage(stderr)
 		return 2
@@ -70,6 +82,16 @@ Commands:
   schedules list [--factory NAME]
   schedules pause SCHEDULE_ID
   schedules resume SCHEDULE_ID
+  runs show RUN_ID
+  runs interrupt RUN_ID
+  runs followup RUN_ID --text TEXT
+  inbox --factory NAME
+  workers
+  automations list --factory NAME
+  automations pause --factory NAME AUTOMATION
+  automations resume --factory NAME AUTOMATION
+  secrets list --factory NAME
+  definition show --factory NAME
 
 Environment:
   FACTORY_URL       control plane base URL (default http://localhost:8080)

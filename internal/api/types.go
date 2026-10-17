@@ -193,6 +193,8 @@ type DefinitionRef struct {
 }
 
 // Run is a run record. It carries no execution material.
+// Held is the per-run bearer a backend may keep beside the row.
+// It is not a response field.
 type Run struct {
 	ID        string `json:"id"`
 	Status    string `json:"status"`
@@ -201,6 +203,7 @@ type Run struct {
 	Title     string `json:"title,omitempty"`
 	Priority  string `json:"priority,omitempty"`
 	Repo      string `json:"repo,omitempty"`
+	Held      hidden `json:"-"`
 	// WorkItemID links a stage run to its work item. factoryctl task watch
 	// matches child transcripts on this field. Empty for a bare run.
 	WorkItemID string `json:"work_item_id,omitempty"`
@@ -224,12 +227,18 @@ type RunRequest struct {
 }
 
 // RunFilter selects runs for the list routes.
+// FailureClass, Source, ParentRunID, and WorkItemID are the console filters.
+// Empty fields match everything. Existing fields keep their meaning.
 type RunFilter struct {
-	FactoryID string
-	Agent     string
-	Status    string
-	Worker    string
-	Model     string
+	FactoryID    string
+	Agent        string
+	Status       string
+	Worker       string
+	Model        string
+	FailureClass string
+	Source       string
+	ParentRunID  string
+	WorkItemID   string
 }
 
 // ValidateResponse is the definition:validate body.
@@ -318,9 +327,12 @@ type InputAnswer struct {
 }
 
 // Problem is an RFC 9457 error body.
+// Reason is set only on steer conflicts. Other problems leave it empty,
+// and encoding omits it.
 type Problem struct {
 	Type   string `json:"type"`
 	Title  string `json:"title"`
 	Status int    `json:"status"`
 	Detail string `json:"detail"`
+	Reason string `json:"reason,omitempty"`
 }
