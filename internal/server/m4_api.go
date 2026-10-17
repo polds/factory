@@ -321,12 +321,14 @@ func apiStoreErr(err error) error {
 }
 
 var (
-	_ api.Backend            = apiFacade{}
-	_ api.WorkBackend        = apiFacade{}
-	_ api.SchemaCatalog      = apiFacade{}
-	_ api.DeliveryBackend    = apiFacade{}
-	_ api.ScheduleBackend    = apiFacade{}
-	_ api.ExternalRefBackend = apiFacade{}
-	_ api.InputBackend       = apiFacade{}
-	_ api.IngressMounts      = apiFacade{}
+	_ api.Backend               = apiFacade{}
+	_ api.WorkBackend           = apiFacade{}
+	_ api.SchemaCatalog         = apiFacade{}
+	_ api.DeliveryBackend       = apiFacade{}
+	_ api.ScheduleBackend       = apiFacade{}
+	_ api.ExternalRefBackend    = apiFacade{}
+	_ api.InputBackend          = apiFacade{}
+	_ api.IngressMounts         = apiFacade{}
+	_ api.ConsoleBackend        = apiFacade{}
+	_ api.DefinitionTreeApplier = apiFacade{}
 )

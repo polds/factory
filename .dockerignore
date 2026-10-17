@@ -1,0 +1,5 @@
+**/node_modules
+web/console/dist
+internal/console/dist
+**/.work
+.git

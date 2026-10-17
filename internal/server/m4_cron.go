@@ -91,6 +91,7 @@ func (c cronDB) Emit(ctx context.Context, ev cron.Event) error {
 		return err
 	}
 	c.s.recordOutcomes(ctx, res)
+	c.s.notePaused(ctx, res)
 	return nil
 }
 

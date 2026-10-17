@@ -64,7 +64,7 @@ func TestListRunsSendsConsoleFilters(t *testing.T) {
 		}
 		got = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[{"id":"run_1","status":"failed","failure_class":"agent","failure_summary":"The agent reported the run as failed","queue_wait_ms":0,"exec_ms":5,"cost_cents":3}]`))
+		_, _ = w.Write([]byte(`[{"id":"run_1","status":"failed","model_id":"test-model","stage":"reviewing","conversation_id":"conv_1","failure_class":"agent","failure_summary":"The agent reported the run as failed","queue_wait_ms":0,"exec_ms":5,"cost_cents":3}]`))
 	}))
 	t.Cleanup(srv.Close)
 	c := &Client{BaseURL: srv.URL, APIKey: "test-key"}
@@ -75,7 +75,7 @@ func TestListRunsSendsConsoleFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runs) != 1 || runs[0].ID != "run_1" || runs[0].FailureClass != "agent" || runs[0].FailureSummary != "The agent reported the run as failed" || runs[0].QueueWaitMS != 0 || runs[0].ExecMS != 5 || runs[0].CostCents == nil || *runs[0].CostCents != 3 {
+	if len(runs) != 1 || runs[0].ID != "run_1" || runs[0].ModelID != "test-model" || runs[0].Stage != "reviewing" || runs[0].ConversationID != "conv_1" || runs[0].FailureClass != "agent" || runs[0].FailureSummary != "The agent reported the run as failed" || runs[0].QueueWaitMS != 0 || runs[0].ExecMS != 5 || runs[0].CostCents == nil || *runs[0].CostCents != 3 {
 		t.Fatalf("%+v", runs)
 	}
 	for _, want := range []string{"failure_class=agent", "source=api", "parent_run_id=run_p", "work_item_id=task_1", "agent=reviewer"} {

@@ -204,11 +204,23 @@ func (h *handler) handleValidate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleApply(w http.ResponseWriter, r *http.Request) {
-	if _, err := readLimited(w, r.Body, maxBodyBytes); err != nil {
+	body, err := readLimited(w, r.Body, maxBodyBytes)
+	if err != nil {
 		writeReadErr(w, err)
 		return
 	}
-	ref, diags, err := h.backend.ApplyDefinition(r.Context(), r.PathValue("uid"))
+	var ref DefinitionRef
+	var diags []Diagnostic
+	if len(bytes.TrimSpace(body)) == 0 {
+		ref, diags, err = h.backend.ApplyDefinition(r.Context(), r.PathValue("uid"))
+	} else {
+		applier, ok := h.backend.(DefinitionTreeApplier)
+		if !ok {
+			writeProblem(w, http.StatusNotImplemented, "definition tree apply is not supported")
+			return
+		}
+		ref, diags, err = applier.ApplyDefinitionTree(r.Context(), r.PathValue("uid"), bytes.NewReader(body))
+	}
 	if err != nil {
 		h.writeBackendErr(w, err)
 		return

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -23,6 +24,9 @@ type loaded struct {
 	factory store.Factory
 	byName  map[string]string
 	byID    map[string]boundAgent
+	// dir is the tree on disk. Boot, git-sync, and a successful upload all
+	// use DefinitionPath. A failed upload may still reference its temp dir.
+	dir string
 }
 
 func (s *Server) applyBoot(ctx context.Context) error {
@@ -51,7 +55,12 @@ func loadTree(path string) (*definition.Tree, []definition.Diagnostic, error) {
 }
 
 func (s *Server) applyTree(ctx context.Context, tree *definition.Tree) (string, error) {
-	applied, err := appliedDefinition(tree)
+	return s.applyTreeDir(ctx, tree, s.cfg.DefinitionPath)
+}
+
+func (s *Server) applyTreeDir(ctx context.Context, tree *definition.Tree, dir string) (string, error) {
+	prev := s.snapshot()
+	applied, err := s.appliedDefinition(tree)
 	if err != nil {
 		return "", err
 	}
@@ -72,6 +81,7 @@ func (s *Server) applyTree(ctx context.Context, tree *definition.Tree) (string, 
 		factory: fac,
 		byName:  make(map[string]string, len(agents)),
 		byID:    make(map[string]boundAgent, len(agents)),
+		dir:     dir,
 	}
 	for _, agent := range agents {
 		spec, ok := tree.Agents[agent.Name]
@@ -84,6 +94,9 @@ func (s *Server) applyTree(ctx context.Context, tree *definition.Tree) (string, 
 	s.mu.Lock()
 	s.loaded = next
 	s.mu.Unlock()
+	if prev.dir != "" && prev.dir != dir && prev.dir != s.cfg.DefinitionPath {
+		_ = os.RemoveAll(prev.dir)
+	}
 	// Schedules and webhook registrations follow the published tree, before
 	// the dispatcher claims a delivery that names an agent.
 	if err := s.syncDefinition(ctx, tree); err != nil {
@@ -98,7 +111,7 @@ func (s *Server) snapshot() loaded {
 	return s.loaded
 }
 
-func appliedDefinition(tree *definition.Tree) (store.AppliedDefinition, error) {
+func (s *Server) appliedDefinition(tree *definition.Tree) (store.AppliedDefinition, error) {
 	spec, err := json.Marshal(map[string]any{
 		"name":    tree.Factory.Name,
 		"secrets": tree.Factory.Secrets,
@@ -170,15 +183,74 @@ func appliedDefinition(tree *definition.Tree) (store.AppliedDefinition, error) {
 			SpecJSON:  agentSpec,
 		})
 	}
+	source := api.DefinitionLocal
+	var gitSHA string
+	if strings.TrimSpace(s.cfg.DefinitionGitURL) != "" {
+		source = api.DefinitionGit
+		s.mu.Lock()
+		gitSHA = s.gitSHA
+		s.mu.Unlock()
+	}
+	autoNames := make([]string, 0, len(tree.Automations))
+	for name := range tree.Automations {
+		autoNames = append(autoNames, name)
+	}
+	sort.Strings(autoNames)
+	automations := make([]store.DefinedAutomation, 0, len(autoNames))
+	for _, name := range autoNames {
+		auto := tree.Automations[name]
+		triggers, err := json.Marshal(auto.Triggers)
+		if err != nil {
+			return store.AppliedDefinition{}, err
+		}
+		if auto.Triggers == nil {
+			triggers = []byte(`[]`)
+		}
+		overrides, err := automationOverrides(auto)
+		if err != nil {
+			return store.AppliedDefinition{}, err
+		}
+		automations = append(automations, store.DefinedAutomation{
+			Name:          name,
+			Enabled:       auto.Enabled,
+			TriggersJSON:  triggers,
+			Prompt:        auto.Body,
+			OverridesJSON: overrides,
+		})
+	}
 	return store.AppliedDefinition{
 		SchemaVersion:    tree.Factory.SchemaVersion,
 		Alias:            tree.Factory.Alias,
-		DefinitionSource: "local",
-		GitSHA:           tree.Digest,
+		DefinitionSource: source,
+		GitSHA:           gitSHA,
 		SpecJSON:         spec,
 		Agents:           agents,
 		Runners:          runners,
+		Automations:      automations,
 	}, nil
+}
+
+// automationOverrides is the execution settings stored on
+// automations.overrides_json. Secrets are names. Values are not on the
+// definition type and are not written here.
+func automationOverrides(auto definition.Automation) (json.RawMessage, error) {
+	raw, err := json.Marshal(struct {
+		Model              string   `json:"model,omitempty"`
+		Runner             string   `json:"runner,omitempty"`
+		Pool               string   `json:"pool,omitempty"`
+		Secrets            []string `json:"secrets,omitempty"`
+		IdleTimeoutMinutes int      `json:"idleTimeoutMinutes,omitempty"`
+	}{
+		Model:              auto.Model,
+		Runner:             auto.Runner,
+		Pool:               auto.Pool,
+		Secrets:            auto.Secrets,
+		IdleTimeoutMinutes: auto.IdleTimeoutMinutes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 func errorTexts(diags []definition.Diagnostic) []string {

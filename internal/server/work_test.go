@@ -257,19 +257,13 @@ func TestE2ERevisionLimitEscalates(t *testing.T) {
 }
 
 // TestReviewerRetryMatchesClassify checks the retry bit against
-// failure.Classify for every Cases row whose inputs are columns of runs:
-// status, failure_reason, and exit_code. Rows that need HarnessStatus or
-// executions.failure_details_json are skipped; those values are not on the
-// run row advanceAfterTerminal already loaded.
+// failure.Classify for every Cases row, including harness status and details.
 func TestReviewerRetryMatchesClassify(t *testing.T) {
 	seen := 0
 	for _, rule := range failure.Cases() {
 		in := rule.Input
-		if in.HarnessStatus != "" || len(in.Details) > 0 {
-			continue
-		}
 		seen++
-		got := reviewerInfra(in.RunStatus, in.FailureReason, in.ExitCode)
+		got := reviewerInfra(in)
 		want := failure.Classify(in).Class == failure.ClassInfrastructure
 		if got != want {
 			t.Errorf("%s: retry %v, infrastructure %v", rule.Name, got, want)
@@ -279,8 +273,18 @@ func TestReviewerRetryMatchesClassify(t *testing.T) {
 		t.Fatal("no Cases rows were checked")
 	}
 	code := 10
-	if reviewerInfra(failure.StatusFailed, failure.ReasonContainerExit, &code) {
+	if reviewerInfra(failure.Input{RunStatus: failure.StatusFailed, FailureReason: failure.ReasonContainerExit, ExitCode: &code}) {
 		t.Fatal("exit 10 with container_exit retried")
+	}
+	exit1 := 1
+	if reviewerInfra(failure.Input{RunStatus: failure.StatusFailed, FailureReason: failure.ReasonContainerExit, ExitCode: &exit1, HarnessStatus: failure.ReasonFailedByAgent}) {
+		t.Fatal("failed_by_agent with exit 1 retried")
+	}
+	if !reviewerInfra(failure.Input{
+		RunStatus: failure.StatusFailed,
+		Details:   json.RawMessage(`{"kubernetes":{"container":{"termination_reason":"OOMKilled"}}}`),
+	}) {
+		t.Fatal("snapshot OOMKilled was not infrastructure")
 	}
 }
 

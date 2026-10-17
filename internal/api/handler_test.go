@@ -128,6 +128,42 @@ func TestValidateAndApplyPayloads(t *testing.T) {
 	if applied.ID != "def_1" || len(applied.Diagnostics) != 1 || applied.Diagnostics[0].Message != "not applied in M2" {
 		t.Fatalf("%+v", applied)
 	}
+
+	res = call(t, h, http.MethodPost, "/api/v1/factory/fac_1/definition:apply", `{"files":[{"path":"factory.yaml","content":"name: acme\n"}]}`, apiHeaders())
+	if res.status != http.StatusNotImplemented {
+		t.Fatalf("tree apply without applier: %d %s", res.status, res.body)
+	}
+}
+
+type treeApplier struct {
+	*fakeBackend
+	body string
+}
+
+func (a *treeApplier) ApplyDefinitionTree(_ context.Context, factoryID string, tree io.Reader) (DefinitionRef, []Diagnostic, error) {
+	raw, err := io.ReadAll(tree)
+	if err != nil {
+		return DefinitionRef{}, nil, err
+	}
+	a.body = string(raw)
+	a.applyID = factoryID
+	return DefinitionRef{ID: "def_tree"}, nil, nil
+}
+
+func TestApplyTreeBodyUsesApplier(t *testing.T) {
+	f := &treeApplier{fakeBackend: newFake()}
+	h := NewHandler(f, testAPIKey, nil)
+	body := `{"files":[{"path":"factory.yaml","content":"name: acme\n"}]}`
+	res := call(t, h, http.MethodPost, "/api/v1/factory/fac_1/definition:apply", body, apiHeaders())
+	applied := decode[ApplyResponse](t, res, http.StatusOK)
+	if applied.ID != "def_tree" || f.body != body || f.applyID != "fac_1" {
+		t.Fatalf("applied %+v body %q id %s", applied, f.body, f.applyID)
+	}
+	res = call(t, h, http.MethodPost, "/api/v1/factory/fac_1/definition:apply", "", apiHeaders())
+	applied = decode[ApplyResponse](t, res, http.StatusOK)
+	if applied.ID != "def_1" {
+		t.Fatalf("empty body %+v", applied)
+	}
 }
 
 func TestRunPayloads(t *testing.T) {

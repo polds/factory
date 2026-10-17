@@ -175,6 +175,9 @@ func (s *Server) executionForEvent(ctx context.Context, runID string) (string, e
 	return id, err
 }
 
+// forceExpire drops the lease so ExpireLeases requeues the run. The
+// execution becomes orphaned. That state is not written onto the run as
+// worker_lost: the run is queued again and has no failure class.
 func (s *Server) forceExpire(ctx context.Context, runID string) error {
 	s.leaseMu.Lock()
 	if _, err := s.db.Exec(ctx, `

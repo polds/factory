@@ -99,7 +99,12 @@ func setEnvDefault(env map[string]string, key, value string) {
 	}
 }
 
-func (s *Server) assignment(run store.Run, exec store.Execution, bound boundAgent, env map[string]string) protocol.TaskAssignment {
+// assignment sets AgentConfigSnapshot.IdleTimeoutMinutes when the bound
+// agent, or the intake automation, has a positive idle timeout. The worker
+// turns that into --idle-on-complete. factoryd does not build the harness
+// argv. A zero timeout leaves the field unset, and the worker's bare flag
+// means the container exits when the conversation ends.
+func (s *Server) assignment(ctx context.Context, run store.Run, exec store.Execution, bound boundAgent, env map[string]string) protocol.TaskAssignment {
 	now := run.CreatedAt
 	if now.IsZero() {
 		now = s.now()
@@ -142,6 +147,13 @@ func (s *Server) assignment(run store.Run, exec store.Execution, bound boundAgen
 				ModelID:    &model,
 			},
 		},
+	}
+	minutes := bound.agent.IdleTimeoutMinutes
+	if auto, ok := s.intakeAutomation(ctx, run.ID); ok && auto.IdleTimeoutMinutes > 0 {
+		minutes = auto.IdleTimeoutMinutes
+	}
+	if minutes > 0 {
+		asg.Task.AgentConfigSnapshot.IdleTimeoutMinutes = &minutes
 	}
 	if bound.runner.VCPUs > 0 || bound.runner.MemoryGB > 0 {
 		asg.InstanceShape = &protocol.InstanceShape{Vcpus: bound.runner.VCPUs, MemoryGb: bound.runner.MemoryGB}
