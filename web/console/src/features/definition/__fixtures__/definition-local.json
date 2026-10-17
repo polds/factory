@@ -1,0 +1,16 @@
+{
+  "source": "local",
+  "git_sha": "",
+  "production_ref": "",
+  "editable": true,
+  "files": [
+    {
+      "path": "factory.yaml",
+      "content": "schemaVersion: v1alpha1\nname: platform\n"
+    },
+    {
+      "path": "agents/reviewer.yaml",
+      "content": "schemaVersion: v1alpha1\nkind: Agent\nmetadata:\n  name: reviewer\nspec:\n  idleTimeoutMinutes: 5\n  maxTurns: 30\n  steer:\n    enabled: true\n  tools:\n    - read_file\n    - gh_review\n  runtime:\n    # model removed while testing a new provider\n    image: ghcr.io/acme/worker-base:2026.10\n    memory: 4Gi"
+    }
+  ]
+}

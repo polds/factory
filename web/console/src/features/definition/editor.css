@@ -1,0 +1,109 @@
+.def-editor {
+  --line: 1.45rem;
+  --syn-key: #1e3a8a;
+  --syn-str: #166534;
+  --syn-num: #9a3412;
+  --syn-comment: #44403c;
+  --code-line: #f0eeea;
+  display: grid;
+  grid-template-columns: 4.75rem minmax(0, 1fr);
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  font-family: ui-monospace, sfmono-regular, menlo, consolas, monospace;
+  font-size: 13px;
+  line-height: var(--line);
+}
+
+:root[data-theme="dark"] .def-editor {
+  --syn-key: #93c5fd;
+  --syn-str: #86efac;
+  --syn-num: #fdba74;
+  --syn-comment: #e7e5e4;
+  --code-line: #3a3532;
+}
+
+.def-gutter {
+  margin: 0;
+  padding: 0.5rem 0;
+  list-style: none;
+  background: var(--muted);
+  border-right: 1px solid var(--border);
+  color: var(--muted-foreground);
+  user-select: none;
+}
+
+.def-gutter li {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  height: var(--line);
+  padding-right: 0.55rem;
+}
+
+.def-gutter li[data-current="true"] {
+  color: var(--foreground);
+  background: var(--code-line);
+}
+
+.def-code {
+  position: relative;
+  min-width: 0;
+  padding: 0.5rem 0;
+}
+
+.def-line,
+.def-code textarea {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0 0.75rem;
+  font: inherit;
+  line-height: var(--line);
+  tab-size: 2;
+  white-space: pre;
+}
+
+.def-line {
+  height: var(--line);
+}
+
+.def-line[data-current="true"] {
+  background: var(--code-line);
+}
+
+.def-line[data-error="true"] {
+  text-decoration: underline wavy var(--danger);
+  text-underline-offset: 3px;
+}
+
+.def-code textarea {
+  display: block;
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  border: 0;
+  color: var(--foreground);
+  background: transparent;
+}
+
+.def-current-bar {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 0;
+  height: var(--line);
+  background: var(--code-line);
+  pointer-events: none;
+}
+
+.def-code textarea {
+  position: relative;
+  z-index: 1;
+}
+
+.def-mark {
+  color: var(--danger);
+  font-size: 0.7rem;
+  line-height: 1;
+}
