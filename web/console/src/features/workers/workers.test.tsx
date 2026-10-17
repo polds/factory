@@ -8,9 +8,9 @@ import { server } from "../../mocks/server";
 import { renderApp } from "../../test/render";
 import workers from "./__fixtures__/workers.json";
 
-function renderWorkers() {
+async function renderWorkers() {
   setAPIKey(demoAPIKey);
-  return renderApp("/workers");
+  return await renderApp("/workers");
 }
 
 async function expectClean() {
@@ -28,7 +28,7 @@ describe("workers", () => {
     server.use(
       http.get("/api/v1/agent/connected-self-hosted-workers", () => HttpResponse.json(workers)),
     );
-    renderWorkers();
+    await renderWorkers();
     expect(await screen.findByRole("heading", { name: "Workers" })).toBeInTheDocument();
     expect(screen.getByText("p50 time to first start")).toBeInTheDocument();
     expect(
@@ -80,7 +80,7 @@ describe("workers", () => {
         }),
       ),
     );
-    renderWorkers();
+    await renderWorkers();
     expect(await screen.findByText("Stale")).toBeInTheDocument();
     expect(screen.getByText("never")).toBeInTheDocument();
     expect(screen.getAllByText("unknown").length).toBeGreaterThanOrEqual(2);

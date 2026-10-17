@@ -68,7 +68,7 @@ describe("dashboard", () => {
       }),
       http.get("/api/v1/agent/runs", () => HttpResponse.json(goldenRuns)),
     );
-    const { container } = renderApp("/");
+    const { container } = await renderApp("/");
     expect(await screen.findByText("10")).toBeInTheDocument();
     const waiting = screen.getByRole("region", { name: "Waiting on human" });
     expect(waiting).toHaveTextContent("8");
@@ -133,7 +133,7 @@ describe("dashboard", () => {
         });
       }),
     );
-    renderApp("/");
+    await renderApp("/");
     expect(await screen.findByText("10")).toBeInTheDocument();
     await waitFor(() => expect(streams.has("fac_payments")).toBe(true));
     const before = counts.get("fac_payments") ?? 0;
@@ -180,7 +180,7 @@ describe("dashboard", () => {
         });
       }),
     );
-    renderApp("/");
+    await renderApp("/");
     await screen.findByText("10");
     await waitFor(() => expect(streams.size).toBe(2));
     for (const [id, controller] of streams) {
@@ -194,7 +194,7 @@ describe("dashboard", () => {
   it("has no serious accessibility violations", async () => {
     setAPIKey(demoAPIKey);
     const user = userEvent.setup();
-    const { container } = renderApp("/");
+    const { container } = await renderApp("/");
     expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     await expectClean(container);
     await user.click(screen.getByRole("button", { name: "Switch to dark theme" }));

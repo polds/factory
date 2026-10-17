@@ -9,9 +9,9 @@ import { renderApp } from "../../test/render";
 import identities from "./__fixtures__/identities.json";
 import secrets from "./__fixtures__/secrets.json";
 
-function renderSecrets() {
+async function renderSecrets() {
   setAPIKey(demoAPIKey);
-  return renderApp("/f/fac_1/secrets");
+  return await renderApp("/f/fac_1/secrets");
 }
 
 async function expectClean() {
@@ -41,7 +41,7 @@ describe("secrets", () => {
         HttpResponse.json([{ ...identities[0], token: "ghp_PLANTED" }]),
       ),
     );
-    renderSecrets();
+    await renderSecrets();
     expect(await screen.findByRole("heading", { name: "Secrets" })).toBeInTheDocument();
     expect(
       screen.getByText(

@@ -35,7 +35,7 @@ describe("runs list", () => {
         searches.push(url.search);
       },
     });
-    const { router } = renderApp("/runs?failure_class=infrastructure&agent=reviewer");
+    const { router } = await renderApp("/runs?failure_class=infrastructure&agent=reviewer");
 
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
     expect(screen.getByText("All factories")).toBeInTheDocument();
@@ -99,7 +99,7 @@ describe("runs list", () => {
       },
     ];
     installRuns({ list: rows });
-    renderApp("/runs");
+    await renderApp("/runs");
 
     const table = await screen.findByRole("table");
     const agent = table.querySelector('[data-failure-class="agent"]');
@@ -121,7 +121,7 @@ describe("runs list", () => {
 
   it("shows queue and execution time on every row with the caveat", async () => {
     installRuns();
-    renderApp("/runs");
+    await renderApp("/runs");
     const table = await screen.findByRole("table");
     const bodyRows = within(table).getAllByRole("row").slice(1);
     expect(bodyRows).toHaveLength(goldenRuns.length);
