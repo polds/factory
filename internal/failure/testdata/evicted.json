@@ -1,0 +1,24 @@
+{
+  "kubernetes": {
+    "schema_version": 1,
+    "observation_source": "worker",
+    "pod": {
+      "phase": "Failed",
+      "reason": "Evicted",
+      "conditions": [
+        {
+          "type": "DisruptionTarget",
+          "status": "True",
+          "reason": "Evicted"
+        }
+      ]
+    },
+    "events": [
+      {
+        "type": "Warning",
+        "reason": "Evicted",
+        "count": 1
+      }
+    ]
+  }
+}
