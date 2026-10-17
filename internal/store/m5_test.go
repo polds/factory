@@ -233,7 +233,7 @@ func TestFailureClassBackfill(t *testing.T) {
 	if err := h.raw.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&files); err != nil {
 		t.Fatal(err)
 	}
-	if files != 6 {
+	if files != 7 {
 		t.Fatalf("schema_migrations %d", files)
 	}
 }

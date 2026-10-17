@@ -63,7 +63,7 @@ describe("run detail", () => {
       value: { writeText },
     });
     installRuns();
-    renderApp(`/runs/${goldenRun.id}`);
+    await renderApp(`/runs/${goldenRun.id}`);
 
     expect(
       await screen.findByRole("heading", { name: shortId(goldenRun.id) }, { timeout: 3000 }),
@@ -129,7 +129,7 @@ describe("run detail", () => {
 
   it("tints an infrastructure failure and keeps the snapshot inside raw details", async () => {
     installRuns({ run: infraRun() });
-    renderApp("/runs/run_infra_detail");
+    await renderApp("/runs/run_infra_detail");
     const panel = await screen.findByRole("region", { name: "Failure" });
     expect(panel).toHaveAttribute("data-failure-class", "infrastructure");
     expect(within(panel).getByText("Infrastructure")).toBeInTheDocument();
@@ -163,13 +163,13 @@ describe("run detail", () => {
         },
       },
     });
-    const succeeded = renderApp("/runs/run_ok");
+    const succeeded = await renderApp("/runs/run_ok");
     expect(await screen.findByRole("heading", { name: "Clean run" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Failure" })).not.toBeInTheDocument();
     succeeded.unmount();
 
     installRuns({ run: runningRun() });
-    renderApp(`/runs/${runningRun().id}`);
+    await renderApp(`/runs/${runningRun().id}`);
     expect(await screen.findByRole("heading", { name: "Settle the batch" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Failure" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument();
@@ -191,7 +191,7 @@ describe("run detail", () => {
         followUps.push(text);
       },
     });
-    renderApp(`/runs/${run.id}`);
+    await renderApp(`/runs/${run.id}`);
     await screen.findByRole("heading", { name: "Settle the batch" });
 
     await user.click(screen.getByRole("button", { name: "Interrupt" }));
@@ -219,7 +219,7 @@ describe("run detail", () => {
   it("disables steering with the server reason and keeps text after a 409", async () => {
     const user = userEvent.setup();
     installRuns();
-    const disabled = renderApp(`/runs/${goldenRun.id}`);
+    const disabled = await renderApp(`/runs/${goldenRun.id}`);
     const reason = "run finished; idle window ended at 2026-04-02T15:30:00Z";
     expect(await screen.findByText(reason)).toBeInTheDocument();
     const area = screen.getByLabelText("Send a follow-up to the agent");
@@ -248,7 +248,7 @@ describe("run detail", () => {
         },
       },
     });
-    renderApp(`/runs/${run.id}`);
+    await renderApp(`/runs/${run.id}`);
     const enabled = await screen.findByLabelText("Send a follow-up to the agent");
     await user.type(enabled, "keep this text");
     await user.click(screen.getByRole("button", { name: "Send follow-up" }));
@@ -280,7 +280,7 @@ describe("run detail", () => {
         return HttpResponse.json({ steer_id: "steer_held" }, { status: 202 });
       }),
     );
-    renderApp(`/runs/${run.id}`);
+    await renderApp(`/runs/${run.id}`);
     const area = await screen.findByLabelText("Send a follow-up to the agent");
     await user.type(area, "ship the cutoff");
     const send = screen.getByRole("button", { name: "Send follow-up" });
@@ -321,7 +321,7 @@ describe("run detail", () => {
         ),
       ),
     );
-    renderApp(`/runs/${run.id}`);
+    await renderApp(`/runs/${run.id}`);
     await screen.findByRole("heading", { name: "Settle the batch" });
     await user.click(screen.getByRole("button", { name: "Interrupt" }));
     const dialog = await screen.findByRole("dialog", { name: "Interrupt this turn?" });
@@ -339,7 +339,7 @@ describe("run detail", () => {
     vi.setSystemTime(Date.parse(idleUntil) - 252_000);
     const run = runningRun({ steer: { enabled: true, reason: "", idle_until: idleUntil } });
     installRuns({ run });
-    renderApp(`/runs/${run.id}`);
+    await renderApp(`/runs/${run.id}`);
 
     expect(await screen.findByText(/Idle: accepting follow-ups for 4m 12s/)).toBeInTheDocument();
     expect(screen.getByLabelText("Send a follow-up to the agent")).toBeEnabled();
@@ -364,7 +364,7 @@ describe("run detail", () => {
     const base = runningRun();
     for (const status of ["queued", "assigned", "running"]) {
       installRuns({ run: { ...base, status } });
-      const view = renderApp(`/runs/${base.id}`);
+      const view = await renderApp(`/runs/${base.id}`);
       expect(await screen.findByRole("button", { name: "Cancel run" })).toBeInTheDocument();
       view.unmount();
     }
@@ -379,7 +379,7 @@ describe("run detail", () => {
           },
         },
       });
-      const view = renderApp(`/runs/${base.id}`);
+      const view = await renderApp(`/runs/${base.id}`);
       expect(await screen.findByRole("heading", { name: "Settle the batch" })).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Cancel run" })).not.toBeInTheDocument();
       view.unmount();
@@ -396,7 +396,7 @@ describe("run detail", () => {
         return HttpResponse.json({ ...base, status });
       }),
     );
-    renderApp(`/runs/${base.id}`);
+    await renderApp(`/runs/${base.id}`);
     await user.click(await screen.findByRole("button", { name: "Cancel run" }));
     const dialog = await screen.findByRole("dialog", { name: "Cancel this run?" });
     await user.click(within(dialog).getByRole("button", { name: "Cancel run" }));
@@ -431,7 +431,7 @@ describe("run detail", () => {
       list: [child, stranger, ...goldenRuns],
       events: (request) => bus.response(request),
     });
-    renderApp(`/runs/${goldenRun.id}`);
+    await renderApp(`/runs/${goldenRun.id}`);
     await screen.findByRole("region", { name: "Failure" });
     bus.send(
       sseEvent(1, "file.changed", {
@@ -478,7 +478,7 @@ describe("run detail", () => {
         run: leaked,
         events: (request) => bus.response(request),
       });
-      renderApp(`/runs/${goldenRun.id}`);
+      await renderApp(`/runs/${goldenRun.id}`);
       await screen.findByRole("region", { name: "Failure" });
       bus.send(
         sseEvent(1, "tool.call", {

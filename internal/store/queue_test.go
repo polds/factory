@@ -652,7 +652,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := h.raw.QueryRow(ctx, `SELECT count(*), count(DISTINCT filename) FROM schema_migrations`).Scan(&files, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if files != 6 || distinct != 6 {
+	if files != 7 || distinct != 7 {
 		t.Fatalf("schema_migrations rows %d distinct %d", files, distinct)
 	}
 	nameRows, err := h.raw.Query(ctx, `SELECT filename FROM schema_migrations ORDER BY filename`)
@@ -673,7 +673,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	}
 	wantFiles := []string{
 		"0001_init.sql", "0002_m3.sql", "0003_m4.sql", "0004_automation.sql",
-		"0005_building_guard.sql", "0006_m5.sql",
+		"0005_building_guard.sql", "0006_m5.sql", "0007_owner_session.sql",
 	}
 	if strings.Join(filenames, ",") != strings.Join(wantFiles, ",") {
 		t.Fatalf("filenames %v", filenames)
@@ -697,6 +697,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	if tables != 30 {
 		t.Fatalf("tables %d", tables)
 	}
+	assertColumns(t, h, "run_queue", []string{"owner_session"})
 	assertColumns(t, h, "runs", []string{
 		"work_item_id", "parent_run_id", "conversation_id", "stage", "model_id",
 		"failure_class", "failure_code", "assigned_at",

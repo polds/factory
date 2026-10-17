@@ -49,7 +49,7 @@ describe("accessibility", () => {
   it("keeps the shell clean in light and dark themes", async () => {
     const user = userEvent.setup();
     setAPIKey(demoAPIKey);
-    const { container } = renderApp("/");
+    const { container } = await renderApp("/");
     expect(await screen.findByRole("navigation", { name: "Sections" })).toBeInTheDocument();
     await expectClean(container);
     await user.click(screen.getByRole("button", { name: "Switch to dark theme" }));

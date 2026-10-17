@@ -67,7 +67,7 @@ describe("runs accessibility", () => {
         },
       ],
     });
-    renderApp("/runs");
+    await renderApp("/runs");
     expect(await screen.findByRole("table")).toBeInTheDocument();
     await expectClean(document.body);
   });
@@ -75,21 +75,21 @@ describe("runs accessibility", () => {
   it("has no serious or critical violations on a running detail", async () => {
     const run = runningRun();
     installRuns({ run });
-    renderApp(`/runs/${run.id}`);
+    await renderApp(`/runs/${run.id}`);
     expect(await screen.findByRole("heading", { name: "Settle the batch" })).toBeInTheDocument();
     await expectClean(document.body);
   });
 
   it("has no serious or critical violations on an agent failure", async () => {
     installRuns();
-    renderApp(`/runs/${goldenRun.id}`);
+    await renderApp(`/runs/${goldenRun.id}`);
     expect(await screen.findByRole("region", { name: "Failure" })).toBeInTheDocument();
     await expectClean(document.body);
   });
 
   it("has no serious or critical violations on an infrastructure failure", async () => {
     installRuns({ run: infraRun() });
-    renderApp(`/runs/${goldenRun.id}`);
+    await renderApp(`/runs/${goldenRun.id}`);
     expect(await screen.findByRole("region", { name: "Failure" })).toBeInTheDocument();
     await expectClean(document.body);
   });
@@ -98,7 +98,7 @@ describe("runs accessibility", () => {
     const user = userEvent.setup();
     const run = runningRun();
     installRuns({ run });
-    renderApp(`/runs/${run.id}`);
+    await renderApp(`/runs/${run.id}`);
     const trigger = await screen.findByRole("button", { name: "Interrupt" });
     trigger.focus();
     await user.click(trigger);
@@ -134,7 +134,7 @@ describe("runs accessibility", () => {
         },
       ],
     });
-    renderApp("/runs");
+    await renderApp("/runs");
     const agent = await screen.findByLabelText("Agent");
     for (let step = 0; step < 40 && document.activeElement !== agent; step += 1) {
       await user.tab();

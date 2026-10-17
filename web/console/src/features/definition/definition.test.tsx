@@ -13,9 +13,9 @@ import type { DefinitionFile } from "../../api/types";
 
 const localFiles = localDefinition.files as DefinitionFile[];
 
-function renderDefinition(path = "/f/fac_1/definition") {
+async function renderDefinition(path = "/f/fac_1/definition") {
   setAPIKey(demoAPIKey);
-  return renderApp(path);
+  return await renderApp(path);
 }
 
 async function expectClean() {
@@ -35,7 +35,7 @@ describe("definition", () => {
     const urls: string[] = [];
     server.events.on("request:start", ({ request }) => urls.push(request.url));
     server.use(http.get("/api/v1/factory/:uid/definition", () => HttpResponse.json(gitDefinition)));
-    renderDefinition();
+    await renderDefinition();
     expect(await screen.findByRole("heading", { name: "Definition" })).toBeInTheDocument();
     expect(screen.getByText("Read-only. Changes go through a pull request.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "View on forge" })).toHaveAttribute(
@@ -80,7 +80,7 @@ describe("definition", () => {
         },
       ),
     );
-    renderDefinition();
+    await renderDefinition();
     const factory = await screen.findByRole("textbox", { name: "Contents of factory.yaml" });
     await user.type(factory, "!");
     await user.click(screen.getByRole("button", { name: "Validate" }));
@@ -115,7 +115,7 @@ describe("definition", () => {
       http.get("/api/v1/factory/:uid/definition", () => HttpResponse.json(localDefinition)),
       http.get("/api/v1/factory-files/schemas/:version", () => HttpResponse.json({})),
     );
-    renderDefinition();
+    await renderDefinition();
     const tree = await screen.findByRole("tree", { name: "Definition files" });
     const factory = within(tree).getByRole("treeitem", { name: "factory.yaml" });
     factory.focus();
@@ -154,7 +154,7 @@ describe("definition", () => {
         },
       ),
     );
-    renderDefinition();
+    await renderDefinition();
     const factory = await screen.findByRole("textbox", { name: "Contents of factory.yaml" });
     await user.type(factory, "!");
     await user.type(screen.getByRole("textbox", { name: "New file path" }), "notes.yaml");
@@ -206,7 +206,7 @@ describe("definition", () => {
           }),
       ),
     );
-    renderDefinition();
+    await renderDefinition();
     const factory = await screen.findByRole("textbox", { name: "Contents of factory.yaml" });
     await user.type(factory, "!");
     await user.click(screen.getByRole("button", { name: "Validate" }));
@@ -230,7 +230,7 @@ describe("definition", () => {
         () => HttpResponse.json({ diagnostics: [] }),
       ),
     );
-    renderDefinition();
+    await renderDefinition();
     await screen.findByRole("textbox", { name: "Contents of factory.yaml" });
     await user.click(screen.getByRole("button", { name: "Validate" }));
     const apply = await screen.findByRole("button", { name: "Apply" });

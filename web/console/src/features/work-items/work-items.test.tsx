@@ -128,7 +128,7 @@ describe("work items", () => {
   it("places tasks in stage columns and reads agent from one run list", async () => {
     setAPIKey(demoAPIKey);
     const board = installBoard();
-    renderApp(`/f/${factoryId}/work-items`);
+    await renderApp(`/f/${factoryId}/work-items`);
     expect(await screen.findByRole("link", { name: /Refund webhook retries/ })).toBeInTheDocument();
     const triage = document.getElementById("col-triage")?.closest("section");
     const planning = document.getElementById("col-planning")?.closest("section");
@@ -199,7 +199,7 @@ describe("work items", () => {
         return HttpResponse.json(created, { status: 201 });
       }),
     );
-    renderApp(`/f/${factoryId}/work-items`);
+    await renderApp(`/f/${factoryId}/work-items`);
     const opener = await screen.findByRole("button", { name: "New work item" });
     await user.click(opener);
     const title = await screen.findByRole("textbox", { name: "Title" });
@@ -236,7 +236,7 @@ describe("work items", () => {
     setAPIKey(demoAPIKey);
     const user = userEvent.setup();
     installBoard([boardTasks[0]!]);
-    renderApp(`/f/${factoryId}/work-items`);
+    await renderApp(`/f/${factoryId}/work-items`);
     const opener = await screen.findByRole("button", { name: "New work item" });
     await user.click(opener);
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
@@ -249,7 +249,7 @@ describe("work items", () => {
     setAPIKey(demoAPIKey);
     const user = userEvent.setup();
     installBoard();
-    renderApp(`/f/${factoryId}/work-items`);
+    await renderApp(`/f/${factoryId}/work-items`);
     expect(await screen.findByRole("link", { name: /Refund webhook retries/ })).toBeInTheDocument();
     await expectClean(document.body);
     await user.click(screen.getByRole("button", { name: "New work item" }));
@@ -335,7 +335,7 @@ describe("work items", () => {
         return HttpResponse.json({ ...secret, status: "cancelled" });
       }),
     );
-    renderApp(`/f/${factoryId}/work-items/task_04`);
+    await renderApp(`/f/${factoryId}/work-items/task_04`);
     expect(
       await screen.findByRole("heading", { name: "Flaky settlement cutoff" }),
     ).toBeInTheDocument();
@@ -403,7 +403,7 @@ describe("work items", () => {
         });
       }),
     );
-    renderApp(`/f/${factoryId}/work-items/task_04`);
+    await renderApp(`/f/${factoryId}/work-items/task_04`);
     expect(await screen.findByText("Should the budget be global?")).toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: "Answer" }), "global");
     await user.click(screen.getByRole("button", { name: "Send answer" }));
@@ -451,7 +451,7 @@ describe("work items", () => {
         );
       }),
     );
-    renderApp(`/f/${factoryId}/work-items/task_04`);
+    await renderApp(`/f/${factoryId}/work-items/task_04`);
     await user.click(await screen.findByRole("button", { name: "Approve" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Already decided by alice");
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
@@ -500,7 +500,7 @@ describe("work items", () => {
         );
       }),
     );
-    renderApp(`/f/${factoryId}/work-items/task_04`);
+    await renderApp(`/f/${factoryId}/work-items/task_04`);
     expect(await screen.findByText("Should the budget be global?")).toBeInTheDocument();
     await user.type(screen.getByRole("textbox", { name: "Answer" }), "global");
     await user.click(screen.getByRole("button", { name: "Send answer" }));

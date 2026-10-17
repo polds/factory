@@ -120,6 +120,13 @@ var toolSchema = []any{
 		},
 		"required": []string{"pattern"},
 	}),
+	fnTool("ask_input", "Ask a person a question and pause until they answer. Use this when the task needs a decision you cannot look up. Pass the question as text.", map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"text": map[string]any{"type": "string", "description": "The question to ask."},
+		},
+		"required": []string{"text"},
+	}),
 }
 
 func fnTool(name, desc string, params map[string]any) map[string]any {

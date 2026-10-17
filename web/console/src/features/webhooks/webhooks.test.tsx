@@ -11,9 +11,9 @@ import webhooks from "./__fixtures__/webhooks.json";
 
 const github = webhooks[0];
 
-function renderWebhooks() {
+async function renderWebhooks() {
   setAPIKey(demoAPIKey);
-  return renderApp("/f/fac_1/webhooks");
+  return await renderApp("/f/fac_1/webhooks");
 }
 
 async function expectClean() {
@@ -45,7 +45,7 @@ describe("webhooks", () => {
         ]),
       ),
     );
-    renderWebhooks();
+    await renderWebhooks();
     expect(await screen.findByRole("heading", { name: "Webhooks" })).toBeInTheDocument();
     const url = `${window.location.origin}${github?.ingress_path}`;
     expect(screen.getByText(url)).toBeInTheDocument();
@@ -89,7 +89,7 @@ describe("webhooks", () => {
         ]);
       }),
     );
-    renderWebhooks();
+    await renderWebhooks();
     await screen.findByRole("heading", { name: "Webhooks" });
     await user.click(screen.getByRole("button", { name: "github" }));
     expect(await screen.findByRole("heading", { name: "Recent deliveries" })).toBeInTheDocument();

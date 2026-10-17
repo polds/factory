@@ -357,7 +357,7 @@ func (s *Store) Requeue(ctx context.Context, runID, reason string) error {
 
 	tag, err := tx.Exec(ctx, `
 		UPDATE run_queue
-		SET attempts = attempts + 1, lease_until = NULL
+		SET attempts = attempts + 1, lease_until = NULL, owner_session = NULL
 		WHERE run_id = $1`, runID)
 	if err != nil {
 		return fmt.Errorf("store: requeue: %w", err)
@@ -613,7 +613,7 @@ func (s *Store) ExpireLeases(ctx context.Context, now time.Time) ([]OrphanedExec
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE run_queue
-		SET lease_until = NULL, attempts = attempts + 1
+		SET lease_until = NULL, owner_session = NULL, attempts = attempts + 1
 		WHERE run_id = ANY($1)`, ids); err != nil {
 		return nil, fmt.Errorf("store: expire leases: %w", err)
 	}
