@@ -375,12 +375,18 @@ func TestM5LateCancelKeepsExit(t *testing.T) {
 			})
 			deadline := time.Now().Add(5 * time.Second)
 			var got *int
+			var detail api.RunDetail
 			for time.Now().Before(deadline) {
 				if err := env.raw.QueryRow(context.Background(), `SELECT exit_code FROM runs WHERE id = $1`, runID).Scan(&got); err != nil {
 					t.Fatal(err)
 				}
+				// recordLateExit stores the exit, then classifies. The
+				// exit can be visible while class is still the cancel value.
 				if got != nil && *got == tc.exit {
-					break
+					detail = env.runDetail(t, runID)
+					if detail.Failure.Class == tc.class && detail.Failure.Code == tc.code {
+						break
+					}
 				}
 				time.Sleep(30 * time.Millisecond)
 			}
@@ -390,7 +396,6 @@ func TestM5LateCancelKeepsExit(t *testing.T) {
 			if env.status(t, runID) != "cancelled" {
 				t.Fatal("status changed")
 			}
-			detail := env.runDetail(t, runID)
 			if detail.Failure.Class != tc.class || detail.Failure.Code != tc.code {
 				t.Fatalf("class %s/%s", detail.Failure.Class, detail.Failure.Code)
 			}
@@ -923,18 +928,26 @@ func TestM5WorkerFacts(t *testing.T) {
 	env.waitConnected(t, "rich-1")
 	deadline := time.Now().Add(3 * time.Second)
 	var view api.WorkersView
+	var plainInfo, richInfo api.Worker
 	for time.Now().Before(deadline) {
 		view = env.workers(t)
-		if workerPresent(view, "rich-1") && workerPresent(view, "plain-1") {
+		if !workerPresent(view, "rich-1") || !workerPresent(view, "plain-1") {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		plainInfo = workerByID(t, view, "plain-1")
+		richInfo = workerByID(t, view, "rich-1")
+		// UpsertWorker lists the row before MarkWorkerConnected stores
+		// version and backend. Empty is valid when the worker sent neither.
+		if plainInfo.Version == "" && plainInfo.Backend == "" &&
+			richInfo.Version == "factory-worker/9" && richInfo.Backend == "k8s" {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !workerPresent(view, "rich-1") {
+	if !workerPresent(view, "rich-1") || !workerPresent(view, "plain-1") {
 		t.Fatalf("worker rich-1 missing in %+v logs %s", view.Workers, env.logs.String())
 	}
-	plainInfo := workerByID(t, view, "plain-1")
-	richInfo := workerByID(t, view, "rich-1")
 	if plainInfo.Version != "" || plainInfo.Backend != "" {
 		t.Fatalf("invented facts %+v", plainInfo)
 	}
