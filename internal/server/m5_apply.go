@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path"
@@ -171,7 +172,14 @@ func materializeTree(body []byte) (*definition.Tree, []definition.Diagnostic, st
 		return nil, nil, "", err
 	}
 	for _, file := range cleaned {
-		dst := filepath.Join(dir, filepath.FromSlash(file.Path))
+		// IsLocal is the barrier on the uploaded path. cleanUploadPath already
+		// rejected escapes; this check is what the write is guarded on.
+		rel := file.Path
+		if !filepath.IsLocal(rel) {
+			_ = os.RemoveAll(dir)
+			return nil, nil, "", errDefinitionPath
+		}
+		dst := filepath.Join(dir, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			_ = os.RemoveAll(dir)
 			return nil, nil, "", err
@@ -193,11 +201,13 @@ func cleanUploadPath(raw string) (string, bool) {
 		return "", false
 	}
 	cleaned := path.Clean(raw)
-	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+	if !filepath.IsLocal(cleaned) {
 		return "", false
 	}
 	return cleaned, true
 }
+
+var errDefinitionPath = errors.New("server: definition path is not local")
 
 func displayPath(raw string) string {
 	raw = strings.TrimSpace(raw)
