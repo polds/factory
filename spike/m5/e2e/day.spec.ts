@@ -323,7 +323,7 @@ test("day of factory", async ({ browser }) => {
     await expect(editor).toHaveValue(/m5-applied-marker/);
     await page.getByRole("button", { name: "Validate" }).click();
     await expect(diagnostics.getByText("0 errors")).toBeVisible({ timeout: 30_000 });
-    await expect(diagnostics.getByText(/not an authorization boundary/)).toBeVisible();
+    await expect(diagnostics.getByText(/not an authorization boundary/).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Apply" })).toBeEnabled();
     await page.getByRole("button", { name: "Apply" }).click();
     const apply = page.getByRole("dialog", { name: "Apply definition" });
