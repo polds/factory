@@ -29,6 +29,7 @@ func TestRealClientsHideTokens(t *testing.T) {
 	var mu sync.Mutex
 	var ghPaths []string
 	var slackPosts int
+	var slackBodies []string
 	ghSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		mu.Lock()
@@ -58,9 +59,10 @@ func TestRealClientsHideTokens(t *testing.T) {
 	}))
 	t.Cleanup(ghSrv.Close)
 	slackSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
+		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		slackPosts++
+		slackBodies = append(slackBodies, string(body))
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"ts":"1500000000.000100"}`))
@@ -116,8 +118,15 @@ func TestRealClientsHideTokens(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if slackPosts != 2 {
+	if slackPosts != 1 {
 		t.Fatalf("slack posts %d paths %v", slackPosts, ghPaths)
+	}
+	joinedSlack := strings.Join(slackBodies, "\n")
+	if !strings.Contains(joinedSlack, `"blocks"`) {
+		t.Fatalf("slack body has no blocks: %s", joinedSlack)
+	}
+	if strings.Contains(joinedSlack, slackCanary) || strings.Contains(joinedSlack, ghCanary) {
+		t.Fatalf("token in slack body: %s", joinedSlack)
 	}
 	joined := strings.Join(ghPaths, "\n")
 	for _, want := range []string{"/installation", "/access_tokens", "/comments", "/check-runs"} {

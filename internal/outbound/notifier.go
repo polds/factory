@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ type Commenter interface {
 // Config builds a Notifier.
 // ExternalURL is FACTORY_EXTERNAL_URL. SlackChannel is integrations[].slack.channel.
 // Slack, GitHub, and Linear are omitted when that integration is off.
+// RunURL, when set, is the console link for a run. Nil keeps the API link.
 // Now, Sleep, and Log are optional. Sleep is the backoff and coalesce wait.
 // Formatting or logging a Config does not walk the client values.
 type Config struct {
@@ -34,6 +36,7 @@ type Config struct {
 	Linear       Commenter
 	Threads      Threads
 	Refs         Refs
+	RunURL       func(runID string) string
 	Now          func() time.Time
 	Sleep        func(context.Context, time.Duration) error
 	Log          *slog.Logger
@@ -72,6 +75,7 @@ func (c Config) summary(sharp bool) string {
 type Notifier struct {
 	externalURL  string
 	slackChannel string
+	runURL       func(runID string) string
 	slack        slack.Poster
 	github       github.App
 	linear       Commenter
@@ -110,6 +114,7 @@ func New(cfg Config) (*Notifier, error) {
 	n := &Notifier{
 		externalURL:  cfg.ExternalURL,
 		slackChannel: cfg.SlackChannel,
+		runURL:       cfg.RunURL,
 		slack:        cfg.Slack,
 		github:       cfg.GitHub,
 		linear:       cfg.Linear,
@@ -273,6 +278,11 @@ func (n *Notifier) save(ctx context.Context, t Thread) error {
 }
 
 func (n *Notifier) link(runID string) string {
+	if n.runURL != nil {
+		if u := strings.TrimSpace(n.runURL(runID)); u != "" {
+			return u
+		}
+	}
 	return runLink(n.externalURL, runID)
 }
 
