@@ -126,7 +126,7 @@ describe("inbox", () => {
     setAPIKey(demoAPIKey);
     const user = userEvent.setup();
     install(shuffled);
-    renderApp(`/f/${factoryId}/inbox`);
+    await renderApp(`/f/${factoryId}/inbox`);
     const titles = await screen.findAllByRole("button", {
       name: /Spec gate|Currency column|Settlement cutoff/,
     });
@@ -156,7 +156,7 @@ describe("inbox", () => {
     const api = install([shuffled[1]!], {
       decide: () => pending as unknown as Response,
     });
-    renderApp(`/f/${factoryId}/inbox`);
+    await renderApp(`/f/${factoryId}/inbox`);
     const row = await screen.findByRole("button", { name: /Spec gate/ });
     await user.click(row);
     await user.type(screen.getByRole("textbox", { name: /Note/ }), "ship it");
@@ -198,7 +198,7 @@ describe("inbox", () => {
           { status: 409 },
         ) as unknown as Response,
     });
-    renderApp(`/f/${factoryId}/inbox`);
+    await renderApp(`/f/${factoryId}/inbox`);
     await user.click(await screen.findByRole("button", { name: /Spec gate/ }));
     api.omit("apr_01");
     await user.click(screen.getByRole("button", { name: "Reject" }));
@@ -211,7 +211,7 @@ describe("inbox", () => {
     setAPIKey(demoAPIKey);
     const user = userEvent.setup();
     const api = install([shuffled[1]!]);
-    renderApp(`/f/${factoryId}/inbox`);
+    await renderApp(`/f/${factoryId}/inbox`);
     await user.click(await screen.findByRole("button", { name: /Spec gate/ }));
     await user.click(screen.getByRole("button", { name: "Reject" }));
     expect(await screen.findByText("Rejected by you · Saving…")).toBeInTheDocument();
@@ -226,7 +226,7 @@ describe("inbox", () => {
       resolveAnswer = resolve;
     });
     const api = install([shuffled[2]!], { answer: () => pending as unknown as Response });
-    renderApp(`/f/${factoryId}/inbox`);
+    await renderApp(`/f/${factoryId}/inbox`);
     await user.click(await screen.findByRole("button", { name: /Currency column/ }));
     await user.type(screen.getByRole("textbox", { name: "Answer" }), "before the amount");
     await user.click(screen.getByRole("button", { name: "Send answer" }));
@@ -251,7 +251,7 @@ describe("inbox", () => {
     setAPIKey(demoAPIKey);
     const user = userEvent.setup();
     install(shuffled);
-    renderApp(`/f/${factoryId}/inbox`);
+    await renderApp(`/f/${factoryId}/inbox`);
     await user.click(await screen.findByRole("button", { name: /Settlement cutoff failed/ }));
     expect(screen.getByText("Infrastructure")).toBeInTheDocument();
     expect(screen.getAllByText("The agent reported the run as failed").length).toBeGreaterThan(0);
@@ -271,7 +271,7 @@ describe("inbox", () => {
       release = resolve;
     });
     install([shuffled[1]!], { decide: () => pending as unknown as Response });
-    renderApp(`/f/${factoryId}/inbox`);
+    await renderApp(`/f/${factoryId}/inbox`);
     const row = await screen.findByRole("button", { name: /Spec gate/ });
     for (let step = 0; step < 40 && document.activeElement !== row; step += 1) {
       await user.tab();
@@ -293,12 +293,12 @@ describe("inbox", () => {
   it("has no serious accessibility violations when empty or full", async () => {
     setAPIKey(demoAPIKey);
     install([]);
-    const empty = renderApp(`/f/${factoryId}/inbox`);
+    const empty = await renderApp(`/f/${factoryId}/inbox`);
     expect(await screen.findByText("Nothing needs you right now")).toBeInTheDocument();
     await expectClean(document.body);
     empty.unmount();
     install(shuffled);
-    renderApp(`/f/${factoryId}/inbox`);
+    await renderApp(`/f/${factoryId}/inbox`);
     expect(await screen.findByRole("button", { name: /Spec gate/ })).toBeInTheDocument();
     await expectClean(document.body);
   });

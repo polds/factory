@@ -37,9 +37,9 @@ const matched = {
   matched_automations: ["on-label"],
 };
 
-function renderDeliveries() {
+async function renderDeliveries() {
   setAPIKey(demoAPIKey);
-  return renderApp("/f/fac_1/deliveries");
+  return await renderApp("/f/fac_1/deliveries");
 }
 
 async function expectClean() {
@@ -73,7 +73,7 @@ describe("deliveries", () => {
         },
       ),
     );
-    renderDeliveries();
+    await renderDeliveries();
     const unmatchedTab = await screen.findByRole("tab", { name: /Unmatched \(1\)/ });
     expect(unmatchedTab).toHaveAttribute("aria-selected", "true");
     expect(searches.some((search) => search.includes("status=unmatched"))).toBe(true);
@@ -106,7 +106,7 @@ describe("deliveries", () => {
         return HttpResponse.json([unmatched, matched]);
       }),
     );
-    renderDeliveries();
+    await renderDeliveries();
     const unmatchedTab = await screen.findByRole("tab", { name: /Unmatched/ });
     unmatchedTab.focus();
     await user.keyboard("{ArrowRight}");
