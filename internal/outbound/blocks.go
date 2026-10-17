@@ -80,7 +80,7 @@ func renderSummary(notice Notice, link, findings string) string {
 	var b strings.Builder
 	b.WriteString(attribution(notice))
 	b.WriteByte('\n')
-	title := strings.TrimSpace(notice.Title)
+	title := escapeMrkdwn(strings.TrimSpace(notice.Title))
 	if title != "" {
 		b.WriteString(title)
 		b.WriteByte('\n')
@@ -114,7 +114,7 @@ func cardBlocks(notice Notice, link, findings string) []any {
 	if line := cardStatus(notice); line != "" {
 		blocks = append(blocks, sectionBlock{
 			Type: "section",
-			Text: textObj{Type: "mrkdwn", Text: truncate(escapeMrkdwn(line), maxSection)},
+			Text: textObj{Type: "mrkdwn", Text: truncate(line, maxSection)},
 		})
 	}
 	blocks = append(blocks, textBlock(attribution(notice)))
@@ -127,7 +127,7 @@ func cardBlocks(notice Notice, link, findings string) []any {
 	if line := revisionLine(notice.Actor); line != "" {
 		blocks = append(blocks, sectionBlock{
 			Type: "section",
-			Text: textObj{Type: "mrkdwn", Text: truncate(escapeMrkdwn(line), maxSection)},
+			Text: textObj{Type: "mrkdwn", Text: truncate(line, maxSection)},
 		})
 	}
 	if links := linksLine(link, notice.PRURL); links != "" {
@@ -210,9 +210,9 @@ func sourceLine(notice Notice) string {
 	short := shortID(notice.WorkItemID)
 	switch {
 	case href != "" && short != "":
-		return fmt.Sprintf("<%s|%s> · %s", href, escapeMrkdwn(label), escapeMrkdwn(short))
+		return slackLink(href, label) + " · " + escapeMrkdwn(short)
 	case href != "":
-		return fmt.Sprintf("<%s|%s>", href, escapeMrkdwn(label))
+		return slackLink(href, label)
 	case label != "" && short != "":
 		return escapeMrkdwn(label) + " · " + escapeMrkdwn(short)
 	case short != "":
@@ -239,12 +239,18 @@ func sourceRef(notice Notice) (label, href string) {
 func linksLine(link, pr string) string {
 	var parts []string
 	if link != "" {
-		parts = append(parts, "<"+link+"|Open run>")
+		parts = append(parts, slackLink(link, "Open run"))
 	}
 	if pr != "" {
-		parts = append(parts, "<"+pr+"|Open PR>")
+		parts = append(parts, slackLink(pr, "Open PR"))
 	}
 	return strings.Join(parts, "  ·  ")
+}
+
+// slackLink is one mrkdwn link. The URL and the label are escaped on
+// their own so the angle brackets we add still parse.
+func slackLink(href, label string) string {
+	return "<" + escapeMrkdwn(href) + "|" + escapeMrkdwn(label) + ">"
 }
 
 func findingsLine(text, link string) string {
@@ -257,7 +263,9 @@ func findingsLine(text, link string) string {
 	if preview != "" {
 		prose += " — " + preview
 	}
-	prose = truncate(prose, maxFindings)
+	// Escape before truncate so a review line cannot introduce a mention.
+	// The run URL appended below is ours and stays raw.
+	prose = truncate(escapeMrkdwn(prose), maxFindings)
 	if link == "" {
 		return prose
 	}
@@ -269,7 +277,7 @@ func revisionLine(actor string) string {
 	if actor == "" {
 		return ""
 	}
-	return "Revision requested by " + actor
+	return "Revision requested by " + escapeMrkdwn(actor)
 }
 
 func ackLine(notice Notice) string {
@@ -280,7 +288,7 @@ func ackLine(notice Notice) string {
 }
 
 func failedLine(notice Notice) string {
-	reason := oneLine(strings.TrimSpace(notice.Text))
+	reason := escapeMrkdwn(oneLine(strings.TrimSpace(notice.Text)))
 	if reason == "" {
 		reason = "the run failed"
 	}
@@ -294,7 +302,7 @@ func failedLine(notice Notice) string {
 func threadBody(notice Notice) string {
 	switch notice.Kind {
 	case KindQuestionAsked:
-		text := strings.TrimSpace(notice.Text)
+		text := escapeMrkdwn(strings.TrimSpace(notice.Text))
 		if text == "" {
 			text = "A question needs an answer."
 		}
@@ -303,9 +311,9 @@ func threadBody(notice Notice) string {
 		if strings.TrimSpace(notice.Text) == "" {
 			return "Approval pending."
 		}
-		return "Approval pending.\n" + oneLine(notice.Text)
+		return "Approval pending.\n" + escapeMrkdwn(oneLine(notice.Text))
 	case KindPROpened:
-		return "Pull request opened: " + notice.PRURL
+		return "Pull request opened: " + escapeMrkdwn(notice.PRURL)
 	case KindFailed:
 		return failedLine(notice)
 	case KindHandoff:
@@ -323,16 +331,16 @@ func mrkdwnBody(notice Notice, body string) string {
 	switch notice.Kind {
 	case KindPROpened:
 		if notice.PRURL == "" {
-			return escapeMrkdwn(body)
+			return body
 		}
-		return "Pull request opened: <" + notice.PRURL + "|" + escapeMrkdwn(notice.PRURL) + ">"
+		return "Pull request opened: " + slackLink(notice.PRURL, notice.PRURL)
 	case KindQuestionAsked, KindApprovalPending, KindFailed, KindReplyReceived, KindHandoff:
-		return escapeMrkdwn(body)
+		return body
 	case KindRunStarted, KindStageChanged, KindFindings:
-		return escapeMrkdwn(body)
+		return body
 	default:
 		_ = neverKind(notice.Kind)
-		return escapeMrkdwn(body)
+		return body
 	}
 }
 

@@ -1,0 +1,56 @@
+{
+  "text": "Factory · implementer · claude-test\n\u0026lt;!channel\u0026gt; \u0026lt;@U123\u0026gt; \u0026lt;https://evil|click\u0026gt; \u0026amp;amp;\n✅ Triage  →  ✅ Planning  →  ✅ Building  →  ⏳ Reviewing  →  ⬜ Handoff\nFindings\nFindings: 1 — \u0026lt;!channel\u0026gt; \u0026lt;@U123\u0026gt; \u0026lt;https://evil|click\u0026gt; \u0026amp;amp;\nhttps://factory.example/api/v1/agent/runs/run_9\nRevision requested by ada\u0026lt;!channel\u0026gt;\nhttps://factory.example/api/v1/agent/runs/run_9",
+  "blocks": [
+    {
+      "text": {
+        "text": "\u003c!channel\u003e \u003c@U123\u003e \u003chttps://evil|click\u003e \u0026amp;",
+        "type": "plain_text"
+      },
+      "type": "header"
+    },
+    {
+      "text": {
+        "text": "\u003chttps://github.com/polds/factory/issues/89|polds/factory#89\u003e · task_01M…ZHSV",
+        "type": "mrkdwn"
+      },
+      "type": "section"
+    },
+    {
+      "text": {
+        "text": "✅ Triage  →  ✅ Planning  →  ✅ Building  →  ⏳ Reviewing  →  ⬜ Handoff",
+        "type": "mrkdwn"
+      },
+      "type": "section"
+    },
+    {
+      "elements": [
+        {
+          "text": "Factory · implementer · claude-test",
+          "type": "mrkdwn"
+        }
+      ],
+      "type": "context"
+    },
+    {
+      "text": {
+        "text": "Findings: 1 — \u0026lt;!channel\u0026gt; \u0026lt;@U123\u0026gt; \u0026lt;https://evil|click\u0026gt; \u0026amp;amp;\nhttps://factory.example/api/v1/agent/runs/run_9",
+        "type": "mrkdwn"
+      },
+      "type": "section"
+    },
+    {
+      "text": {
+        "text": "Revision requested by ada\u0026lt;!channel\u0026gt;",
+        "type": "mrkdwn"
+      },
+      "type": "section"
+    },
+    {
+      "text": {
+        "text": "\u003chttps://factory.example/api/v1/agent/runs/run_9|Open run\u003e",
+        "type": "mrkdwn"
+      },
+      "type": "section"
+    }
+  ]
+}

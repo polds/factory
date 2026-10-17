@@ -58,6 +58,13 @@ func TestCardGoldens(t *testing.T) {
 			n.PRURL = "https://github.com/polds/factory/pull/77"
 			return n
 		}()},
+		{name: "mentions", notice: func() Notice {
+			n := cardNotice(base, KindFindings, "reviewing")
+			n.Title = "<!channel> <@U123> <https://evil|click> &amp;"
+			n.Text = n.Title
+			n.Actor = "ada<!channel>"
+			return n
+		}(), findings: findingsLine("<!channel> <@U123> <https://evil|click> &amp;", link)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,6 +106,107 @@ func TestHeaderTruncates(t *testing.T) {
 	if !strings.HasSuffix(header, "…") {
 		t.Fatalf("header %q", header)
 	}
+}
+
+func TestUserTextCannotInjectMentions(t *testing.T) {
+	const raw = "<!channel> <@U123> <https://evil|click> &amp;"
+	const escaped = "&lt;!channel&gt; &lt;@U123&gt; &lt;https://evil|click&gt; &amp;amp;"
+	link := "https://factory.example/api/v1/agent/runs/run_9"
+	pr := "https://github.com/acme/repo/pull/7?x=1&y=2"
+	n := Notice{
+		Kind:       KindFindings,
+		WorkItemID: "wi_01",
+		RunID:      "run_9",
+		Agent:      "implementer",
+		Model:      "claude-test",
+		Stage:      "reviewing",
+		Title:      raw,
+		Text:       raw + "\nsecond",
+		Actor:      raw,
+		PRURL:      pr,
+	}
+	findings := findingsLine(n.Text, link)
+	text, blocks := renderCard(n, link, findings)
+	assertEscaped(t, "fallback", text, raw, escaped)
+	if !strings.Contains(text, "\n"+link) {
+		t.Fatalf("fallback dropped the run link: %s", text)
+	}
+	doc := parseBlocks(t, blocks)
+	if doc[0].Type != "header" || doc[0].Text == nil || doc[0].Text.Type != "plain_text" || doc[0].Text.Text != raw {
+		t.Fatalf("header %+v", doc[0].Text)
+	}
+	findingsText := sectionText(t, doc, "Findings:")
+	assertEscaped(t, "findings block", findingsText, raw, escaped)
+	if !strings.HasSuffix(findingsText, "\n"+link) {
+		t.Fatalf("run url %q", findingsText)
+	}
+	links := sectionText(t, doc, "Open PR")
+	if !strings.Contains(links, "<https://github.com/acme/repo/pull/7?x=1&amp;y=2|Open PR>") {
+		t.Fatalf("pr link %q", links)
+	}
+	if !strings.Contains(links, "<"+link+"|Open run>") {
+		t.Fatalf("run link %q", links)
+	}
+	assertEscaped(t, "actor block", sectionText(t, doc, "Revision requested by"), raw, escaped)
+
+	q := n
+	q.Kind = KindQuestionAsked
+	q.Text = raw
+	qText, qBlocks := renderThreadReply(q, link)
+	assertEscaped(t, "question fallback", qText, raw, escaped)
+	assertEscaped(t, "question block", parseBlocks(t, qBlocks)[0].Text.Text, raw, escaped)
+
+	failed := n
+	failed.Kind = KindFailed
+	failed.Text = raw
+	failedText, failedBlocks := renderCard(failed, link, "")
+	assertEscaped(t, "failure fallback", failedText, raw, escaped)
+	assertEscaped(t, "failure block", sectionText(t, parseBlocks(t, failedBlocks), "Failed:"), raw, escaped)
+
+	approval := n
+	approval.Kind = KindApprovalPending
+	approval.Text = raw
+	aText, aBlocks := renderThreadReply(approval, link)
+	assertEscaped(t, "approval fallback", aText, raw, escaped)
+	assertEscaped(t, "approval block", parseBlocks(t, aBlocks)[0].Text.Text, raw, escaped)
+
+	done, _ := renderThreadReply(Notice{Kind: KindHandoff, Agent: "reviewer", Model: "m4-reviewing"}, link)
+	if !strings.Contains(done, "\nDone.\n") {
+		t.Fatalf("handoff reply %s", done)
+	}
+}
+
+func assertEscaped(t *testing.T, name, got, raw, escaped string) {
+	t.Helper()
+	if !strings.Contains(got, escaped) {
+		t.Fatalf("%s missing escaped text: %s", name, got)
+	}
+	if strings.Contains(got, raw) {
+		t.Fatalf("%s still has raw user text: %s", name, got)
+	}
+}
+
+func parseBlocks(t *testing.T, blocks json.RawMessage) []blockView {
+	t.Helper()
+	var doc []blockView
+	if err := json.Unmarshal(blocks, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc) == 0 {
+		t.Fatal("no blocks")
+	}
+	return doc
+}
+
+func sectionText(t *testing.T, doc []blockView, prefix string) string {
+	t.Helper()
+	for _, block := range doc {
+		if block.Type == "section" && block.Text != nil && strings.Contains(block.Text.Text, prefix) {
+			return block.Text.Text
+		}
+	}
+	t.Fatalf("section %q missing", prefix)
+	return ""
 }
 
 func TestBlockLimitsHoldForLongText(t *testing.T) {
