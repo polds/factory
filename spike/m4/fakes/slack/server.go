@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"io"
@@ -25,11 +26,12 @@ type server struct {
 }
 
 type slackMessage struct {
-	Op       string `json:"op"`
-	TS       string `json:"ts"`
-	ThreadTS string `json:"thread_ts"`
-	Channel  string `json:"channel"`
-	Text     string `json:"text"`
+	Op       string          `json:"op"`
+	TS       string          `json:"ts"`
+	ThreadTS string          `json:"thread_ts"`
+	Channel  string          `json:"channel"`
+	Text     string          `json:"text"`
+	Blocks   json.RawMessage `json:"blocks,omitempty"`
 }
 
 type slackState struct {
@@ -83,9 +85,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) post(w http.ResponseWriter, body []byte) {
 	var req struct {
-		Channel  string `json:"channel"`
-		ThreadTS string `json:"thread_ts"`
-		Text     string `json:"text"`
+		Channel  string          `json:"channel"`
+		ThreadTS string          `json:"thread_ts"`
+		Text     string          `json:"text"`
+		Blocks   json.RawMessage `json:"blocks"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil || req.Channel == "" {
 		writeSlack(w, false, "", "invalid_arguments")
@@ -96,6 +99,7 @@ func (s *server) post(w http.ResponseWriter, body []byte) {
 	ts := "1700000000." + pad6(s.next)
 	s.posts = append(s.posts, slackMessage{
 		Op: "post", TS: ts, ThreadTS: req.ThreadTS, Channel: req.Channel, Text: req.Text,
+		Blocks: keptBlocks(req.Blocks),
 	})
 	s.mu.Unlock()
 	writeSlack(w, true, ts, "")
@@ -103,9 +107,10 @@ func (s *server) post(w http.ResponseWriter, body []byte) {
 
 func (s *server) update(w http.ResponseWriter, body []byte) {
 	var req struct {
-		Channel string `json:"channel"`
-		TS      string `json:"ts"`
-		Text    string `json:"text"`
+		Channel string          `json:"channel"`
+		TS      string          `json:"ts"`
+		Text    string          `json:"text"`
+		Blocks  json.RawMessage `json:"blocks"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil || req.TS == "" {
 		writeSlack(w, false, "", "invalid_arguments")
@@ -127,6 +132,7 @@ func (s *server) update(w http.ResponseWriter, body []byte) {
 	if found {
 		s.posts = append(s.posts, slackMessage{
 			Op: "update", TS: req.TS, ThreadTS: thread, Channel: channel, Text: req.Text,
+			Blocks: keptBlocks(req.Blocks),
 		})
 	}
 	s.mu.Unlock()
@@ -157,6 +163,14 @@ func (s *server) allow(r *http.Request) bool {
 		return true
 	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
+}
+
+func keptBlocks(raw json.RawMessage) json.RawMessage {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) || bytes.Equal(raw, []byte("[]")) {
+		return nil
+	}
+	return raw
 }
 
 func pad6(n int) string {

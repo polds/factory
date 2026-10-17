@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/polds/factory/internal/store"
 )
 
 const (
@@ -130,27 +132,49 @@ func TestFiveStageWorkItem(t *testing.T) {
 	}
 	n.Settle()
 
-	roots, statuses, replies, updates := classifySlack(h.slack.snapshot())
-	if roots != 1 || statuses != 1 || replies != milestones || updates != len(events)-1 {
-		t.Fatalf("slack roots %d status %d replies %d updates %d", roots, statuses, replies, updates)
+	roots, replies, updates, rootTS := countSlack(h.slack.snapshot())
+	if roots != 1 || replies != milestones || updates != len(events)-1 {
+		t.Fatalf("slack roots %d replies %d updates %d", roots, replies, updates)
 	}
-	var statusTS string
+	var sawQuestion, sawPR, sawDone bool
+	seenStage := map[string]bool{}
 	for _, msg := range h.slack.snapshot() {
 		if msg.channel != testChan {
 			t.Fatalf("channel %s", msg.channel)
 		}
 		assertAttribution(t, msg.text, testLink)
+		if len(msg.blocks) == 0 {
+			t.Fatalf("missing blocks: %s", msg.text)
+		}
 		if msg.update {
-			if msg.ts != statusTS {
-				t.Fatalf("update ts %s, status %s", msg.ts, statusTS)
+			if msg.ts != rootTS {
+				t.Fatalf("update ts %s, root %s", msg.ts, rootTS)
 			}
-			continue
 		}
-		if msg.thread == "" {
-			continue
+		for _, stage := range []string{"Triage", "Planning", "Building", "Reviewing", "Handoff"} {
+			if strings.Contains(msg.text, stage) {
+				seenStage[stage] = true
+			}
 		}
-		if statusTS == "" {
-			statusTS = msg.ts
+		if msg.thread != "" && !msg.update {
+			switch {
+			case strings.Contains(msg.text, "Reply in this thread to answer."):
+				sawQuestion = true
+			case strings.Contains(msg.text, "Pull request opened:"):
+				sawPR = true
+			case strings.Contains(msg.text, "Done."):
+				sawDone = true
+			default:
+				t.Fatalf("unexpected reply %s", msg.text)
+			}
+		}
+	}
+	if !sawQuestion || !sawPR || !sawDone {
+		t.Fatalf("replies question %v pr %v done %v", sawQuestion, sawPR, sawDone)
+	}
+	for _, stage := range []string{"Triage", "Planning", "Building", "Reviewing", "Handoff"} {
+		if !seenStage[stage] {
+			t.Fatalf("stage %s missing", stage)
 		}
 	}
 
@@ -205,7 +229,7 @@ func TestFiveStageWorkItem(t *testing.T) {
 	}
 
 	slackRow, err := h.threads.GetOutboundThread(context.Background(), "wi_01", ProviderSlack)
-	if err != nil || slackRow.RootRef == "" || slackRow.StatusMsgRef == "" || slackRow.Channel != testChan {
+	if err != nil || slackRow.RootRef == "" || slackRow.StatusMsgRef != "" || slackRow.Channel != testChan {
 		t.Fatalf("slack thread %#v %v", slackRow, err)
 	}
 	ghRow, err := h.threads.GetOutboundThread(context.Background(), "wi_01", ProviderGitHub)
@@ -247,12 +271,12 @@ func TestRestartReusesStoredThread(t *testing.T) {
 	}
 	second.Settle()
 
-	roots, statuses, replies, updates := classifySlack(h.slack.snapshot())
-	if roots != 1 || statuses != 1 || replies != 0 || updates != 1 {
-		t.Fatalf("slack roots %d status %d replies %d updates %d", roots, statuses, replies, updates)
+	roots, replies, updates, _ := countSlack(h.slack.snapshot())
+	if roots != 1 || replies != 0 || updates != 1 {
+		t.Fatalf("slack roots %d replies %d updates %d", roots, replies, updates)
 	}
 	after, err := h.threads.GetOutboundThread(context.Background(), "wi_01", ProviderSlack)
-	if err != nil || after.RootRef != before.RootRef || after.StatusMsgRef != before.StatusMsgRef {
+	if err != nil || after.RootRef != before.RootRef || after.StatusMsgRef != "" {
 		t.Fatalf("before %#v after %#v %v", before, after, err)
 	}
 	_, _, checks, notes := h.gh.snapshot()
@@ -328,7 +352,7 @@ func TestCoalesceStatusEdits(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("coalesce did not wait")
 	}
-	if _, _, _, updates := classifySlack(h.slack.snapshot()); updates != 0 {
+	if _, _, updates, _ := countSlack(h.slack.snapshot()); updates != 0 {
 		t.Fatalf("updated inside the window")
 	}
 	release <- struct{}{}
@@ -338,7 +362,7 @@ func TestCoalesceStatusEdits(t *testing.T) {
 		t.Fatal("coalesced edit was not sent")
 	}
 	n.Settle()
-	_, _, _, updates := classifySlack(h.slack.snapshot())
+	_, _, updates, _ := countSlack(h.slack.snapshot())
 	if updates != 1 {
 		t.Fatalf("updates %d", updates)
 	}
@@ -385,9 +409,9 @@ func TestFailureDoesNotFailTheRun(t *testing.T) {
 	if strings.Contains(h.log.String(), canary) || !strings.Contains(h.log.String(), "[REDACTED]") {
 		t.Fatalf("log %s", h.log.String())
 	}
-	roots, statuses, _, _ := classifySlack(h.slack.snapshot())
-	if roots != 0 || statuses != 0 {
-		t.Fatalf("posted roots %d status %d", roots, statuses)
+	roots, replies, _, _ := countSlack(h.slack.snapshot())
+	if roots != 0 || replies != 0 {
+		t.Fatalf("posted roots %d replies %d", roots, replies)
 	}
 }
 
@@ -430,9 +454,9 @@ func TestConcurrentNotifyOneRoot(t *testing.T) {
 	}
 	wg.Wait()
 	n.Settle()
-	roots, statuses, replies, _ := classifySlack(h.slack.snapshot())
-	if roots != 1 || statuses != 1 || replies != 0 {
-		t.Fatalf("slack roots %d status %d replies %d", roots, statuses, replies)
+	roots, replies, _, _ := countSlack(h.slack.snapshot())
+	if roots != 1 || replies != 0 {
+		t.Fatalf("slack roots %d replies %d", roots, replies)
 	}
 	_, _, checks, notes := h.gh.snapshot()
 	var created int
@@ -596,6 +620,168 @@ func TestNotifierGuards(t *testing.T) {
 	}
 }
 
+func TestReplyAckOnceAcrossRedelivery(t *testing.T) {
+	h := newHarness()
+	n := h.notifier(t, nil)
+	t.Cleanup(func() { _ = n.Close() })
+	ev := baseNotice()
+	ev.Kind = KindStageChanged
+	ev.Stage = "human_handoff"
+	if err := n.Notify(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	h.clock.Advance(3 * time.Second)
+	ack := baseNotice()
+	ack.Kind = KindReplyReceived
+	ack.RunID = "run_follow"
+	ack.Actor = "ada"
+	ack.Stage = "building"
+	ack.PRURL = "https://github.com/polds/factory/pull/9"
+	if err := n.Notify(context.Background(), ack); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Notify(context.Background(), ack); err != nil {
+		t.Fatal(err)
+	}
+	n.Settle()
+	if got := countAck(h.slack.snapshot()); got != 1 {
+		t.Fatalf("acks %d", got)
+	}
+	if !cardHas(h.slack.snapshot(), "Revision requested by ada") {
+		t.Fatal("card missed the revision")
+	}
+	if !cardHas(h.slack.snapshot(), "Got it — revising on PR #9") {
+		t.Fatal("ack text")
+	}
+
+	h.clock.Advance(3 * time.Second)
+	restart := h.notifier(t, nil)
+	t.Cleanup(func() { _ = restart.Close() })
+	if err := restart.Notify(context.Background(), ack); err != nil {
+		t.Fatal(err)
+	}
+	restart.Settle()
+	if got := countAck(h.slack.snapshot()); got != 1 {
+		t.Fatalf("acks after restart %d", got)
+	}
+}
+
+func TestLegacyStatusMessageStillEdits(t *testing.T) {
+	h := newHarness()
+	if _, err := h.threads.UpsertOutboundThread(context.Background(), store.OutboundThread{
+		WorkItemID:   "wi_01",
+		Provider:     ProviderSlack,
+		Channel:      testChan,
+		RootRef:      "100.001",
+		StatusMsgRef: "100.002",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n := h.notifier(t, nil)
+	t.Cleanup(func() { _ = n.Close() })
+	ev := baseNotice()
+	ev.Kind = KindStageChanged
+	ev.Stage = "building"
+	if err := n.Notify(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	n.Settle()
+	roots, replies, updates, _ := countSlack(h.slack.snapshot())
+	if roots != 0 || replies != 0 || updates != 1 {
+		t.Fatalf("roots %d replies %d updates %d", roots, replies, updates)
+	}
+	msg := h.slack.snapshot()[0]
+	if !msg.update || msg.ts != "100.002" || len(msg.blocks) == 0 {
+		t.Fatalf("legacy edit %#v", msg)
+	}
+	row, err := h.threads.GetOutboundThread(context.Background(), "wi_01", ProviderSlack)
+	if err != nil || row.StatusMsgRef != "100.002" || row.RootRef != "100.001" {
+		t.Fatalf("thread %#v %v", row, err)
+	}
+}
+
+func TestRunURLReplacesAPILink(t *testing.T) {
+	h := newHarness()
+	const page = "https://console.example/runs/run_9"
+	n, err := New(Config{
+		ExternalURL:  "https://factory.example",
+		SlackChannel: testChan,
+		Slack:        h.slack,
+		Threads:      h.threads,
+		RunURL:       func(id string) string { return "https://console.example/runs/" + id },
+		Now:          h.clock.Now,
+		Sleep:        func(context.Context, time.Duration) error { return nil },
+		Log:          slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.Close() })
+	ev := baseNotice()
+	ev.Kind = KindStageChanged
+	ev.Stage = "triage"
+	if err := n.Notify(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	msg := h.slack.snapshot()[0]
+	if !strings.Contains(msg.text, page) || strings.Contains(msg.text, "/api/v1/agent/runs/") {
+		t.Fatalf("text %s", msg.text)
+	}
+	if !strings.Contains(string(msg.blocks), page) || strings.Contains(string(msg.blocks), "/api/v1/agent/runs/") {
+		t.Fatalf("blocks %s", msg.blocks)
+	}
+}
+
+func TestFindingsStayShort(t *testing.T) {
+	h := newHarness()
+	n := h.notifier(t, nil)
+	t.Cleanup(func() { _ = n.Close() })
+	const sentinel = "FULL-FINDINGS-SENTINEL"
+	ev := baseNotice()
+	ev.Kind = KindFindings
+	ev.Stage = "reviewing"
+	ev.Text = "first nit\nsecond nit\n" + strings.Repeat("x", 400) + sentinel
+	if err := n.Notify(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	h.clock.Advance(3 * time.Second)
+	next := baseNotice()
+	next.Kind = KindStageChanged
+	next.Stage = "human_handoff"
+	if err := n.Notify(context.Background(), next); err != nil {
+		t.Fatal(err)
+	}
+	n.Settle()
+	for _, msg := range h.slack.snapshot() {
+		blob := msg.text + string(msg.blocks)
+		if strings.Contains(blob, sentinel) {
+			t.Fatalf("findings dumped: %s", blob)
+		}
+	}
+	if !cardHas(h.slack.snapshot(), "Findings: 3") {
+		t.Fatal("findings count missing")
+	}
+}
+
+func countAck(msgs []slackMsg) int {
+	n := 0
+	for _, msg := range msgs {
+		if !msg.update && strings.Contains(msg.text, "Got it —") {
+			n++
+		}
+	}
+	return n
+}
+
+func cardHas(msgs []slackMsg, needle string) bool {
+	for _, msg := range msgs {
+		if strings.Contains(msg.text, needle) || strings.Contains(string(msg.blocks), needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func fiveStage(base Notice) []Notice {
 	stages := []string{"triage", "planning", "building", "reviewing", "human_handoff"}
 	var out []Notice
@@ -626,8 +812,7 @@ func fiveStage(base Notice) []Notice {
 	return out
 }
 
-func classifySlack(msgs []slackMsg) (roots, statuses, replies, updates int) {
-	var statusTS string
+func countSlack(msgs []slackMsg) (roots, replies, updates int, rootTS string) {
 	for _, msg := range msgs {
 		if msg.update {
 			updates++
@@ -635,14 +820,10 @@ func classifySlack(msgs []slackMsg) (roots, statuses, replies, updates int) {
 		}
 		if msg.thread == "" {
 			roots++
-			continue
-		}
-		if statusTS == "" {
-			statusTS = msg.ts
-			statuses++
+			rootTS = msg.ts
 			continue
 		}
 		replies++
 	}
-	return roots, statuses, replies, updates
+	return roots, replies, updates, rootTS
 }

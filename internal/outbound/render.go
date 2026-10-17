@@ -42,20 +42,11 @@ func renderRoot(notice Notice, link string) string {
 }
 
 func renderStatus(notice Notice, link string) string {
-	var b strings.Builder
-	b.WriteString(attribution(notice))
-	b.WriteByte('\n')
-	b.WriteString(statusLine(notice))
-	if notice.Title != "" {
-		b.WriteByte('\n')
-		b.WriteString(notice.Title)
+	findings := ""
+	if notice.Kind == KindFindings {
+		findings = findingsLine(notice.Text, link)
 	}
-	if notice.Text != "" && notice.Kind != KindStageChanged && notice.Kind != KindRunStarted {
-		b.WriteByte('\n')
-		b.WriteString(notice.Text)
-	}
-	writeLink(&b, link)
-	return b.String()
+	return renderSummary(notice, link, findings)
 }
 
 func renderMilestone(notice Notice, link string) string {
@@ -72,7 +63,7 @@ func renderMilestone(notice Notice, link string) string {
 		b.WriteString(notice.PRURL)
 	case KindHandoff:
 		b.WriteString("Done.")
-	case KindRunStarted, KindStageChanged, KindApprovalPending, KindFindings, KindFailed:
+	case KindRunStarted, KindStageChanged, KindApprovalPending, KindFindings, KindFailed, KindReplyReceived:
 		b.WriteString(statusLine(notice))
 	default:
 		_ = neverKind(notice.Kind)
@@ -98,7 +89,12 @@ func statusLine(notice Notice) string {
 	case KindHandoff:
 		return "Done"
 	case KindFailed:
-		return "Failed"
+		return failedLine(notice)
+	case KindReplyReceived:
+		if line := revisionLine(notice.Actor); line != "" {
+			return line
+		}
+		return "Revision requested"
 	default:
 		return string(neverKind(notice.Kind))
 	}
@@ -126,7 +122,7 @@ func checkRun(notice Notice, summary, details string) github.CheckRun {
 	case KindHandoff:
 		cr.Status = github.CheckCompleted
 		cr.Conclusion = "success"
-	case KindRunStarted, KindStageChanged, KindQuestionAsked, KindApprovalPending, KindPROpened, KindFindings:
+	case KindRunStarted, KindStageChanged, KindQuestionAsked, KindApprovalPending, KindPROpened, KindFindings, KindReplyReceived:
 	default:
 		_ = neverKind(notice.Kind)
 	}

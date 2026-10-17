@@ -11,6 +11,10 @@ const (
 	ProviderGitHub = store.ProviderGitHub
 	ProviderSlack  = store.ProviderSlack
 	ProviderLinear = store.ProviderLinear
+	// cardProvider stores Slack card memory on the existing outbound_threads
+	// table. ProviderWebhook is already a valid provider, and no webhook
+	// delivery writes an outbound thread, so this needs no new table.
+	cardProvider = store.ProviderWebhook
 )
 
 // Thread is one outbound conversation for a work item and provider.
