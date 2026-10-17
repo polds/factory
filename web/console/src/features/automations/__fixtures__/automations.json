@@ -1,0 +1,11 @@
+[
+  {
+    "name": "on-label",
+    "enabled": true,
+    "runtime_paused": false,
+    "triggers": ["github.label"],
+    "last_fired_at": "2026-04-02T15:00:00Z",
+    "match_count": 4,
+    "runs_started": 2
+  }
+]
