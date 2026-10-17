@@ -166,14 +166,12 @@ export function Transcript({
   rows,
   eventCount,
   status,
-  runStatus,
   latestSeq,
   resumedFrom,
 }: {
   rows: readonly TranscriptRow[];
   eventCount: number;
   status: StreamStatus;
-  runStatus: string;
   latestSeq: string | null;
   resumedFrom: string | null;
 }) {
@@ -226,9 +224,8 @@ export function Transcript({
     if (rows.length > 0) virtualizerRef.current.scrollToIndex(rows.length - 1, { align: "end" });
   }
 
-  const terminal = runStatus === "succeeded" || runStatus === "failed" || runStatus === "cancelled";
   const headline =
-    status === "closed" || (terminal && status === "reconnecting")
+    status === "closed"
       ? "Stream closed"
       : status === "reconnecting"
         ? "Reconnecting…"

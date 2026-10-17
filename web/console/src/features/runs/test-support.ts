@@ -146,10 +146,24 @@ export function createEventBus() {
   const encoder = new TextEncoder();
   let queued: Uint8Array[] = [];
   let wake: (() => void) | null = null;
+  let closed = false;
+  let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
 
   return {
     send(text: string) {
+      if (closed) return;
       queued.push(encoder.encode(text));
+      const fn = wake;
+      wake = null;
+      fn?.();
+    },
+    close() {
+      closed = true;
+      try {
+        controller?.close();
+      } catch {
+        // The reader already finished this stream.
+      }
       const fn = wake;
       wake = null;
       fn?.();
@@ -157,32 +171,41 @@ export function createEventBus() {
     response(request: Request): Response {
       queued = [];
       wake = null;
+      closed = false;
+      controller = null;
       return new Response(
         new ReadableStream({
-          pull(controller) {
-            if (request.signal.aborted) {
-              controller.close();
+          start(ctrl) {
+            controller = ctrl;
+          },
+          pull(ctrl) {
+            if (request.signal.aborted || closed) {
+              try {
+                ctrl.close();
+              } catch {
+                // Already closed.
+              }
               return;
             }
             if (queued.length > 0) {
               const next = queued.shift();
-              if (next) controller.enqueue(next);
+              if (next) ctrl.enqueue(next);
               return;
             }
             return new Promise<void>((resolve) => {
               const finish = () => {
                 wake = null;
-                if (request.signal.aborted) {
+                if (request.signal.aborted || closed) {
                   try {
-                    controller.close();
+                    ctrl.close();
                   } catch {
-                    // Already closed by the consumer.
+                    // Already closed.
                   }
                   resolve();
                   return;
                 }
                 const next = queued.shift();
-                if (next) controller.enqueue(next);
+                if (next) ctrl.enqueue(next);
                 resolve();
               };
               wake = finish;

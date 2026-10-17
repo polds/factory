@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { client } from "../../api/client";
-import { consumeSSE, type SSERecord, type SSEStatus } from "../../api/sse";
+import { consumeSSE, defaultSleep, type SSERecord, type SSEStatus } from "../../api/sse";
 import { ensureAnimationFrame, scheduleFrame } from "./frame";
 
 export type StreamStatus = SSEStatus | "closed";
@@ -12,12 +12,19 @@ export type RunEvents = {
   error: string | null;
 };
 
-export function useRunEvents(runId: string): RunEvents {
+export function useRunEvents(runId: string, terminal: boolean): RunEvents {
   ensureAnimationFrame();
+  const terminalRef = useRef(terminal);
+  const onTerminalDuringBackoff = useRef<(() => void) | null>(null);
   const [events, setEvents] = useState<SSERecord[]>([]);
   const [status, setStatus] = useState<StreamStatus>("connecting");
   const [resumedFrom, setResumedFrom] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useLayoutEffect(() => {
+    terminalRef.current = terminal;
+    if (terminal) onTerminalDuringBackoff.current?.();
+  }, [terminal]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -39,9 +46,26 @@ export function useRunEvents(runId: string): RunEvents {
       cancelFrame = scheduleFrame(flush);
     };
 
+    const sleep = async (ms: number, signal: AbortSignal) => {
+      if (signal.aborted) return;
+      const stopIfTerminal = () => {
+        if (terminalRef.current) controller.abort();
+      };
+      stopIfTerminal();
+      if (signal.aborted) return;
+      onTerminalDuringBackoff.current = stopIfTerminal;
+      try {
+        await defaultSleep(ms, signal);
+      } finally {
+        onTerminalDuringBackoff.current = null;
+      }
+      stopIfTerminal();
+    };
+
     void consumeSSE({
       url: client.runEventsURL(runId),
       signal: controller.signal,
+      sleep,
       onStatus: (next) => {
         if (!active) return;
         if (next === "reconnecting") reconnecting = true;
@@ -61,7 +85,7 @@ export function useRunEvents(runId: string): RunEvents {
       .then(() => {
         if (!active) return;
         flush();
-        if (!controller.signal.aborted) setStatus("closed");
+        setStatus("closed");
       })
       .catch((err: unknown) => {
         if (!active || controller.signal.aborted) return;
@@ -72,6 +96,7 @@ export function useRunEvents(runId: string): RunEvents {
 
     return () => {
       active = false;
+      onTerminalDuringBackoff.current = null;
       cancelFrame?.();
       controller.abort();
     };

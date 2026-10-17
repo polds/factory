@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import { APIError, client } from "../../api/client";
 import { Button } from "../../components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
@@ -8,7 +8,7 @@ import { DurationPair } from "../../components/DurationPair";
 import { ErrorState } from "../../components/ErrorState";
 import { StatusBadge } from "../../components/StatusBadge";
 import { Caveat } from "./caveat";
-import { rowsFromEvents, steerSignals, canCancel } from "./events";
+import { rowsFromEvents, steerSignals, canCancel, isTerminalStatus } from "./events";
 import { formatCost, isFailureClass, prNumber, QUEUE_CAVEAT, shortId, workerLabel } from "./format";
 import { FailurePanel } from "./failure-panel";
 import { FilesTab } from "./files-tab";
@@ -35,11 +35,11 @@ function reasonOf(error: unknown): string {
 
 export function RunDetailPage({ runId }: { runId: string }) {
   const queryClient = useQueryClient();
-  const stream = useRunEvents(runId);
   const runQuery = useQuery({
     queryKey: ["run", runId],
     queryFn: () => client.getRun(runId) as Promise<RunDetailWire>,
   });
+  const stream = useRunEvents(runId, isTerminalStatus(runQuery.data?.status ?? ""));
   const timeline = useQuery({
     queryKey: ["run-timeline", runId],
     queryFn: () => client.runTimeline(runId),
@@ -59,6 +59,9 @@ export function RunDetailPage({ runId }: { runId: string }) {
   const [sendError, setSendError] = useState("");
   const [localSteers, setLocalSteers] = useState<LocalSteer[]>([]);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [steerPending, setSteerPending] = useState(false);
+  const followInFlight = useRef(false);
+  const interruptInFlight = useRef(false);
 
   const rows = useMemo(() => rowsFromEvents(stream.events), [stream.events]);
   const signals = useMemo(() => steerSignals(stream.events), [stream.events]);
@@ -78,7 +81,9 @@ export function RunDetailPage({ runId }: { runId: string }) {
     mutationFn: () => client.interruptRun(runId),
     onSuccess: (accepted) => {
       setLocalSteers((prev) => [...prev, { id: accepted.steer_id, kind: "interrupt" }]);
+      setSendError("");
     },
+    onError: (error: unknown) => setSendError(reasonOf(error)),
   });
   const cancel = useMutation({
     mutationFn: () => client.cancelRun(runId),
@@ -86,6 +91,31 @@ export function RunDetailPage({ runId }: { runId: string }) {
       await queryClient.invalidateQueries({ queryKey: ["run", runId] });
     },
   });
+
+  function sendFollowUp() {
+    if (followInFlight.current || interruptInFlight.current) return;
+    if (text.trim() === "") return;
+    followInFlight.current = true;
+    setSteerPending(true);
+    followUp.mutate(text, {
+      onSettled: () => {
+        followInFlight.current = false;
+        setSteerPending(false);
+      },
+    });
+  }
+
+  function sendInterrupt() {
+    if (followInFlight.current || interruptInFlight.current) return;
+    interruptInFlight.current = true;
+    setSteerPending(true);
+    interrupt.mutate(undefined, {
+      onSettled: () => {
+        interruptInFlight.current = false;
+        setSteerPending(false);
+      },
+    });
+  }
 
   if (runQuery.isPending) return <p>Loading run</p>;
   if (runQuery.isError || !runQuery.data) {
@@ -107,7 +137,6 @@ export function RunDetailPage({ runId }: { runId: string }) {
         rows={rows}
         eventCount={stream.events.length}
         status={stream.status}
-        runStatus={run.status}
         latestSeq={latestSeq}
         resumedFrom={stream.resumedFrom}
       />
@@ -256,8 +285,9 @@ export function RunDetailPage({ runId }: { runId: string }) {
           text={text}
           sendError={sendError}
           onText={setText}
-          onFollowUp={() => followUp.mutate(text)}
-          onInterrupt={() => interrupt.mutate()}
+          pending={steerPending}
+          onFollowUp={sendFollowUp}
+          onInterrupt={sendInterrupt}
         />
       </div>
       <ConfirmDialog

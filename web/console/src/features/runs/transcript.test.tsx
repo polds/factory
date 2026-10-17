@@ -12,8 +12,10 @@ import {
   installRuns,
   mockTranscriptViewport,
   repeatedStatus,
+  runningRun,
   scriptedStream,
   seqValues,
+  sseEvent,
   statusEvents,
 } from "./test-support";
 
@@ -40,8 +42,10 @@ describe("run transcript", () => {
     const calls: { last: string | null; from: string | null }[] = [];
     const first = statusEvents(1, 5) + 'id: 6\nevent: usage\ndata: {"seq":';
     const bus = createEventBus();
+    const run = runningRun();
     try {
       installRuns({
+        run,
         events(request) {
           const url = new URL(request.url);
           calls.push({
@@ -52,10 +56,16 @@ describe("run transcript", () => {
           return bus.response(request);
         },
       });
-      renderApp(`/runs/${goldenRun.id}`);
+      renderApp(`/runs/${run.id}`);
       await waitFor(() => expect(seqValues().sort()).toEqual(["1", "2", "3", "4", "5"]));
       await waitFor(() => expect(calls.length).toBeGreaterThan(1));
       expect(calls[1]).toEqual({ last: "5", from: "5" });
+      await waitFor(() =>
+        expect(document.querySelector(".transcript-strip")?.textContent).toContain("Reconnecting"),
+      );
+      expect(document.querySelector(".transcript-strip")?.textContent).not.toContain(
+        "Stream closed",
+      );
       bus.send(statusEvents(6, 8));
       await waitFor(() =>
         expect(seqValues().sort()).toEqual(["1", "2", "3", "4", "5", "6", "7", "8"]),
@@ -144,5 +154,55 @@ describe("run transcript", () => {
     } finally {
       restore();
     }
+  });
+
+  it("stops reconnecting when a terminal run's stream closes", async () => {
+    const calls: string[] = [];
+    const bus = createEventBus();
+    installRuns({
+      events(request) {
+        calls.push(request.headers.get("Last-Event-ID") ?? "");
+        return bus.response(request);
+      },
+    });
+    renderApp(`/runs/${goldenRun.id}`);
+    await screen.findByText("The agent reported the run as failed");
+    bus.send(statusEvents(1, 2));
+    await waitFor(() =>
+      expect(document.querySelector(".transcript-count")?.textContent).toMatch(/2 events/),
+    );
+    bus.close();
+    await waitFor(() =>
+      expect(document.querySelector(".transcript-strip")?.textContent).toContain("Stream closed"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(calls).toEqual([""]);
+  });
+
+  it("keeps a live run connected through a terminal event and reconnects after a clean close", async () => {
+    const calls: string[] = [];
+    const bus = createEventBus();
+    const run = runningRun();
+    installRuns({
+      run,
+      events(request) {
+        calls.push(request.headers.get("Last-Event-ID") ?? "");
+        return bus.response(request);
+      },
+    });
+    renderApp(`/runs/${run.id}`);
+    await screen.findByRole("heading", { name: "Settle the batch" });
+    bus.send(sseEvent(1, "terminal", { status: "idle" }));
+    await waitFor(() =>
+      expect(document.querySelector(".transcript-count")?.textContent).toMatch(/1 events/),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(calls).toEqual([""]);
+    expect(document.querySelector(".transcript-strip")?.textContent).not.toContain("Stream closed");
+    bus.close();
+    await waitFor(() => expect(calls.length).toBe(2));
+    await waitFor(() =>
+      expect(document.querySelector(".transcript-strip")?.textContent).toContain("Reconnecting"),
+    );
   });
 });

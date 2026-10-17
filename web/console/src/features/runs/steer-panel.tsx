@@ -36,6 +36,7 @@ export function SteerPanel({
   signals,
   text,
   sendError,
+  pending,
   onText,
   onFollowUp,
   onInterrupt,
@@ -45,6 +46,7 @@ export function SteerPanel({
   signals: readonly SteerSignal[];
   text: string;
   sendError: string;
+  pending: boolean;
   onText: (value: string) => void;
   onFollowUp: () => void;
   onInterrupt: () => void;
@@ -61,6 +63,7 @@ export function SteerPanel({
   const counting = steer.enabled && remaining > 0;
   const expired = steer.enabled && Number.isFinite(remaining) && remaining <= 0;
   const enabled = steer.enabled && !expired;
+  const locked = !enabled || pending;
   const reason = !steer.enabled
     ? steer.reason
     : expired && steer.idle_until
@@ -96,7 +99,7 @@ export function SteerPanel({
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            if (!enabled || text.trim() === "") return;
+            if (locked || text.trim() === "") return;
             onFollowUp();
           }}
         >
@@ -111,7 +114,7 @@ export function SteerPanel({
           />
           <Button
             type="submit"
-            disabled={!enabled || text.trim() === ""}
+            disabled={locked || text.trim() === ""}
             aria-describedby={described}
           >
             Send follow-up
@@ -122,7 +125,7 @@ export function SteerPanel({
           type="button"
           tone="danger"
           className="button-outline-danger"
-          disabled={!enabled}
+          disabled={locked}
           aria-describedby={described}
           onClick={() => setInterruptOpen(true)}
         >

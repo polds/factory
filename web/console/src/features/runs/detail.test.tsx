@@ -255,6 +255,81 @@ describe("run detail", () => {
     expect(screen.getByText("None yet.")).toBeInTheDocument();
   });
 
+  it("posts one follow-up when Send is clicked twice before the response", async () => {
+    const user = userEvent.setup();
+    const run = runningRun();
+    const bodies: { text?: string }[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let interrupts = 0;
+    installRuns({
+      run,
+      onInterrupt() {
+        interrupts += 1;
+      },
+    });
+    server.use(
+      http.post("/api/v1/agent/runs/:id/followups", async ({ request }) => {
+        bodies.push((await request.json()) as { text?: string });
+        await gate;
+        return HttpResponse.json({ steer_id: "steer_held" }, { status: 202 });
+      }),
+    );
+    renderApp(`/runs/${run.id}`);
+    const area = await screen.findByLabelText("Send a follow-up to the agent");
+    await user.type(area, "ship the cutoff");
+    const send = screen.getByRole("button", { name: "Send follow-up" });
+    const interrupt = screen.getByRole("button", { name: "Interrupt" });
+    send.click();
+    send.click();
+    await waitFor(() => expect(bodies).toEqual([{ text: "ship the cutoff" }]));
+    await waitFor(() => expect(send).toBeDisabled());
+    expect(interrupt).toBeDisabled();
+    interrupt.click();
+    expect(interrupts).toBe(0);
+    expect(area).toHaveValue("ship the cutoff");
+    if (!release) throw new Error("follow-up gate was not installed");
+    release();
+    const row = await screen.findByText("steer_held");
+    expect(row.closest("li")).toHaveTextContent("pending");
+    expect(row.closest("li")).toHaveTextContent("followup");
+    expect(area).toHaveValue("");
+    expect(send).toBeDisabled();
+    await waitFor(() => expect(interrupt).toBeEnabled());
+  });
+
+  it("shows the interrupt conflict reason", async () => {
+    const user = userEvent.setup();
+    const run = runningRun();
+    installRuns({ run });
+    server.use(
+      http.post("/api/v1/agent/runs/:id/interrupt", () =>
+        HttpResponse.json(
+          {
+            type: "about:blank",
+            title: "conflict",
+            status: 409,
+            detail: "conflict",
+            reason: "worker/harness does not support steering",
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderApp(`/runs/${run.id}`);
+    await screen.findByRole("heading", { name: "Settle the batch" });
+    await user.click(screen.getByRole("button", { name: "Interrupt" }));
+    const dialog = await screen.findByRole("dialog", { name: "Interrupt this turn?" });
+    await user.click(within(dialog).getByRole("button", { name: "Interrupt" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "worker/harness does not support steering",
+    );
+    expect(screen.getByText("None yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("counts the idle window down and disables steering at zero", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
     const idleUntil = "2026-04-02T15:30:00Z";
