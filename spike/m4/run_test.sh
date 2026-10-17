@@ -1681,6 +1681,118 @@ EOF
   return "$rc"
 }
 
+case_failure_line_secrets() {
+  local dir="" mode="" rc=0 state="" summary="" message="" stars="" name="" i=0
+  local saved_mode="${MODE:-}" status=0 body=""
+  local -a saved_secrets=() names=()
+  local -a was_set=() saved_values=()
+  saved_secrets=("${SECRETS[@]+"${SECRETS[@]}"}")
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    names+=("$name")
+    if [[ -n "${!name+x}" ]]; then
+      was_set+=("1")
+      saved_values+=("${!name}")
+    else
+      was_set+=("0")
+      saved_values+=("")
+    fi
+  done < <(secret_env_names)
+  FACTORY_WORKER_API_KEY="worker-m4sec-shared-tail-aa11"
+  S3_SECRET_KEY="m4sec-shared-tail-aa11"
+  POSTGRES_PASSWORD="m4sec-pg-bb22cc33"
+  FACTORY_API_KEY="m4sec-api-cc334455"
+  OPENAI_API_KEY="m4sec-openai-dd445566"
+  FACTORY_INFERENCE_OPENAI_API_KEY="m4sec-inf-openai-44ee55"
+  M1_OPENAI_API_KEY="m4sec-m1-openai-55ff66"
+  GH_TOKEN="m4sec-gh-ee556677"
+  LIVE_TOKEN="m4sec-live-ff667788"
+  FACTORY_SECRET_GH_TOKEN="m4sec-fgh-00112233"
+  FACTORY_GITHUB_WEBHOOK_SECRET="m4sec-hook-22334455"
+  M4_GITHUB_APP_PRIVATE_KEY="m4sec-pem-44556677"
+  FACTORY_SLACK_BOT_TOKEN="m4sec-slackbot-667788"
+  M4_SLACK_BOT_TOKEN="m4sec-m4slack-889900"
+  FACTORY_SLACK_SIGNING_SECRET="m4sec-slacksign-00aa11"
+  SLACK_TEST_USER_TOKEN="m4sec-slackuser-11bb22"
+  FACTORY_LINEAR_API_KEY="m4sec-linear-22cc33"
+  FACTORY_LINEAR_WEBHOOK_SECRET="m4sec-linhook-33dd44"
+  dir="$(mktemp -d)"
+  printf '%s\n' '{"provider":"github","external_ref":"polds/factory#83","work_item_id":"wi_1","run":{"id":"run_9","status":"failed","failure_reason":"container_exit"}}' >"$dir/failed.json"
+  printf '%s\n' '{"id":"wi_1","stage":"triage","status":"open"}' >"$dir/task.json"
+  summary="${FACTORY_WORKER_API_KEY} ${S3_SECRET_KEY} ${POSTGRES_PASSWORD} ${FACTORY_API_KEY} ${OPENAI_API_KEY} ${FACTORY_INFERENCE_OPENAI_API_KEY} ${M1_OPENAI_API_KEY} ${GH_TOKEN} ${LIVE_TOKEN} ${FACTORY_SECRET_GH_TOKEN} ${FACTORY_GITHUB_WEBHOOK_SECRET} ${M4_GITHUB_APP_PRIVATE_KEY} ${FACTORY_SLACK_BOT_TOKEN} ${M4_SLACK_BOT_TOKEN} ${FACTORY_SLACK_SIGNING_SECRET} ${SLACK_TEST_USER_TOKEN} ${FACTORY_LINEAR_API_KEY} ${FACTORY_LINEAR_WEBHOOK_SECRET}"
+  printf '%s\n' "data: {\"type\":\"run.terminal\",\"summary\":\"${summary}\"}" >"$dir/events.txt"
+  : >"$dir/logs.txt"
+  stars="*** *** *** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***"
+  message="work item wi_1 escalated at stage triage: run run_9 failed: container_exit: ${stars}"
+  for mode in offline live live-ci; do
+    MODE="$mode"
+    state="$(read_live_work_state 200 "$dir/failed.json" "$dir/task.json" "$dir/events.txt" "$dir/logs.txt" "$dir/message")"
+    if [[ "$state" != failed || "$(cat "$dir/message")" != "$message" ]]; then
+      echo "${mode}: failure line was:" >&2
+      cat "$dir/message" >&2
+      rc=1
+    fi
+    if [[ "$rc" -eq 0 ]] && grep -F -q "m4sec-" "$dir/message"; then
+      echo "${mode}: failure line kept a secret" >&2
+      rc=1
+    fi
+  done
+  if [[ "$rc" -eq 0 ]] && ! secret_env_names | grep -F -q FACTORY_WORKER_API_KEY; then
+    echo "secret list omitted FACTORY_WORKER_API_KEY" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! declare -f scan_logs_for_secrets | grep -F -q remember_secret_env; then
+    echo "log scanner does not read the shared secret list" >&2
+    rc=1
+  fi
+  SECRETS=()
+  remember_secret_env 16
+  printf '%s\n' "leak ${FACTORY_WORKER_API_KEY}" >"$dir/leak.txt"
+  if [[ "$rc" -eq 0 ]] && scan_files "$dir/leak.txt"; then
+    echo "log scanner missed FACTORY_WORKER_API_KEY" >&2
+    rc=1
+  fi
+  printf '%s\n' "factoryd ready" >"$dir/plain.txt"
+  POSTGRES_PASSWORD="factory"
+  SECRETS=()
+  remember_secret_env 16
+  if [[ "$rc" -eq 0 ]] && ! scan_files "$dir/plain.txt"; then
+    echo "log scanner treated the short dev password as a needle" >&2
+    rc=1
+  fi
+  body="$(declare -f poll_live_work)"
+  if [[ "$rc" -eq 0 ]] && grep -E -q -- '-m (2|10)' <<<"$body"; then
+    echo "factoryd work-item curls are not limited to 5 seconds" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && [[ "$(grep -c -- '-m 5' <<<"$body")" -ne 3 ]]; then
+    echo "factoryd work-item curls did not all use -m 5" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q 'run_bounded 5 compose logs --tail 200' <<<"$body"; then
+    echo "fail-path compose logs has no bound" >&2
+    rc=1
+  fi
+  status=0
+  run_bounded 1 sleep 30 || status=$?
+  if [[ "$rc" -eq 0 && "$status" -eq 0 ]]; then
+    echo "run_bounded did not stop a long command" >&2
+    rc=1
+  fi
+  MODE="$saved_mode"
+  SECRETS=("${saved_secrets[@]+"${saved_secrets[@]}"}")
+  for name in "${names[@]}"; do
+    if [[ "${was_set[$i]}" -eq 1 ]]; then
+      printf -v "$name" '%s' "${saved_values[$i]}"
+    else
+      unset "$name"
+    fi
+    i=$((i + 1))
+  done
+  rm -rf "$dir"
+  return "$rc"
+}
+
 case_no_gnu_flags() {
   if grep -n -E '(grep[[:space:]]+-P|sed[[:space:]]+-i|[[:space:]]mapfile[[:space:]]|^mapfile[[:space:]]|(^|[[:space:]])timeout[[:space:]])' \
     "$SCRIPT" "$HERE/run_test.sh"; then
@@ -1725,6 +1837,7 @@ run_case live_label_sender case_live_label_sender
 run_case host_catalog_probe case_host_catalog_probe
 run_case live_work_failure case_live_work_failure
 run_case select_draft_pull case_select_draft_pull
+run_case failure_line_secrets case_failure_line_secrets
 run_case no_gnu_flags case_no_gnu_flags
 
 echo

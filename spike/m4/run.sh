@@ -380,11 +380,82 @@ compose() {
   docker compose -p "$PROJECT" -f "$COMPOSE_BASE" -f "$COMPOSE_OVERLAY" "$@"
 }
 
+# run_bounded stops a command after a whole number of seconds.
+run_bounded() {
+  local seconds="$1" pid="" waited=0
+  shift
+  "$@" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ "$waited" -ge "$seconds" ]]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$pid"
+}
+
 remember() {
-  local value="$1"
-  if [[ -n "$value" ]]; then
-    SECRETS+=("$value")
+  local value="$1" existing=""
+  if [[ -z "$value" ]]; then
+    return 0
   fi
+  for existing in "${SECRETS[@]+"${SECRETS[@]}"}"; do
+    if [[ "$existing" == "$value" ]]; then
+      return 0
+    fi
+  done
+  SECRETS+=("$value")
+}
+
+# secret_env_names is the only list of secret-bearing environment variables.
+# Failure-line redaction and the log scanner both read it.
+secret_env_names() {
+  printf '%s\n' \
+    FACTORY_API_KEY \
+    FACTORY_WORKER_API_KEY \
+    S3_SECRET_KEY \
+    POSTGRES_PASSWORD \
+    OPENAI_API_KEY \
+    FACTORY_INFERENCE_OPENAI_API_KEY \
+    M1_OPENAI_API_KEY \
+    GH_TOKEN \
+    LIVE_TOKEN \
+    FACTORY_SECRET_GH_TOKEN \
+    FACTORY_GITHUB_WEBHOOK_SECRET \
+    M4_GITHUB_APP_PRIVATE_KEY \
+    FACTORY_SLACK_BOT_TOKEN \
+    M4_SLACK_BOT_TOKEN \
+    FACTORY_SLACK_SIGNING_SECRET \
+    SLACK_TEST_USER_TOKEN \
+    FACTORY_LINEAR_API_KEY \
+    FACTORY_LINEAR_WEBHOOK_SECRET
+}
+
+# secret_env_values prints NUL-terminated values from secret_env_names
+# whose length is at least min_len.
+secret_env_values() {
+  local min_len="$1" name="" value=""
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    value="${!name-}"
+    if [[ ${#value} -ge "$min_len" ]]; then
+      printf '%s\0' "$value"
+    fi
+  done < <(secret_env_names)
+}
+
+# remember_secret_env records those values for the log scanner.
+# The failure line redacts length 6 and up. The scanner uses 16 so a
+# short dev password is not matched inside ordinary words such as factoryd.
+remember_secret_env() {
+  local min_len="$1" value=""
+  while IFS= read -r -d '' value; do
+    remember "$value"
+  done < <(secret_env_values "$min_len")
 }
 
 scan_files() {
@@ -463,6 +534,7 @@ log_files() {
 }
 
 scan_logs_for_secrets() {
+  remember_secret_env 16
   log_files
   scan_files "${LOG_FILES[@]+"${LOG_FILES[@]}"}"
 }
@@ -1956,12 +2028,17 @@ live_wait_note() {
 # redacted reason to the message path.
 read_live_work_state() {
   local code="$1" external="$2" task="$3" events="$4" logs="$5" message_path="$6"
-  python3 - "$code" "$external" "$task" "$events" "$logs" "$message_path" <<'PY'
+  local -a secret_values=()
+  local secret_value=""
+  while IFS= read -r -d '' secret_value; do
+    secret_values+=("$secret_value")
+  done < <(secret_env_values 6)
+  python3 - "$code" "$external" "$task" "$events" "$logs" "$message_path" "${secret_values[@]+"${secret_values[@]}"}" <<'PY'
 import json
-import os
 import sys
 
 code, external_path, task_path, events_path, logs_path, message_path = sys.argv[1:7]
+secret_values = sys.argv[7:]
 
 
 def load_json(path):
@@ -1977,29 +2054,11 @@ def load_json(path):
         return None
 
 
-def secret_values():
-    names = (
-        "FACTORY_API_KEY",
-        "OPENAI_API_KEY",
-        "GH_TOKEN",
-        "LIVE_TOKEN",
-        "FACTORY_SECRET_GH_TOKEN",
-        "FACTORY_GITHUB_WEBHOOK_SECRET",
-        "FACTORY_SLACK_BOT_TOKEN",
-        "FACTORY_SLACK_SIGNING_SECRET",
-        "SLACK_TEST_USER_TOKEN",
-        "M4_GITHUB_APP_PRIVATE_KEY",
-    )
-    values = []
-    for name in names:
-        value = os.environ.get(name, "")
-        if len(value) >= 6:
-            values.append(value)
-    return values
-
-
 def redact(text, values):
-    for value in values:
+    ordered = sorted(set(values), key=len, reverse=True)
+    for value in ordered:
+        if len(value) < 6:
+            continue
         text = text.replace(value, "***")
     return text
 
@@ -2043,7 +2102,7 @@ def log_lines(text):
 
 def finish(state, message=""):
     if message:
-        message = redact(message, secret_values())
+        message = redact(message, secret_values)
         if len(message) > 500:
             message = message[:500]
         open(message_path, "w", encoding="utf-8").write(message)
@@ -2151,7 +2210,7 @@ PY
     return 0
   fi
   code="$(
-    curl -sS -o "$body" -w '%{http_code}' --connect-timeout 2 -m 10 \
+    curl -sS -o "$body" -w '%{http_code}' --connect-timeout 2 -m 5 \
       -H "Authorization: Bearer ${FACTORY_API_KEY}" \
       -H "Accept: application/json" \
       "$url" 2>"$dir/curl.err"
@@ -2161,20 +2220,20 @@ PY
     run_status="$(live_json_field "$body" "run.status")"
     work_id="$(live_json_field "$body" "work_item_id")"
     if [[ "$work_id" =~ ^[A-Za-z0-9_-]+$ && "${FACTORY_NAME}" =~ ^[A-Za-z0-9_-]+$ ]]; then
-      curl -sS -o "$task" --connect-timeout 2 -m 10 \
+      curl -sS -o "$task" --connect-timeout 2 -m 5 \
         -H "Authorization: Bearer ${FACTORY_API_KEY}" \
         -H "Accept: application/json" \
         "http://127.0.0.1:8080/api/v1/factory/${FACTORY_NAME}/tasks/${work_id}" \
         >/dev/null 2>>"$dir/curl.err" || true
     fi
     if [[ "$run_id" =~ ^[A-Za-z0-9_-]+$ && ("$run_status" == failed || "$run_status" == cancelled) ]]; then
-      curl -sS --connect-timeout 2 -m 2 -o "$events" \
+      curl -sS --connect-timeout 2 -m 5 -o "$events" \
         -H "Authorization: Bearer ${FACTORY_API_KEY}" \
         -H "Accept: text/event-stream" \
         "http://127.0.0.1:8080/api/v1/agent/runs/${run_id}/events" \
         >/dev/null 2>>"$dir/curl.err" || true
       if ! grep -F -q 'provider HTTP' "$events"; then
-        compose logs --tail 200 --no-color factoryd worker >"$logs" 2>/dev/null || true
+        run_bounded 5 compose logs --tail 200 --no-color factoryd worker >"$logs" 2>/dev/null || true
       fi
     fi
   fi
