@@ -11,6 +11,7 @@ import (
 
 	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/definition"
+	"github.com/polds/factory/internal/failure"
 	"github.com/polds/factory/internal/handoff"
 	"github.com/polds/factory/internal/orchestrator"
 	"github.com/polds/factory/internal/store"
@@ -241,7 +242,7 @@ func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
 	case store.StatusFailed:
 		ev = orchestrator.RunFailed{
 			Stage: run.Stage,
-			Infra: isInfraFailure(run.FailureReason, run.ExitCode),
+			Infra: reviewerInfra(run.Status, run.FailureReason, run.ExitCode),
 		}
 	default:
 		return
@@ -1066,45 +1067,17 @@ func (s *Server) sweepStaleSuspensions(ctx context.Context) error {
 	return nil
 }
 
-// TODO(T47): replace with failure.Classify.
-//
-// isInfraFailure reports whether a failed run is infrastructure, using the
-// Contracts table. Agent (exit 10 or failed_by_agent) and configuration
-// (exit 20 or config_invalid) are not infrastructure, so a reviewing failure
-// of those classes still revises. superseded_duplicate_building_run is
-// cancelled, not infrastructure.
-func isInfraFailure(reason string, exit *int) bool {
-	reason = strings.TrimSpace(reason)
-	code := 0
-	hasExit := exit != nil
-	if hasExit {
-		code = *exit
-	}
-	if hasExit && code == 10 {
-		return false
-	}
-	if reason == "failed_by_agent" {
-		return false
-	}
-	if reason == "config_invalid" || (hasExit && code == 20) {
-		return false
-	}
-	if reason == "superseded_duplicate_building_run" {
-		return false
-	}
-	if reason == "model_unavailable" || (hasExit && code == 21) {
-		return true
-	}
-	if reason == "environment_setup_failed" || (hasExit && code == 30) {
-		return true
-	}
-	if hasExit && code >= 128 {
-		return true
-	}
-	if reason == "container_exit" {
-		return true
-	}
-	return reason != ""
+// reviewerInfra reports whether this run is an infrastructure failure.
+// Class comes from failure.Classify. The runs row carries status,
+// failure_reason, and exit_code. Harness status and
+// executions.failure_details_json are not columns of runs, so they are
+// not passed.
+func reviewerInfra(status, reason string, exit *int) bool {
+	return failure.Classify(failure.Input{
+		RunStatus:     status,
+		FailureReason: reason,
+		ExitCode:      exit,
+	}).Class == failure.ClassInfrastructure
 }
 
 // priorReviewerInfraFails counts infrastructure-failed reviewing runs for the
@@ -1119,7 +1092,7 @@ func (s *Server) priorReviewerInfraFails(ctx context.Context, q interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }, workItemID, currentRunID string) (int, error) {
 	rows, err := q.Query(ctx, `
-		SELECT COALESCE(r.failure_reason, ''), r.exit_code
+		SELECT r.status, COALESCE(r.failure_reason, ''), r.exit_code
 		FROM runs r
 		WHERE r.work_item_id = $1
 		  AND r.stage = $2
@@ -1138,12 +1111,12 @@ func (s *Server) priorReviewerInfraFails(ctx context.Context, q interface {
 	defer rows.Close()
 	n := 0
 	for rows.Next() {
-		var reason string
+		var status, reason string
 		var exit *int
-		if err := rows.Scan(&reason, &exit); err != nil {
+		if err := rows.Scan(&status, &reason, &exit); err != nil {
 			return 0, err
 		}
-		if isInfraFailure(reason, exit) {
+		if reviewerInfra(status, reason, exit) {
 			n++
 		}
 	}
@@ -1252,7 +1225,7 @@ func (s *Server) recoverReviewerRetries(ctx context.Context) error {
 		return nil
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT r.id, COALESCE(r.failure_reason, ''), r.exit_code
+		SELECT r.id, r.status, COALESCE(r.failure_reason, ''), r.exit_code
 		FROM work_items w
 		JOIN LATERAL (
 			SELECT id, status, failure_reason, exit_code
@@ -1269,13 +1242,14 @@ func (s *Server) recoverReviewerRetries(ctx context.Context) error {
 	defer rows.Close()
 	type failedReview struct {
 		id     string
+		status string
 		reason string
 		exit   *int
 	}
 	var pending []failedReview
 	for rows.Next() {
 		var row failedReview
-		if err := rows.Scan(&row.id, &row.reason, &row.exit); err != nil {
+		if err := rows.Scan(&row.id, &row.status, &row.reason, &row.exit); err != nil {
 			return err
 		}
 		pending = append(pending, row)
@@ -1285,7 +1259,7 @@ func (s *Server) recoverReviewerRetries(ctx context.Context) error {
 	}
 	rows.Close()
 	for _, row := range pending {
-		if !isInfraFailure(row.reason, row.exit) {
+		if !reviewerInfra(row.status, row.reason, row.exit) {
 			continue
 		}
 		run, err := s.store.GetRun(ctx, row.id)

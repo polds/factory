@@ -16,6 +16,7 @@ import (
 
 	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/defsync"
+	"github.com/polds/factory/internal/failure"
 	"github.com/polds/factory/internal/protocol"
 	"github.com/polds/factory/internal/store"
 )
@@ -255,36 +256,31 @@ func TestE2ERevisionLimitEscalates(t *testing.T) {
 	}
 }
 
-func TestIsInfraFailure(t *testing.T) {
-	exit := func(n int) *int { return &n }
-	cases := []struct {
-		reason string
-		exit   *int
-		infra  bool
-	}{
-		{reason: "failed_by_agent", exit: exit(10), infra: false},
-		{reason: "container_exit", exit: exit(10), infra: false},
-		{reason: "model_unavailable", exit: exit(10), infra: false},
-		{reason: "failed_by_agent", exit: exit(137), infra: false},
-		{reason: "config_invalid", exit: exit(20), infra: false},
-		{reason: "config_invalid", exit: exit(137), infra: false},
-		{reason: "container_exit", exit: exit(20), infra: false},
-		{reason: "superseded_duplicate_building_run", exit: exit(1), infra: false},
-		{reason: "", exit: nil, infra: false},
-		{reason: "model_unavailable", exit: exit(21), infra: true},
-		{reason: "environment_setup_failed", exit: exit(30), infra: true},
-		{reason: "", exit: exit(21), infra: true},
-		{reason: "", exit: exit(30), infra: true},
-		{reason: "container_exit", exit: exit(137), infra: true},
-		{reason: "container_exit", exit: exit(1), infra: true},
-		{reason: "container_exit", exit: nil, infra: true},
-		{reason: "", exit: exit(128), infra: true},
-		{reason: "worker_lost", exit: nil, infra: true},
-	}
-	for _, tc := range cases {
-		if got := isInfraFailure(tc.reason, tc.exit); got != tc.infra {
-			t.Errorf("isInfraFailure(%q, %v) = %v, want %v", tc.reason, tc.exit, got, tc.infra)
+// TestReviewerRetryMatchesClassify checks the retry bit against
+// failure.Classify for every Cases row whose inputs are columns of runs:
+// status, failure_reason, and exit_code. Rows that need HarnessStatus or
+// executions.failure_details_json are skipped; those values are not on the
+// run row advanceAfterTerminal already loaded.
+func TestReviewerRetryMatchesClassify(t *testing.T) {
+	seen := 0
+	for _, rule := range failure.Cases() {
+		in := rule.Input
+		if in.HarnessStatus != "" || len(in.Details) > 0 {
+			continue
 		}
+		seen++
+		got := reviewerInfra(in.RunStatus, in.FailureReason, in.ExitCode)
+		want := failure.Classify(in).Class == failure.ClassInfrastructure
+		if got != want {
+			t.Errorf("%s: retry %v, infrastructure %v", rule.Name, got, want)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no Cases rows were checked")
+	}
+	code := 10
+	if reviewerInfra(failure.StatusFailed, failure.ReasonContainerExit, &code) {
+		t.Fatal("exit 10 with container_exit retried")
 	}
 }
 
