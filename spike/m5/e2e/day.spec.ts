@@ -254,7 +254,9 @@ test("day of factory", async ({ browser }) => {
     await expect(page.locator("strong").filter({ hasText: /^Handoff$/ })).toBeVisible();
     const prAck = await signal("deliver", '{"op":"pr"}\n');
     if (!prAck.startsWith("status 2")) throw new Error(`step 6: pr delivery ${prAck}`);
-    await expect(page.getByRole("link", { name: prURL })).toBeVisible({ timeout: 60_000 });
+    await page.reload();
+    await expect(page.locator("strong").filter({ hasText: /^Handoff$/ })).toBeVisible();
+    await expect(page.getByRole("link", { name: prURL })).toBeVisible({ timeout: 30_000 });
     await axe(page, "work-item");
     await saveShot(page, "handoff");
 
