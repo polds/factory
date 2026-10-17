@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -96,6 +97,11 @@ func (t toolbox) bash(ctx context.Context, command string) toolResult {
 	cmd := exec.CommandContext(cctx, "sh", "-c", command)
 	cmd.Dir = t.workspace
 	cmd.Env = t.env
+	// Own process group so an interrupt can signal the shell and every
+	// child it spawned. Killing only the shell leaves orphans that still
+	// hold the output pipes.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
@@ -111,6 +117,20 @@ func (t toolbox) bash(ctx context.Context, command string) toolResult {
 		return toolResult{Output: out}
 	}
 	return toolResult{OK: true, Output: out}
+}
+
+// killProcessGroup signals the command's process group. Setpgid makes the
+// shell the group leader, and its children stay in that group, so one
+// signal reaps the pipeline and anything it backgrounded.
+func killProcessGroup(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return os.ErrProcessDone
+	}
+	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
 }
 
 func (t toolbox) read(path string) toolResult {

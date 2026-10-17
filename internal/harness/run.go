@@ -63,18 +63,35 @@ func Run(ctx context.Context, opt Options) int {
 	}
 	defer func() { _ = ef.Close() }()
 	eventOut := io.Writer(ef)
-	if rep := startEventReporter(opt.Env); rep != nil {
+	rep := startEventReporter(opt.Env)
+	if rep != nil {
 		eventOut = reportWriter{w: ef, push: rep.push}
 		defer rep.flush()
 	}
 	log := NewLog(eventOut, opt.Now)
 
-	var secrets []string
+	var (
+		secrets   []string
+		hub       *steerHub
+		stopSteer func()
+	)
 	finish := func(code int, status, summary string) int {
+		// Stop the poller before the terminal event so a late capability
+		// cannot land after it.
+		if stopSteer != nil {
+			stopSteer()
+		}
 		summary = Redact(summary, secrets)
 		_ = log.Emit(Event{Type: "terminal", Status: status, Summary: summary})
 		warnf(opt.Stderr, "factory-harness: %s\n", summary)
 		return code
+	}
+	if rep != nil {
+		if endpoint, err := steerEndpoint(lookupEnv(opt.Env, "FACTORY_EVENTS_URL")); err == nil {
+			hub = newSteerHub()
+			stopSteer = startSteerPoller(ctx, endpoint, secretValue(lookupEnv(opt.Env, "FACTORY_RUN_TOKEN")), log, hub)
+			defer stopSteer()
+		}
 	}
 
 	if inv.TaskID() == "" {
@@ -132,6 +149,25 @@ func Run(ctx context.Context, opt Options) int {
 
 	apiKey := lookupEnv(opt.Env, "OPENAI_API_KEY")
 	box := toolbox{workspace: opt.Workspace, env: scrubEnv(opt.Env, toolEnvDeny(task.HarnessAuthEnv))}
+	// Parsed up front so an interrupt during the conversation can wait
+	// out the same idle budget. A bad value is reported only after the
+	// conversation, matching a run that never steers.
+	idle, idleErr := idleDuration(inv.IdleOnComplete())
+	if idleErr != nil {
+		idle = 0
+	}
+	conv := conversation{
+		log:      log,
+		box:      box,
+		baseURL:  baseURL,
+		apiKey:   apiKey,
+		model:    model,
+		secrets:  secrets,
+		maxTurns: turns,
+		runtime:  opt.RuntimeDir,
+		hub:      hub,
+		idle:     idle,
+	}
 
 	summary := "skipped initial turn"
 	if !inv.SkipInitialTurn() {
@@ -142,24 +178,30 @@ func Run(ctx context.Context, opt Options) int {
 		if prompt == "" {
 			return finish(ExitConfigInvalid, "config_invalid", "prompt is empty")
 		}
-		code, status, summaryRun := runConversation(ctx, log, box, baseURL, apiKey, model, prompt, secrets, turns)
+		code, status, summaryRun := conv.run(ctx, prompt)
 		summary = summaryRun
 		if code != ExitOK {
 			return finish(code, status, summary)
 		}
 	}
-
-	idle, err := idleDuration(inv.IdleOnComplete())
-	if err != nil {
-		return finish(ExitConfigInvalid, "config_invalid", err.Error())
+	if idleErr != nil {
+		return finish(ExitConfigInvalid, "config_invalid", idleErr.Error())
 	}
+
 	deadline := time.Now().Add(idle)
 	for idle > 0 && time.Now().Before(deadline) {
-		next, ok := pollFollowup(ctx, opt.RuntimeDir, deadline)
+		next, ok := pollFollowup(ctx, opt.RuntimeDir, deadline, hub)
 		if !ok {
 			break
 		}
-		code, status, summaryRun := runConversation(ctx, log, box, baseURL, apiKey, model, next, secrets, turns)
+		if next.steerID != "" {
+			_ = log.Emit(Event{
+				Type:    "followup.received",
+				SteerID: next.steerID,
+				Text:    Redact(next.text, secrets),
+			})
+		}
+		code, status, summaryRun := conv.run(ctx, next.text)
 		summary = summaryRun
 		if code != ExitOK {
 			return finish(code, status, summary)
@@ -184,117 +226,272 @@ func idleDuration(raw string) (time.Duration, error) {
 	return d, nil
 }
 
-func pollFollowup(ctx context.Context, runtime string, deadline time.Time) (string, bool) {
+// followUp is one resumed user turn. steerID is empty when it came from
+// followup.json. Steer follow-ups and file follow-ups share this wait so
+// the idle window has a single code path.
+type followUp struct {
+	text    string
+	steerID string
+}
+
+func pollFollowup(ctx context.Context, runtime string, deadline time.Time, hub *steerHub) (followUp, bool) {
 	path := filepath.Join(runtime, "followup.json")
 	for {
-		if ctx.Err() != nil || !time.Now().Before(deadline) {
-			return "", false
+		if text, ok := readFollowupFile(path); ok {
+			return followUp{text: text}, true
 		}
-		b, err := os.ReadFile(path)
-		if err == nil {
-			var body struct {
-				Prompt string `json:"prompt"`
-			}
-			if json.Unmarshal(b, &body) == nil && strings.TrimSpace(body.Prompt) != "" {
-				_ = os.Remove(path)
-				return body.Prompt, true
-			}
+		if msg, ok := hub.takeFollowup(); ok {
+			return followUp{text: msg.Text, steerID: msg.ID}, true
+		}
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			return followUp{}, false
+		}
+		var wake <-chan struct{}
+		if hub != nil {
+			wake = hub.wake
 		}
 		timer := time.NewTimer(50 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return "", false
+			return followUp{}, false
+		case <-wake:
+			timer.Stop()
 		case <-timer.C:
 		}
 	}
 }
 
-func runConversation(ctx context.Context, log *Log, box toolbox, baseURL, apiKey, model, prompt string, secrets []string, maxTurns int) (int, string, string) {
+func readFollowupFile(path string) (string, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var body struct {
+		Prompt string `json:"prompt"`
+	}
+	if json.Unmarshal(b, &body) != nil || strings.TrimSpace(body.Prompt) == "" {
+		return "", false
+	}
+	_ = os.Remove(path)
+	return body.Prompt, true
+}
+
+// conversation is one model session. A steer follow-up that arrives while
+// the session is live is appended to messages. A follow-up that arrives
+// after it has returned is delivered by pollFollowup and starts run again.
+type conversation struct {
+	log      *Log
+	box      toolbox
+	baseURL  string
+	apiKey   string
+	model    string
+	secrets  []string
+	maxTurns int
+	runtime  string
+	hub      *steerHub
+	idle     time.Duration
+}
+
+func (c conversation) run(ctx context.Context, prompt string) (int, string, string) {
 	messages := []chatMessage{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: prompt},
 	}
-	for turn := 1; turn <= maxTurns; turn++ {
-		if err := log.Emit(Event{Type: "turn.started", Turn: turn, ModelID: model}); err != nil {
-			return ExitEnvironment, "environment_setup_failed", err.Error()
-		}
-		resp, err := completeChat(ctx, baseURL, apiKey, chatRequest{
-			Model:    model,
-			Messages: messages,
-			Tools:    toolSchema,
-		})
-		if err != nil {
-			code := classifyProvider(err)
-			status := "model_unavailable"
-			if code == ExitConfigInvalid {
-				status = "config_invalid"
-			}
-			return code, status, err.Error()
-		}
-		msg := resp.Choices[0].Message
-		if resp.Usage != nil {
-			_ = log.Emit(Event{
-				Type:         "usage",
-				Turn:         turn,
-				ModelID:      model,
-				InputTokens:  resp.Usage.PromptTokens,
-				OutputTokens: resp.Usage.CompletionTokens,
-			})
-		}
-		if text := strings.TrimSpace(msg.Content); text != "" && len(msg.ToolCalls) == 0 {
-			red := Redact(text, secrets)
-			_ = log.Emit(Event{Type: "message.delta", Turn: turn, Role: "assistant", Text: red})
-			if summary, ok := agentFailure(text); ok {
-				return ExitAgentReported, "failed_by_agent", Redact(summary, secrets)
-			}
-			return ExitOK, "succeeded", red
-		}
-		if len(msg.ToolCalls) == 0 {
-			return ExitModelUnavailable, "model_unavailable", "model returned an empty message"
-		}
-		messages = append(messages, chatMessage{
-			Role:      "assistant",
-			Content:   msg.Content,
-			ToolCalls: msg.ToolCalls,
-		})
-		for _, call := range msg.ToolCalls {
-			rawIn := visibleInput(call.Function.Name, call.Function.Arguments)
-			_ = log.Emit(Event{
-				Type:          "tool.call",
-				Turn:          turn,
-				Tool:          call.Function.Name,
-				RedactedInput: Redact(rawIn, secrets),
-				InputDigest:   Digest(rawIn),
-			})
-			start := time.Now()
-			result := box.run(ctx, call.Function.Name, call.Function.Arguments)
-			ms := time.Since(start).Milliseconds()
-			ok := result.OK
-			_ = log.Emit(Event{
-				Type:         "tool.result",
-				Turn:         turn,
-				Tool:         call.Function.Name,
-				OK:           &ok,
-				DurationMS:   &ms,
-				OutputDigest: Digest(result.Output),
-			})
-			if result.Changed {
-				_ = log.Emit(Event{
-					Type:      "file.changed",
-					Path:      result.RelPath,
-					Additions: result.Additions,
-					Deletions: result.Deletions,
-				})
-			}
-			messages = append(messages, chatMessage{
-				Role:       "tool",
-				ToolCallID: call.ID,
-				Content:    result.Output,
-			})
+	for turn := 1; turn <= c.maxTurns; turn++ {
+		messages = c.drainFollowups(messages)
+		var (
+			cont    bool
+			code    int
+			status  string
+			summary string
+		)
+		messages, cont, code, status, summary = c.oneTurn(ctx, turn, messages)
+		if !cont {
+			return code, status, summary
 		}
 	}
-	return ExitAgentReported, "failed_by_agent", fmt.Sprintf("stopped after %d model turns", maxTurns)
+	return ExitAgentReported, "failed_by_agent", fmt.Sprintf("stopped after %d model turns", c.maxTurns)
+}
+
+func (c conversation) oneTurn(ctx context.Context, turn int, messages []chatMessage) ([]chatMessage, bool, int, string, string) {
+	if err := c.log.Emit(Event{Type: "turn.started", Turn: turn, ModelID: c.model}); err != nil {
+		return messages, false, ExitEnvironment, "environment_setup_failed", err.Error()
+	}
+	turnCtx, turnCancel := context.WithCancel(ctx)
+	defer turnCancel()
+	if c.hub != nil {
+		gen := c.hub.bindTurn(turnCancel)
+		defer c.hub.unbindTurn(gen)
+	}
+	resp, err := completeChat(turnCtx, c.baseURL, c.apiKey, chatRequest{
+		Model:    c.model,
+		Messages: messages,
+		Tools:    toolSchema,
+	})
+	if c.turnInterrupted(ctx, turnCtx) {
+		return c.finishInterrupt(ctx, turn, messages)
+	}
+	if err != nil {
+		code := classifyProvider(err)
+		status := "model_unavailable"
+		if code == ExitConfigInvalid {
+			status = "config_invalid"
+		}
+		return messages, false, code, status, err.Error()
+	}
+	msg := resp.Choices[0].Message
+	if resp.Usage != nil {
+		_ = c.log.Emit(Event{
+			Type:         "usage",
+			Turn:         turn,
+			ModelID:      c.model,
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
+		})
+	}
+	if text := strings.TrimSpace(msg.Content); text != "" && len(msg.ToolCalls) == 0 {
+		if c.turnInterrupted(ctx, turnCtx) {
+			return c.finishInterrupt(ctx, turn, messages)
+		}
+		red := Redact(text, c.secrets)
+		_ = c.log.Emit(Event{Type: "message.delta", Turn: turn, Role: "assistant", Text: red})
+		if summary, ok := agentFailure(text); ok {
+			return messages, false, ExitAgentReported, "failed_by_agent", Redact(summary, c.secrets)
+		}
+		return messages, false, ExitOK, "succeeded", red
+	}
+	if len(msg.ToolCalls) == 0 {
+		return messages, false, ExitModelUnavailable, "model_unavailable", "model returned an empty message"
+	}
+	if c.turnInterrupted(ctx, turnCtx) {
+		return c.finishInterrupt(ctx, turn, messages)
+	}
+	messages = append(messages, chatMessage{
+		Role:      "assistant",
+		Content:   msg.Content,
+		ToolCalls: msg.ToolCalls,
+	})
+	for i, call := range msg.ToolCalls {
+		if c.turnInterrupted(ctx, turnCtx) {
+			messages = interruptedTools(messages, msg.ToolCalls[i:])
+			return c.finishInterrupt(ctx, turn, messages)
+		}
+		rawIn := visibleInput(call.Function.Name, call.Function.Arguments)
+		_ = c.log.Emit(Event{
+			Type:          "tool.call",
+			Turn:          turn,
+			Tool:          call.Function.Name,
+			RedactedInput: Redact(rawIn, c.secrets),
+			InputDigest:   Digest(rawIn),
+		})
+		start := time.Now()
+		result := c.box.run(turnCtx, call.Function.Name, call.Function.Arguments)
+		ms := time.Since(start).Milliseconds()
+		output := result.Output
+		ok := result.OK
+		if c.turnInterrupted(ctx, turnCtx) {
+			ok = false
+			if strings.TrimSpace(output) == "" {
+				output = "interrupted"
+			}
+		}
+		_ = c.log.Emit(Event{
+			Type:         "tool.result",
+			Turn:         turn,
+			Tool:         call.Function.Name,
+			OK:           &ok,
+			DurationMS:   &ms,
+			OutputDigest: Digest(output),
+		})
+		if result.Changed && !c.turnInterrupted(ctx, turnCtx) {
+			_ = c.log.Emit(Event{
+				Type:      "file.changed",
+				Path:      result.RelPath,
+				Additions: result.Additions,
+				Deletions: result.Deletions,
+			})
+		}
+		messages = append(messages, chatMessage{
+			Role:       "tool",
+			ToolCallID: call.ID,
+			Content:    output,
+		})
+		if c.turnInterrupted(ctx, turnCtx) {
+			messages = interruptedTools(messages, msg.ToolCalls[i+1:])
+			return c.finishInterrupt(ctx, turn, messages)
+		}
+	}
+	return messages, true, 0, "", ""
+}
+
+func (c conversation) turnInterrupted(parent, turn context.Context) bool {
+	return c.hub != nil && turn.Err() != nil && parent.Err() == nil
+}
+
+func (c conversation) finishInterrupt(ctx context.Context, turn int, messages []chatMessage) ([]chatMessage, bool, int, string, string) {
+	saw := false
+	for {
+		msg, ok := c.hub.takeInterrupt()
+		if !ok {
+			break
+		}
+		saw = true
+		_ = c.log.Emit(Event{
+			Type:    "turn.interrupted",
+			Turn:    turn,
+			SteerID: msg.ID,
+			Text:    Redact(msg.Text, c.secrets),
+		})
+	}
+	if !saw {
+		return messages, false, ExitModelUnavailable, "model_unavailable", "model call canceled"
+	}
+	// The idle deadline bounds the wait. A follow-up that is already
+	// queued is taken before the deadline is consulted, so idle 0 still
+	// resumes when the interrupt and the follow-up arrived together.
+	next, ok := pollFollowup(ctx, c.runtime, time.Now().Add(c.idle), c.hub)
+	if !ok {
+		return messages, false, ExitOK, "succeeded", "turn interrupted"
+	}
+	if next.steerID != "" {
+		_ = c.log.Emit(Event{
+			Type:    "followup.received",
+			SteerID: next.steerID,
+			Text:    Redact(next.text, c.secrets),
+		})
+	}
+	messages = append(messages, chatMessage{Role: "user", Content: next.text})
+	return messages, true, 0, "", ""
+}
+
+func (c conversation) drainFollowups(messages []chatMessage) []chatMessage {
+	if c.hub == nil {
+		return messages
+	}
+	for {
+		msg, ok := c.hub.takeFollowup()
+		if !ok {
+			return messages
+		}
+		_ = c.log.Emit(Event{
+			Type:    "followup.received",
+			SteerID: msg.ID,
+			Text:    Redact(msg.Text, c.secrets),
+		})
+		messages = append(messages, chatMessage{Role: "user", Content: msg.Text})
+	}
+}
+
+func interruptedTools(messages []chatMessage, calls []toolCall) []chatMessage {
+	for _, call := range calls {
+		messages = append(messages, chatMessage{
+			Role:       "tool",
+			ToolCallID: call.ID,
+			Content:    "interrupted",
+		})
+	}
+	return messages
 }
 
 func visibleInput(name, args string) string {
