@@ -83,6 +83,58 @@ func TestAskInputRedactsQuestion(t *testing.T) {
 	}
 }
 
+// TestAskInputSkipsIdleOnComplete is the parked-run case. A positive
+// --idle-on-complete must not keep the process in the follow-up wait
+// after the question event. The clock jumps on each read, so entering
+// that wait still returns without sleeping, and the test can see it.
+func TestAskInputSkipsIdleOnComplete(t *testing.T) {
+	script := writeStubScript(t, `[
+		{"tool":"ask_input","args":{"text":"Which staging env?"}},
+		{"final":"should not be asked"}
+	]`)
+	base := startOfflineStub(t, script)
+	var reads int
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	prev := idleNow
+	idleNow = func() time.Time {
+		reads++
+		return start.Add(time.Duration(reads) * time.Hour)
+	}
+	t.Cleanup(func() { idleNow = prev })
+
+	began := time.Now()
+	code, raw := runAskIdle(t, base, "1m", nil)
+	elapsed := time.Since(began)
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, raw)
+	}
+	if reads != 0 {
+		t.Fatalf("idle-on-complete ran after the question (clock reads %d)", reads)
+	}
+	if elapsed >= 5*time.Second {
+		t.Fatalf("run took %s after the question", elapsed)
+	}
+	events := decodeAskEvents(t, raw)
+	questionAt := -1
+	for i, ev := range events {
+		if ev.Type == "question" {
+			if questionAt >= 0 {
+				t.Fatalf("question events more than one\n%s", raw)
+			}
+			questionAt = i
+			if ev.Gate != "clarification" || ev.Text != offlineQuestion {
+				t.Fatalf("question %+v", ev)
+			}
+		}
+		if ev.Text == "should not be asked" || ev.Summary == "should not be asked" {
+			t.Fatalf("model continued after ask_input: %+v", ev)
+		}
+	}
+	if questionAt < 0 || questionAt != len(events)-2 || events[len(events)-1].Type != "terminal" {
+		t.Fatalf("process did not exit on the question event\n%s", raw)
+	}
+}
+
 func TestAskInputEmptyTextDoesNotAsk(t *testing.T) {
 	script := writeStubScript(t, `[
 		{"tool":"ask_input","args":{}},
@@ -125,6 +177,11 @@ func writeStubScript(t *testing.T, body string) string {
 
 func runAsk(t *testing.T, baseURL string, extra []string) (int, string) {
 	t.Helper()
+	return runAskIdle(t, baseURL, "0s", extra)
+}
+
+func runAskIdle(t *testing.T, baseURL, idle string, extra []string) (int, string) {
+	t.Helper()
 	ws := t.TempDir()
 	rt := t.TempDir()
 	env := []string{
@@ -141,7 +198,7 @@ func runAsk(t *testing.T, baseURL string, extra []string) (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	code := Run(ctx, Options{
-		Args:       []string{"agent", "run", "--task-id", "ask", "--model", "offline-stub", "--idle-on-complete", "0s"},
+		Args:       []string{"agent", "run", "--task-id", "ask", "--model", "offline-stub", "--idle-on-complete", idle},
 		Env:        env,
 		Workspace:  ws,
 		RuntimeDir: rt,

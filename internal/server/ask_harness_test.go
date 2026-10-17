@@ -22,6 +22,18 @@ import (
 // The model calls ask_input, the inbox stores that question, the answer API
 // resumes the parked run, and the next model request contains the answer.
 func TestE2EAskInputReachesNextTurn(t *testing.T) {
+	e2eAskInputResume(t, "0s")
+}
+
+// TestE2EAskInputSkipsIdleAndResumes uses a positive idle duration. The
+// harness must still return as soon as the question is emitted, and the
+// answer API must resume that same run on the next assignment.
+func TestE2EAskInputSkipsIdleAndResumes(t *testing.T) {
+	e2eAskInputResume(t, "1m")
+}
+
+func e2eAskInputResume(t *testing.T, idle string) {
+	t.Helper()
 	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
 		t.Skip("FACTORY_TEST_DATABASE_URL unset")
 	}
@@ -44,9 +56,12 @@ func TestE2EAskInputReachesNextTurn(t *testing.T) {
 	asg := w.readAssignment(t)
 	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: asg.TaskID, WorkerID: "local-ask"})
 
-	code, stderr := runAssignedHarness(t, asg)
+	code, stderr, elapsed := runAssignedHarness(t, asg, idle)
 	if code != harness.ExitOK {
 		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	if idle != "0s" && elapsed >= 5*time.Second {
+		t.Fatalf("harness waited %s with --idle-on-complete=%s", elapsed, idle)
 	}
 	if n := len(chats.snapshot()); n != 1 {
 		t.Fatalf("model calls before the answer %d, want 1", n)
@@ -81,7 +96,7 @@ func TestE2EAskInputReachesNextTurn(t *testing.T) {
 		t.Fatal("resumed prompt is missing the question and answer")
 	}
 
-	code, stderr = runAssignedHarness(t, next)
+	code, stderr, _ = runAssignedHarness(t, next, "0s")
 	if code != harness.ExitOK {
 		t.Fatalf("resume exit %d\n%s", code, stderr)
 	}
@@ -141,7 +156,7 @@ func assertInboxQuestion(t *testing.T, env *env, workItemID, runID, question str
 	}
 }
 
-func runAssignedHarness(t *testing.T, asg protocol.TaskAssignment) (int, string) {
+func runAssignedHarness(t *testing.T, asg protocol.TaskAssignment, idle string) (int, string, time.Duration) {
 	t.Helper()
 	if asg.Task == nil || asg.Task.AgentConfigSnapshot == nil || asg.Task.AgentConfigSnapshot.ModelID == nil || *asg.Task.AgentConfigSnapshot.ModelID == "" {
 		t.Fatal("assignment has no model")
@@ -155,22 +170,24 @@ func runAssignedHarness(t *testing.T, asg protocol.TaskAssignment) (int, string)
 	var errBuf bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	began := time.Now()
 	code := harness.Run(ctx, harness.Options{
 		Args: []string{
 			"agent", "run",
 			"--task-id", asg.TaskID,
 			"--model", *asg.Task.AgentConfigSnapshot.ModelID,
-			"--idle-on-complete", "0s",
+			"--idle-on-complete", idle,
 		},
 		Env:        envVars,
 		Workspace:  ws,
 		RuntimeDir: rt,
 		Stderr:     &errBuf,
 	})
+	elapsed := time.Since(began)
 	if ctx.Err() != nil {
 		t.Fatalf("harness timed out\n%s", errBuf.String())
 	}
-	return code, errBuf.String()
+	return code, errBuf.String(), elapsed
 }
 
 type chatLog struct {

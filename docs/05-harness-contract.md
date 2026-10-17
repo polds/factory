@@ -123,9 +123,10 @@ Rules that matter:
   `cost per PR` is computable by stage ([08](08-measure-and-self-improvement.md)).
 - **`question` suspends the run** without consuming a worker slot once emitted with
   `--idle-on-complete` still pending. `generic-openai` emits it when the model
-  calls `ask_input` with `{"text":"…"}`. `text` is the question and `gate` is
-  `clarification`. The control plane reads `text`, parks the run, and on answer
-  appends the question and answer to the prompt for the next execution.
+  calls `ask_input` with `{"text":"…"}`, then exits. It does not enter the
+  follow-up wait, whatever that flag's duration is. `text` is the question and
+  `gate` is `clarification`. The control plane reads `text`, parks the run, and
+  on answer appends the question and answer to the prompt for the next execution.
 
 **v1 workers: event push.** An unmodified v1 worker delivers harness events only
 when the run ends. When `FACTORY_EVENTS_URL` and `FACTORY_RUN_TOKEN` are both
@@ -259,7 +260,8 @@ and the harness read them from the process environment. That run used model
 
 `bash`, `read`, `write`, `edit`, `grep`, `glob`, and `ask_input` are the tool set.
 `ask_input` takes `{"text":"<question>"}` and emits one `question` event, then
-ends the conversation. `write` and `edit` refuse a path outside the workspace.
+ends the conversation and exits without waiting out `--idle-on-complete`.
+`write` and `edit` refuse a path outside the workspace.
 `bash` is not jailed by the process.
 The task container is that boundary. Tool subprocesses do not receive
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FACTORY_SECRET_VALUES`, or names listed in

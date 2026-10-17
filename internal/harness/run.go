@@ -196,6 +196,11 @@ func Run(ctx context.Context, opt Options) int {
 	if idleErr != nil {
 		return finish(ExitConfigInvalid, "config_invalid", idleErr.Error())
 	}
+	// A question already parked the run. Waiting out --idle-on-complete
+	// would hold the worker while the answer requeues this same run.
+	if conv.parked {
+		return finish(ExitOK, "succeeded", summary)
+	}
 
 	applyFollowup := func(next followUp) (int, string) {
 		if next.steerID != "" {
@@ -210,17 +215,17 @@ func Run(ctx context.Context, opt Options) int {
 		return code, status
 	}
 
-	deadline := time.Now().Add(idle)
-	for idle > 0 && time.Now().Before(deadline) {
+	deadline := idleNow().Add(idle)
+	for idle > 0 && idleNow().Before(deadline) {
 		next, ok := pollFollowup(ctx, opt.RuntimeDir, deadline, hub)
 		if !ok {
 			break
 		}
 		code, status := applyFollowup(next)
-		if code != ExitOK {
+		if code != ExitOK || conv.parked {
 			return finish(code, status, summary)
 		}
-		deadline = time.Now().Add(idle)
+		deadline = idleNow().Add(idle)
 	}
 	// A follow-up already queued is a resume turn even when idle is 0.
 	// That covers one that missed the end-of-turn drain and one left by
@@ -231,7 +236,7 @@ func Run(ctx context.Context, opt Options) int {
 			break
 		}
 		code, status := applyFollowup(followUp{text: msg.Text, steerID: msg.ID})
-		if code != ExitOK {
+		if code != ExitOK || conv.parked {
 			return finish(code, status, summary)
 		}
 	}
@@ -250,7 +255,7 @@ func Run(ctx context.Context, opt Options) int {
 				break
 			}
 			code, status := applyFollowup(followUp{text: msg.Text, steerID: msg.ID})
-			if code != ExitOK {
+			if code != ExitOK || conv.parked {
 				return finish(code, status, summary)
 			}
 		}
@@ -334,6 +339,10 @@ var turnCommitHook func()
 // missed that drain. Production leaves it nil.
 var followupMissedDrainHook func()
 
+// idleNow is the clock for the post-conversation idle wait. Tests replace
+// it so a positive --idle-on-complete does not sleep. Production uses time.Now.
+var idleNow = time.Now
+
 // conversation is one model session. A steer follow-up that arrives while
 // the session is live is appended to messages. A follow-up that arrives
 // after it has returned is delivered by pollFollowup and starts run again.
@@ -348,9 +357,12 @@ type conversation struct {
 	runtime  string
 	hub      *steerHub
 	idle     time.Duration
+	// parked is set when ask_input emits a question. The caller exits
+	// without the idle-on-complete wait.
+	parked bool
 }
 
-func (c conversation) run(ctx context.Context, prompt string) (int, string, string) {
+func (c *conversation) run(ctx context.Context, prompt string) (int, string, string) {
 	messages := []chatMessage{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: prompt},
@@ -364,6 +376,9 @@ func (c conversation) run(ctx context.Context, prompt string) (int, string, stri
 			summary string
 		)
 		messages, cont, code, status, summary = c.oneTurn(ctx, turn, messages)
+		if c.parked {
+			return code, status, summary
+		}
 		if cont {
 			continue
 		}
@@ -386,7 +401,7 @@ func (c conversation) run(ctx context.Context, prompt string) (int, string, stri
 	return ExitAgentReported, "failed_by_agent", fmt.Sprintf("stopped after %d model turns", c.maxTurns)
 }
 
-func (c conversation) oneTurn(ctx context.Context, turn int, messages []chatMessage) ([]chatMessage, bool, int, string, string) {
+func (c *conversation) oneTurn(ctx context.Context, turn int, messages []chatMessage) ([]chatMessage, bool, int, string, string) {
 	if err := c.log.Emit(Event{Type: "turn.started", Turn: turn, ModelID: c.model}); err != nil {
 		return messages, false, ExitEnvironment, "environment_setup_failed", err.Error()
 	}
@@ -502,9 +517,10 @@ func (c conversation) oneTurn(ctx context.Context, turn int, messages []chatMess
 		})
 		if asked && !c.turnInterrupted(ctx, turnCtx) {
 			// factoryd parks on this event and resumeIfParked starts the
-			// next execution with the answer in the prompt. Staying in
-			// this process would be a second wait.
+			// next execution with the answer in the prompt. The idle
+			// wait would hold this worker while that execution is queued.
 			_ = c.log.Emit(Event{Type: "question", Turn: turn, Gate: questionGate, Text: redacted})
+			c.parked = true
 			return messages, false, ExitOK, "succeeded", "waiting for an answer"
 		}
 		if c.turnInterrupted(ctx, turnCtx) {
