@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -453,6 +454,88 @@ func TestE2EAskInputRequeueGap(t *testing.T) {
 	}
 	if _, err := env.srv.AnswerInput(context.Background(), task.ID, "a different answer", "peter"); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("conflict %v", err)
+	}
+}
+
+// TestE2EAskInputPromptRereadOnClaim commits the resumed question and answer
+// after the scheduler has snapshotted the queued run and before claim leases
+// the queue row. The assignment carries the prompt committed at claim time.
+func TestE2EAskInputPromptRereadOnClaim(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	const question = "Which staging env?"
+	const answer = "staging-2"
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	task := env.createTask(t, "Prompt reread on claim", "which env?")
+	asg := w.readAssignment(t)
+	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: asg.TaskID, WorkerID: "local-1"})
+	postEvents(t, asg.EnvVars["FACTORY_EVENTS_URL"], asg.EnvVars["FACTORY_RUN_TOKEN"], 0, []string{
+		`{"type":"question","gate":"clarification","text":"` + question + `"}`,
+	})
+	waiting := env.waitTask(t, task.ID, "awaiting_input", "triage")
+	env.assertSuspended(t, task.ID, asg.TaskID, question)
+	w.close()
+	env.stop(t)
+	env.restorePrePark(t, task.ID, asg.TaskID)
+	env.start(t)
+	if _, err := env.srv.store.ExpireLeases(context.Background(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	var once sync.Once
+	var hookMu sync.Mutex
+	var hookErr error
+	hooked := false
+	env.srv.mu.Lock()
+	env.srv.beforeClaim = func(runID string) {
+		if runID != asg.TaskID {
+			return
+		}
+		once.Do(func() {
+			_, err := env.srv.AnswerInput(context.Background(), task.ID, answer, "peter")
+			hookMu.Lock()
+			hookErr = err
+			hooked = true
+			hookMu.Unlock()
+		})
+	}
+	env.srv.mu.Unlock()
+
+	w2 := dialWorker(t, env, "local-2")
+	defer w2.close()
+	next := w2.readAssignment(t)
+	hookMu.Lock()
+	ran, err := hooked, hookErr
+	hookMu.Unlock()
+	if !ran {
+		t.Fatal("claim hook did not run")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.TaskID != asg.TaskID {
+		t.Fatalf("resume run %s, want %s", next.TaskID, asg.TaskID)
+	}
+	prompt := next.EnvVars["FACTORY_TASK_PROMPT"]
+	if !strings.Contains(prompt, question) || !strings.Contains(prompt, answer) {
+		t.Fatal("resumed prompt is missing the question and answer")
+	}
+	if next.Task == nil || !strings.Contains(next.Task.Definition.Prompt, question) || !strings.Contains(next.Task.Definition.Prompt, answer) {
+		t.Fatal("assignment task prompt is missing the question and answer")
+	}
+	if next.EnvVars["FACTORY_CONVERSATION_ID"] != waiting.ConversationID {
+		t.Fatalf("conversation %s", next.EnvVars["FACTORY_CONVERSATION_ID"])
+	}
+	var attempts int
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM executions WHERE run_id = $1`, asg.TaskID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("executions %d, want 2", attempts)
 	}
 }
 

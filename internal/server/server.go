@@ -125,6 +125,11 @@ type Server struct {
 	// observe the new status until the event commits with it.
 	beforeTerminalEvent func()
 
+	// beforeClaim runs after the scheduler has snapshotted a queued run and
+	// before claim leases it. Nil in production. A test commits a new prompt
+	// in that gap. The hook runs without leaseMu and must not call assignOne.
+	beforeClaim func(runID string)
+
 	// integ is the M4 ingress, automation, and outbound runtime.
 	integ m4State
 }

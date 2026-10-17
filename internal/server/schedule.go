@@ -202,7 +202,15 @@ func (s *Server) candidates(now time.Time) []scheduler.Candidate {
 }
 
 func (s *Server) assignOne(ctx context.Context, run store.Run, workerID string, bound boundAgent) {
-	ok, err := s.claim(ctx, run.ID, s.cfg.LeaseTTL)
+	s.mu.Lock()
+	hook := s.beforeClaim
+	s.mu.Unlock()
+	if hook != nil {
+		hook(run.ID)
+	}
+	// run is the list snapshot. claim returns the prompt committed with the
+	// queue lease, which is what the worker must receive.
+	prompt, ok, err := s.claim(ctx, run.ID, s.cfg.LeaseTTL)
 	if err != nil {
 		s.log.Error("claim", "run_id", run.ID, "err", err)
 		return
@@ -210,6 +218,7 @@ func (s *Server) assignOne(ctx context.Context, run store.Run, workerID string, 
 	if !ok {
 		return
 	}
+	run.Prompt = prompt
 	bound = s.boundForRun(ctx, run, bound)
 	env, err := s.taskEnvRetry(ctx, run, bound)
 	if err != nil {
