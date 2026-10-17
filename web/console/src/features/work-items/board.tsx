@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Plus } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { client } from "../../api/client";
 import type { Task } from "../../api/types";
 import { Button } from "../../components/Button";
@@ -22,7 +22,17 @@ import {
 } from "../dashboard/model";
 import { GateBadge, PageHeader } from "../dashboard/ui";
 
-const sources = ["cli", "github", "slack", "linear", "schedule", "issue", "manual", "api"] as const;
+const filterSources = [
+  "cli",
+  "github",
+  "slack",
+  "linear",
+  "schedule",
+  "issue",
+  "manual",
+  "api",
+] as const;
+const createSources = ["manual", "issue", "api"] as const;
 
 export function WorkItemBoard({ factoryId }: { factoryId: string }) {
   ensureStreamFallback();
@@ -85,7 +95,7 @@ export function WorkItemBoard({ factoryId }: { factoryId: string }) {
           Source{" "}
           <select value={source} onChange={(event) => setSource(event.target.value)}>
             <option value="">All sources</option>
-            {sources.map((item) => (
+            {filterSources.map((item) => (
               <option key={item} value={item}>
                 {item}
               </option>
@@ -216,16 +226,15 @@ function NewWorkItem({ factoryId }: { factoryId: string }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [source, setSource] = useState<(typeof sources)[number]>("cli");
+  const [source, setSource] = useState<(typeof createSources)[number]>("manual");
   const [sourceRef, setSourceRef] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const knownSources = useMemo(() => sources, []);
 
   function reset() {
     setTitle("");
     setBody("");
-    setSource("cli");
+    setSource("manual");
     setSourceRef("");
     setError(null);
   }
@@ -314,7 +323,7 @@ function NewWorkItem({ factoryId }: { factoryId: string }) {
                     if (isSource(next)) setSource(next);
                   }}
                 >
-                  {knownSources.map((item) => (
+                  {createSources.map((item) => (
                     <option key={item} value={item}>
                       {item}
                     </option>
@@ -346,8 +355,8 @@ function NewWorkItem({ factoryId }: { factoryId: string }) {
   );
 }
 
-function isSource(value: string): value is (typeof sources)[number] {
-  return (sources as readonly string[]).includes(value);
+function isSource(value: string): value is (typeof createSources)[number] {
+  return (createSources as readonly string[]).includes(value);
 }
 
 function StreamWatch({

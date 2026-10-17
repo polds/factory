@@ -7,6 +7,7 @@ export type RunRow = Run & {
   failure_class?: FailureClass;
   failure_summary?: string;
   cost_cents?: number;
+  created_at?: string;
 };
 
 export const FAILURE_CLASSES = [
@@ -81,14 +82,23 @@ export function failureClassOf(run: RunRow | undefined): FailureClass | undefine
   return undefined;
 }
 
-// List rows have no timestamp. The last row for a work item is the latest.
+// ListRuns is newest first: created_at DESC, id DESC. Compare those fields so
+// the chosen run does not depend on where it sits in the array.
 export function latestByWorkItem(runs: readonly RunRow[]): Map<string, RunRow> {
   const latest = new Map<string, RunRow>();
   for (const run of runs) {
-    if (!run.work_item_id) continue;
-    latest.set(run.work_item_id, run);
+    const workItemId = run.work_item_id;
+    if (!workItemId) continue;
+    const current = latest.get(workItemId);
+    if (!current || compareRunRecency(run, current) > 0) latest.set(workItemId, run);
   }
   return latest;
+}
+
+function compareRunRecency(left: RunRow, right: RunRow): number {
+  const byTime = (left.created_at ?? "").localeCompare(right.created_at ?? "");
+  if (byTime !== 0) return byTime;
+  return left.id.localeCompare(right.id);
 }
 
 export function rangeBounds(range: RangeKey, now = Date.now()): { from: string; to: string } {

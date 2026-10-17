@@ -69,12 +69,13 @@ function install(
   rows: InboxItem[],
   options?: { decide?: () => Response; answer?: () => Response },
 ) {
+  const live = { rows: [...rows] };
   const gets = { inbox: 0, approvals: 0 };
   const posts: { url: string; body: unknown }[] = [];
   server.use(
     http.get("/api/v1/factory/:factoryId/inbox", () => {
       gets.inbox += 1;
-      return HttpResponse.json(rows.map((row) => ({ ...row, SECRET_PLANT: "SECRET_PLANT" })));
+      return HttpResponse.json(live.rows.map((row) => ({ ...row, SECRET_PLANT: "SECRET_PLANT" })));
     }),
     http.get("/api/v1/factory/:factoryId/approvals", () => {
       gets.approvals += 1;
@@ -111,7 +112,13 @@ function install(
       );
     }),
   );
-  return { gets, posts };
+  return {
+    gets,
+    posts,
+    omit(id: string) {
+      live.rows = live.rows.filter((row) => row.id !== id);
+    },
+  };
 }
 
 describe("inbox", () => {
@@ -157,6 +164,7 @@ describe("inbox", () => {
     const approvalsBefore = api.gets.approvals;
     await user.click(screen.getByRole("button", { name: "Approve" }));
     expect(await screen.findByText("Approved by you · Saving…")).toBeInTheDocument();
+    api.omit("apr_01");
     resolveDecision(
       HttpResponse.json(
         {
@@ -170,13 +178,33 @@ describe("inbox", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Already decided by alice 2m ago (409). Refreshed.",
     );
-    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Spec gate/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     expect(screen.queryByText("Approved by you · Saving…")).not.toBeInTheDocument();
     await waitFor(() => expect(api.gets.inbox).toBeGreaterThan(inboxBefore));
     await waitFor(() => expect(api.gets.approvals).toBeGreaterThan(approvalsBefore));
     expect(api.posts).toHaveLength(1);
     expect(api.posts[0]?.body).toEqual({ decision: "approve", note: "ship it" });
     expect(api.posts[0]?.url).toContain("/api/v1/approvals/apr_01:decide");
+  });
+
+  it("shows a reject conflict after the inbox drops the row", async () => {
+    setAPIKey(demoAPIKey);
+    const user = userEvent.setup();
+    const api = install([shuffled[1]!], {
+      decide: () =>
+        HttpResponse.json(
+          { title: "conflict", status: 409, detail: "Already rejected by bob" },
+          { status: 409 },
+        ) as unknown as Response,
+    });
+    renderApp(`/f/${factoryId}/inbox`);
+    await user.click(await screen.findByRole("button", { name: /Spec gate/ }));
+    api.omit("apr_01");
+    await user.click(screen.getByRole("button", { name: "Reject" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Already rejected by bob");
+    expect(screen.queryByRole("button", { name: /Spec gate/ })).not.toBeInTheDocument();
+    expect(api.posts[0]?.body).toEqual({ decision: "reject", note: "" });
   });
 
   it("rejects with the same decision body", async () => {
@@ -208,14 +236,15 @@ describe("inbox", () => {
     expect(api.posts).toHaveLength(1);
     expect(api.posts[0]?.body).toEqual({ text: "before the amount" });
     expect(api.posts[0]?.url).toContain("/api/v1/work-items/task_03/input");
+    api.omit("in_01");
     resolveAnswer(
       HttpResponse.json(
         { title: "conflict", status: 409, detail: "Already answered" },
         { status: 409 },
       ) as unknown as Response,
     );
-    expect(await screen.findByText("Currency column position")).toBeInTheDocument();
     expect(await screen.findByRole("alert")).toHaveTextContent("Already answered");
+    expect(screen.queryByText("Currency column position")).not.toBeInTheDocument();
   });
 
   it("shows a failed run without a retry control", async () => {

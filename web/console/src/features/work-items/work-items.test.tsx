@@ -79,23 +79,26 @@ const boardTasks: Task[] = [
   }),
 ];
 
+// ListRuns is newest first. The older row is last, which is what used to be chosen.
 const boardRuns = [
   {
-    id: "run_old",
-    status: "failed",
-    work_item_id: "task_04",
-    agent: "planner",
-    model_id: "old-model",
-    failure_class: "agent",
-  },
-  {
     id: "run_new",
+    created_at: "2026-10-17T12:00:00Z",
     status: "running",
     work_item_id: "task_04",
     agent: "implementer",
     model_id: "model-a",
     queue_wait_ms: 1000,
     exec_ms: 2000,
+  },
+  {
+    id: "run_old",
+    created_at: "2026-10-17T09:00:00Z",
+    status: "failed",
+    work_item_id: "task_04",
+    agent: "planner",
+    model_id: "old-model",
+    failure_class: "agent",
   },
 ];
 
@@ -188,7 +191,7 @@ describe("work items", () => {
           title: "Pin the digest",
           stage: "triage",
           status: "open",
-          source: "cli",
+          source: "manual",
           source_ref: "acme/payments-api#420",
           body: "Pin every base image.",
         });
@@ -201,6 +204,14 @@ describe("work items", () => {
     await user.click(opener);
     const title = await screen.findByRole("textbox", { name: "Title" });
     expect(title).toHaveFocus();
+    const dialog = screen.getByRole("dialog");
+    const source = within(dialog).getByRole("combobox", { name: "Source" });
+    expect(source).toHaveValue("manual");
+    expect(
+      within(source)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual(["manual", "issue", "api"]);
     await user.type(title, "Pin the digest");
     await user.type(screen.getByRole("textbox", { name: "Body" }), "Pin every base image.");
     await user.type(screen.getByRole("textbox", { name: "Source ref" }), "acme/payments-api#420");
@@ -215,7 +226,7 @@ describe("work items", () => {
     expect(bodies[0]).toEqual({
       title: "Pin the digest",
       body: "Pin every base image.",
-      source: "cli",
+      source: "manual",
       source_ref: "acme/payments-api#420",
     });
     expect(bodies).toHaveLength(2);
@@ -260,6 +271,7 @@ describe("work items", () => {
     let cancels = 0;
     let runLists = 0;
     let runGets = 0;
+    let openedRun = "";
     const decisions: unknown[] = [];
     server.use(
       http.get("/api/v1/factory/:factoryId/tasks/:taskId", () =>
@@ -282,6 +294,7 @@ describe("work items", () => {
         return HttpResponse.json([
           {
             id: "run_abc",
+            created_at: "2026-10-17T12:00:00Z",
             status: "failed",
             title: "First attempt",
             work_item_id: "task_04",
@@ -292,14 +305,25 @@ describe("work items", () => {
             queue_wait_ms: 5000,
             exec_ms: 6000,
           },
+          {
+            id: "run_old",
+            created_at: "2026-10-17T08:00:00Z",
+            status: "failed",
+            title: "Older attempt",
+            work_item_id: "task_04",
+            agent: "planner",
+            model_id: "old-model",
+            stage: "building",
+          },
         ]);
       }),
       http.get("/api/v1/agent/runs/:runId", ({ params }) => {
         runGets += 1;
+        openedRun = String(params.runId);
         return HttpResponse.json({
-          id: String(params.runId),
+          id: openedRun,
           status: "failed",
-          pr_url: "https://example.test/pr/9",
+          pr_url: openedRun === "run_abc" ? "https://example.test/pr/9" : "",
         });
       }),
       http.post("/api/v1/approvals/:approvalId", async ({ request }) => {
@@ -333,6 +357,7 @@ describe("work items", () => {
     await waitFor(() => expect(cancels).toBe(1));
     expect(runLists).toBe(1);
     expect(runGets).toBe(1);
+    expect(openedRun).toBe("run_abc");
     await expectClean(document.body);
   });
 
@@ -384,5 +409,103 @@ describe("work items", () => {
     await user.click(screen.getByRole("button", { name: "Send answer" }));
     await waitFor(() => expect(bodies).toEqual([{ text: "global" }]));
     expect(await screen.findByText("Answer sent")).toBeInTheDocument();
+  });
+
+  it("keeps an approval conflict visible after the approval leaves the page", async () => {
+    setAPIKey(demoAPIKey);
+    const user = userEvent.setup();
+    let pending = true;
+    server.use(
+      http.get("/api/v1/factory/:factoryId/tasks/:taskId", () =>
+        HttpResponse.json(
+          task({
+            id: "task_04",
+            title: "Flaky settlement cutoff",
+            stage: "building",
+            status: "awaiting_approval",
+            pending_gate: "spec",
+          }),
+        ),
+      ),
+      http.get("/api/v1/factory/:factoryId/approvals", () =>
+        HttpResponse.json(
+          pending
+            ? [
+                {
+                  id: "apr_9",
+                  work_item_id: "task_04",
+                  gate: "spec",
+                  requested_at: "2026-10-17T12:00:00Z",
+                },
+              ]
+            : [],
+        ),
+      ),
+      http.get("/api/v1/factory/:factoryId/inbox", () => HttpResponse.json([])),
+      http.get("/api/v1/agent/runs", () => HttpResponse.json([])),
+      http.post("/api/v1/approvals/:approvalId", () => {
+        pending = false;
+        return HttpResponse.json(
+          { title: "conflict", status: 409, detail: "Already decided by alice" },
+          { status: 409 },
+        );
+      }),
+    );
+    renderApp(`/f/${factoryId}/work-items/task_04`);
+    await user.click(await screen.findByRole("button", { name: "Approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Already decided by alice");
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  });
+
+  it("keeps an answer conflict visible after the question leaves the page", async () => {
+    setAPIKey(demoAPIKey);
+    const user = userEvent.setup();
+    let waiting = true;
+    server.use(
+      http.get("/api/v1/factory/:factoryId/tasks/:taskId", () =>
+        HttpResponse.json(
+          task({
+            id: "task_04",
+            title: "Flaky settlement cutoff",
+            stage: "building",
+            status: waiting ? "awaiting_input" : "open",
+          }),
+        ),
+      ),
+      http.get("/api/v1/factory/:factoryId/approvals", () => HttpResponse.json([])),
+      http.get("/api/v1/factory/:factoryId/inbox", () =>
+        HttpResponse.json(
+          waiting
+            ? [
+                {
+                  kind: "question",
+                  id: "in_1",
+                  work_item_id: "task_04",
+                  run_id: "run_abc",
+                  created_at: "2026-10-17T12:00:00Z",
+                  title: "Flaky settlement cutoff",
+                  detail: "Should the budget be global?",
+                  action: "answer",
+                },
+              ]
+            : [],
+        ),
+      ),
+      http.get("/api/v1/agent/runs", () => HttpResponse.json([])),
+      http.post("/api/v1/work-items/:workItemId/input", () => {
+        waiting = false;
+        return HttpResponse.json(
+          { title: "conflict", status: 409, detail: "Already answered" },
+          { status: 409 },
+        );
+      }),
+    );
+    renderApp(`/f/${factoryId}/work-items/task_04`);
+    expect(await screen.findByText("Should the budget be global?")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Answer" }), "global");
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Already answered");
+    expect(screen.queryByText("Should the budget be global?")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send answer" })).not.toBeInTheDocument();
   });
 });

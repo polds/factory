@@ -48,6 +48,7 @@ export function WorkItemDetail({ factoryId, id }: { factoryId: string; id: strin
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   if (task.isPending || runs.isPending || approvals.isPending || inbox.isPending) {
     return <p>Loading work item</p>;
@@ -98,6 +99,7 @@ export function WorkItemDetail({ factoryId, id }: { factoryId: string; id: strin
         <span className="muted"> / </span>
         <span className="mono">{task.data.id}</span>
       </nav>
+      {notice ? <p role="alert">{notice}</p> : null}
       <PageHeader
         title={task.data.title}
         subtitle={
@@ -150,6 +152,7 @@ export function WorkItemDetail({ factoryId, id }: { factoryId: string; id: strin
             factoryId={factoryId}
             approvalId={approval.id}
             gate={approval.gate || task.data.pending_gate || ""}
+            onProblem={setNotice}
           />
           <Link to="/f/$factory/inbox" params={{ factory: factoryId }}>
             Open in Inbox
@@ -163,6 +166,7 @@ export function WorkItemDetail({ factoryId, id }: { factoryId: string; id: strin
           prompt={
             question?.detail || task.data.pending_gate || "The agent is waiting for an answer."
           }
+          onProblem={setNotice}
         />
       ) : null}
       {task.data.body ? <p>{task.data.body}</p> : null}
@@ -206,23 +210,24 @@ function AnswerCallout({
   factoryId,
   workItemId,
   prompt,
+  onProblem,
 }: {
   factoryId: string;
   workItemId: string;
   prompt: string;
+  onProblem: (detail: string | null) => void;
 }) {
   const queryClient = useQueryClient();
-  const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
 
   async function onSubmit(text: string) {
     setSent(true);
-    setError(null);
+    onProblem(null);
     try {
       await submitAnswer(queryClient, factoryId, workItemId, text);
     } catch (err) {
       setSent(false);
-      setError(problemDetail(err));
+      onProblem(problemDetail(err));
     }
   }
 
@@ -231,12 +236,7 @@ function AnswerCallout({
       <h3 id="answer-heading">Question</h3>
       {sent ? <p role="status">Answer sent</p> : null}
       {sent ? null : (
-        <AnswerForm
-          inputId={`detail-answer-${workItemId}`}
-          prompt={prompt}
-          error={error}
-          onSubmit={onSubmit}
-        />
+        <AnswerForm inputId={`detail-answer-${workItemId}`} prompt={prompt} onSubmit={onSubmit} />
       )}
       <Link to="/f/$factory/inbox" params={{ factory: factoryId }}>
         Open in Inbox

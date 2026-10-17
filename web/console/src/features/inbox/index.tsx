@@ -52,7 +52,7 @@ export default function InboxPage() {
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [openId, setOpenId] = useState<string | null>(null);
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState<string | null>(null);
 
   if (inbox.isPending || approvals.isPending || runs.isPending) return <p>Loading inbox</p>;
   if (inbox.isError || approvals.isError) {
@@ -73,11 +73,7 @@ export default function InboxPage() {
 
   async function answer(item: InboxItem, text: string) {
     setHidden((current) => new Set(current).add(item.id));
-    setErrors((current) => {
-      const next = { ...current };
-      delete next[item.id];
-      return next;
-    });
+    setNotice(null);
     try {
       await submitAnswer(queryClient, factoryId, item.work_item_id, text);
     } catch (err) {
@@ -86,7 +82,7 @@ export default function InboxPage() {
         next.delete(item.id);
         return next;
       });
-      setErrors((current) => ({ ...current, [item.id]: problemDetail(err) }));
+      setNotice(problemDetail(err));
     }
   }
 
@@ -102,6 +98,7 @@ export default function InboxPage() {
           </>
         }
       />
+      {notice ? <p role="alert">{notice}</p> : null}
       <div className="chips" role="group" aria-label="Filter by kind">
         {filters.map((kind) => (
           <FilterChip
@@ -131,7 +128,7 @@ export default function InboxPage() {
               onToggle={() => setOpenId((current) => (current === item.id ? null : item.id))}
               onClose={() => setOpenId((current) => (current === item.id ? null : current))}
               failureClass={failureClassOf(runs.data?.find((run) => run.id === item.run_id))}
-              error={errors[item.id] ?? null}
+              onProblem={setNotice}
               onAnswer={(text) => answer(item, text)}
             />
           ))}
@@ -201,7 +198,7 @@ function InboxRow({
   onToggle,
   onClose,
   failureClass,
-  error,
+  onProblem,
   onAnswer,
 }: {
   item: InboxItem;
@@ -210,7 +207,7 @@ function InboxRow({
   onToggle: () => void;
   onClose: () => void;
   failureClass: FailureClass | undefined;
-  error: string | null;
+  onProblem: (detail: string | null) => void;
   onAnswer: (text: string) => Promise<void>;
 }) {
   const bodyId = `inbox-body-${item.id}`;
@@ -239,7 +236,7 @@ function InboxRow({
       </button>
       {open ? (
         <div className="inbox-body" id={bodyId}>
-          {rowActions(item, factoryId, failureClass, error, onAnswer)}
+          {rowActions(item, factoryId, failureClass, onProblem, onAnswer)}
         </div>
       ) : null}
       <p className="inbox-meta">
@@ -263,21 +260,21 @@ function rowActions(
   item: InboxItem,
   factoryId: string,
   failureClass: FailureClass | undefined,
-  error: string | null,
+  onProblem: (detail: string | null) => void,
   onAnswer: (text: string) => Promise<void>,
 ): ReactNode {
   switch (item.kind) {
     case "approval":
-      return <ApprovalActions factoryId={factoryId} approvalId={item.id} gate={item.detail} />;
-    case "question":
       return (
-        <AnswerForm
-          inputId={`answer-${item.id}`}
-          prompt={item.detail}
-          error={error}
-          onSubmit={onAnswer}
+        <ApprovalActions
+          factoryId={factoryId}
+          approvalId={item.id}
+          gate={item.detail}
+          onProblem={onProblem}
         />
       );
+    case "question":
+      return <AnswerForm inputId={`answer-${item.id}`} prompt={item.detail} onSubmit={onAnswer} />;
     case "failed_run":
       return (
         <div className="actions">

@@ -48,16 +48,17 @@ export function ApprovalActions({
   factoryId,
   approvalId,
   gate,
+  onProblem,
 }: {
   factoryId: string;
   approvalId: string;
   gate: string;
+  onProblem: (detail: string | null) => void;
 }) {
   const queryClient = useQueryClient();
   const [note, setNote] = useState("");
   const [phase, setPhase] = useState<"idle" | "saving" | "saved">("idle");
   const [decision, setDecision] = useState<ApprovalDecision>("approve");
-  const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
   const verb = decision === "approve" ? "Approved" : "Rejected";
 
@@ -66,14 +67,14 @@ export function ApprovalActions({
     busy.current = true;
     setDecision(next);
     setPhase("saving");
-    setError(null);
+    onProblem(null);
     try {
       await submitDecision(queryClient, factoryId, approvalId, next, note);
       setPhase("saved");
     } catch (err) {
       busy.current = false;
       setPhase("idle");
-      setError(problemDetail(err));
+      onProblem(problemDetail(err));
     }
   }
 
@@ -116,7 +117,6 @@ export function ApprovalActions({
           </label>
         </>
       ) : null}
-      {error ? <p role="alert">{error}</p> : null}
     </div>
   );
 }
@@ -125,12 +125,10 @@ export function AnswerForm({
   inputId,
   prompt,
   onSubmit,
-  error,
 }: {
   inputId: string;
   prompt: string;
   onSubmit: (text: string) => Promise<void>;
-  error: string | null;
 }) {
   const [text, setText] = useState("");
   const [pending, setPending] = useState(false);
@@ -158,7 +156,6 @@ export function AnswerForm({
           Send answer
         </Button>
       </div>
-      {error ? <p role="alert">{error}</p> : null}
     </div>
   );
 }
