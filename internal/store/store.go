@@ -28,6 +28,12 @@ type Store struct {
 	// stay until every id in the batch is passed to MarkDelivery.
 	claimMu sync.Mutex
 	claims  map[string]*deliveryClaim
+
+	// steerClaims holds one transaction per NextSteers batch. The row
+	// locks stay until MarkSteerDelivered has seen every returned id.
+	// Close rolls them back so a crash leaves the steers undelivered.
+	steerMu     sync.Mutex
+	steerClaims map[string]*steerClaim
 }
 
 // SetPendingLookupHookForTest sets pendingLookupHook. Pass nil to clear it.
@@ -62,5 +68,6 @@ func Open(ctx context.Context, url string) (*Store, error) {
 // connections are returned.
 func (s *Store) Close() {
 	s.abortDeliveryClaims()
+	s.abortSteerClaims()
 	s.pool.Close()
 }

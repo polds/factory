@@ -20,6 +20,7 @@ const (
 	PrefixSchedule     = "sch_"
 	PrefixInputRequest = "inr_"
 	PrefixWebhook      = "whk_"
+	PrefixSteer        = "str_"
 )
 
 // crockfordAlphabet is Crockford base32 (no I, L, O, or U).
@@ -65,7 +66,8 @@ func knownPrefix(prefix string) bool {
 	switch prefix {
 	case PrefixRun, PrefixExec, PrefixFactory, PrefixAgent, PrefixDefinition,
 		PrefixWorkItem, PrefixApproval, PrefixConversation,
-		PrefixDelivery, PrefixSchedule, PrefixInputRequest, PrefixWebhook:
+		PrefixDelivery, PrefixSchedule, PrefixInputRequest, PrefixWebhook,
+		PrefixSteer:
 		return true
 	default:
 		return false

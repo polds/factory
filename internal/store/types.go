@@ -89,6 +89,22 @@ const (
 
 	// DeliveryBodyCap is the maximum raw body stored for one delivery.
 	DeliveryBodyCap = 256 << 10
+
+	SteerInterrupt = "interrupt"
+	SteerFollowup  = "followup"
+
+	InboxApproval = "approval"
+	InboxQuestion = "question"
+	InboxFailed   = "failed_run"
+
+	InboxActionApprove = "approve"
+	InboxActionAnswer  = "answer"
+	InboxActionOpen    = "open"
+
+	PhaseQueued   = "queued"
+	PhaseAssigned = "assigned"
+	PhaseRunning  = "running"
+	PhaseTerminal = "terminal"
 )
 
 // Run is one logical task. Tokens and env values are never fields of Run.
@@ -115,6 +131,12 @@ type Run struct {
 	ConversationID string
 	Stage          string
 	ModelID        string
+	// FailureClass and FailureCode are empty until SetRunClass or the
+	// migration backfill stores them. AssignedAt is the first
+	// StartExecution and stays put when the run is requeued.
+	FailureClass string
+	FailureCode  string
+	AssignedAt   *time.Time
 }
 
 // NewRun is the input to CreateRun. The store enqueues it in the same transaction.
@@ -385,4 +407,128 @@ type Worker struct {
 	LastHeartbeatAt time.Time
 	MaxConcurrent   int
 	Status          string
+}
+
+// WorkerInfo is one worker plus the console's heartbeat and rejection fields.
+// HeartbeatAgeMS is -1 when last_heartbeat_at is null.
+type WorkerInfo struct {
+	ID              string
+	Pool            string
+	Platform        string
+	Backend         string
+	Version         string
+	LabelsJSON      json.RawMessage
+	LastHeartbeatAt *time.Time
+	ConnectedAt     *time.Time
+	MaxConcurrent   int
+	InFlight        int
+	Reconnects      int
+	Status          string
+	HeartbeatAgeMS  int64
+	Rejected1h      int
+}
+
+// PoolStat is queue depth, assignment latency, and rejections for one pool.
+// P50TimeToAssignMS is nil when the last hour has no assignment.
+type PoolStat struct {
+	Pool              string
+	QueueDepth        int
+	P50TimeToAssignMS *int64
+	Rejected1h        int
+}
+
+// Steer is one interrupt or follow-up waiting for the harness.
+type Steer struct {
+	ID          string
+	RunID       string
+	Kind        string
+	Text        string
+	CreatedAt   time.Time
+	DeliveredAt *time.Time
+	Actor       string
+}
+
+// Phase is one timeline segment. DurationMS is the time until the next
+// phase, and 0 while the phase is still open.
+type Phase struct {
+	Phase       string
+	At          time.Time
+	DurationMS  int64
+	ExecutionID string
+}
+
+// UsageCall is one usage event.
+type UsageCall struct {
+	Seq          int64
+	Turn         int
+	ModelID      string
+	InputTokens  int64
+	OutputTokens int64
+	CostCents    int64
+}
+
+// ModelUsage is the usage events for one model.
+type ModelUsage struct {
+	ModelID      string
+	InputTokens  int64
+	OutputTokens int64
+	CostCents    int64
+	Calls        int
+}
+
+// UsageTotal is the sum of a run's usage events.
+type UsageTotal struct {
+	InputTokens  int64
+	OutputTokens int64
+	CostCents    int64
+}
+
+// RunUsage is harness usage for one run.
+type RunUsage struct {
+	Total   UsageTotal
+	ByModel []ModelUsage
+	Calls   []UsageCall
+}
+
+// FactoryEvent is a run event plus the factory-wide gid cursor.
+type FactoryEvent struct {
+	GID int64
+	Event
+}
+
+// InboxItem is one thing waiting on a person.
+type InboxItem struct {
+	Kind       string
+	ID         string
+	WorkItemID string
+	RunID      string
+	CreatedAt  time.Time
+	Title      string
+	Detail     string
+	Action     string
+}
+
+// AutomationStat is one automation on the factory's current definition.
+type AutomationStat struct {
+	Name          string
+	Enabled       bool
+	RuntimePaused bool
+	Triggers      json.RawMessage
+	LastFiredAt   *time.Time
+	MatchCount    int
+	RunsStarted   int
+}
+
+// FactorySummary is the operational dashboard for [from, to).
+// ActiveRuns and WaitingOnHuman are point-in-time, not windowed.
+// PRsOpened counts work items created in the window that have an open
+// PR URL. The schema has no timestamp for when the URL was stored.
+type FactorySummary struct {
+	RunsByStatus        map[string]int
+	RunsByFailureClass  map[string]int
+	QueueWaitP50MS      *int64
+	ActiveRuns          int
+	WaitingOnHuman      int
+	PRsOpened           int
+	DeliveriesUnmatched int
 }

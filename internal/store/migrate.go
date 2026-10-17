@@ -106,6 +106,29 @@ func migrationNames() ([]string, error) {
 	return names, nil
 }
 
+// ApplySQLForTest runs body in one transaction. Tests use it to apply
+// migrations by hand and to prove 0006_m5.sql is idempotent.
+func (s *Store) ApplySQLForTest(ctx context.Context, body string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: apply sql: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, stmt := range splitSQL(body) {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			snippet := stmt
+			if len(snippet) > 240 {
+				snippet = snippet[:240]
+			}
+			return fmt.Errorf("store: apply sql: %w\n%s", err, snippet)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: apply sql: %w", err)
+	}
+	return nil
+}
+
 func execScript(ctx context.Context, tx pgx.Tx, body string) error {
 	for _, stmt := range splitSQL(body) {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
