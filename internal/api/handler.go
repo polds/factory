@@ -250,6 +250,14 @@ func (h *handler) handleListRuns(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) listRuns(w http.ResponseWriter, r *http.Request, factoryID string) {
 	q := r.URL.Query()
+	queryFactory := strings.TrimSpace(q.Get("factory_id"))
+	if factoryID != "" && queryFactory != "" && queryFactory != factoryID {
+		writeProblem(w, http.StatusBadRequest, "factory_id does not match")
+		return
+	}
+	if factoryID == "" {
+		factoryID = queryFactory
+	}
 	filter := RunFilter{
 		FactoryID:    factoryID,
 		Agent:        q.Get("agent"),

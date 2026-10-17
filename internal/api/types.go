@@ -214,6 +214,12 @@ type Run struct {
 	Stage          string `json:"stage,omitempty"`
 	ModelID        string `json:"model_id,omitempty"`
 	FailureReason  string `json:"failure_reason,omitempty"`
+	// CreatedAt is always present. StartedAt, Worker, and Source are omitted
+	// when the run has not started, has no worker, or has no work item.
+	CreatedAt time.Time  `json:"created_at"`
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	Worker    string     `json:"worker,omitempty"`
+	Source    string     `json:"source,omitempty"`
 }
 
 // RunRequest is the POST /agent/run body.
@@ -274,6 +280,10 @@ type Delivery struct {
 	Truncated          bool              `json:"truncated"`
 	Status             string            `json:"status"`
 	MatchedAutomations []string          `json:"matched_automations"`
+	// NormalizedEvents is the persisted event list with the raw key removed.
+	// Nil (column NULL) is omitted. A non-nil empty slice encodes as [].
+	// omitempty would drop both, so the tag is omitzero.
+	NormalizedEvents []json.RawMessage `json:"normalized_events,omitzero"`
 }
 
 // Schedule is one cron schedule. Paused is always present so false is visible.

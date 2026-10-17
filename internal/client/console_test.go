@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,6 +34,9 @@ func TestConsoleGoldensDecode(t *testing.T) {
 		{"identities.json", &[]Identity{}},
 		{"summary.json", &Summary{}},
 		{"runs.json", &[]RunRow{}},
+		{"steers.json", &[]SteerRecord{}},
+		{"webhook-deliveries.json", &[]Delivery{}},
+		{"deliveries.json", &[]Delivery{}},
 	}
 	for _, tc := range cases {
 		raw := readConsoleGolden(t, tc.name)
@@ -69,7 +73,8 @@ func TestListRunsSendsConsoleFilters(t *testing.T) {
 	t.Cleanup(srv.Close)
 	c := &Client{BaseURL: srv.URL, APIKey: "test-key"}
 	runs, err := c.ListRuns(context.Background(), RunFilter{
-		Agent: "reviewer", Status: "failed", Worker: "w1", Model: "m1",
+		FactoryID: "fac_b",
+		Agent:     "reviewer", Status: "failed", Worker: "w1", Model: "m1",
 		FailureClass: "agent", Source: "api", ParentRunID: "run_p", WorkItemID: "task_1",
 	})
 	if err != nil {
@@ -78,7 +83,7 @@ func TestListRunsSendsConsoleFilters(t *testing.T) {
 	if len(runs) != 1 || runs[0].ID != "run_1" || runs[0].ModelID != "test-model" || runs[0].Stage != "reviewing" || runs[0].ConversationID != "conv_1" || runs[0].FailureClass != "agent" || runs[0].FailureSummary != "The agent reported the run as failed" || runs[0].QueueWaitMS != 0 || runs[0].ExecMS != 5 || runs[0].CostCents == nil || *runs[0].CostCents != 3 {
 		t.Fatalf("%+v", runs)
 	}
-	for _, want := range []string{"failure_class=agent", "source=api", "parent_run_id=run_p", "work_item_id=task_1", "agent=reviewer"} {
+	for _, want := range []string{"factory_id=fac_b", "failure_class=agent", "source=api", "parent_run_id=run_p", "work_item_id=task_1", "agent=reviewer"} {
 		if !bytes.Contains([]byte(got), []byte(want)) {
 			t.Fatalf("query %q missing %s", got, want)
 		}
@@ -114,6 +119,43 @@ func TestPollSteersUsesRunToken(t *testing.T) {
 	}
 	if _, err := c.PollSteers(context.Background(), "run_1", "", ""); err == nil {
 		t.Fatal("missing run token")
+	}
+}
+
+func TestListRunSteersAndWebhookDeliveries(t *testing.T) {
+	var gotAuth, gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/steers") {
+			_, _ = w.Write([]byte(`[{"id":"steer_1","kind":"interrupt","text":"","actor":"api-key","created_at":"2026-04-02T15:04:00Z"}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id":"del_1","provider":"webhook","delivery_id":"d1","received_at":"2026-04-02T15:04:05Z","truncated":false,"status":"unmatched","matched_automations":[],"normalized_events":[]}]`))
+	}))
+	t.Cleanup(srv.Close)
+	c := &Client{BaseURL: srv.URL, APIKey: "test-key"}
+	rows, err := c.ListRunSteers(context.Background(), "run_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer test-key" || gotPath != "/api/v1/agent/runs/run_1/steers" {
+		t.Fatalf("auth %q path %s", gotAuth, gotPath)
+	}
+	if len(rows) != 1 || rows[0].ID != "steer_1" || rows[0].Text != "" {
+		t.Fatalf("%+v", rows)
+	}
+	deliveries, err := c.ListWebhookDeliveries(context.Background(), "fac_1", "wh_1", DeliveryFilter{Status: "unmatched", IncludeBody: true, Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/v1/factory/fac_1/webhooks/wh_1/deliveries" || !strings.Contains(gotQuery, "include=body") || !strings.Contains(gotQuery, "status=unmatched") || !strings.Contains(gotQuery, "limit=5") {
+		t.Fatalf("path %s query %s", gotPath, gotQuery)
+	}
+	if len(deliveries) != 1 || deliveries[0].ID != "del_1" || deliveries[0].NormalizedEvents == nil {
+		t.Fatalf("%+v", deliveries)
 	}
 }
 

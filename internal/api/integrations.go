@@ -17,6 +17,9 @@ const (
 	replaySuffix = ":replay"
 	includeBody  = "body"
 	maxListLimit = 1000
+	// defaultWebhookDeliveryLimit is the page when the per-webhook list
+	// omits limit. The store treats 0 as 100, so the handler sets this.
+	defaultWebhookDeliveryLimit = 50
 )
 
 // DeliveryBackend lists and replays persisted deliveries.
@@ -161,6 +164,50 @@ func (h *handler) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := db.ListDeliveries(r.Context(), r.PathValue("uid"), status, limit)
+	if err != nil {
+		h.writeStatusErr(w, err, "conflict")
+		return
+	}
+	if rows == nil {
+		rows = []Delivery{}
+	}
+	out := make([]Delivery, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, presentDelivery(row, include))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *handler) handleListWebhookDeliveries(w http.ResponseWriter, r *http.Request) {
+	db, ok := h.backend.(WebhookDeliveryBackend)
+	if !ok {
+		writeProblem(w, http.StatusNotFound, "not found")
+		return
+	}
+	q := r.URL.Query()
+	status := q.Get("status")
+	if !validDeliveryStatus(status) {
+		writeProblem(w, http.StatusBadRequest, "status is invalid")
+		return
+	}
+	include, ok := parseIncludeBody(q.Get("include"))
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "include is invalid")
+		return
+	}
+	if include && !h.authorized(r) {
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	limit, ok := parseListLimit(q.Get("limit"))
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "limit is invalid")
+		return
+	}
+	if limit == 0 {
+		limit = defaultWebhookDeliveryLimit
+	}
+	rows, err := db.ListWebhookDeliveries(r.Context(), r.PathValue("uid"), r.PathValue("webhookUID"), status, limit)
 	if err != nil {
 		h.writeStatusErr(w, err, "conflict")
 		return

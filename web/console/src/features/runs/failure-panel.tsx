@@ -78,6 +78,8 @@ export function FailurePanel({ run }: { run: RunDetailWire }) {
         <dl>
           <dt>failure_reason</dt>
           <dd className="mono">{run.failure_reason ?? "—"}</dd>
+          <dt>exit_code</dt>
+          <dd className="mono">{run.exit_code != null ? String(run.exit_code) : "—"}</dd>
           <dt>code</dt>
           <dd className="mono">{failure.code}</dd>
           <dt>retryable</dt>

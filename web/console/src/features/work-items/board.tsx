@@ -42,7 +42,7 @@ export function WorkItemBoard({ factoryId }: { factoryId: string }) {
   });
   const runs = useQuery({
     queryKey: ["runs", "board", factoryId],
-    queryFn: () => client.listRuns() as Promise<RunRow[]>,
+    queryFn: () => client.listRuns({ factory_id: factoryId }) as Promise<RunRow[]>,
   });
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("connecting");
   const [query, setQuery] = useState("");

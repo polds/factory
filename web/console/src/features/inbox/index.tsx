@@ -45,7 +45,7 @@ export default function InboxPage() {
   });
   const runs = useQuery({
     queryKey: ["runs", "inbox", factoryId],
-    queryFn: () => client.listRuns() as Promise<RunRow[]>,
+    queryFn: () => client.listRuns({ factory_id: factoryId }) as Promise<RunRow[]>,
     enabled: factoryId.length > 0,
   });
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("connecting");
@@ -139,8 +139,16 @@ export default function InboxPage() {
   );
 }
 
-function byOldest(left: InboxItem, right: InboxItem): number {
-  return left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id);
+export function byOldest(left: InboxItem, right: InboxItem): number {
+  const byTime = inboxMillis(left.created_at) - inboxMillis(right.created_at);
+  if (byTime !== 0) return byTime;
+  return left.id.localeCompare(right.id);
+}
+
+function inboxMillis(value: string | undefined): number {
+  if (!value) return Number.NEGATIVE_INFINITY;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
 
 function StreamWatch({

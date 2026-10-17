@@ -4,6 +4,7 @@ import { useParams } from "@tanstack/react-router";
 import {
   AlertCircle,
   CheckCircle2,
+  ExternalLink,
   FileJson,
   GitBranch,
   Pencil,
@@ -319,6 +320,17 @@ function DefinitionScreen({ factoryId }: { factoryId: string }) {
             {" @ "}
             <span className="font-mono">{shortSha(view.git_sha)}</span>
           </p>
+          {view.forge_url ? (
+            <a
+              href={view.forge_url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-sm text-[var(--ring)] hover:underline"
+            >
+              <ExternalLink className="size-4" aria-hidden />
+              View on forge
+            </a>
+          ) : null}
         </section>
       ) : (
         <section

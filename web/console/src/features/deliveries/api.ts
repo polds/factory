@@ -1,6 +1,6 @@
 import { APIError, UnauthorizedError } from "../../api/client";
 import { clearAPIKey, getAPIKey } from "../../api/session";
-import type { Delivery, Problem } from "../../api/types";
+import type { Delivery, NormalizedEvent, Problem } from "../../api/types";
 
 export type HeaderEntry = {
   name: string;
@@ -18,6 +18,18 @@ export type DeliveryRow = {
   truncated: boolean;
   status: string;
   matched_automations: string[];
+  events: NormalizedEventView[];
+};
+
+export type NormalizedEventView = {
+  provider: string;
+  event: string;
+  subjectKind: string;
+  subjectId: string;
+  subjectNumber: string;
+  subjectTitle: string;
+  actorHandle: string;
+  thread: string;
 };
 
 const SENSITIVE_HEADER = /signature|secret|token|authorization/i;
@@ -49,6 +61,23 @@ export function presentDelivery(raw: Delivery): DeliveryRow {
     truncated: Boolean(raw.truncated),
     status: raw.status,
     matched_automations: Array.isArray(raw.matched_automations) ? raw.matched_automations : [],
+    events: Array.isArray(raw.normalized_events) ? raw.normalized_events.map(presentEvent) : [],
+  };
+}
+
+function presentEvent(raw: NormalizedEvent): NormalizedEventView {
+  const thread = [raw.thread?.kind, raw.thread?.external_ref].filter((part): part is string =>
+    Boolean(part),
+  );
+  return {
+    provider: raw.provider ?? "",
+    event: raw.event ?? "",
+    subjectKind: raw.subject?.kind ?? "",
+    subjectId: raw.subject?.id ?? "",
+    subjectNumber: raw.subject?.number === undefined ? "" : String(raw.subject.number),
+    subjectTitle: raw.subject?.title ?? "",
+    actorHandle: raw.actor?.handle ?? "",
+    thread: thread.join(" "),
   };
 }
 

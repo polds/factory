@@ -13,6 +13,7 @@ import (
 
 // RunFilter selects GET /api/v1/agent/runs. Empty fields are omitted.
 type RunFilter struct {
+	FactoryID    string
 	Agent        string
 	Status       string
 	Worker       string
@@ -41,18 +42,25 @@ type SteerState struct {
 
 // RunDetail is GET /api/v1/agent/runs/{id} with the console fields.
 type RunDetail struct {
-	ID            string     `json:"id"`
-	Status        string     `json:"status"`
-	FactoryID     string     `json:"factory_id,omitempty"`
-	Agent         string     `json:"agent,omitempty"`
-	WorkItemID    string     `json:"work_item_id,omitempty"`
-	ParentRunID   string     `json:"parent_run_id,omitempty"`
-	FailureReason string     `json:"failure_reason,omitempty"`
-	Failure       Failure    `json:"failure"`
-	QueueWaitMS   int64      `json:"queue_wait_ms"`
-	ExecMS        int64      `json:"exec_ms"`
-	Steer         SteerState `json:"steer"`
-	PRURL         string     `json:"pr_url,omitempty"`
+	ID                 string            `json:"id"`
+	Status             string            `json:"status"`
+	FactoryID          string            `json:"factory_id,omitempty"`
+	Agent              string            `json:"agent,omitempty"`
+	WorkItemID         string            `json:"work_item_id,omitempty"`
+	ParentRunID        string            `json:"parent_run_id,omitempty"`
+	FailureReason      string            `json:"failure_reason,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	StartedAt          *time.Time        `json:"started_at,omitempty"`
+	Worker             string            `json:"worker,omitempty"`
+	Source             string            `json:"source,omitempty"`
+	Failure            Failure           `json:"failure"`
+	QueueWaitMS        int64             `json:"queue_wait_ms"`
+	ExecMS             int64             `json:"exec_ms"`
+	Steer              SteerState        `json:"steer"`
+	PRURL              string            `json:"pr_url,omitempty"`
+	ExitCode           *int              `json:"exit_code,omitempty"`
+	CostCents          *int64            `json:"cost_cents,omitempty"`
+	KubernetesSnapshot map[string]string `json:"kubernetes_snapshot,omitempty"`
 }
 
 // Phase is one timeline row.
@@ -209,6 +217,7 @@ type Definition struct {
 	GitSHA        string           `json:"git_sha"`
 	ProductionRef string           `json:"production_ref"`
 	Editable      bool             `json:"editable"`
+	ForgeURL      string           `json:"forge_url,omitempty"`
 	Files         []DefinitionFile `json:"files"`
 }
 
@@ -229,26 +238,43 @@ type followupBody struct {
 // when the field is absent. Cost is nil when unknown, including a missing
 // field, and zero when the backend sends 0. Steer and pr_url are not here.
 type RunRow struct {
-	ID             string `json:"id"`
-	Status         string `json:"status"`
-	FactoryID      string `json:"factory_id,omitempty"`
-	Agent          string `json:"agent,omitempty"`
-	WorkItemID     string `json:"work_item_id,omitempty"`
-	ParentRunID    string `json:"parent_run_id,omitempty"`
-	FailureReason  string `json:"failure_reason,omitempty"`
-	ModelID        string `json:"model_id,omitempty"`
-	Stage          string `json:"stage,omitempty"`
-	ConversationID string `json:"conversation_id,omitempty"`
-	FailureClass   string `json:"failure_class,omitempty"`
-	FailureSummary string `json:"failure_summary,omitempty"`
-	QueueWaitMS    int64  `json:"queue_wait_ms"`
-	ExecMS         int64  `json:"exec_ms"`
-	CostCents      *int64 `json:"cost_cents,omitempty"`
+	ID             string     `json:"id"`
+	Status         string     `json:"status"`
+	FactoryID      string     `json:"factory_id,omitempty"`
+	Agent          string     `json:"agent,omitempty"`
+	WorkItemID     string     `json:"work_item_id,omitempty"`
+	ParentRunID    string     `json:"parent_run_id,omitempty"`
+	FailureReason  string     `json:"failure_reason,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	StartedAt      *time.Time `json:"started_at,omitempty"`
+	Worker         string     `json:"worker,omitempty"`
+	Source         string     `json:"source,omitempty"`
+	ModelID        string     `json:"model_id,omitempty"`
+	Stage          string     `json:"stage,omitempty"`
+	ConversationID string     `json:"conversation_id,omitempty"`
+	FailureClass   string     `json:"failure_class,omitempty"`
+	FailureCode    string     `json:"failure_code,omitempty"`
+	FailureSummary string     `json:"failure_summary,omitempty"`
+	QueueWaitMS    int64      `json:"queue_wait_ms"`
+	ExecMS         int64      `json:"exec_ms"`
+	CostCents      *int64     `json:"cost_cents,omitempty"`
+	ExitCode       *int       `json:"exit_code,omitempty"`
+}
+
+// SteerRecord is one row of GET /agent/runs/{id}/steers.
+type SteerRecord struct {
+	ID          string     `json:"id"`
+	Kind        string     `json:"kind"`
+	Text        string     `json:"text"`
+	Actor       string     `json:"actor"`
+	CreatedAt   time.Time  `json:"created_at"`
+	DeliveredAt *time.Time `json:"delivered_at,omitempty"`
 }
 
 // ListRuns lists runs with the console filters.
 func (c *Client) ListRuns(ctx context.Context, f RunFilter) ([]RunRow, error) {
 	q := url.Values{}
+	setQuery(q, "factory_id", f.FactoryID)
 	setQuery(q, "agent", f.Agent)
 	setQuery(q, "status", f.Status)
 	setQuery(q, "worker", f.Worker)
@@ -260,6 +286,17 @@ func (c *Client) ListRuns(ctx context.Context, f RunFilter) ([]RunRow, error) {
 	var runs []RunRow
 	err := c.doJSONQuery(ctx, http.MethodGet, "/api/v1/agent/runs", q, nil, &runs, http.StatusOK)
 	return runs, err
+}
+
+// ListRunSteers lists interrupt and follow-up rows for a run, oldest first.
+// It uses the factory API key, not the run token.
+func (c *Client) ListRunSteers(ctx context.Context, id string) ([]SteerRecord, error) {
+	if err := requireID(id, "run id"); err != nil {
+		return nil, err
+	}
+	var rows []SteerRecord
+	err := c.doJSON(ctx, http.MethodGet, "/api/v1/agent/runs/"+url.PathEscape(id)+"/steers", nil, &rows, http.StatusOK)
+	return rows, err
 }
 
 // RunDetail fetches one run, including failure class, summary, and evidence.

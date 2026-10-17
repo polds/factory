@@ -43,6 +43,7 @@ export function installRuns(options: RunsHandlers = {}): void {
       options.onList?.(url);
       return HttpResponse.json(options.list ?? goldenRuns);
     }),
+    http.get("/api/v1/agent/runs/:id/steers", () => HttpResponse.json([])),
     http.get("/api/v1/agent/runs/:id/timeline", () => HttpResponse.json(goldenTimeline)),
     http.get("/api/v1/agent/runs/:id/harness-usage", () => HttpResponse.json(goldenUsage)),
     http.get("/api/v1/agent/runs/:id/events", ({ request }) => {

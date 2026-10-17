@@ -148,10 +148,7 @@ func (s *Server) assignment(ctx context.Context, run store.Run, exec store.Execu
 			},
 		},
 	}
-	minutes := bound.agent.IdleTimeoutMinutes
-	if auto, ok := s.intakeAutomation(ctx, run.ID); ok && auto.IdleTimeoutMinutes > 0 {
-		minutes = auto.IdleTimeoutMinutes
-	}
+	minutes := s.effectiveIdleMinutes(ctx, run, bound)
 	if minutes > 0 {
 		asg.Task.AgentConfigSnapshot.IdleTimeoutMinutes = &minutes
 	}

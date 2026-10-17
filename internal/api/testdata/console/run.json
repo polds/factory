@@ -6,6 +6,10 @@
   "work_item_id": "task_01",
   "parent_run_id": "run_parent",
   "failure_reason": "container_exit",
+  "created_at": "2026-04-02T15:30:00Z",
+  "started_at": "2026-04-02T15:30:01Z",
+  "worker": "local-1",
+  "source": "issue",
   "failure": {
     "class": "agent",
     "code": "agent_reported",
@@ -23,5 +27,13 @@
     "reason": "run finished; idle window ended at 2026-04-02T15:30:00Z",
     "idle_until": "2026-04-02T15:30:00Z"
   },
-  "pr_url": "https://github.com/polds/factory/pull/94"
+  "pr_url": "https://github.com/polds/factory/pull/94",
+  "exit_code": 10,
+  "cost_cents": 3,
+  "kubernetes_snapshot": {
+    "container.normalized_exit_code": "10",
+    "container.state": "terminated",
+    "pod.phase": "Failed",
+    "pod.reason": "Error"
+  }
 }

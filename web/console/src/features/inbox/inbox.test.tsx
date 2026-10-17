@@ -9,6 +9,7 @@ import { demoAPIKey } from "../../mocks/demo-key";
 import { server } from "../../mocks/server";
 import { renderApp } from "../../test/render";
 import goldenInbox from "./__fixtures__/inbox.json";
+import { byOldest } from "./index";
 
 const factoryId = "fac_payments";
 
@@ -120,6 +121,24 @@ function install(
     },
   };
 }
+
+describe("byOldest", () => {
+  it("orders fractional seconds by parsed time", () => {
+    const half = item({
+      kind: "approval",
+      id: "apr_half",
+      created_at: "2026-04-02T15:30:00.5Z",
+      title: "Half",
+    });
+    const digits = item({
+      kind: "approval",
+      id: "apr_digits",
+      created_at: "2026-04-02T15:30:00.123456Z",
+      title: "Digits",
+    });
+    expect([half, digits].sort(byOldest).map((row) => row.id)).toEqual(["apr_digits", "apr_half"]);
+  });
+});
 
 describe("inbox", () => {
   it("lists rows oldest first and filters by kind", async () => {

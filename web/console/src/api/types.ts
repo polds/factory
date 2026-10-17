@@ -60,6 +60,14 @@ export type Run = {
   stage?: string;
   model_id?: string;
   failure_reason?: string;
+  created_at?: string;
+  started_at?: string;
+  worker?: string;
+  source?: string;
+  failure_code?: string;
+  exit_code?: number;
+  cost_cents?: number;
+  kubernetes_snapshot?: Record<string, string>;
   failure?: Failure;
   queue_wait_ms?: number;
   exec_ms?: number;
@@ -70,6 +78,7 @@ export type Run = {
 export type RunDetail = Run;
 
 export type RunListQuery = {
+  factory_id?: string;
   failure_class?: FailureClass;
   source?: string;
   parent_run_id?: string;
@@ -121,6 +130,15 @@ export type SteerMessage = {
   text: string;
 };
 
+export type SteerRecord = {
+  id: string;
+  kind: "interrupt" | "followup";
+  text: string;
+  actor: string;
+  created_at: string;
+  delivered_at?: string;
+};
+
 export type DefinitionFile = {
   path: string;
   content: string;
@@ -131,6 +149,7 @@ export type DefinitionView = {
   git_sha: string;
   production_ref: string;
   editable: boolean;
+  forge_url?: string;
   files: DefinitionFile[];
 };
 
@@ -272,6 +291,15 @@ export type Delivery = {
   truncated: boolean;
   status: string;
   matched_automations: string[];
+  normalized_events?: NormalizedEvent[];
+};
+
+export type NormalizedEvent = {
+  provider?: string;
+  event?: string;
+  actor?: { handle?: string };
+  subject?: { kind?: string; id?: string; number?: number; title?: string };
+  thread?: { kind?: string; external_ref?: string };
 };
 
 export type InputAnswer = {

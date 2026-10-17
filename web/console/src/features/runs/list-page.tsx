@@ -140,6 +140,7 @@ export function RunsListPage() {
                 <th scope="col">Queue | Exec</th>
                 <th scope="col">Cost</th>
                 <th scope="col">Model</th>
+                <th scope="col">Started</th>
               </tr>
             </thead>
             <tbody>
@@ -203,6 +204,12 @@ function RunTableRow({ row }: { row: RunRow }) {
         {failureClass ? (
           <>
             <StatusBadge failureClass={failureClass} />
+            {row.failure_code || row.exit_code != null ? (
+              <p>
+                {row.failure_code ? <span className="mono">{row.failure_code}</span> : null}
+                {row.exit_code != null ? <span> exit {row.exit_code}</span> : null}
+              </p>
+            ) : null}
             {row.failure_summary ? <p>{row.failure_summary}</p> : null}
           </>
         ) : (
@@ -214,6 +221,7 @@ function RunTableRow({ row }: { row: RunRow }) {
       </td>
       <td className="mono">{formatCost(row.cost_cents)}</td>
       <td className="mono">{row.model_id || "—"}</td>
+      <td>{row.started_at ? <time dateTime={row.started_at}>{row.started_at}</time> : "—"}</td>
     </tr>
   );
 }

@@ -233,6 +233,18 @@ export function RunDetailPage({ runId }: { runId: string }) {
             <dd className="mono">{workerLabel(run.worker)}</dd>
           </div>
           <div>
+            <dt>Created</dt>
+            <dd>
+              {run.created_at ? <time dateTime={run.created_at}>{run.created_at}</time> : "—"}
+            </dd>
+          </div>
+          <div>
+            <dt>Started</dt>
+            <dd>
+              {run.started_at ? <time dateTime={run.started_at}>{run.started_at}</time> : "—"}
+            </dd>
+          </div>
+          <div>
             <dt>Work item</dt>
             <dd>
               {run.factory_id && run.work_item_id ? (
@@ -279,6 +291,7 @@ export function RunDetailPage({ runId }: { runId: string }) {
       <div className="detail-layout">
         <RunTabs panels={panels} />
         <SteerPanel
+          runId={run.id}
           steer={run.steer ?? { enabled: false, reason: "" }}
           local={localSteers}
           signals={signals}

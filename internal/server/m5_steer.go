@@ -115,9 +115,47 @@ func (s *Server) idleUntil(ctx context.Context, run store.Run) (time.Time, bool)
 	minutes := 0
 	snap := s.snapshot()
 	if bound, ok := snap.byID[run.AgentID]; ok {
-		minutes = bound.agent.IdleTimeoutMinutes
+		minutes = s.effectiveIdleMinutes(ctx, run, bound)
 	}
 	return ts.Add(time.Duration(minutes) * time.Minute), true
+}
+
+// effectiveIdleMinutes is the idle timeout assignment() copies onto the
+// worker snapshot: the intake automation's timeout when it is positive,
+// otherwise the bound agent's.
+func (s *Server) effectiveIdleMinutes(ctx context.Context, run store.Run, bound boundAgent) int {
+	minutes := bound.agent.IdleTimeoutMinutes
+	if auto, ok := s.intakeAutomation(ctx, run.ID); ok && auto.IdleTimeoutMinutes > 0 {
+		minutes = auto.IdleTimeoutMinutes
+	}
+	return minutes
+}
+
+// ListSteers is the API-key history. Unknown runs are 404.
+// The read does not claim or acknowledge.
+func (s *Server) ListSteers(ctx context.Context, runID string) ([]api.SteerRecord, error) {
+	if _, err := s.store.GetRun(ctx, runID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, api.ErrNotFound
+		}
+		return nil, err
+	}
+	rows, err := s.store.ListSteers(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]api.SteerRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, api.SteerRecord{
+			ID:          row.ID,
+			Kind:        row.Kind,
+			Text:        row.Text,
+			Actor:       row.Actor,
+			CreatedAt:   row.CreatedAt.UTC(),
+			DeliveredAt: utcPtr(row.DeliveredAt),
+		})
+	}
+	return out, nil
 }
 
 func (s *Server) steerState(ctx context.Context, run store.Run) api.SteerState {

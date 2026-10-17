@@ -41,6 +41,10 @@ export const handlers = [
     if (!authorized(request)) return deny();
     return HttpResponse.json(runList);
   }),
+  http.get("/api/v1/agent/runs/:id/steers", ({ request }) => {
+    if (!authorized(request)) return deny();
+    return HttpResponse.json([]);
+  }),
   http.get("/api/v1/agent/runs/:id", ({ request }) => {
     if (!authorized(request)) return deny();
     return HttpResponse.json(runDetail);
@@ -80,6 +84,10 @@ export const handlers = [
   http.post("/api/v1/factory/:uid/automations/:name/resume", ({ request }) => {
     if (!authorized(request)) return deny();
     return new HttpResponse(null, { status: 204 });
+  }),
+  http.get("/api/v1/factory/:uid/webhooks/:webhookUid/deliveries", ({ request }) => {
+    if (!authorized(request)) return deny();
+    return HttpResponse.json([]);
   }),
   http.get("/api/v1/factory/:uid/webhooks", ({ request }) => {
     if (!authorized(request)) return deny();

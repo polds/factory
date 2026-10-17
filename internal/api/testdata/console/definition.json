@@ -3,6 +3,7 @@
   "git_sha": "1f55a9fb2873481d8fcfa519cba9cafc3c8d1fa8",
   "production_ref": "main",
   "editable": false,
+  "forge_url": "https://github.com/polds/factory/tree/1f55a9fb2873481d8fcfa519cba9cafc3c8d1fa8",
   "files": [
     {
       "path": "factory.yaml",
