@@ -1,13 +1,16 @@
 -- M5 console read models. Idempotent and forward-only.
 -- String literals in this file must not contain a semicolon.
 --
--- run_events.gid is the factory-wide exclusive cursor. Adding a
--- GENERATED ALWAYS AS IDENTITY column rewrites run_events: PostgreSQL
--- takes ACCESS EXCLUSIVE and writes every existing row, because an
--- identity default is volatile. That cost is acceptable on a dev-sized
--- table. A large table needs a later migration that adds the column
--- nullable, backfills in batches, then attaches the identity. Do not
--- copy this ALTER onto a production-sized table.
+-- run_events.gid is an identity assigned at insert, before commit, so
+-- a higher gid can commit first. factory_seq is the exclusive cursor.
+-- assign_run_event_factory_seq fills it, after commit, in gid order,
+-- under one advisory lock. Readers page with factory_seq > cursor.
+-- Adding the identity column rewrites run_events: PostgreSQL takes
+-- ACCESS EXCLUSIVE and writes every existing row, because an identity
+-- default is volatile. That cost is acceptable on a dev-sized table.
+-- A large table needs a later migration that adds the column nullable,
+-- backfills in batches, then attaches the identity. Do not copy this
+-- ALTER onto a production-sized table.
 --
 -- worker_rejections keeps seven days. RecordRejection deletes older
 -- rows. There is no separate janitor: a pool that stops rejecting
@@ -111,6 +114,42 @@ ADD COLUMN IF NOT EXISTS gid bigint GENERATED ALWAYS AS IDENTITY;
 
 CREATE UNIQUE INDEX IF NOT EXISTS run_events_gid_idx
 ON run_events (gid);
+
+ALTER TABLE run_events
+ADD COLUMN IF NOT EXISTS factory_seq bigint;
+
+CREATE SEQUENCE IF NOT EXISTS run_events_factory_seq;
+
+CREATE UNIQUE INDEX IF NOT EXISTS run_events_factory_seq_idx
+ON run_events (factory_seq);
+
+-- One assigner. nextval runs once per committed row, in gid order.
+-- A row that is still inserting is not visible, so it receives a
+-- later factory_seq after it commits. PostgreSQL does not honor
+-- ORDER BY on a single UPDATE, so the loop is the ordered form.
+
+CREATE OR REPLACE FUNCTION assign_run_event_factory_seq()
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    row_gid bigint;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtextextended('factory-events', 3));
+    FOR row_gid IN
+        SELECT run_events.gid
+        FROM run_events
+        WHERE run_events.factory_seq IS NULL
+        ORDER BY run_events.gid
+        FOR UPDATE
+    LOOP
+        UPDATE run_events
+        SET factory_seq = nextval('run_events_factory_seq')
+        WHERE run_events.gid = row_gid
+            AND run_events.factory_seq IS NULL;
+    END LOOP;
+END;
+$$;
 
 -- Backfill failed and cancelled runs once. A second apply leaves any
 -- class already stored, including a class SetRunClass wrote later.

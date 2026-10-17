@@ -35,10 +35,51 @@ func TestFailureClassBackfillMatchesClassify(t *testing.T) {
 	if len(rules) == 0 {
 		t.Fatal("failure.Cases returned no rows")
 	}
+	type backfillRow struct {
+		name      string
+		in        failure.Input
+		execState string
+	}
+	rows := make([]backfillRow, 0, len(rules)+5)
 	for _, rule := range rules {
+		rows = append(rows, backfillRow{name: rule.Name, in: rule.Input})
+	}
+	exit137 := 137
+	rows = append(rows,
+		backfillRow{
+			name:      "exec_state_orphaned_reason_lost",
+			in:        failure.Input{RunStatus: failure.StatusFailed, FailureReason: "lost"},
+			execState: "orphaned",
+		},
+		backfillRow{
+			name:      "exec_state_lease_expired",
+			in:        failure.Input{RunStatus: failure.StatusFailed},
+			execState: "lease_expired",
+		},
+		backfillRow{
+			name:      "exec_state_worker_gone",
+			in:        failure.Input{RunStatus: failure.StatusFailed, FailureReason: "disk_full"},
+			execState: "worker_gone",
+		},
+		backfillRow{
+			name:      "exec_state_failed_reason_lost",
+			in:        failure.Input{RunStatus: failure.StatusFailed, FailureReason: "lost"},
+			execState: "failed",
+		},
+		backfillRow{
+			name: "exec_state_orphaned_container_oom",
+			in: failure.Input{
+				RunStatus:     failure.StatusFailed,
+				FailureReason: failure.ReasonContainerOOM,
+				ExitCode:      &exit137,
+			},
+			execState: "orphaned",
+		},
+	)
+	for _, row := range rows {
 		var details []byte
-		if len(rule.Input.Details) > 0 {
-			details = []byte(rule.Input.Details)
+		if len(row.in.Details) > 0 {
+			details = []byte(row.in.Details)
 		}
 		var class, code string
 		err := h.raw.QueryRow(ctx, `
@@ -53,24 +94,36 @@ func TestFailureClassBackfillMatchesClassify(t *testing.T) {
 			            $2::text AS failure_reason,
 			            $3::int AS exit_code,
 			            $4::text AS harness_status,
-			            ''::text AS exec_state,
-			            $5::jsonb AS details
+			            $5::text AS exec_state,
+			            $6::jsonb AS details
 			    ) AS shaped
 			) AS classified`,
-			rule.Input.RunStatus,
-			rule.Input.FailureReason,
-			rule.Input.ExitCode,
-			rule.Input.HarnessStatus,
+			row.in.RunStatus,
+			row.in.FailureReason,
+			row.in.ExitCode,
+			row.in.HarnessStatus,
+			row.execState,
 			details,
 		).Scan(&class, &code)
 		if err != nil {
-			t.Fatalf("%s: %v", rule.Name, err)
+			t.Fatalf("%s: %v", row.name, err)
 		}
-		got := failure.Classify(rule.Input)
+		got := failure.Classify(classifyWithExecState(row.in, row.execState))
 		if class != string(got.Class) || code != got.Code {
-			t.Errorf("%s: backfill %s/%s classify %s/%s", rule.Name, class, code, got.Class, got.Code)
+			t.Errorf("%s: backfill %s/%s classify %s/%s", row.name, class, code, got.Class, got.Code)
 		}
 	}
+}
+
+// classifyWithExecState passes an execution state through RunStatus.
+// Classify has no separate exec_state field. orphaned, lease_expired,
+// and worker_gone are read from that status.
+func classifyWithExecState(in failure.Input, execState string) failure.Input {
+	switch execState {
+	case "orphaned", "lease_expired", "worker_gone":
+		in.RunStatus = execState
+	}
+	return in
 }
 
 func TestFailureClassBackfill(t *testing.T) {
@@ -666,29 +719,6 @@ func TestFactoryEventsResumeNoGap(t *testing.T) {
 	}
 	run, exec := startRunning(t, h, factoryID, agentID, "events-a")
 	_, otherExec := startRunning(t, h, beta.ID, betaAgents[0].ID, "events-b")
-	// An older transaction that does not touch run_events must not hide
-	// events that have already committed. A database-wide xmin horizon would.
-	var schema string
-	if err := h.raw.QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
-		t.Fatal(err)
-	}
-	dsn, err := withSearchPath(os.Getenv("FACTORY_TEST_DATABASE_URL"), schema, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	unrelated, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = unrelated.Close(context.Background()) })
-	unrelatedTx, err := unrelated.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = unrelatedTx.Rollback(context.Background()) })
-	if _, err := unrelatedTx.Exec(ctx, `UPDATE factories SET alias = alias WHERE id = $1`, factoryID); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := h.st.AppendEvents(ctx, run.ID, exec.ID, 0, eventBatch(0, 5)); err != nil {
 		t.Fatal(err)
 	}
@@ -710,11 +740,11 @@ func TestFactoryEventsResumeNoGap(t *testing.T) {
 			t.Fatalf("page %d", len(page))
 		}
 		for _, ev := range page {
-			if ev.GID <= cursor || ev.RunID != run.ID {
+			if ev.FactorySeq <= cursor || ev.RunID != run.ID {
 				t.Fatalf("event %+v cursor %d", ev, cursor)
 			}
 			got = append(got, ev.GID)
-			cursor = ev.GID
+			cursor = ev.FactorySeq
 		}
 	}
 	want := factoryGIDs(t, h, factoryID)
@@ -734,7 +764,7 @@ func TestFactoryEventsResumeNoGap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rest) != 1 || rest[0].GID <= cursor || rest[0].RunID != run.ID {
+	if len(rest) != 1 || rest[0].FactorySeq <= cursor || rest[0].RunID != run.ID {
 		t.Fatalf("resume %+v", rest)
 	}
 	got = append(got, rest[0].GID)
@@ -811,34 +841,56 @@ func TestFactoryEventsLateCommit(t *testing.T) {
 		t.Fatalf("gid B %d is not after A %d", gidB, gidA)
 	}
 
-	held, err := h.st.FactoryEventsFrom(ctx, factoryID, 0, 10)
+	first, err := h.st.FactoryEventsFrom(ctx, factoryID, 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, ev := range held {
-		if ev.GID == gidA || ev.GID == gidB {
-			t.Fatalf("gid %d visible while %d is uncommitted", ev.GID, gidA)
+	var cursor int64
+	seenA := 0
+	for _, ev := range first {
+		if ev.GID == gidA {
+			seenA++
 		}
+		if ev.GID == gidB {
+			if ev.FactorySeq <= cursor {
+				t.Fatalf("seq %d cursor %d", ev.FactorySeq, cursor)
+			}
+			cursor = ev.FactorySeq
+		}
+	}
+	if seenA != 0 || cursor == 0 {
+		t.Fatalf("first page saw N %d times, cursor %d, page %+v", seenA, cursor, first)
 	}
 
 	if err := txA.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	released, err := h.st.FactoryEventsFrom(ctx, factoryID, 0, 10)
+	second, err := h.st.FactoryEventsFrom(ctx, factoryID, cursor, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	posA, posB := -1, -1
-	for i, ev := range released {
-		if ev.GID == gidA {
-			posA = i
-		}
+	seenA = 0
+	var seqA int64
+	for _, ev := range second {
 		if ev.GID == gidB {
-			posB = i
+			t.Fatalf("gid %d returned again: %+v", gidB, second)
+		}
+		if ev.GID == gidA {
+			seenA++
+			seqA = ev.FactorySeq
 		}
 	}
-	if posA < 0 || posB < 0 || posA > posB {
-		t.Fatalf("after commit positions A %d B %d in %+v", posA, posB, released)
+	if seenA != 1 || seqA <= cursor {
+		t.Fatalf("N returned %d times at seq %d after cursor %d: %+v", seenA, seqA, cursor, second)
+	}
+	third, err := h.st.FactoryEventsFrom(ctx, factoryID, seqA, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range third {
+		if ev.GID == gidA || ev.GID == gidB {
+			t.Fatalf("gid %d returned again: %+v", ev.GID, third)
+		}
 	}
 }
 

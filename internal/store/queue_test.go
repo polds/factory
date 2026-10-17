@@ -704,7 +704,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	assertColumns(t, h, "workers", []string{
 		"backend", "version", "reconnects", "in_flight", "connected_at",
 	})
-	assertColumns(t, h, "run_events", []string{"gid"})
+	assertColumns(t, h, "run_events", []string{"gid", "factory_seq"})
 	assertColumns(t, h, "worker_rejections", []string{"id", "worker_id", "run_id", "at"})
 	assertColumns(t, h, "steer_requests", []string{
 		"id", "run_id", "kind", "text", "created_at", "delivered_at", "actor",
@@ -721,6 +721,18 @@ func TestMigrateIdempotent(t *testing.T) {
 	}
 	if !failureClassIdx {
 		t.Fatal("runs_failure_class_idx missing")
+	}
+	var factorySeqIdx bool
+	if err := h.raw.QueryRow(ctx, `
+		SELECT EXISTS (
+		    SELECT 1 FROM pg_indexes
+		    WHERE schemaname = current_schema()
+		      AND indexname = 'run_events_factory_seq_idx'
+		)`).Scan(&factorySeqIdx); err != nil {
+		t.Fatal(err)
+	}
+	if !factorySeqIdx {
+		t.Fatal("run_events_factory_seq_idx missing")
 	}
 	assertColumns(t, h, "automation_overrides", []string{
 		"factory_id", "name", "paused", "updated_at",

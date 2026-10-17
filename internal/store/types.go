@@ -502,9 +502,13 @@ type RunUsage struct {
 	Calls   []UsageCall
 }
 
-// FactoryEvent is a run event plus the factory-wide gid cursor.
+// FactoryEvent is a run event plus both identifiers.
+// FactorySeq is the exclusive cursor: it is assigned after the
+// inserting transaction commits, so commit order is seq order.
+// GID is the identity value assigned at insert and is not a cursor.
 type FactoryEvent struct {
-	GID int64
+	FactorySeq int64
+	GID        int64
 	Event
 }
 

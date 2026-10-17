@@ -187,20 +187,19 @@ func usageCall(seq int64, payload []byte) (UsageCall, error) {
 	}, nil
 }
 
-// FactoryEventsFrom returns events for factoryID with gid greater than cursor,
-// oldest first. The cursor is exclusive. limit must be positive.
+// FactoryEventsFrom returns events for factoryID with factory_seq greater
+// than cursor, oldest commit first. The cursor is exclusive. limit must
+// be positive.
 //
-// gid is assigned at insert, which can be before that transaction commits.
-// A row is returned only when no older transaction still holds a lock on
-// run_events. A reader therefore cannot advance the cursor past a gid whose
-// writer has not committed. A transaction that never locks run_events does
-// not hold the tail back. A rolled-back insert releases its lock; the
-// identity value it consumed is a gap the cursor does not wait for.
+// The call assigns factory_seq to every committed row that does not have
+// one yet, then reads. An insert that has taken a gid and not committed
+// is invisible, so a higher gid that already committed keeps the lower
+// factory_seq. The late gid is assigned on a later read and is not skipped.
 //
 // The live tail is Listen(ctx, "run_events"). AppendEvents notifies that
 // channel with the run id after commit. Wake on the notification, then read
-// again from the last gid applied. Read once before Listen and once after
-// it is registered so a commit between the two is not missed.
+// again from the last factory_seq applied. Read once before Listen and once
+// after it is registered so a commit between the two is not missed.
 func (s *Store) FactoryEventsFrom(ctx context.Context, factoryID string, cursor int64, limit int) ([]FactoryEvent, error) {
 	if err := s.requireFactory(ctx, s.pool, factoryID); err != nil {
 		return nil, err
@@ -211,8 +210,17 @@ func (s *Store) FactoryEventsFrom(ctx context.Context, factoryID string, cursor 
 	if limit <= 0 {
 		return nil, fmt.Errorf("store: event limit must be positive")
 	}
-	rows, err := s.pool.Query(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: factory events: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT assign_run_event_factory_seq()`); err != nil {
+		return nil, fmt.Errorf("store: factory events: %w", err)
+	}
+	rows, err := tx.Query(ctx, `
 		SELECT
+		    run_events.factory_seq,
 		    run_events.gid,
 		    run_events.run_id,
 		    run_events.seq,
@@ -224,21 +232,8 @@ func (s *Store) FactoryEventsFrom(ctx context.Context, factoryID string, cursor 
 		FROM run_events
 		JOIN runs ON runs.id = run_events.run_id
 		WHERE runs.factory_id = $1
-		  AND run_events.gid > $2
-		  AND NOT EXISTS (
-		      SELECT 1
-		      FROM pg_locks AS rel
-		      JOIN pg_locks AS tx
-		          ON tx.pid = rel.pid
-		         AND tx.locktype = 'transactionid'
-		         AND tx.mode = 'ExclusiveLock'
-		      WHERE rel.locktype = 'relation'
-		        AND rel.relation = 'run_events'::regclass
-		        AND rel.granted
-		        AND rel.pid <> pg_backend_pid()
-		        AND tx.transactionid::text::xid8 <= run_events.xmin::text::xid8
-		  )
-		ORDER BY run_events.gid
+		  AND run_events.factory_seq > $2
+		ORDER BY run_events.factory_seq
 		LIMIT $3`, factoryID, cursor, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: factory events: %w", err)
@@ -249,7 +244,7 @@ func (s *Store) FactoryEventsFrom(ctx context.Context, factoryID string, cursor 
 		var ev FactoryEvent
 		var payload []byte
 		if err := rows.Scan(
-			&ev.GID, &ev.RunID, &ev.Seq, &ev.ExecutionID, &ev.Idx, &ev.TS, &ev.Type, &payload,
+			&ev.FactorySeq, &ev.GID, &ev.RunID, &ev.Seq, &ev.ExecutionID, &ev.Idx, &ev.TS, &ev.Type, &payload,
 		); err != nil {
 			return nil, fmt.Errorf("store: factory events: %w", err)
 		}
@@ -257,6 +252,10 @@ func (s *Store) FactoryEventsFrom(ctx context.Context, factoryID string, cursor 
 		out = append(out, ev)
 	}
 	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: factory events: %w", err)
+	}
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("store: factory events: %w", err)
 	}
 	return out, nil
