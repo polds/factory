@@ -72,7 +72,7 @@ func TestConsoleCommands(t *testing.T) {
 		case r.URL.Path == "/api/v1/factory/acme/secrets":
 			_, _ = fmt.Fprintf(w, `[{"name":"OPENAI_API_KEY","provider":"env","present":true,"used_by":[{"kind":"agent","name":"implementer"}],"value":%q}]`, planted)
 		case r.URL.Path == "/api/v1/factory/acme/definition":
-			_, _ = w.Write([]byte(`{"source":"git","git_sha":"abc","production_ref":"main","editable":false,"files":[{"path":"factory.yaml","content":"name: acme\n"}]}`))
+			_, _ = fmt.Fprintf(w, `{"source":"git","git_sha":"abc","production_ref":"main","editable":false,"files":[{"path":"factory.yaml","content":"name: acme\n"}],"value":%q}`, planted)
 		default:
 			http.NotFound(w, r)
 		}
@@ -154,9 +154,13 @@ func TestConsoleCommands(t *testing.T) {
 	}
 
 	stdout.Reset()
+	stderr.Reset()
 	code = execute([]string{"definition", "show", "--factory", "acme"}, &stdout, &stderr, getenv)
 	if code != 0 || !strings.Contains(stdout.String(), "source: git") || !strings.Contains(stdout.String(), "--- factory.yaml") || !strings.Contains(stdout.String(), "name: acme") {
 		t.Fatalf("definition exit %d stdout %q stderr %s", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), planted) || strings.Contains(stderr.String(), planted) {
+		t.Fatalf("definition printed secret material\nstdout %s\nstderr %s", stdout.String(), stderr.String())
 	}
 }
 

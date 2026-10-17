@@ -315,6 +315,9 @@ func cmdDefinition(args []string, stdout, stderr io.Writer, getenv func(string) 
 		say(stderr, "factoryctl:", err)
 		return 1
 	}
+	// Content is the definition source and is printed verbatim. Secret
+	// values are not a field of this response; an extra JSON "value" is
+	// dropped because DefinitionFile has no such field.
 	for _, file := range view.Files {
 		if _, err := fmt.Fprintf(stdout, "--- %s\n%s", file.Path, file.Content); err != nil {
 			say(stderr, "factoryctl:", err)

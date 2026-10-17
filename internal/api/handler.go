@@ -238,7 +238,7 @@ func (h *handler) handleListRuns(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) listRuns(w http.ResponseWriter, r *http.Request, factoryID string) {
 	q := r.URL.Query()
-	runs, err := h.backend.ListRuns(r.Context(), RunFilter{
+	filter := RunFilter{
 		FactoryID:    factoryID,
 		Agent:        q.Get("agent"),
 		Status:       q.Get("status"),
@@ -248,7 +248,17 @@ func (h *handler) listRuns(w http.ResponseWriter, r *http.Request, factoryID str
 		Source:       q.Get("source"),
 		ParentRunID:  q.Get("parent_run_id"),
 		WorkItemID:   q.Get("work_item_id"),
-	})
+	}
+	if cb, ok := h.backend.(ConsoleBackend); ok {
+		rows, err := cb.ListRunRows(r.Context(), filter)
+		if err != nil {
+			h.writeConsoleErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, orEmpty(rows))
+		return
+	}
+	runs, err := h.backend.ListRuns(r.Context(), filter)
 	if err != nil {
 		h.writeBackendErr(w, err)
 		return

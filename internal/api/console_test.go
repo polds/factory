@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,8 +20,10 @@ import (
 )
 
 const (
-	plantedSecret = "planted-secret-value-9f3a"
-	runTokenValue = "run-token-value"
+	plantedSecret  = "planted-secret-value-9f3a"
+	runTokenValue  = "run-token-value"
+	echoDefinition = "echo-definition-content"
+	echoEventText  = "echo-event-text"
 )
 
 func TestRunListConsoleFilters(t *testing.T) {
@@ -42,6 +45,9 @@ func TestRunListConsoleFilters(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("filter %+v", got)
+	}
+	if bytes.Contains(res.body, []byte("queue_wait_ms")) || bytes.Contains(res.body, []byte("failure_class")) || bytes.Contains(res.body, []byte("exec_ms")) || bytes.Contains(res.body, []byte("cost_cents")) {
+		t.Fatalf("unwired list grew console fields: %s", res.body)
 	}
 }
 
@@ -86,6 +92,19 @@ func TestConsoleGoldens(t *testing.T) {
 	assertGolden(t, res.body, "run.json")
 	if f.detailCalls != 1 {
 		t.Fatalf("detail calls %d", f.detailCalls)
+	}
+	res = call(t, h, http.MethodGet, "/api/v1/agent/runs?failure_class=agent", "", apiHeaders())
+	assertGolden(t, res.body, "runs.json")
+	if bytes.Contains(res.body, []byte("pr_url")) || bytes.Contains(res.body, []byte("steer")) {
+		t.Fatalf("list row carries detail-only fields: %s", res.body)
+	}
+	if f.queryFilter.FailureClass != "agent" {
+		t.Fatalf("list filter %+v", f.queryFilter)
+	}
+	res = call(t, h, http.MethodGet, "/api/v1/factory/fac_1/runs", "", apiHeaders())
+	assertGolden(t, res.body, "runs.json")
+	if f.lastFilter.FactoryID != "fac_1" {
+		t.Fatalf("factory list filter %+v", f.lastFilter)
 	}
 }
 
@@ -321,26 +340,41 @@ func TestSummaryTimeValidation(t *testing.T) {
 func TestConsoleNoSecretMaterial(t *testing.T) {
 	assertNoValueField(t, reflect.TypeOf(Secret{}), reflect.TypeOf(SecretUse{}), reflect.TypeOf(Identity{}), reflect.TypeOf(Webhook{}))
 
-	material := secretMaterial{}
-	n := plantAllStrings(&material, plantedSecret)
-	if n != 6 {
-		t.Fatalf("planted %d string fields", n)
-	}
-
 	f := newConsole(t)
-	f.material = material
+	plantResponseSecrets(f)
 	h := NewHandler(f, testAPIKey, nil)
 	for _, rt := range consoleRoutes() {
-		if rt.name == "events" {
-			continue
-		}
 		res := call(t, h, rt.method, rt.sample, rt.body, consoleAuth(rt))
 		if res.status != rt.status {
-			t.Fatalf("%s status %d", rt.name, res.status)
+			t.Fatalf("%s status %d body %s", rt.name, res.status, res.body)
+		}
+		if rt.name == "events" {
+			assertEventFrameClean(t, res.body)
+			continue
 		}
 		assertBodyClean(t, res.body, plantedSecret, testAPIKey, runTokenValue)
+		if rt.name == "definition" && !bytes.Contains(res.body, []byte(echoDefinition)) {
+			t.Fatalf("definition walk missed file content: %s", res.body)
+		}
 	}
-	res := call(t, h, http.MethodPost, "/api/v1/agent/runs/run_1/followups", `{"text":"hello","value":"`+plantedSecret+`"}`, apiHeaders())
+	res := call(t, h, http.MethodGet, "/api/v1/agent/runs/run_1", "", apiHeaders())
+	if res.status != http.StatusOK {
+		t.Fatalf("run status %d", res.status)
+	}
+	assertBodyClean(t, res.body, plantedSecret, testAPIKey, runTokenValue)
+	if !bytes.Contains(res.body, []byte("The agent reported the run as failed")) {
+		t.Fatalf("run walk missed failure summary: %s", res.body)
+	}
+	res = call(t, h, http.MethodGet, "/api/v1/agent/runs", "", apiHeaders())
+	if res.status != http.StatusOK {
+		t.Fatalf("list status %d", res.status)
+	}
+	assertBodyClean(t, res.body, plantedSecret, testAPIKey, runTokenValue)
+	if !bytes.Contains(res.body, []byte("failure_class")) {
+		t.Fatalf("list walk missed the row: %s", res.body)
+	}
+
+	res = call(t, h, http.MethodPost, "/api/v1/agent/runs/run_1/followups", `{"text":"hello","value":"`+plantedSecret+`"}`, apiHeaders())
 	if res.status != http.StatusAccepted {
 		t.Fatalf("status %d body %s", res.status, res.body)
 	}
@@ -352,9 +386,41 @@ func TestConsoleNoSecretMaterial(t *testing.T) {
 		if res.status == http.StatusBadRequest {
 			continue
 		}
-		if bytes.Contains(res.body, []byte(plantedSecret)) {
+		if bytes.Contains(res.body, []byte(plantedSecret)) || bytes.Contains(res.body, []byte(testAPIKey)) {
 			t.Fatalf("%s leaked backend error: %s", rt.name, res.body)
 		}
+	}
+	res = call(t, h, http.MethodGet, "/api/v1/agent/runs", "", apiHeaders())
+	if bytes.Contains(res.body, []byte(plantedSecret)) {
+		t.Fatalf("list leaked backend error: %s", res.body)
+	}
+}
+
+func TestHiddenRedacts(t *testing.T) {
+	run := Run{ID: "run_1", Held: hidden(plantedSecret)}
+	view := DefinitionView{HeldValue: hidden(testAPIKey), HeldSign: hidden(plantedSecret)}
+	for _, v := range []any{run, &run, view, &view} {
+		for _, format := range []string{"%v", "%+v", "%#v"} {
+			printed := fmt.Sprintf(format, v)
+			if strings.Contains(printed, plantedSecret) || strings.Contains(printed, testAPIKey) {
+				t.Fatalf("%s printed a secret: %s", format, printed)
+			}
+		}
+	}
+	for _, v := range []any{run, view} {
+		body, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(body, []byte(plantedSecret)) || bytes.Contains(body, []byte(testAPIKey)) {
+			t.Fatalf("json %s", body)
+		}
+	}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	logger.Info("run", "run", run, "view", view)
+	if strings.Contains(buf.String(), plantedSecret) || strings.Contains(buf.String(), testAPIKey) {
+		t.Fatalf("slog %s", buf.String())
 	}
 }
 
@@ -431,17 +497,40 @@ func assertNoMaterialKeys(t *testing.T, body []byte) {
 	walk(v)
 }
 
-func plantAllStrings(v any, planted string) int {
-	rv := reflect.ValueOf(v).Elem()
-	n := 0
-	for i := 0; i < rv.NumField(); i++ {
-		f := rv.Field(i)
-		if f.Kind() == reflect.String && f.CanSet() {
-			f.SetString(planted)
-			n++
-		}
+func plantResponseSecrets(f *consoleFake) {
+	f.definition.HeldValue = hidden(testAPIKey)
+	f.definition.HeldSign = hidden(plantedSecret)
+	f.definition.Files[0].Content = echoDefinition + "\n"
+	f.detail.Held = hidden(plantedSecret)
+	for i := range f.rows {
+		f.rows[i].Held = hidden(plantedSecret)
 	}
-	return n
+	for i := range f.hooks {
+		f.hooks[i].HeldSign = hidden(plantedSecret)
+	}
+	f.closeAfter = true
+	f.events = []FactoryEvent{{
+		GID:   10,
+		RunID: "run_1",
+		Type:  "message.delta",
+		Held:  hidden(runTokenValue),
+		Data:  json.RawMessage(`{"seq":4,"turn":1,"role":"assistant","text":"` + echoEventText + `"}`),
+	}}
+}
+
+func assertEventFrameClean(t *testing.T, body []byte) {
+	t.Helper()
+	parts := splitSSE(body)
+	if len(parts) != 1 {
+		t.Fatalf("events %+v body %s", parts, body)
+	}
+	if !strings.Contains(parts[0].data, echoEventText) {
+		t.Fatalf("event frame missed transcript text: %s", parts[0].data)
+	}
+	assertBodyClean(t, []byte(parts[0].data), plantedSecret, testAPIKey, runTokenValue)
+	if bytes.Contains(body, []byte(plantedSecret)) || bytes.Contains(body, []byte(testAPIKey)) || bytes.Contains(body, []byte(runTokenValue)) {
+		t.Fatalf("event frame leaked: %s", body)
+	}
 }
 
 func consoleAuth(rt consoleRoute) map[string]string {
@@ -511,26 +600,17 @@ func normalizeJSON(t *testing.T, b []byte) []byte {
 	return bytes.TrimSpace(buf.Bytes())
 }
 
-type secretMaterial struct {
-	EnvValue string
-	Token    string
-	Secret   string
-	Password string
-	APIKey   string
-	Raw      string
-}
-
 type consoleFake struct {
 	*fakeBackend
 	mu       sync.Mutex
 	planted  string
-	material secretMaterial
 	notFound bool
 	leakErr  bool
 	unauth   bool
 
 	definition   DefinitionView
 	detail       RunDetail
+	rows         []RunRow
 	detailCalls  int
 	timeline     []Phase
 	usage        Usage
@@ -574,6 +654,7 @@ func newConsole(t *testing.T) *consoleFake {
 		started:     make(chan int64, 4),
 		definition:  decodeGolden[DefinitionView](t, "definition.json"),
 		detail:      decodeGolden[RunDetail](t, "run.json"),
+		rows:        decodeGolden[[]RunRow](t, "runs.json"),
 		timeline:    decodeGolden[[]Phase](t, "timeline.json"),
 		usage:       decodeGolden[Usage](t, "harness-usage.json"),
 		steerID:     decodeGolden[SteerAck](t, "interrupt.json").SteerID,
@@ -608,6 +689,21 @@ func (f *consoleFake) Definition(ctx context.Context, factory string) (Definitio
 		return DefinitionView{}, err
 	}
 	return f.definition, nil
+}
+
+func (f *consoleFake) ListRunRows(ctx context.Context, filter RunFilter) ([]RunRow, error) {
+	if filter.FactoryID != "" {
+		f.lastFilter = filter
+	} else {
+		f.queryFilter = filter
+	}
+	if err := f.fail(""); err != nil {
+		return nil, err
+	}
+	if err := f.blocked(ctx); err != nil {
+		return nil, err
+	}
+	return f.rows, nil
 }
 
 func (f *consoleFake) RunDetail(ctx context.Context, id string) (RunDetail, error) {

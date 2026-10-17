@@ -35,11 +35,15 @@ func (e ErrSteerUnavailable) Error() string {
 // implement it answers 501 on those routes, so internal/server keeps
 // compiling until T47 adds the methods.
 //
-// None of these types carry secret material. Secret and Identity have no
-// value field.
+// Secret and Identity have no value field. Credential fields on these
+// types use hidden and json:"-", so encoding a value does not emit them.
 type ConsoleBackend interface {
 	Definition(ctx context.Context, factory string) (DefinitionView, error)
 	RunDetail(ctx context.Context, id string) (RunDetail, error)
+	// ListRunRows is the console list. Backend.ListRuns stays the unwired
+	// body. T47 applies the filter, including the console fields ListRuns
+	// still ignores. Steer and pr_url stay on RunDetail.
+	ListRunRows(ctx context.Context, filter RunFilter) ([]RunRow, error)
 	RunTimeline(ctx context.Context, id string) ([]Phase, error)
 	RunUsage(ctx context.Context, id string) (Usage, error)
 	Interrupt(ctx context.Context, id, actor string) (steerID string, err error)
@@ -109,15 +113,22 @@ const (
 )
 
 // DefinitionView is GET /factory/{uid}/definition.
+// HeldValue is an environment value and HeldSign is a signing key.
+// Both stay off the wire. The response echoes file source.
 type DefinitionView struct {
 	Source        string           `json:"source"`
 	GitSHA        string           `json:"git_sha"`
 	ProductionRef string           `json:"production_ref"`
 	Editable      bool             `json:"editable"`
 	Files         []DefinitionFile `json:"files"`
+	HeldValue     hidden           `json:"-"`
+	HeldSign      hidden           `json:"-"`
 }
 
 // DefinitionFile is one file in a definition view.
+// Content is the definition source. The editor shows it verbatim, so this
+// route does not redact it. Credentials are not stored in Content; they
+// stay on DefinitionView.HeldValue and HeldSign, which are not serialized.
 type DefinitionFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
@@ -150,6 +161,20 @@ type RunDetail struct {
 	ExecMS      int64      `json:"exec_ms"`
 	Steer       SteerState `json:"steer"`
 	PRURL       string     `json:"pr_url,omitempty"`
+}
+
+// RunRow is one GET /agent/runs element when ConsoleBackend is wired.
+// The unwired list still encodes []Run, so these fields are absent there.
+// Queue wait and exec are always present, including zero. Failure class,
+// failure summary, and cost are omitted when unknown. The summary is the
+// detail contract's failure.summary; the list does not carry steer or pr_url.
+type RunRow struct {
+	Run
+	FailureClass   string `json:"failure_class,omitempty"`
+	FailureSummary string `json:"failure_summary,omitempty"`
+	QueueWaitMS    int64  `json:"queue_wait_ms"`
+	ExecMS         int64  `json:"exec_ms"`
+	CostCents      *int64 `json:"cost_cents,omitempty"`
 }
 
 // Phase is one row of GET /agent/runs/{id}/timeline.
@@ -212,6 +237,10 @@ type FactoryEvent struct {
 	RunID string
 	Type  string
 	Data  json.RawMessage
+	// Held is the run bearer stored beside the payload. The SSE frame copies
+	// Data and does not copy Held. Data's text is transcript content and is
+	// echoed; it is not this credential.
+	Held hidden `json:"-"`
 }
 
 // InboxItem is one oldest-first inbox row.
@@ -246,6 +275,8 @@ type Webhook struct {
 	SignatureScheme string     `json:"signature_scheme"`
 	Enabled         bool       `json:"enabled"`
 	LastDeliveryAt  *time.Time `json:"last_delivery_at,omitempty"`
+	// HeldSign is the webhook signing key. The response does not include it.
+	HeldSign hidden `json:"-"`
 }
 
 // WorkersView is GET /agent/connected-self-hosted-workers.

@@ -213,6 +213,8 @@ type Definition struct {
 }
 
 // DefinitionFile is one definition file.
+// Content is the source text. definition show prints it. This type has no
+// value field, so a JSON "value" on the response is not printed.
 type DefinitionFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
@@ -222,8 +224,27 @@ type followupBody struct {
 	Text string `json:"text"`
 }
 
+// RunRow is one GET /api/v1/agent/runs element from a console backend.
+// Older rows omit the console fields. Queue wait and exec decode as zero
+// when the field is absent. Cost is nil when unknown, including a missing
+// field, and zero when the backend sends 0. Steer and pr_url are not here.
+type RunRow struct {
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	FactoryID      string `json:"factory_id,omitempty"`
+	Agent          string `json:"agent,omitempty"`
+	WorkItemID     string `json:"work_item_id,omitempty"`
+	ParentRunID    string `json:"parent_run_id,omitempty"`
+	FailureReason  string `json:"failure_reason,omitempty"`
+	FailureClass   string `json:"failure_class,omitempty"`
+	FailureSummary string `json:"failure_summary,omitempty"`
+	QueueWaitMS    int64  `json:"queue_wait_ms"`
+	ExecMS         int64  `json:"exec_ms"`
+	CostCents      *int64 `json:"cost_cents,omitempty"`
+}
+
 // ListRuns lists runs with the console filters.
-func (c *Client) ListRuns(ctx context.Context, f RunFilter) ([]Run, error) {
+func (c *Client) ListRuns(ctx context.Context, f RunFilter) ([]RunRow, error) {
 	q := url.Values{}
 	setQuery(q, "agent", f.Agent)
 	setQuery(q, "status", f.Status)
@@ -233,7 +254,7 @@ func (c *Client) ListRuns(ctx context.Context, f RunFilter) ([]Run, error) {
 	setQuery(q, "source", f.Source)
 	setQuery(q, "parent_run_id", f.ParentRunID)
 	setQuery(q, "work_item_id", f.WorkItemID)
-	var runs []Run
+	var runs []RunRow
 	err := c.doJSONQuery(ctx, http.MethodGet, "/api/v1/agent/runs", q, nil, &runs, http.StatusOK)
 	return runs, err
 }

@@ -193,6 +193,8 @@ type DefinitionRef struct {
 }
 
 // Run is a run record. It carries no execution material.
+// Held is the per-run bearer a backend may keep beside the row.
+// It is not a response field.
 type Run struct {
 	ID        string `json:"id"`
 	Status    string `json:"status"`
@@ -201,6 +203,7 @@ type Run struct {
 	Title     string `json:"title,omitempty"`
 	Priority  string `json:"priority,omitempty"`
 	Repo      string `json:"repo,omitempty"`
+	Held      hidden `json:"-"`
 	// WorkItemID links a stage run to its work item. factoryctl task watch
 	// matches child transcripts on this field. Empty for a bare run.
 	WorkItemID string `json:"work_item_id,omitempty"`
