@@ -255,6 +255,285 @@ func TestE2ERevisionLimitEscalates(t *testing.T) {
 	}
 }
 
+func TestIsInfraFailure(t *testing.T) {
+	exit := func(n int) *int { return &n }
+	cases := []struct {
+		reason string
+		exit   *int
+		infra  bool
+	}{
+		{reason: "failed_by_agent", exit: exit(10), infra: false},
+		{reason: "container_exit", exit: exit(10), infra: false},
+		{reason: "model_unavailable", exit: exit(10), infra: false},
+		{reason: "failed_by_agent", exit: exit(137), infra: false},
+		{reason: "config_invalid", exit: exit(20), infra: false},
+		{reason: "config_invalid", exit: exit(137), infra: false},
+		{reason: "container_exit", exit: exit(20), infra: false},
+		{reason: "superseded_duplicate_building_run", exit: exit(1), infra: false},
+		{reason: "", exit: nil, infra: false},
+		{reason: "model_unavailable", exit: exit(21), infra: true},
+		{reason: "environment_setup_failed", exit: exit(30), infra: true},
+		{reason: "", exit: exit(21), infra: true},
+		{reason: "", exit: exit(30), infra: true},
+		{reason: "container_exit", exit: exit(137), infra: true},
+		{reason: "container_exit", exit: exit(1), infra: true},
+		{reason: "container_exit", exit: nil, infra: true},
+		{reason: "", exit: exit(128), infra: true},
+		{reason: "worker_lost", exit: nil, infra: true},
+	}
+	for _, tc := range cases {
+		if got := isInfraFailure(tc.reason, tc.exit); got != tc.infra {
+			t.Errorf("isInfraFailure(%q, %v) = %v, want %v", tc.reason, tc.exit, got, tc.infra)
+		}
+	}
+}
+
+func TestE2ESupersededSuspensionDoesNotResume(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	task, asg := reachSuspendedBuilding(t, env, w, "Superseded suspension", "Which staging env?")
+	w.close()
+	var attempts int
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM executions WHERE run_id = $1`, asg.TaskID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	env.stop(t)
+	env.markRunFailed(t, asg.TaskID, "superseded_duplicate_building_run", 1)
+	var suspended string
+	if err := env.raw.QueryRow(context.Background(), `SELECT suspended_run_id FROM work_items WHERE id = $1`, task.ID).Scan(&suspended); err != nil {
+		t.Fatal(err)
+	}
+	if suspended != asg.TaskID {
+		t.Fatalf("suspended run %s", suspended)
+	}
+
+	// Hold the scheduler so the startup sweep cannot clear the pointer
+	// before AnswerInput and park do.
+	gate := make(chan struct{})
+	env.srv.cfg.ScheduleGate = gate
+	env.start(t)
+	if err := env.raw.QueryRow(context.Background(), `SELECT suspended_run_id FROM work_items WHERE id = $1`, task.ID).Scan(&suspended); err != nil {
+		t.Fatal(err)
+	}
+	if suspended != asg.TaskID {
+		t.Fatalf("startup cleared the pointer before the answer path: %s", suspended)
+	}
+	if err := env.srv.parkSuspendedRun(context.Background(), asg.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.raw.QueryRow(context.Background(), `SELECT suspended_run_id FROM work_items WHERE id = $1`, task.ID).Scan(&suspended); err != nil {
+		t.Fatal(err)
+	}
+	if suspended != "" {
+		t.Fatalf("park left suspended_run_id %s", suspended)
+	}
+	if st := env.status(t, asg.TaskID); st != "failed" {
+		t.Fatalf("status %s", st)
+	}
+	if n := env.queueRows(t, asg.TaskID); n != 0 {
+		t.Fatalf("queue rows after park %d", n)
+	}
+
+	if _, err := env.raw.Exec(context.Background(), `
+		UPDATE work_items
+		SET suspended_run_id = $2, suspended_at = clock_timestamp()
+		WHERE id = $1`, task.ID, asg.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.srv.AnswerInput(context.Background(), task.ID, "staging-2", "peter"); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("answer err %v", err)
+	}
+	if err := env.raw.QueryRow(context.Background(), `SELECT suspended_run_id FROM work_items WHERE id = $1`, task.ID).Scan(&suspended); err != nil {
+		t.Fatal(err)
+	}
+	if suspended != "" {
+		t.Fatalf("answer left suspended_run_id %s", suspended)
+	}
+	if st := env.status(t, asg.TaskID); st != "failed" {
+		t.Fatalf("status %s", st)
+	}
+	if n := env.queueRows(t, asg.TaskID); n != 0 {
+		t.Fatalf("queue rows after answer %d", n)
+	}
+	var gotAttempts int
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM executions WHERE run_id = $1`, asg.TaskID).Scan(&gotAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if gotAttempts != attempts {
+		t.Fatalf("executions %d, want %d", gotAttempts, attempts)
+	}
+	var answered *time.Time
+	if err := env.raw.QueryRow(context.Background(), `SELECT answered_at FROM input_requests WHERE work_item_id = $1`, task.ID).Scan(&answered); err != nil {
+		t.Fatal(err)
+	}
+	if answered != nil {
+		t.Fatal("answer was stored for a dead run")
+	}
+	still := env.getTask(t, task.ID)
+	if still.Status != "awaiting_input" || still.Stage != "building" {
+		t.Fatalf("task %+v", still)
+	}
+	if _, err := env.srv.AnswerInput(context.Background(), task.ID, "staging-2", "again"); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("second answer err %v", err)
+	}
+	if n := env.queueRows(t, asg.TaskID); n != 0 {
+		t.Fatalf("queue rows after second answer %d", n)
+	}
+}
+
+func TestE2EStaleSuspensionSweepIdempotent(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	liveTask, liveRun := reachSuspendedBuilding(t, env, w, "Live suspension", "Which live env?")
+	staleTask, staleRun := reachSuspendedBuilding(t, env, w, "Stale suspension", "Which stale env?")
+	w.close()
+	env.stop(t)
+	env.markRunFailed(t, staleRun.TaskID, "superseded_duplicate_building_run", 1)
+
+	gate := make(chan struct{})
+	env.srv.cfg.ScheduleGate = gate
+	env.start(t)
+	if err := env.srv.sweepStaleSuspensions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertSuspension(t, env, liveTask.ID, liveRun.TaskID)
+	assertSuspension(t, env, staleTask.ID, "")
+	if err := env.srv.sweepStaleSuspensions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertSuspension(t, env, liveTask.ID, liveRun.TaskID)
+	assertSuspension(t, env, staleTask.ID, "")
+
+	if _, err := env.raw.Exec(context.Background(), `
+		UPDATE work_items
+		SET suspended_run_id = $2, suspended_at = clock_timestamp()
+		WHERE id = $1`, staleTask.ID, staleRun.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	close(gate)
+	deadline := time.Now().Add(8 * time.Second)
+	var suspended string
+	for {
+		if err := env.raw.QueryRow(context.Background(), `SELECT suspended_run_id FROM work_items WHERE id = $1`, staleTask.ID).Scan(&suspended); err != nil {
+			t.Fatal(err)
+		}
+		if suspended == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("startup sweep left suspended_run_id %s", suspended)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	assertSuspension(t, env, liveTask.ID, liveRun.TaskID)
+	if err := env.srv.sweepStaleSuspensions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertSuspension(t, env, liveTask.ID, liveRun.TaskID)
+	assertSuspension(t, env, staleTask.ID, "")
+}
+
+func TestE2EReviewerInfraRetryAcrossRestart(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	task, review := reachReviewing(t, env, w)
+	failAssignment(t, w, review, "model_unavailable", 21)
+	env.waitRunCount(t, task.ID, "reviewing", 2)
+	var retryID, retryStatus string
+	if err := env.raw.QueryRow(context.Background(), `
+		SELECT id, status FROM runs
+		WHERE work_item_id = $1 AND stage = 'reviewing' AND id <> $2`, task.ID, review.TaskID).Scan(&retryID, &retryStatus); err != nil {
+		t.Fatal(err)
+	}
+	if retryID == "" || (retryStatus != "queued" && retryStatus != "assigned" && retryStatus != "running") {
+		t.Fatalf("retry run %s status %s", retryID, retryStatus)
+	}
+	if got := env.getTask(t, task.ID); got.RevisionCount != 0 || got.Stage != "reviewing" || got.Status != "open" {
+		t.Fatalf("after retry %+v", got)
+	}
+	// Drop the worker before restart so an assignment lease cannot hide the
+	// queued retry from the next process. The run row is what survives.
+	w.close()
+	env.waitStatus(t, retryID, "queued")
+	env.restart(t)
+	env.assertRunCountStable(t, task.ID, "reviewing", 2)
+
+	w = dialWorker(t, env, "local-1")
+	again := w.readAssignment(t)
+	if again.TaskID != retryID || again.EnvVars["FACTORY_STAGE"] != "reviewing" {
+		t.Fatalf("assignment after restart %s stage %s", again.TaskID, again.EnvVars["FACTORY_STAGE"])
+	}
+	failAssignment(t, w, again, "container_exit", 137)
+	build := w.readAssignment(t)
+	if build.EnvVars["FACTORY_STAGE"] != "building" || build.TaskID == again.TaskID {
+		t.Fatalf("revision assignment stage %s id %s", build.EnvVars["FACTORY_STAGE"], build.TaskID)
+	}
+	if got := env.waitRevision(t, task.ID, 1); got.Stage != "building" || got.Status != "open" {
+		t.Fatalf("after second infra failure %+v", got)
+	}
+	if env.countStage(t, task.ID, "reviewing") != 2 || env.countStage(t, task.ID, "building") != 2 {
+		t.Fatalf("reviewing %d building %d", env.countStage(t, task.ID, "reviewing"), env.countStage(t, task.ID, "building"))
+	}
+	w.close()
+	env.restart(t)
+	env.assertRunCountStable(t, task.ID, "reviewing", 2)
+	env.assertRunCountStable(t, task.ID, "building", 2)
+}
+
+func TestE2EReviewerInfraRetrySurvivesCrash(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	task, review := reachReviewing(t, env, w)
+	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: review.TaskID, WorkerID: "local-1"})
+	env.waitStatus(t, review.TaskID, "running")
+	w.close()
+	env.stop(t)
+	env.markRunFailed(t, review.TaskID, "environment_setup_failed", 30)
+	if env.countStage(t, task.ID, "reviewing") != 1 {
+		t.Fatalf("reviewing runs %d before restart", env.countStage(t, task.ID, "reviewing"))
+	}
+	env.start(t)
+	env.waitRunCount(t, task.ID, "reviewing", 2)
+	var parent, stage, status string
+	if err := env.raw.QueryRow(context.Background(), `
+		SELECT COALESCE(parent_run_id, ''), stage, status
+		FROM runs
+		WHERE work_item_id = $1 AND id <> $2
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1`, task.ID, review.TaskID).Scan(&parent, &stage, &status); err != nil {
+		t.Fatal(err)
+	}
+	if parent != review.TaskID || stage != "reviewing" || status != "queued" {
+		t.Fatalf("recovered run parent %s stage %s status %s", parent, stage, status)
+	}
+	if got := env.getTask(t, task.ID); got.RevisionCount != 0 || got.Stage != "reviewing" {
+		t.Fatalf("task %+v", got)
+	}
+	// The recovered retry is in flight. A second startup must not start another.
+	env.restart(t)
+	env.assertRunCountStable(t, task.ID, "reviewing", 2)
+}
+
 func TestE2EWorkItemAskInputReleasesSlot(t *testing.T) {
 	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
 		t.Skip("FACTORY_TEST_DATABASE_URL unset")
@@ -1360,6 +1639,130 @@ func assertSchemaUnauthenticated(t *testing.T, env *env) {
 	if index.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(index.Body)
 		t.Fatalf("schema index %d %s", index.StatusCode, raw)
+	}
+}
+
+func reachSuspendedBuilding(t *testing.T, env *env, w *wsWorker, title, question string) (taskJSON, protocol.TaskAssignment) {
+	t.Helper()
+	task := env.createTask(t, title, "which env?")
+	finishStage(t, w, "triage-done")
+	finishStage(t, w, "planning-done")
+	env.waitTask(t, task.ID, "awaiting_approval", "planning")
+	var gateID string
+	for _, approval := range env.listApprovals(t) {
+		if approval.WorkItemID == task.ID && approval.Decision == "" {
+			gateID = approval.ID
+		}
+	}
+	if gateID == "" {
+		t.Fatal("no pending gate")
+	}
+	env.decide(t, gateID, "approve", http.StatusOK)
+	building := w.readAssignment(t)
+	if building.EnvVars["FACTORY_STAGE"] != "building" || building.EnvVars["FACTORY_WORK_ITEM_ID"] != task.ID {
+		t.Fatalf("building env %+v", building.EnvVars)
+	}
+	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: building.TaskID, WorkerID: "local-1"})
+	postEvents(t, building.EnvVars["FACTORY_EVENTS_URL"], building.EnvVars["FACTORY_RUN_TOKEN"], 0, []string{
+		`{"type":"question","gate":"clarification","text":"` + question + `"}`,
+	})
+	env.waitTask(t, task.ID, "awaiting_input", "building")
+	env.assertSuspended(t, task.ID, building.TaskID, question)
+	return task, building
+}
+
+func reachReviewing(t *testing.T, env *env, w *wsWorker) (taskJSON, protocol.TaskAssignment) {
+	t.Helper()
+	task := env.createTask(t, "Review the change", "scope")
+	finishStage(t, w, "triage-done")
+	finishStage(t, w, "planning-done")
+	env.waitTask(t, task.ID, "awaiting_approval", "planning")
+	var gateID string
+	for _, approval := range env.listApprovals(t) {
+		if approval.WorkItemID == task.ID && approval.Decision == "" {
+			gateID = approval.ID
+		}
+	}
+	if gateID == "" {
+		t.Fatal("no pending gate")
+	}
+	env.decide(t, gateID, "approve", http.StatusOK)
+	building := w.readAssignment(t)
+	if building.EnvVars["FACTORY_STAGE"] != "building" {
+		t.Fatalf("stage %s", building.EnvVars["FACTORY_STAGE"])
+	}
+	completeAssignment(t, w, building, "building-done")
+	review := w.readAssignment(t)
+	if review.EnvVars["FACTORY_STAGE"] != "reviewing" || review.EnvVars["FACTORY_WORK_ITEM_ID"] != task.ID {
+		t.Fatalf("review env %+v", review.EnvVars)
+	}
+	return task, review
+}
+
+func failAssignment(t *testing.T, w *wsWorker, asg protocol.TaskAssignment, reason string, exitCode int) {
+	t.Helper()
+	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: asg.TaskID, WorkerID: "local-1"})
+	w.send(t, protocol.TypeTaskFailed, protocol.TaskFailed{
+		TaskID: asg.TaskID, ExecutionID: asg.ExecutionID, Message: reason,
+		FailureReason: reason, ExitCode: exitCode,
+	})
+}
+
+func (e *env) markRunFailed(t *testing.T, runID, reason string, exitCode int) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := e.raw.Exec(ctx, `
+		UPDATE runs
+		SET status = 'failed', failure_reason = $2, exit_code = $3,
+		    ended_at = clock_timestamp(), worker_id = NULL
+		WHERE id = $1`, runID, reason, exitCode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.raw.Exec(ctx, `
+		UPDATE executions
+		SET state = 'failed', failure_reason = $2, exit_code = $3,
+		    ended_at = clock_timestamp()
+		WHERE run_id = $1 AND state IN ('assigned', 'running')`, runID, reason, exitCode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.raw.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertSuspension(t *testing.T, env *env, workItemID, runID string) {
+	t.Helper()
+	var suspended string
+	if err := env.raw.QueryRow(context.Background(), `SELECT suspended_run_id FROM work_items WHERE id = $1`, workItemID).Scan(&suspended); err != nil {
+		t.Fatal(err)
+	}
+	if suspended != runID {
+		t.Fatalf("suspended run %s, want %s", suspended, runID)
+	}
+}
+
+func (e *env) waitRunCount(t *testing.T, workItemID, stage string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	var last int
+	for time.Now().Before(deadline) {
+		last = e.countStage(t, workItemID, stage)
+		if last == n {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("%s runs %d, want %d", stage, last, n)
+}
+
+func (e *env) assertRunCountStable(t *testing.T, workItemID, stage string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := e.countStage(t, workItemID, stage); got != n {
+			t.Fatalf("%s runs %d, want %d", stage, got, n)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
