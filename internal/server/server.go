@@ -83,6 +83,10 @@ type Config struct {
 	// TokenRetrySleep overrides the wait between installation-token retries
 	// during assignment. Tests advance a clock here instead of sleeping.
 	TokenRetrySleep func(context.Context, time.Duration) error
+	// ScheduleGate blocks the scheduler loop until it is closed. Nil starts
+	// the loop immediately. Tests close it after a claim hook and a worker
+	// are ready, so the first tick cannot park a seeded run before assignOne.
+	ScheduleGate <-chan struct{}
 }
 
 // Server is one factoryd process: REST, SSE, the worker gateway, and the
@@ -129,6 +133,9 @@ type Server struct {
 	// before claim leases it. Nil in production. A test commits a new prompt
 	// in that gap. The hook runs without leaseMu and must not call assignOne.
 	beforeClaim func(runID string)
+
+	// scheduleGate blocks loop until closed. Nil in production.
+	scheduleGate <-chan struct{}
 
 	// integ is the M4 ingress, automation, and outbound runtime.
 	integ m4State
@@ -183,22 +190,23 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	s := &Server{
-		cfg:       cfg,
-		log:       cfg.Log,
-		store:     st,
-		db:        pool,
-		leader:    leader,
-		hub:       events.NewHub(),
-		ctx:       runCtx,
-		cancel:    cancel,
-		pings:     make(chan beat, 32),
-		wake:      make(chan struct{}, 1),
-		live:      map[string]execRec{},
-		byRun:     map[string]string{},
-		idleSince: map[string]time.Time{},
-		grace:     map[string]*time.Timer{},
-		suspended: map[string]struct{}{},
-		schemas:   schemaHandler(cfg.SchemasPath),
+		cfg:          cfg,
+		log:          cfg.Log,
+		store:        st,
+		db:           pool,
+		leader:       leader,
+		hub:          events.NewHub(),
+		ctx:          runCtx,
+		cancel:       cancel,
+		pings:        make(chan beat, 32),
+		wake:         make(chan struct{}, 1),
+		live:         map[string]execRec{},
+		byRun:        map[string]string{},
+		idleSince:    map[string]time.Time{},
+		grace:        map[string]*time.Timer{},
+		suspended:    map[string]struct{}{},
+		schemas:      schemaHandler(cfg.SchemasPath),
+		scheduleGate: cfg.ScheduleGate,
 	}
 	s.gw = gateway.New(s.authenticate, s, s.log)
 	if err := s.wire(); err != nil {
@@ -367,6 +375,13 @@ func (s *Server) nudge() {
 
 func (s *Server) loop() {
 	defer s.wg.Done()
+	if s.scheduleGate != nil {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-s.scheduleGate:
+		}
+	}
 	s.tick(s.ctx)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()

@@ -460,6 +460,10 @@ func TestE2EAskInputRequeueGap(t *testing.T) {
 // TestE2EAskInputPromptRereadOnClaim commits the resumed question and answer
 // after the scheduler has snapshotted the queued run and before claim leases
 // the queue row. The assignment carries the prompt committed at claim time.
+//
+// The synthetic lease is seeded only after the claim hook is installed and a
+// worker is connected. The scheduler ticks as soon as the server starts, and
+// a queue row that already exists is expired and parked before assignOne.
 func TestE2EAskInputPromptRereadOnClaim(t *testing.T) {
 	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
 		t.Skip("FACTORY_TEST_DATABASE_URL unset")
@@ -480,11 +484,12 @@ func TestE2EAskInputPromptRereadOnClaim(t *testing.T) {
 	env.assertSuspended(t, task.ID, asg.TaskID, question)
 	w.close()
 	env.stop(t)
-	env.restorePrePark(t, task.ID, asg.TaskID)
+	// Hold the restarted scheduler until the hook and the worker are ready.
+	// The first tick expires the synthetic lease and parks the run, and that
+	// deletes the queue row when assignOne has no worker to call.
+	gate := make(chan struct{})
+	env.srv.cfg.ScheduleGate = gate
 	env.start(t)
-	if _, err := env.srv.store.ExpireLeases(context.Background(), time.Now().Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
 
 	var once sync.Once
 	var hookMu sync.Mutex
@@ -507,6 +512,15 @@ func TestE2EAskInputPromptRereadOnClaim(t *testing.T) {
 
 	w2 := dialWorker(t, env, "local-2")
 	defer w2.close()
+	env.waitConnected(t, "local-2")
+	env.restorePrePark(t, task.ID, asg.TaskID)
+	// time.Now, not an hour ahead. The gate is still closed, but a fresh
+	// claim lease must not be eligible if a tick already passed it.
+	if _, err := env.srv.store.ExpireLeases(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	close(gate)
+
 	next := w2.readAssignment(t)
 	hookMu.Lock()
 	ran, err := hooked, hookErr
@@ -765,14 +779,25 @@ func TestE2EAskInputCancelSettlesWithoutGrace(t *testing.T) {
 
 func (e *env) restorePrePark(t *testing.T, workItemID, runID string) {
 	t.Helper()
-	_, err := e.raw.Exec(context.Background(), `
-		INSERT INTO run_queue (run_id, factory_id, pool, priority, enqueued_at, lease_until)
-		SELECT id, factory_id, pool, priority, clock_timestamp(), '1970-01-02T00:00:00Z'
-		FROM runs WHERE id = $1`, runID)
+	ctx := context.Background()
+	tx, err := e.raw.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tag, err := e.raw.Exec(context.Background(), `
+	defer func() { _ = tx.Rollback(ctx) }()
+	// Lock the run before the queue insert so a live scheduler tick cannot
+	// observe a partial seed and park it away.
+	var id string
+	if err := tx.QueryRow(ctx, `SELECT id FROM runs WHERE id = $1 FOR UPDATE`, runID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO run_queue (run_id, factory_id, pool, priority, enqueued_at, lease_until)
+		SELECT id, factory_id, pool, priority, clock_timestamp(), '1970-01-02T00:00:00Z'
+		FROM runs WHERE id = $1`, runID); err != nil {
+		t.Fatal(err)
+	}
+	tag, err := tx.Exec(ctx, `
 		UPDATE executions
 		SET state = 'running', ended_at = NULL
 		WHERE id = (
@@ -785,7 +810,7 @@ func (e *env) restorePrePark(t *testing.T, workItemID, runID string) {
 	if tag.RowsAffected() != 1 {
 		t.Fatalf("restored executions %d", tag.RowsAffected())
 	}
-	tag, err = e.raw.Exec(context.Background(), `
+	tag, err = tx.Exec(ctx, `
 		UPDATE runs
 		SET status = 'running', worker_id = NULL, ended_at = NULL
 		WHERE id = $1`, runID)
@@ -795,9 +820,26 @@ func (e *env) restorePrePark(t *testing.T, workItemID, runID string) {
 	if tag.RowsAffected() != 1 {
 		t.Fatalf("restored runs %d", tag.RowsAffected())
 	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if n := e.queueRows(t, runID); n != 1 {
 		t.Fatalf("pre-park queue rows %d", n)
 	}
+}
+
+func (e *env) waitConnected(t *testing.T, workerID string) {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, info := range e.srv.gw.Connected() {
+			if info.WorkerID == workerID {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("worker %s did not connect", workerID)
 }
 
 func (e *env) assertSuspended(t *testing.T, workItemID, runID, question string) {
