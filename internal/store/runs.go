@@ -15,7 +15,8 @@ const runColumns = `
     COALESCE(worker_id, ''), COALESCE(failure_reason, ''), exit_code, cancel_requested,
     created_at, started_at, ended_at,
     COALESCE(work_item_id, ''), COALESCE(parent_run_id, ''), COALESCE(conversation_id, ''),
-    COALESCE(stage, ''), COALESCE(model_id, '')`
+    COALESCE(stage, ''), COALESCE(model_id, ''),
+    COALESCE(failure_class, ''), COALESCE(failure_code, ''), assigned_at`
 
 func scanRun(row pgx.Row) (Run, error) {
 	var run Run
@@ -25,6 +26,7 @@ func scanRun(row pgx.Row) (Run, error) {
 		&run.Prompt, &run.Title, &run.Repo, &run.WorkerID, &run.FailureReason,
 		&run.ExitCode, &run.CancelRequested, &run.CreatedAt, &run.StartedAt, &run.EndedAt,
 		&run.WorkItemID, &run.ParentRunID, &run.ConversationID, &run.Stage, &run.ModelID,
+		&run.FailureClass, &run.FailureCode, &run.AssignedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Run{}, ErrNotFound
@@ -434,10 +436,19 @@ func (s *Store) StartExecution(ctx context.Context, runID, workerID string, toke
 	); err != nil {
 		return Execution{}, fmt.Errorf("store: start execution: %w", err)
 	}
+	// One clock_timestamp() feeds both columns so the first start's
+	// assigned and running phases share an instant. assigned_at stays
+	// at that first start when a later attempt runs: requeue must not
+	// erase the original queue wait. A later writer should keep the
+	// same COALESCE.
 	if _, err := tx.Exec(ctx, `
 		UPDATE runs
-		SET status = $2, worker_id = $3, started_at = COALESCE(started_at, clock_timestamp())
-		WHERE id = $1`,
+		SET status = $2,
+		    worker_id = $3,
+		    started_at = COALESCE(started_at, tick.ts),
+		    assigned_at = COALESCE(assigned_at, tick.ts)
+		FROM (SELECT clock_timestamp() AS ts) AS tick
+		WHERE runs.id = $1`,
 		runID, StatusRunning, workerID,
 	); err != nil {
 		return Execution{}, fmt.Errorf("store: start execution: %w", err)

@@ -38,6 +38,7 @@ func TestExportedStructsOmitSecrets(t *testing.T) {
 		reflect.TypeOf(store.AppliedDefinition{}),
 		reflect.TypeOf(store.DefinedAgent{}),
 		reflect.TypeOf(store.DefinedRunner{}),
+		reflect.TypeOf(store.DefinedAutomation{}),
 		reflect.TypeOf(store.Terminal{}),
 		reflect.TypeOf(store.RunFilter{}),
 		reflect.TypeOf(store.WorkItem{}),
@@ -49,6 +50,15 @@ func TestExportedStructsOmitSecrets(t *testing.T) {
 		reflect.TypeOf(store.ExternalRef{}),
 		reflect.TypeOf(store.OutboundThread{}),
 		reflect.TypeOf(store.InputRequest{}),
+		reflect.TypeOf(store.WorkerInfo{}),
+		reflect.TypeOf(store.PoolStat{}),
+		reflect.TypeOf(store.Steer{}),
+		reflect.TypeOf(store.Phase{}),
+		reflect.TypeOf(store.RunUsage{}),
+		reflect.TypeOf(store.FactoryEvent{}),
+		reflect.TypeOf(store.InboxItem{}),
+		reflect.TypeOf(store.AutomationStat{}),
+		reflect.TypeOf(store.FactorySummary{}),
 	}
 	for _, typ := range types {
 		assertNoSecretFields(t, typ)
@@ -72,6 +82,23 @@ func TestExportedStructsOmitSecrets(t *testing.T) {
 		}
 		if secretish(field.Name) {
 			t.Fatalf("Execution.%s looks like a secret", field.Name)
+		}
+	}
+	// InputTokens and OutputTokens are usage counts, not credentials.
+	for _, typ := range []reflect.Type{
+		reflect.TypeOf(store.UsageCall{}),
+		reflect.TypeOf(store.ModelUsage{}),
+		reflect.TypeOf(store.UsageTotal{}),
+	} {
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			switch field.Name {
+			case "InputTokens", "OutputTokens":
+				continue
+			}
+			if secretish(field.Name) {
+				t.Fatalf("%s.%s looks like a secret", typ.Name(), field.Name)
+			}
 		}
 	}
 }
@@ -625,7 +652,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := h.raw.QueryRow(ctx, `SELECT count(*), count(DISTINCT filename) FROM schema_migrations`).Scan(&files, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if files != 5 || distinct != 5 {
+	if files != 6 || distinct != 6 {
 		t.Fatalf("schema_migrations rows %d distinct %d", files, distinct)
 	}
 	nameRows, err := h.raw.Query(ctx, `SELECT filename FROM schema_migrations ORDER BY filename`)
@@ -644,7 +671,10 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := nameRows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	wantFiles := []string{"0001_init.sql", "0002_m3.sql", "0003_m4.sql", "0004_automation.sql", "0005_building_guard.sql"}
+	wantFiles := []string{
+		"0001_init.sql", "0002_m3.sql", "0003_m4.sql", "0004_automation.sql",
+		"0005_building_guard.sql", "0006_m5.sql",
+	}
 	if strings.Join(filenames, ",") != strings.Join(wantFiles, ",") {
 		t.Fatalf("filenames %v", filenames)
 	}
@@ -659,15 +689,53 @@ func TestMigrateIdempotent(t *testing.T) {
 		    'scorers', 'webhooks', 'deliveries', 'integration_installations',
 		    'webhook_registrations', 'schedules', 'leader_leases',
 		    'external_refs', 'outbound_threads', 'input_requests',
-		    'intake_slots', 'delivery_effects'
+		    'intake_slots', 'delivery_effects',
+		    'worker_rejections', 'steer_requests', 'automation_overrides'
 		  )`).Scan(&tables); err != nil {
 		t.Fatal(err)
 	}
-	if tables != 27 {
+	if tables != 30 {
 		t.Fatalf("tables %d", tables)
 	}
 	assertColumns(t, h, "runs", []string{
 		"work_item_id", "parent_run_id", "conversation_id", "stage", "model_id",
+		"failure_class", "failure_code", "assigned_at",
+	})
+	assertColumns(t, h, "workers", []string{
+		"backend", "version", "reconnects", "in_flight", "connected_at",
+	})
+	assertColumns(t, h, "run_events", []string{"gid", "factory_seq"})
+	assertColumns(t, h, "worker_rejections", []string{"id", "worker_id", "run_id", "at"})
+	assertColumns(t, h, "steer_requests", []string{
+		"id", "run_id", "kind", "text", "created_at", "delivered_at", "actor",
+		"claimed_by", "claim_expires_at",
+	})
+	var failureClassIdx bool
+	if err := h.raw.QueryRow(ctx, `
+		SELECT EXISTS (
+		    SELECT 1 FROM pg_indexes
+		    WHERE schemaname = current_schema()
+		      AND indexname = 'runs_failure_class_idx'
+		)`).Scan(&failureClassIdx); err != nil {
+		t.Fatal(err)
+	}
+	if !failureClassIdx {
+		t.Fatal("runs_failure_class_idx missing")
+	}
+	var factorySeqIdx bool
+	if err := h.raw.QueryRow(ctx, `
+		SELECT EXISTS (
+		    SELECT 1 FROM pg_indexes
+		    WHERE schemaname = current_schema()
+		      AND indexname = 'run_events_factory_seq_idx'
+		)`).Scan(&factorySeqIdx); err != nil {
+		t.Fatal(err)
+	}
+	if !factorySeqIdx {
+		t.Fatal("run_events_factory_seq_idx missing")
+	}
+	assertColumns(t, h, "automation_overrides", []string{
+		"factory_id", "name", "paused", "updated_at",
 	})
 	assertColumns(t, h, "work_items", []string{
 		"id", "factory_id", "source", "source_ref", "title", "body", "stage", "status",
