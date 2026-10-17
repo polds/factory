@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -31,10 +32,16 @@ type Event struct {
 	Gate          string `json:"gate,omitempty"`
 	Status        string `json:"status,omitempty"`
 	Summary       string `json:"summary,omitempty"`
+	// Steer is set on run.capabilities. SteerID identifies an applied
+	// interrupt or follow-up. Text on those events is already redacted.
+	Steer   bool   `json:"steer,omitempty"`
+	SteerID string `json:"steer_id,omitempty"`
 }
 
 // Log writes events with strictly increasing timestamps and at most one terminal.
+// Emit is safe for the steer poller to call alongside the agent loop.
 type Log struct {
+	mu       sync.Mutex
 	w        io.Writer
 	now      func() time.Time
 	last     time.Time
@@ -49,6 +56,8 @@ func NewLog(w io.Writer, now func() time.Time) *Log {
 }
 
 func (l *Log) Emit(e Event) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if e.Type == "terminal" {
 		if l.terminal {
 			return errors.New("second terminal event")
@@ -69,4 +78,8 @@ func (l *Log) Emit(e Event) error {
 	return err
 }
 
-func (l *Log) Closed() bool { return l.terminal }
+func (l *Log) Closed() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.terminal
+}
