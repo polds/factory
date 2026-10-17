@@ -36,6 +36,8 @@
 # Run gh auth login first. The App token stays on the other GitHub calls.
 # The draft-PR wait stops when that issue's run has failed or the work
 # item has escalated. The webhook hint is only for a missing work item.
+# More than one open draft whose body closes the issue stops the wait
+# and lists each pull request URL. That check does not depend on MODE.
 # live-ci reads M4_GITHUB_APP_PRIVATE_KEY (PEM text) and writes it to
 # spike/m4/.work/live-ci/github-app.pem (mode 644). It does not start a
 # tunnel. It signs a synthetic issues.labeled delivery with
@@ -77,6 +79,7 @@ LIVE_MODEL_URL="http://host.docker.internal:8317/v1"
 LIVE_MODEL_ERROR=""
 MODEL_CATALOG_ERROR=""
 LIVE_WAIT_ERROR=""
+DRAFT_PULL_ERROR=""
 
 ISSUE_NUMBER=17
 PR_NUMBER=77
@@ -1708,6 +1711,11 @@ live_ci_cleanup_request() {
   esac
 }
 
+# select_draft_pull reads one `gh pr list` document.
+# Exit 0 prints url, head sha, number, and branch for the only matching
+# open draft. Exit 1 means none match yet. Exit 3 means more than one
+# open draft closes this issue; stderr lists every matching URL.
+# Offline, live, and live-ci share this function. It does not read MODE.
 select_draft_pull() {
   python3 - "$1" "$2" <<'PY'
 import json
@@ -1719,15 +1727,58 @@ if not re.fullmatch(r"[1-9][0-9]*", number):
     raise SystemExit(1)
 pattern = re.compile(r"(?<!\w)Closes #%s(?!\d)" % re.escape(number))
 rows = json.load(open(path, encoding="utf-8"))
+matches = []
 for row in rows:
+    if not isinstance(row, dict):
+        continue
     if row.get("isDraft") and pattern.search(row.get("body") or ""):
-        print(row.get("url") or "")
-        print(row.get("headRefOid") or "")
-        print(row.get("number") or "")
-        print(row.get("headRefName") or "")
-        raise SystemExit(0)
-raise SystemExit(1)
+        matches.append(row)
+if not matches:
+    raise SystemExit(1)
+if len(matches) > 1:
+    urls = []
+    for row in matches:
+        url = row.get("url") or ""
+        if not url:
+            url = "pull request %s" % (row.get("number") or "?")
+        urls.append(url)
+    sys.stderr.write(
+        "more than one open draft pull request matches Closes #%s:\n%s\n"
+        % (number, "\n".join(urls))
+    )
+    raise SystemExit(3)
+row = matches[0]
+print(row.get("url") or "")
+print(row.get("headRefOid") or "")
+print(row.get("number") or "")
+print(row.get("headRefName") or "")
 PY
+}
+
+# take_selected_draft applies select_draft_pull to the live pull globals.
+# 0: exactly one match. 1: none yet. 3: ambiguous; DRAFT_PULL_ERROR is set.
+take_selected_draft() {
+  local path="$1" number="$2" parsed="" select_rc=0 err=""
+  err="$(mktemp)"
+  parsed="$(select_draft_pull "$path" "$number" 2>"$err")" || select_rc=$?
+  if [[ "$select_rc" -eq 0 ]]; then
+    PR_LIVE_URL="$(printf '%s\n' "$parsed" | awk 'NR==1')"
+    PR_LIVE_SHA="$(printf '%s\n' "$parsed" | awk 'NR==2')"
+    PR_LIVE_NUMBER="$(printf '%s\n' "$parsed" | awk 'NR==3')"
+    PR_LIVE_BRANCH="$(printf '%s\n' "$parsed" | awk 'NR==4')"
+    rm -f "$err"
+    if [[ -z "$PR_LIVE_URL" ]]; then
+      return 1
+    fi
+    return 0
+  fi
+  if [[ "$select_rc" -eq 3 ]]; then
+    DRAFT_PULL_ERROR="$(cat "$err")"
+    rm -f "$err"
+    return 3
+  fi
+  rm -f "$err"
+  return 1
 }
 
 record_live_ci_evidence() {
@@ -2143,6 +2194,9 @@ finish_wait_draft_pull() {
     2)
       fail "${LIVE_WAIT_ERROR:-work item failed before a draft pull request opened}"
       ;;
+    3)
+      fail "${DRAFT_PULL_ERROR:-more than one open draft pull request matches this issue}"
+      ;;
     *)
       fail "draft pull request did not open"
       ;;
@@ -2150,7 +2204,7 @@ finish_wait_draft_pull() {
 }
 
 wait_draft_pull() {
-  local parsed="" attempt=0 work_state=""
+  local attempt=0 work_state="" select_rc=0
   PR_LIVE_URL=""
   PR_LIVE_SHA=""
   PR_LIVE_NUMBER=""
@@ -2159,12 +2213,14 @@ wait_draft_pull() {
     attempt=$((attempt + 1))
     GH_TOKEN="$LIVE_TOKEN" gh pr list --repo "$M4_REPO" --state open \
       --json number,isDraft,url,body,headRefOid,headRefName >"$WORK/live-pr.json" || true
-    parsed="$(select_draft_pull "$WORK/live-pr.json" "$ISSUE_LIVE")" &&
-      PR_LIVE_URL="$(printf '%s\n' "$parsed" | awk 'NR==1')" &&
-      PR_LIVE_SHA="$(printf '%s\n' "$parsed" | awk 'NR==2')" &&
-      PR_LIVE_NUMBER="$(printf '%s\n' "$parsed" | awk 'NR==3')" &&
-      PR_LIVE_BRANCH="$(printf '%s\n' "$parsed" | awk 'NR==4')" &&
-      [[ -n "$PR_LIVE_URL" ]] && return 0
+    select_rc=0
+    take_selected_draft "$WORK/live-pr.json" "$ISSUE_LIVE" || select_rc=$?
+    if [[ "$select_rc" -eq 0 ]]; then
+      return 0
+    fi
+    if [[ "$select_rc" -eq 3 ]]; then
+      return 3
+    fi
     poll_live_work >"$WORK/live-wait-state"
     work_state="$(cat "$WORK/live-wait-state")"
     case "$work_state" in

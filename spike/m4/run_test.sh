@@ -1583,6 +1583,104 @@ data: {"type":"run.terminal","status":"failed","failure_reason":"container_exit"
   return "$rc"
 }
 
+case_select_draft_pull() {
+  local dir="" mode="" rc=0 status=0 out="" saved_mode="${MODE:-}"
+  local saved_url="${PR_LIVE_URL-}" saved_sha="${PR_LIVE_SHA-}"
+  local saved_number="${PR_LIVE_NUMBER-}" saved_branch="${PR_LIVE_BRANCH-}"
+  local saved_error="${DRAFT_PULL_ERROR-}"
+  local want=""
+  dir="$(mktemp -d)"
+  cat >"$dir/none.json" <<'EOF'
+[]
+EOF
+  cat >"$dir/one.json" <<'EOF'
+[
+  {"isDraft": false, "url": "https://github.com/polds/factory/pull/80", "headRefOid": "abc80", "number": 80, "headRefName": "ready", "body": "Closes #83"},
+  {"isDraft": true, "url": "https://github.com/polds/factory/pull/84", "headRefOid": "abc84", "number": 84, "headRefName": "m4-84", "body": "Please Closes #83 now"}
+]
+EOF
+  cat >"$dir/two.json" <<'EOF'
+[
+  {"isDraft": true, "url": "https://github.com/polds/factory/pull/84", "headRefOid": "aaa", "number": 84, "headRefName": "m4-a", "body": "Closes #83"},
+  {"isDraft": false, "url": "https://github.com/polds/factory/pull/86", "headRefOid": "ccc", "number": 86, "headRefName": "m4-c", "body": "Closes #83"},
+  {"isDraft": true, "url": "https://github.com/polds/factory/pull/85", "headRefOid": "bbb", "number": 85, "headRefName": "m4-b", "body": "Also Closes #83."},
+  {"isDraft": true, "url": "https://github.com/polds/factory/pull/87", "headRefOid": "ddd", "number": 87, "headRefName": "m4-d", "body": "Closes #830"}
+]
+EOF
+  want=$'more than one open draft pull request matches Closes #83:\nhttps://github.com/polds/factory/pull/84\nhttps://github.com/polds/factory/pull/85'
+  for mode in offline live live-ci; do
+    MODE="$mode"
+    status=0
+    out="$(select_draft_pull "$dir/none.json" 83 2>"$dir/none.err")" || status=$?
+    if [[ "$status" -eq 0 || -n "$out" || -s "$dir/none.err" ]]; then
+      echo "${mode}: zero matching drafts did not stay quiet (status ${status})" >&2
+      rc=1
+    fi
+    status=0
+    out="$(select_draft_pull "$dir/one.json" 83 2>"$dir/one.err")" || status=$?
+    if [[ "$rc" -eq 0 && ("$status" -ne 0 || -s "$dir/one.err") ]]; then
+      echo "${mode}: one matching draft was rejected" >&2
+      rc=1
+    fi
+    if [[ "$rc" -eq 0 && "$out" != $'https://github.com/polds/factory/pull/84\nabc84\n84\nm4-84' ]]; then
+      echo "${mode}: one matching draft printed:" >&2
+      printf '%s\n' "$out" >&2
+      rc=1
+    fi
+    status=0
+    out="$(select_draft_pull "$dir/two.json" 83 2>"$dir/two.err")" || status=$?
+    if [[ "$rc" -eq 0 && ("$status" -eq 0 || -n "$out") ]]; then
+      echo "${mode}: two matching drafts were accepted" >&2
+      rc=1
+    fi
+    if [[ "$rc" -eq 0 && "$status" -ne 3 ]]; then
+      echo "${mode}: two matching drafts exited ${status}" >&2
+      rc=1
+    fi
+    if [[ "$rc" -eq 0 && "$(cat "$dir/two.err")" != "$want" ]]; then
+      echo "${mode}: ambiguous draft message was:" >&2
+      cat "$dir/two.err" >&2
+      rc=1
+    fi
+    PR_LIVE_URL=""
+    PR_LIVE_SHA=""
+    PR_LIVE_NUMBER=""
+    PR_LIVE_BRANCH=""
+    DRAFT_PULL_ERROR=""
+    status=0
+    take_selected_draft "$dir/two.json" 83 || status=$?
+    if [[ "$rc" -eq 0 && "$status" -ne 3 ]]; then
+      echo "${mode}: take_selected_draft status was ${status}" >&2
+      rc=1
+    fi
+    if [[ "$rc" -eq 0 && "$DRAFT_PULL_ERROR" != "$want" ]]; then
+      echo "${mode}: DRAFT_PULL_ERROR was:" >&2
+      printf '%s\n' "$DRAFT_PULL_ERROR" >&2
+      rc=1
+    fi
+    if [[ "$rc" -eq 0 && -n "$PR_LIVE_URL" ]]; then
+      echo "${mode}: an ambiguous list still selected ${PR_LIVE_URL}" >&2
+      rc=1
+    fi
+  done
+  if ! declare -f wait_draft_pull | grep -F -q take_selected_draft; then
+    echo "wait_draft_pull does not use the shared draft selector" >&2
+    rc=1
+  fi
+  if ! declare -f finish_wait_draft_pull | grep -F -q DRAFT_PULL_ERROR; then
+    echo "the draft-PR wait does not report an ambiguous match" >&2
+    rc=1
+  fi
+  MODE="$saved_mode"
+  PR_LIVE_URL="$saved_url"
+  PR_LIVE_SHA="$saved_sha"
+  PR_LIVE_NUMBER="$saved_number"
+  PR_LIVE_BRANCH="$saved_branch"
+  DRAFT_PULL_ERROR="$saved_error"
+  rm -rf "$dir"
+  return "$rc"
+}
+
 case_no_gnu_flags() {
   if grep -n -E '(grep[[:space:]]+-P|sed[[:space:]]+-i|[[:space:]]mapfile[[:space:]]|^mapfile[[:space:]]|(^|[[:space:]])timeout[[:space:]])' \
     "$SCRIPT" "$HERE/run_test.sh"; then
@@ -1626,6 +1724,7 @@ run_case prepare_definition_models case_prepare_definition_models
 run_case live_label_sender case_live_label_sender
 run_case host_catalog_probe case_host_catalog_probe
 run_case live_work_failure case_live_work_failure
+run_case select_draft_pull case_select_draft_pull
 run_case no_gnu_flags case_no_gnu_flags
 
 echo
