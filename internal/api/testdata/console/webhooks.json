@@ -1,0 +1,11 @@
+[
+  {
+    "uid": "wh_1",
+    "name": "github",
+    "ingress_path": "/api/v1/ingress/github",
+    "auth_mode": "signature",
+    "signature_scheme": "github",
+    "enabled": true,
+    "last_delivery_at": "2026-04-02T15:00:00Z"
+  }
+]

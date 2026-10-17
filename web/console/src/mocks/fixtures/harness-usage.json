@@ -1,0 +1,16 @@
+{
+  "total": { "input_tokens": 10, "output_tokens": 4, "cost_cents": 1 },
+  "by_model": [
+    { "model_id": "stub-model", "input_tokens": 10, "output_tokens": 4, "cost_cents": 1 }
+  ],
+  "calls": [
+    {
+      "seq": 3,
+      "turn": 1,
+      "model_id": "stub-model",
+      "input_tokens": 10,
+      "output_tokens": 4,
+      "cost_cents": 1
+    }
+  ]
+}

@@ -29,7 +29,7 @@ func TestRenderNamesAgentModelAndRun(t *testing.T) {
 
 	kinds := []Kind{
 		KindRunStarted, KindStageChanged, KindQuestionAsked, KindApprovalPending,
-		KindPROpened, KindFindings, KindHandoff, KindFailed,
+		KindPROpened, KindFindings, KindHandoff, KindFailed, KindReplyReceived,
 	}
 	for _, kind := range kinds {
 		notice.Kind = kind
@@ -52,7 +52,7 @@ func TestRenderNamesAgentModelAndRun(t *testing.T) {
 			if cr.Status != github.CheckCompleted || cr.Conclusion != "success" {
 				t.Fatalf("done check %#v", cr)
 			}
-		case KindRunStarted, KindStageChanged, KindQuestionAsked, KindApprovalPending, KindPROpened, KindFindings:
+		case KindRunStarted, KindStageChanged, KindQuestionAsked, KindApprovalPending, KindPROpened, KindFindings, KindReplyReceived:
 			if cr.Status != github.CheckInProgress || cr.Conclusion != "" {
 				t.Fatalf("open check %#v", cr)
 			}

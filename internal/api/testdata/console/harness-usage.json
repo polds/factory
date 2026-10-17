@@ -1,0 +1,25 @@
+{
+  "total": {
+    "input_tokens": 1000,
+    "output_tokens": 200,
+    "cost_cents": 3
+  },
+  "by_model": [
+    {
+      "model_id": "gpt-test",
+      "input_tokens": 1000,
+      "output_tokens": 200,
+      "cost_cents": 3
+    }
+  ],
+  "calls": [
+    {
+      "seq": 4,
+      "turn": 1,
+      "model_id": "gpt-test",
+      "input_tokens": 1000,
+      "output_tokens": 200,
+      "cost_cents": 3
+    }
+  ]
+}

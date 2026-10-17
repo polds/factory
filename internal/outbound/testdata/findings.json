@@ -1,0 +1,49 @@
+{
+  "text": "Factory · implementer · claude-test\nEmphasize Hello\n✅ Triage  →  ✅ Planning  →  ✅ Building  →  ⏳ Reviewing  →  ⬜ Handoff\nFindings\nFindings: 2 — first nit\nhttps://factory.example/api/v1/agent/runs/run_9\nhttps://factory.example/api/v1/agent/runs/run_9",
+  "blocks": [
+    {
+      "text": {
+        "text": "Emphasize Hello",
+        "type": "plain_text"
+      },
+      "type": "header"
+    },
+    {
+      "text": {
+        "text": "\u003chttps://github.com/polds/factory/issues/89|polds/factory#89\u003e · task_01M…ZHSV",
+        "type": "mrkdwn"
+      },
+      "type": "section"
+    },
+    {
+      "text": {
+        "text": "✅ Triage  →  ✅ Planning  →  ✅ Building  →  ⏳ Reviewing  →  ⬜ Handoff",
+        "type": "mrkdwn"
+      },
+      "type": "section"
+    },
+    {
+      "elements": [
+        {
+          "text": "Factory · implementer · claude-test",
+          "type": "mrkdwn"
+        }
+      ],
+      "type": "context"
+    },
+    {
+      "text": {
+        "text": "Findings: 2 — first nit\nhttps://factory.example/api/v1/agent/runs/run_9",
+        "type": "mrkdwn"
+      },
+      "type": "section"
+    },
+    {
+      "text": {
+        "text": "\u003chttps://factory.example/api/v1/agent/runs/run_9|Open run\u003e",
+        "type": "mrkdwn"
+      },
+      "type": "section"
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/polds/factory/internal/forge/github"
@@ -85,6 +86,7 @@ type slackMsg struct {
 	thread  string
 	ts      string
 	text    string
+	blocks  json.RawMessage
 	update  bool
 }
 
@@ -101,7 +103,7 @@ func newFakeSlack() *fakeSlack {
 	return &fakeSlack{updated: make(chan struct{}, 8)}
 }
 
-func (f *fakeSlack) Post(_ context.Context, channel, threadTS, text string, _ json.RawMessage) (string, error) {
+func (f *fakeSlack) Post(_ context.Context, channel, threadTS, text string, blocks json.RawMessage) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.attempts++
@@ -110,11 +112,11 @@ func (f *fakeSlack) Post(_ context.Context, channel, threadTS, text string, _ js
 	}
 	f.seq++
 	ts := "100." + pad3(f.seq)
-	f.msgs = append(f.msgs, slackMsg{channel: channel, thread: threadTS, ts: ts, text: text})
+	f.msgs = append(f.msgs, slackMsg{channel: channel, thread: threadTS, ts: ts, text: text, blocks: cloneBlocks(blocks)})
 	return ts, nil
 }
 
-func (f *fakeSlack) Update(_ context.Context, channel, ts, text string, _ json.RawMessage) error {
+func (f *fakeSlack) Update(_ context.Context, channel, ts, text string, blocks json.RawMessage) error {
 	f.mu.Lock()
 	f.attempts++
 	if f.err != nil {
@@ -122,7 +124,7 @@ func (f *fakeSlack) Update(_ context.Context, channel, ts, text string, _ json.R
 		f.mu.Unlock()
 		return err
 	}
-	f.msgs = append(f.msgs, slackMsg{channel: channel, thread: ts, ts: ts, text: text, update: true})
+	f.msgs = append(f.msgs, slackMsg{channel: channel, thread: ts, ts: ts, text: text, blocks: cloneBlocks(blocks), update: true})
 	f.mu.Unlock()
 	select {
 	case f.updated <- struct{}{}:
@@ -141,6 +143,15 @@ func (f *fakeSlack) snapshot() []slackMsg {
 
 func pad3(n int) string {
 	return fmt.Sprintf("%03d", n)
+}
+
+func cloneBlocks(b json.RawMessage) json.RawMessage {
+	if len(strings.TrimSpace(string(b))) == 0 {
+		return nil
+	}
+	out := make([]byte, len(b))
+	copy(out, b)
+	return out
 }
 
 type ghComment struct {

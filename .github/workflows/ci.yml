@@ -28,6 +28,7 @@
 #   m4 offline e2e         MODE=offline ./spike/m4/run.sh
 #   task image platform    task and harness images built for linux/arm64
 #   upcoming languages     TypeScript, Python, SQL, Helm, JSON Schema
+#   console                web/console lint, typecheck, test, build, audit
 #   factory/config         validate definition trees; succeed without
 #                          validating when those paths did not change
 #
@@ -594,6 +595,30 @@ jobs:
         if: steps.filter.outputs.changed == 'true'
         run: ./scripts/ci/factory-config.sh
 
+  console:
+    name: console
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/console/package-lock.json
+      - name: Install, lint, test, and build the console
+        working-directory: web/console
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run lint
+          npm run typecheck
+          npm test
+          npm run build
+          npm audit --omit=dev --audit-level=high
+
   required:
     name: required
     needs:
@@ -615,6 +640,7 @@ jobs:
       - m4-offline
       - task-image-arch
       - upcoming-languages
+      - console
       - factory-config
     if: always()
     runs-on: ubuntu-latest
@@ -640,6 +666,7 @@ jobs:
           M4_OFFLINE: ${{ needs.m4-offline.result }}
           TASK_IMAGE_ARCH: ${{ needs.task-image-arch.result }}
           UPCOMING: ${{ needs.upcoming-languages.result }}
+          CONSOLE: ${{ needs.console.result }}
           FACTORY_CONFIG: ${{ needs.factory-config.result }}
         run: |
           set -euo pipefail
@@ -675,5 +702,6 @@ jobs:
           report "m4 offline e2e" "${M4_OFFLINE}"
           report "task image platform" "${TASK_IMAGE_ARCH}"
           report "upcoming languages" "${UPCOMING}"
+          report "console" "${CONSOLE}"
           report "factory/config" "${FACTORY_CONFIG}"
           exit "${fail}"

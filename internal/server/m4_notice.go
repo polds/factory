@@ -101,6 +101,9 @@ func (s *Server) recordOutcomes(ctx context.Context, res automation.Result) {
 		if outcome.RunID == "" {
 			continue
 		}
+		if outcome.Kind == automation.KindFollowUp {
+			s.notifyFollowUp(ctx, outcome)
+		}
 		if outcome.Kind != automation.KindCreated && outcome.Kind != automation.KindFollowUp {
 			continue
 		}
@@ -113,6 +116,28 @@ func (s *Server) recordOutcomes(ctx context.Context, res automation.Result) {
 		}
 		s.notify(ctx, outbound.KindRunStarted, item, outcome.RunID, "", "", "")
 	}
+}
+
+// notifyFollowUp acks a thread reply that started a revision. The ack is
+// keyed on the follow-up run id inside the notifier, so a second delivery
+// of the same run does not post again.
+func (s *Server) notifyFollowUp(ctx context.Context, outcome automation.Outcome) {
+	if s.integ.notifier == nil || outcome.WorkItemID == "" {
+		return
+	}
+	item, err := s.store.GetWorkItem(ctx, outcome.WorkItemID)
+	if err != nil {
+		return
+	}
+	prURL := ""
+	if url, ok, err := (&store.Automation{Store: s.store}).OpenPullRequest(ctx, item.ID); err == nil && ok {
+		prURL = url
+	}
+	actor := ""
+	if run, err := s.store.GetRun(ctx, outcome.RunID); err == nil {
+		actor = outbound.ReplyActor(run.Prompt)
+	}
+	s.notifyActor(ctx, outbound.KindReplyReceived, item, outcome.RunID, "", prURL, "", actor)
 }
 
 func (s *Server) noteAfterTerminal(ctx context.Context, runID string, before store.WorkItem) {
@@ -227,6 +252,10 @@ func questionText(lines [][]byte) string {
 }
 
 func (s *Server) notify(ctx context.Context, kind outbound.Kind, item store.WorkItem, runID, text, prURL, headSHA string) {
+	s.notifyActor(ctx, kind, item, runID, text, prURL, headSHA, "")
+}
+
+func (s *Server) notifyActor(ctx context.Context, kind outbound.Kind, item store.WorkItem, runID, text, prURL, headSHA, actor string) {
 	if s.integ.notifier == nil || item.ID == "" {
 		return
 	}
@@ -246,9 +275,11 @@ func (s *Server) notify(ctx context.Context, kind outbound.Kind, item store.Work
 		ConversationID: item.ConversationID,
 		SlackTeam:      s.cfg.SlackTeamID,
 		Channel:        slackChannel(snap.tree),
+		Actor:          strings.TrimSpace(actor),
 	}
 	if runID != "" {
 		if run, err := s.store.GetRun(ctx, runID); err == nil {
+			notice.ExitCode = run.ExitCode
 			notice.Model = run.ModelID
 			if bound, ok := snap.byID[run.AgentID]; ok {
 				notice.Agent = bound.name
