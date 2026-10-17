@@ -28,6 +28,10 @@ const (
 	steerEmptyFloor = 50 * time.Millisecond
 )
 
+// steerDeliveredHook, when set, runs on the poller after a batch that
+// contained a new steer id. Tests rendezvous there. Production leaves it nil.
+var steerDeliveredHook func()
+
 // secretValue is a run token. Formatting, JSON, and slog redact it.
 // The raw value is available only through reveal.
 type secretValue string
@@ -50,9 +54,10 @@ func (s secretValue) reveal() string             { return string(s) }
 //
 //	GET {origin}/api/v1/agent/runs/{id}/steer?after={steerID}
 //
-// The after cursor is the acknowledgement. The next poll's after is the
-// last steer id this process accepted, which is how the control plane
-// marks that id delivered. There is no separate ack call and no extra
+// The after cursor is the acknowledgement. An interrupt or an unknown kind
+// is acknowledged when it is accepted. A follow-up is acknowledged when
+// the harness takes it to run, so the cursor never moves past a follow-up
+// that was not applied. There is no separate ack call and no extra
 // environment variable.
 func steerEndpoint(eventsURL string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(eventsURL))
@@ -79,12 +84,28 @@ type steerMsg struct {
 	Text string
 }
 
+// pendingInterrupt is an interrupt delivered to one turn generation.
+// A later turn must not be canceled by it.
+type pendingInterrupt struct {
+	msg steerMsg
+	gen int
+}
+
+// ackID is one accepted steer in arrival order. hold is set until a
+// follow-up is taken; the cursor cannot move past a held id.
+type ackID struct {
+	id   string
+	hold bool
+}
+
 // steerHub is the poller's handoff to the agent loop. deliver never blocks.
 // Each id is accepted at most once, including when a reconnect replays it.
 type steerHub struct {
 	mu         sync.Mutex
 	followups  []steerMsg
-	interrupts []steerMsg
+	interrupts []pendingInterrupt
+	ack        []ackID
+	cursor     string
 	seen       map[string]struct{}
 	wake       chan struct{}
 	turnCancel context.CancelFunc
@@ -109,24 +130,64 @@ func (h *steerHub) deliver(m steerMsg) bool {
 	if _, ok := h.seen[m.ID]; ok {
 		return false
 	}
-	h.seen[m.ID] = struct{}{}
 	switch m.Kind {
 	case steerInterrupt:
 		// No turn is in flight: acknowledge the id and drop it. The next
 		// turn must not be canceled by an interrupt that already missed.
+		h.acceptLocked(m.ID, false)
 		if h.turnCancel == nil {
 			return true
 		}
-		h.interrupts = append(h.interrupts, m)
+		h.interrupts = append(h.interrupts, pendingInterrupt{msg: m, gen: h.generation})
 		h.turnCancel()
 	case steerFollowup:
+		// Held until takeFollowup. The cursor does not move past it, so
+		// accepting the id is not yet an acknowledgement.
+		h.acceptLocked(m.ID, true)
 		h.followups = append(h.followups, m)
 		h.notifyLocked()
 	default:
-		// The id is still acknowledged by the poller. An unknown kind
-		// does not enter the conversation.
+		// An unknown kind does not enter the conversation. It is still
+		// acknowledged.
+		h.acceptLocked(m.ID, false)
 	}
 	return true
+}
+
+// acceptLocked records id in arrival order. hold keeps the ack cursor
+// from moving past a follow-up that has not been taken.
+func (h *steerHub) acceptLocked(id string, hold bool) {
+	h.seen[id] = struct{}{}
+	h.ack = append(h.ack, ackID{id: id, hold: hold})
+	h.advanceCursorLocked()
+}
+
+func (h *steerHub) advanceCursorLocked() {
+	for len(h.ack) > 0 && !h.ack[0].hold {
+		h.cursor = h.ack[0].id
+		h.ack = h.ack[1:]
+	}
+}
+
+func (h *steerHub) releaseAckLocked(id string) {
+	for i := range h.ack {
+		if h.ack[i].id == id && h.ack[i].hold {
+			h.ack[i].hold = false
+			break
+		}
+	}
+	h.advanceCursorLocked()
+}
+
+// ackCursor is the after value safe to send. It never moves past a
+// follow-up that is still queued.
+func (h *steerHub) ackCursor() string {
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cursor
 }
 
 func (h *steerHub) notifyLocked() {
@@ -136,35 +197,53 @@ func (h *steerHub) notifyLocked() {
 	}
 }
 
-// bindTurn registers the in-flight turn. An interrupt that is already
-// queued cancels it before the model call or tool starts.
+// bindTurn registers the in-flight turn. Only an interrupt tagged for this
+// generation can cancel it. A stale one is discarded.
 func (h *steerHub) bindTurn(cancel context.CancelFunc) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.generation++
 	h.turnCancel = cancel
+	h.keepGenerationLocked(h.generation)
 	if len(h.interrupts) > 0 {
 		cancel()
 	}
 	return h.generation
 }
 
-func (h *steerHub) unbindTurn(gen int) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.generation == gen {
-		h.turnCancel = nil
+func (h *steerHub) keepGenerationLocked(gen int) {
+	kept := make([]pendingInterrupt, 0, len(h.interrupts))
+	for _, item := range h.interrupts {
+		if item.gen == gen {
+			kept = append(kept, item)
+		}
 	}
+	h.interrupts = kept
 }
 
-// releaseTurn ends the bound turn and drops interrupts queued after that
-// turn was recorded. Their ids stay acknowledged.
+// unbindTurn clears the binding for gen and drops interrupts queued for
+// that turn. The success path uses this; those ids are already acknowledged.
+func (h *steerHub) unbindTurn(gen int) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.endTurnLocked(gen)
+}
+
+// releaseTurn ends the bound turn before the post-interrupt wait and drops
+// interrupts that arrived after that turn was recorded.
 func (h *steerHub) releaseTurn(gen int) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.endTurnLocked(gen)
+}
+
+func (h *steerHub) endTurnLocked(gen int) {
 	if h.generation != gen {
 		return
 	}
@@ -183,6 +262,7 @@ func (h *steerHub) takeFollowup() (steerMsg, bool) {
 	}
 	m := h.followups[0]
 	h.followups = h.followups[1:]
+	h.releaseAckLocked(m.ID)
 	return m, true
 }
 
@@ -192,12 +272,14 @@ func (h *steerHub) takeInterrupt() (steerMsg, bool) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(h.interrupts) == 0 {
-		return steerMsg{}, false
+	for len(h.interrupts) > 0 {
+		item := h.interrupts[0]
+		h.interrupts = h.interrupts[1:]
+		if item.gen == h.generation {
+			return item.msg, true
+		}
 	}
-	m := h.interrupts[0]
-	h.interrupts = h.interrupts[1:]
-	return m, true
+	return steerMsg{}, false
 }
 
 type steerPoller struct {
@@ -244,14 +326,13 @@ func startSteerPoller(ctx context.Context, endpoint string, token secretValue, l
 
 func (p *steerPoller) loop(ctx context.Context) {
 	backoff := steerBackoffMin
-	var after string
 	announced := false
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		started := time.Now()
-		items, status, err := p.poll(ctx, after)
+		items, status, err := p.poll(ctx, p.hub.ackCursor())
 		if ctx.Err() != nil {
 			return
 		}
@@ -288,10 +369,9 @@ func (p *steerPoller) loop(ctx context.Context) {
 			if p.hub.deliver(item) {
 				fresh++
 			}
-			// after advances for replays too. The id was accepted on the
-			// first sighting; the cursor is what tells the server to stop
-			// sending it.
-			after = item.ID
+		}
+		if fresh > 0 && steerDeliveredHook != nil {
+			steerDeliveredHook()
 		}
 		if fresh == 0 && time.Since(started) < steerEmptyFloor {
 			if !sleepCtx(ctx, steerEmptyFloor-time.Since(started)) {

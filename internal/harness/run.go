@@ -188,12 +188,7 @@ func Run(ctx context.Context, opt Options) int {
 		return finish(ExitConfigInvalid, "config_invalid", idleErr.Error())
 	}
 
-	deadline := time.Now().Add(idle)
-	for idle > 0 && time.Now().Before(deadline) {
-		next, ok := pollFollowup(ctx, opt.RuntimeDir, deadline, hub)
-		if !ok {
-			break
-		}
+	applyFollowup := func(next followUp) (int, string) {
 		if next.steerID != "" {
 			_ = log.Emit(Event{
 				Type:    "followup.received",
@@ -203,10 +198,33 @@ func Run(ctx context.Context, opt Options) int {
 		}
 		code, status, summaryRun := conv.run(ctx, next.text)
 		summary = summaryRun
+		return code, status
+	}
+
+	deadline := time.Now().Add(idle)
+	for idle > 0 && time.Now().Before(deadline) {
+		next, ok := pollFollowup(ctx, opt.RuntimeDir, deadline, hub)
+		if !ok {
+			break
+		}
+		code, status := applyFollowup(next)
 		if code != ExitOK {
 			return finish(code, status, summary)
 		}
 		deadline = time.Now().Add(idle)
+	}
+	// A follow-up already queued is a resume turn even when idle is 0.
+	// That covers one that missed the end-of-turn drain and one left by
+	// the last budgeted turn. Taking it is what acknowledges it.
+	for {
+		msg, ok := hub.takeFollowup()
+		if !ok {
+			break
+		}
+		code, status := applyFollowup(followUp{text: msg.Text, steerID: msg.ID})
+		if code != ExitOK {
+			return finish(code, status, summary)
+		}
 	}
 	return finish(ExitOK, "succeeded", summary)
 }
@@ -277,6 +295,16 @@ func readFollowupFile(path string) (string, bool) {
 	return body.Prompt, true
 }
 
+// turnCommitHook runs while the turn is still bound, after oneTurn has
+// chosen its result and before unbindTurn. Tests deliver a steer into that
+// window. Production leaves it nil.
+var turnCommitHook func()
+
+// followupMissedDrainHook runs after a successful turn's drain found
+// nothing, before conversation.run returns. Tests deliver a follow-up that
+// missed that drain. Production leaves it nil.
+var followupMissedDrainHook func()
+
 // conversation is one model session. A steer follow-up that arrives while
 // the session is live is appended to messages. A follow-up that arrives
 // after it has returned is delivered by pollFollowup and starts run again.
@@ -310,15 +338,19 @@ func (c conversation) run(ctx context.Context, prompt string) (int, string, stri
 		if cont {
 			continue
 		}
-		// The turn that ends the conversation can still have a follow-up
-		// queued. Append it here and keep going. A follow-up that arrives
-		// only after run returns stays queued for pollFollowup.
+		// A follow-up queued before this return extends the same conversation
+		// when another turn is left in the budget. On the last budgeted
+		// turn it stays queued so the caller runs it as its own
+		// conversation, including when idle is 0.
 		if code == ExitOK && turn < c.maxTurns {
 			continued := c.drainFollowups(messages)
 			if len(continued) > len(messages) {
 				messages = continued
 				continue
 			}
+		}
+		if code == ExitOK && followupMissedDrainHook != nil {
+			followupMissedDrainHook()
 		}
 		return code, status, summary
 	}
@@ -335,6 +367,9 @@ func (c conversation) oneTurn(ctx context.Context, turn int, messages []chatMess
 	if c.hub != nil {
 		gen = c.hub.bindTurn(turnCancel)
 		defer c.hub.unbindTurn(gen)
+		if turnCommitHook != nil {
+			defer turnCommitHook()
+		}
 	}
 	resp, err := completeChat(turnCtx, c.baseURL, c.apiKey, chatRequest{
 		Model:    c.model,
