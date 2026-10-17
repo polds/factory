@@ -271,7 +271,7 @@ test("day of factory", async ({ browser }) => {
     await page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" }).getByRole("link").click();
     const agentPanel = page.getByRole("region", { name: "Failure" });
     await expect(agentPanel).toHaveAttribute("data-failure-class", "agent");
-    await expect(agentPanel.getByText("agent_reported")).toBeVisible();
+    await expect(agentPanel.locator("code", { hasText: "agent_reported" })).toBeVisible();
     await expect(agentPanel.getByText("Agent reported this run as failed")).toBeVisible();
     await expect(agentPanel.getByRole("list", { name: "Evidence" }).getByRole("listitem").first()).toBeVisible();
     await expect(page.getByRole("log", { name: "Run transcript" }).getByText("m5 agent failure")).toBeVisible();
@@ -284,7 +284,7 @@ test("day of factory", async ({ browser }) => {
     await page.locator("tr[data-run]").filter({ hasText: "m5-infra-kill" }).getByRole("link").click();
     const infraPanel = page.getByRole("region", { name: "Failure" });
     await expect(infraPanel).toHaveAttribute("data-failure-class", "infrastructure");
-    await expect(infraPanel.getByText("container_killed")).toBeVisible();
+    await expect(infraPanel.locator("code", { hasText: "container_killed" })).toBeVisible();
     await expect(infraPanel.getByRole("list", { name: "Evidence" }).getByRole("listitem").first()).toBeVisible();
     await axe(page, "run-detail");
     await saveShot(page, "infra-failure");
