@@ -71,9 +71,11 @@ func Run(ctx context.Context, opt Options) int {
 	log := NewLog(eventOut, opt.Now)
 
 	var (
-		secrets   []string
-		hub       *steerHub
-		stopSteer func()
+		secrets    []string
+		hub        *steerHub
+		stopSteer  func()
+		steerURL   string
+		steerToken secretValue
 	)
 	finish := func(code int, status, summary string) int {
 		// Stop the poller before the terminal event so a late capability
@@ -89,7 +91,9 @@ func Run(ctx context.Context, opt Options) int {
 	if rep != nil {
 		if endpoint, err := steerEndpoint(lookupEnv(opt.Env, "FACTORY_EVENTS_URL")); err == nil {
 			hub = newSteerHub()
-			stopSteer = startSteerPoller(ctx, endpoint, secretValue(lookupEnv(opt.Env, "FACTORY_RUN_TOKEN")), log, hub)
+			steerURL = endpoint
+			steerToken = secretValue(lookupEnv(opt.Env, "FACTORY_RUN_TOKEN"))
+			stopSteer = startSteerPoller(ctx, steerURL, steerToken, log, hub)
 			defer stopSteer()
 		}
 	}
@@ -224,6 +228,26 @@ func Run(ctx context.Context, opt Options) int {
 		code, status := applyFollowup(followUp{text: msg.Text, steerID: msg.ID})
 		if code != ExitOK {
 			return finish(code, status, summary)
+		}
+	}
+	// Idle 0 does not wait. A follow-up whose long-poll is still in
+	// flight was not in the hub, and finish would cancel that poll.
+	// Stop the poller, then read once with wait=0. deliver ignores an id
+	// the in-flight response already applied.
+	if idle == 0 && hub != nil && steerURL != "" {
+		if stopSteer != nil {
+			stopSteer()
+		}
+		hub.collectImmediate(ctx, steerURL, steerToken, log)
+		for {
+			msg, ok := hub.takeFollowup()
+			if !ok {
+				break
+			}
+			code, status := applyFollowup(followUp{text: msg.Text, steerID: msg.ID})
+			if code != ExitOK {
+				return finish(code, status, summary)
+			}
 		}
 	}
 	return finish(ExitOK, "succeeded", summary)

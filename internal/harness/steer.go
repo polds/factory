@@ -26,6 +26,9 @@ const (
 	steerBackoffMax  = 5 * time.Second
 	// An empty poll that the server did not hold must not busy-loop.
 	steerEmptyFloor = 50 * time.Millisecond
+	// One immediate poll after the long-poller stops. Short enough that an
+	// empty hold cannot stretch an idle-0 run.
+	steerFinalPoll = 250 * time.Millisecond
 )
 
 // steerDeliveredHook, when set, runs on the poller after a batch that
@@ -101,15 +104,16 @@ type ackID struct {
 // steerHub is the poller's handoff to the agent loop. deliver never blocks.
 // Each id is accepted at most once, including when a reconnect replays it.
 type steerHub struct {
-	mu         sync.Mutex
-	followups  []steerMsg
-	interrupts []pendingInterrupt
-	ack        []ackID
-	cursor     string
-	seen       map[string]struct{}
-	wake       chan struct{}
-	turnCancel context.CancelFunc
-	generation int
+	mu             sync.Mutex
+	followups      []steerMsg
+	interrupts     []pendingInterrupt
+	ack            []ackID
+	cursor         string
+	seen           map[string]struct{}
+	wake           chan struct{}
+	turnCancel     context.CancelFunc
+	generation     int
+	capabilitySent bool
 }
 
 func newSteerHub() *steerHub {
@@ -326,7 +330,6 @@ func startSteerPoller(ctx context.Context, endpoint string, token secretValue, l
 
 func (p *steerPoller) loop(ctx context.Context) {
 	backoff := steerBackoffMin
-	announced := false
 	for {
 		if ctx.Err() != nil {
 			return
@@ -356,11 +359,7 @@ func (p *steerPoller) loop(ctx context.Context) {
 			continue
 		}
 		backoff = steerBackoffMin
-		if !announced {
-			if err := p.log.Emit(Event{Type: "run.capabilities", Steer: true}); err == nil {
-				announced = true
-			}
-		}
+		p.hub.emitCapability(p.log)
 		fresh := 0
 		for _, item := range items {
 			if item.ID == "" {
@@ -393,13 +392,24 @@ func nextSteerBackoff(current time.Duration) time.Duration {
 }
 
 func (p *steerPoller) poll(ctx context.Context, after string) ([]steerMsg, int, error) {
-	u, err := url.Parse(p.endpoint)
+	return pollSteer(ctx, p.client, p.endpoint, p.token, after, false)
+}
+
+// pollSteer reads one steer batch. immediate sets wait=0 so a server that
+// honors it does not hold the request open.
+func pollSteer(ctx context.Context, client *http.Client, endpoint string, token secretValue, after string, immediate bool) ([]steerMsg, int, error) {
+	u, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, 0, err
 	}
+	q := u.Query()
 	if after != "" {
-		q := u.Query()
 		q.Set("after", after)
+	}
+	if immediate {
+		q.Set("wait", "0")
+	}
+	if len(q) > 0 {
 		u.RawQuery = q.Encode()
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, steerPollTimeout)
@@ -408,8 +418,8 @@ func (p *steerPoller) poll(ctx context.Context, after string) ([]steerMsg, int, 
 	if err != nil {
 		return nil, 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+p.token.reveal())
-	resp, err := p.client.Do(req)
+	req.Header.Set("Authorization", "Bearer "+token.reveal())
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -437,6 +447,56 @@ func (p *steerPoller) poll(ctx context.Context, after string) ([]steerMsg, int, 
 		out = append(out, steerMsg{ID: item.ID, Kind: item.Kind, Text: item.Text})
 	}
 	return out, resp.StatusCode, nil
+}
+
+// emitCapability records steering once. Later polls, including the idle-0
+// final poll, do not emit it again.
+func (h *steerHub) emitCapability(log *Log) {
+	if h == nil || log == nil {
+		return
+	}
+	h.mu.Lock()
+	sent := h.capabilitySent
+	h.mu.Unlock()
+	if sent {
+		return
+	}
+	if err := log.Emit(Event{Type: "run.capabilities", Steer: true}); err != nil {
+		return
+	}
+	h.mu.Lock()
+	h.capabilitySent = true
+	h.mu.Unlock()
+}
+
+// collectImmediate stops nothing itself. The caller stops the long-poller
+// first so this request cannot race an in-flight body into the hub twice.
+// Duplicate ids are still ignored by deliver. Only a follow-up that is
+// later taken moves the ack cursor.
+func (h *steerHub) collectImmediate(ctx context.Context, endpoint string, token secretValue, log *Log) {
+	if h == nil || endpoint == "" {
+		return
+	}
+	pctx, cancel := context.WithTimeout(ctx, steerFinalPoll)
+	defer cancel()
+	client := &http.Client{CheckRedirect: refuseRedirect}
+	items, status, err := pollSteer(pctx, client, endpoint, token, h.ackCursor(), true)
+	if err != nil || status != http.StatusOK {
+		return
+	}
+	h.emitCapability(log)
+	fresh := 0
+	for _, item := range items {
+		if item.ID == "" {
+			continue
+		}
+		if h.deliver(item) {
+			fresh++
+		}
+	}
+	if fresh > 0 && steerDeliveredHook != nil {
+		steerDeliveredHook()
+	}
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

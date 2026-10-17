@@ -580,30 +580,12 @@ func TestSteerFollowupAfterEmptyDrainRunsAtIdleZero(t *testing.T) {
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	ready := make(chan struct{})
-	delivered := make(chan struct{})
-	var readyOnce sync.Once
-	var deliverOnce sync.Once
+	sawDrain := make(chan struct{})
+	var drainOnce sync.Once
 	followupMissedDrainHook = func() {
-		readyOnce.Do(func() {
-			close(ready)
-			select {
-			case <-delivered:
-			case <-ctx.Done():
-			}
-		})
+		drainOnce.Do(func() { close(sawDrain) })
 	}
-	steerDeliveredHook = func() {
-		select {
-		case <-ready:
-			deliverOnce.Do(func() { close(delivered) })
-		default:
-		}
-	}
-	t.Cleanup(func() {
-		followupMissedDrainHook = nil
-		steerDeliveredHook = nil
-	})
+	t.Cleanup(func() { followupMissedDrainHook = nil })
 
 	var mu sync.Mutex
 	var calls int
@@ -623,10 +605,22 @@ func TestSteerFollowupAfterEmptyDrainRunsAtIdleZero(t *testing.T) {
 		}
 		writeAssistant(w, "test added")
 	}
+	var polls int
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-ready:
-		case <-r.Context().Done():
+		mu.Lock()
+		polls++
+		n := polls
+		mu.Unlock()
+		if n == 1 {
+			// The long-poll is in flight and the hub is still empty.
+			// Hold the body until the drain has observed that, then
+			// leave with the poller. The follow-up is on the next poll.
+			select {
+			case <-sawDrain:
+			case <-r.Context().Done():
+				return
+			}
+			<-r.Context().Done()
 			return
 		}
 		writeSteers(w, []map[string]string{
@@ -641,18 +635,111 @@ func TestSteerFollowupAfterEmptyDrainRunsAtIdleZero(t *testing.T) {
 	n, body := calls, secondBody
 	mu.Unlock()
 	if n != 2 {
-		t.Fatalf("model calls %d, want the follow-up to run at idle 0\nevents:\n%s", n, events)
+		t.Fatalf("model calls %d, want the in-flight follow-up applied once\nevents:\n%s", n, events)
 	}
 	if strings.Contains(body, prompt) || !strings.Contains(body, follow) {
 		t.Fatalf("idle-0 follow-up did not start a resume turn:\n%s", body)
 	}
 	got := decodeSteerEvents(t, events)
-	if !got.hasFollowup("fu-missed", follow) {
-		t.Fatalf("events:\n%s", events)
+	if countSteer(got, "followup.received", "fu-missed") != 1 {
+		t.Fatalf("follow-up applied %d times\nevents:\n%s", countSteer(got, "followup.received", "fu-missed"), events)
 	}
 	if got[len(got)-1].Summary != "test added" {
 		t.Fatalf("terminal %+v", got[len(got)-1])
 	}
+}
+
+func TestSteerInFlightFollowupThirtyTrials(t *testing.T) {
+	for _, idle := range []string{"0s", "350ms"} {
+		t.Run("idle "+idle, func(t *testing.T) {
+			var same, fresh, dropped, doubled int
+			for trial := 0; trial < 30; trial++ {
+				switch steerInFlightTrial(t, idle) {
+				case "same":
+					same++
+				case "fresh":
+					fresh++
+				case "dropped":
+					dropped++
+				case "doubled":
+					doubled++
+				default:
+					t.Fatalf("trial %d unclassified", trial)
+				}
+			}
+			t.Logf("idle %s: same %d, fresh %d, dropped %d, doubled %d", idle, same, fresh, dropped, doubled)
+			if dropped != 0 || doubled != 0 {
+				t.Fatalf("idle %s: same %d, fresh %d, dropped %d, doubled %d", idle, same, fresh, dropped, doubled)
+			}
+		})
+	}
+}
+
+func steerInFlightTrial(t *testing.T, idle string) string {
+	t.Helper()
+	const (
+		token  = "steer-inflight-probe-token"
+		prompt = "fix the flaky parser"
+		follow = "keep going on the parser"
+		id     = "fu-race"
+	)
+	flushed := make(chan struct{})
+	var flushOnce sync.Once
+	var mu sync.Mutex
+	var followBodies int
+	var stayed bool
+	model := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		text := string(body)
+		mu.Lock()
+		if strings.Contains(text, follow) {
+			followBodies++
+			if strings.Contains(text, prompt) {
+				stayed = true
+			}
+		}
+		n := followBodies
+		mu.Unlock()
+		if !strings.Contains(text, follow) || n == 0 {
+			writeAssistant(w, "parser fixed")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			flushOnce.Do(func() { close(flushed) })
+			return
+		}
+		writeAssistant(w, "parser still fixed")
+	}
+	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-flushed:
+		case <-r.Context().Done():
+			return
+		}
+		writeSteers(w, []map[string]string{
+			{"id": id, "kind": "followup", "text": follow},
+		})
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	code, events, _ := runSteer(t, ctx, plane.eventsURL, token, prompt, idle, model, nil)
+	mu.Lock()
+	bodies, same := followBodies, stayed
+	mu.Unlock()
+	if code != ExitOK {
+		return "dropped"
+	}
+	applied := countSteer(decodeSteerEvents(t, events), "followup.received", id)
+	if applied == 0 || bodies == 0 {
+		return "dropped"
+	}
+	if applied > 1 || bodies > 1 {
+		return "doubled"
+	}
+	if same {
+		return "same"
+	}
+	return "fresh"
 }
 
 func TestSteerFollowupOnLastTurnResumes(t *testing.T) {
