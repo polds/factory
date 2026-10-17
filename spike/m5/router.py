@@ -13,8 +13,9 @@ Other routes:
 - m5-infra-kill is held open until the client disconnects so a docker
   kill lands during the model call.
 - The m5-day building turn is held until the client disconnects so the
-  console can interrupt it. A follow-up that contains m5-follow-up is
-  forwarded to the building stub immediately.
+  console can interrupt it. The hold outlasts the harness steer long-poll
+  that has to finish before the interrupt button can enable. A follow-up
+  that contains m5-follow-up is forwarded to the building stub immediately.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODELS = ("m5-triage", "m5-planning", "m5-building", "m5-reviewing")
-HOLD_SECONDS = 45
+HOLD_SECONDS = 55
 INFRA_HOLD_SECONDS = 50
 
 

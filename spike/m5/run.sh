@@ -646,7 +646,7 @@ watch_signals() {
 }
 
 copy_e2e() {
-  rm -rf "$WORK/e2e"
+  rm -rf "$WORK/e2e" "$SIGNAL" "$EVIDENCE"
   mkdir -p "$WORK/e2e" "$EVIDENCE" "$SIGNAL"
   chmod 777 "$EVIDENCE" "$SIGNAL"
   cp "$ROOT/spike/m5/e2e/package.json" \
@@ -995,7 +995,9 @@ set +e
 run_playwright
 play_code=$?
 set -e
-touch "$SIGNAL/done"
+if [[ ! -f "$SIGNAL/done" ]]; then
+  touch "$SIGNAL/done"
+fi
 if [[ -n "$WATCH_PID" ]]; then
   wait "$WATCH_PID" 2>/dev/null || true
   WATCH_PID=""

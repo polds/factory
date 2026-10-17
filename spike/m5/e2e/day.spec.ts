@@ -125,6 +125,22 @@ async function approveOnly(page: Page, title: string): Promise<void> {
   await expect(row.getByText("Approved by you")).toBeVisible();
 }
 
+// Steer comes from the run snapshot, and the harness emits run.capabilities
+// only after its first steer long-poll. Reload until that snapshot enables
+// the button, while the building model call is still open.
+async function waitUntilInterruptEnabled(page: Page): Promise<void> {
+  const interrupt = page.locator("#interrupt-run");
+  const deadline = Date.now() + 42_000;
+  while (Date.now() < deadline) {
+    const enabled = await interrupt.isEnabled({ timeout: 10_000 }).catch(() => false);
+    if (enabled) return;
+    await page.reload();
+    await expect(page.getByRole("log", { name: "Run transcript" }).locator("[data-seq]").first()).toBeVisible();
+  }
+  const reason = ((await page.locator("#steer-reason").textContent().catch(() => "")) ?? "").trim();
+  throw new Error(`step 5: interrupt stayed disabled (${reason || "no reason"})`);
+}
+
 test("day of factory", async ({ browser }) => {
   if (apiKey === "") throw new Error("M5_API_KEY is empty");
   const context = await browser.newContext({
@@ -181,8 +197,8 @@ test("day of factory", async ({ browser }) => {
     expect(after).toEqual(before);
     await saveShot(page, "transcript");
 
+    await waitUntilInterruptEnabled(page);
     const interrupt = page.locator("#interrupt-run");
-    await expect(interrupt).toBeEnabled({ timeout: 30_000 });
     await interrupt.click();
     const confirm = page.getByRole("dialog", { name: "Interrupt this turn?" });
     await confirm.getByRole("button", { name: "Interrupt" }).click();
@@ -350,10 +366,23 @@ test("day of factory", async ({ browser }) => {
       .catch(() => false);
     if (!sawQuestion) {
       await page.getByRole("link", { name: "Runs" }).click();
-      const qrow = page.locator("tr[data-run]").filter({ hasText: "m5-question" }).first();
-      await qrow.getByRole("link").click();
-      const transcript = page.getByRole("log", { name: "Run transcript" });
-      const text = await transcript.innerText();
+      const rows = page.locator("tr[data-run]").filter({ hasText: "m5-question" });
+      await expect(rows.first()).toBeVisible({ timeout: 30_000 });
+      const count = await rows.count();
+      const chunks: string[] = [];
+      for (let i = 0; i < count; i += 1) {
+        await page.getByRole("link", { name: "Runs" }).click();
+        await page
+          .locator("tr[data-run]")
+          .filter({ hasText: "m5-question" })
+          .nth(i)
+          .getByRole("link")
+          .click();
+        const transcript = page.getByRole("log", { name: "Run transcript" });
+        await expect(transcript.locator("[data-seq]").first()).toBeVisible({ timeout: 30_000 });
+        chunks.push(await transcript.innerText());
+      }
+      const text = chunks.join("\n");
       if (text.includes("unknown tool") || text.includes("ask_input")) {
         throw new Error("step 7: factory-harness emits no question event (T47c not landed)");
       }
