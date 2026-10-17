@@ -367,7 +367,9 @@ test("day of factory", async ({ browser }) => {
     await openSection(page, "Deliveries");
     await axe(page, "deliveries");
     await page.getByRole("tab", { name: /Unmatched/ }).click();
-    await page.getByRole("row", { name: /\bci\b/ }).click();
+    const delivery = page.locator("table").getByRole("button", { name: /^m5-wh-/ });
+    await expect(delivery).toBeVisible();
+    await delivery.click();
     await page.getByRole("button", { name: "Replay delivery" }).click();
     await page.getByRole("dialog", { name: "Replay this delivery?" }).getByRole("button", { name: "Replay" }).click();
     await expect(page.getByText("Replayed just now").first()).toBeVisible();

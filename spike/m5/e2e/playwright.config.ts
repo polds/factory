@@ -9,5 +9,6 @@ export default defineConfig({
   reporter: [["list"]],
   use: {
     baseURL: process.env.FACTORY_URL ?? "http://factoryd:8080",
+    actionTimeout: 20_000,
   },
 });
