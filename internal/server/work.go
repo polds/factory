@@ -1289,6 +1289,7 @@ type reviewerHold struct {
 	stage        string
 	leaseText    string
 	ownerSession string
+	attempts     int
 }
 
 // requeueDetachedReviewerRuns puts a reviewing run back on the queue when
@@ -1300,19 +1301,21 @@ type reviewerHold struct {
 // whose owner is not alive in any process.
 //
 // Ownership is the session id on the queue row plus the advisory lock that
-// owner holds until its session connection closes. A worker socket on this
-// process is not ownership: a same-id reconnect carries no execution, and
-// a worker connected to the previous leader is invisible here. A null
-// session is detached. The expire matches the observed run, worker, lease,
-// status, and stage, so a concurrent renew keeps the row. A second pass
-// matches nothing.
+// owner holds. A worker socket on this process is not ownership: a same-id
+// reconnect carries no execution, and a worker connected to the previous
+// leader is invisible here. A null session belongs to a process that does
+// not write this column. The sweep leaves that lease for ExpireLeases.
+// The expire matches the observed run, worker, lease, status, and stage,
+// so a concurrent renew keeps the row. After maxReviewerDetach requeues
+// the run fails as infrastructure instead of being queued again.
 func (s *Server) requeueDetachedReviewerRuns(ctx context.Context) error {
 	if s.db == nil {
 		return nil
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT r.id, COALESCE(r.worker_id, ''), r.status,
-		       COALESCE(q.lease_until::text, ''), COALESCE(q.owner_session, '')
+		       COALESCE(q.lease_until::text, ''), COALESCE(q.owner_session, ''),
+		       q.attempts
 		FROM work_items w
 		JOIN LATERAL (
 			SELECT id, status, worker_id
@@ -1339,7 +1342,7 @@ func (s *Server) requeueDetachedReviewerRuns(ctx context.Context) error {
 	var pending []reviewerHold
 	for rows.Next() {
 		var hold reviewerHold
-		if err := rows.Scan(&hold.runID, &hold.workerID, &hold.status, &hold.leaseText, &hold.ownerSession); err != nil {
+		if err := rows.Scan(&hold.runID, &hold.workerID, &hold.status, &hold.leaseText, &hold.ownerSession, &hold.attempts); err != nil {
 			return err
 		}
 		hold.stage = store.StageReviewing
@@ -1359,6 +1362,16 @@ func (s *Server) requeueDetachedReviewerRuns(ctx context.Context) error {
 			return err
 		}
 		if held {
+			continue
+		}
+		if hold.attempts >= maxReviewerDetach {
+			ok, err := s.failDetachedReviewer(ctx, hold)
+			if err != nil {
+				return err
+			}
+			if ok {
+				requeued = true
+			}
 			continue
 		}
 		ok, err := s.casExpireReviewer(ctx, hold)
@@ -1439,6 +1452,83 @@ func (s *Server) casExpireReviewer(ctx context.Context, hold reviewerHold) (bool
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("server: expire reviewer: %w", err)
+	}
+	s.mu.Lock()
+	if execID, ok := s.byRun[hold.runID]; ok {
+		delete(s.byRun, hold.runID)
+		delete(s.live, execID)
+	}
+	s.mu.Unlock()
+	return true, nil
+}
+
+// failDetachedReviewer ends a reviewing run that has already been requeued
+// maxReviewerDetach times. The class is infrastructure so the one reviewer
+// retry still applies. The queue row is removed, so this run is not claimed
+// again.
+func (s *Server) failDetachedReviewer(ctx context.Context, hold reviewerHold) (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var id string
+	err = tx.QueryRow(ctx, `
+		WITH held AS (
+		    SELECT q.run_id
+		    FROM run_queue q
+		    JOIN runs r ON r.id = q.run_id
+		    WHERE q.run_id = $1
+		      AND r.status = $2
+		      AND r.stage = $3
+		      AND r.worker_id IS NOT DISTINCT FROM NULLIF($4::text, '')
+		      AND COALESCE(q.lease_until::text, '') = $5
+		      AND q.owner_session IS NOT DISTINCT FROM NULLIF($6::text, '')
+		      AND q.attempts >= $7
+		    FOR UPDATE OF q, r
+		),
+		orphaned AS (
+		    UPDATE executions e
+		    SET state = 'orphaned', ended_at = clock_timestamp()
+		    FROM held
+		    WHERE e.run_id = held.run_id
+		      AND e.state IN ('assigned', 'running')
+		    RETURNING e.id
+		),
+		failed AS (
+		    UPDATE runs r
+		    SET status = 'failed',
+		        worker_id = NULL,
+		        failure_reason = $8,
+		        failure_class = $9,
+		        failure_code = $10,
+		        ended_at = clock_timestamp()
+		    FROM held
+		    WHERE r.id = held.run_id
+		    RETURNING r.id
+		),
+		dropped AS (
+		    DELETE FROM run_queue q
+		    USING held
+		    WHERE q.run_id = held.run_id
+		    RETURNING q.run_id
+		)
+		SELECT run_id FROM dropped`,
+		hold.runID, hold.status, hold.stage, hold.workerID, hold.leaseText, hold.ownerSession, maxReviewerDetach,
+		failure.ReasonLeaseExpired, string(failure.ClassInfrastructure), failure.CodeWorkerLost,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("server: fail detached reviewer: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("server: fail detached reviewer: %w", err)
 	}
 	s.mu.Lock()
 	if execID, ok := s.byRun[hold.runID]; ok {
