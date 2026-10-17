@@ -955,7 +955,11 @@ say "Build and start the stack"
 build_images
 compose down -v --remove-orphans >/dev/null 2>&1 || true
 COMPOSE_STARTED=1
-compose up -d --wait
+if ! compose up -d --wait; then
+  mkdir -p "$EVIDENCE"
+  save_logs || true
+  die "compose up failed"
+fi
 
 if ! wait_http "http://127.0.0.1:8080/healthz"; then
   die "factoryd /healthz did not become ready"

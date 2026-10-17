@@ -32,4 +32,5 @@ services:
       WARP_API_KEY: ${FACTORY_WORKER_API_KEY:-m5-dev-worker-key}
     volumes: !override
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./worker.yaml:/etc/factory/worker.yaml:ro
+      # Relative to deploy/docker-compose.yml, the project directory.
+      - ../spike/m5/worker.yaml:/etc/factory/worker.yaml:ro
