@@ -617,9 +617,10 @@ func TestE2EReviewerLeaseSurvivesLeaderMove(t *testing.T) {
 		t.Fatal("peer took leadership while the owner holds it")
 	}
 	releaseLeaderConn(t, env.srv)
-	if !peer.srv.isLeader(context.Background()) {
-		t.Fatal("leadership did not move")
-	}
+	// Close returns before Postgres has dropped the old backend, so the
+	// advisory lock can still be held for a moment. Retry the peer's try
+	// until it acquires the lock or the deadline passes.
+	waitForLeadership(t, peer.srv)
 	if !workerConnected(env.srv, "local-1") {
 		t.Fatal("owner lost local-1")
 	}
@@ -960,6 +961,20 @@ func TestE2EReviewerSameIDReconnectBeforeSweep(t *testing.T) {
 	}
 	if env.countStage(t, task.ID, "reviewing") != 2 {
 		t.Fatalf("reviewing runs %d", env.countStage(t, task.ID, "reviewing"))
+	}
+}
+
+func waitForLeadership(t *testing.T, s *Server) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if s.isLeader(context.Background()) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("leadership did not move within 5s")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
