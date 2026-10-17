@@ -37,6 +37,11 @@ const (
 
 	leaderLockClass int32 = 748293
 	leaderLockObj   int32 = 2
+
+	// serverSessionLockSalt is the hashtextextended salt for a process
+	// session lock. It is not the definition salt (2), the run-event
+	// salt (3), or the two-int leader lock.
+	serverSessionLockSalt int64 = 4
 )
 
 // defaultCaps are positive on purpose. A zero cap admits no runs.

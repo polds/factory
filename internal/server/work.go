@@ -1280,21 +1280,39 @@ func (s *Server) recoverReviewerRetries(ctx context.Context) error {
 	return nil
 }
 
+// reviewerHold is the queue row a sweep observed. casExpireReviewer
+// matches these values, so a renew that committed a new lease wins.
+type reviewerHold struct {
+	runID        string
+	workerID     string
+	status       string
+	stage        string
+	leaseText    string
+	ownerSession string
+}
+
 // requeueDetachedReviewerRuns puts a reviewing run back on the queue when
-// this process does not have it and its worker is gone. A restart drops the
-// worker socket and the in-memory execution. The claim can still be in the
-// database: status running or assigned, a non-terminal execution, and a
-// lease that is not due for HeartbeatWindow. claim skips that row, so the
-// reconnected worker never receives it. WorkerGone requeues when it still
-// has the run tracked. This sweep covers the claim that survived the
-// process. A run this process tracks, or whose worker is connected, stays
-// leased. A second pass matches nothing.
+// the process that claimed it is gone. A restart drops that process's
+// session lock. The claim can still be in the database: status running or
+// assigned, a non-terminal execution, and a lease that is not due. claim
+// skips that row, so the reconnected worker never receives it. WorkerGone
+// requeues a run this process still tracks. This sweep covers a claim
+// whose owner is not alive in any process.
+//
+// Ownership is the session id on the queue row plus the advisory lock that
+// owner holds until its session connection closes. A worker socket on this
+// process is not ownership: a same-id reconnect carries no execution, and
+// a worker connected to the previous leader is invisible here. A null
+// session is detached. The expire matches the observed run, worker, lease,
+// status, and stage, so a concurrent renew keeps the row. A second pass
+// matches nothing.
 func (s *Server) requeueDetachedReviewerRuns(ctx context.Context) error {
-	if s.db == nil || s.store == nil || s.gw == nil {
+	if s.db == nil {
 		return nil
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT r.id, COALESCE(r.worker_id, '')
+		SELECT r.id, COALESCE(r.worker_id, ''), r.status,
+		       COALESCE(q.lease_until::text, ''), COALESCE(q.owner_session, '')
 		FROM work_items w
 		JOIN LATERAL (
 			SELECT id, status, worker_id
@@ -1303,18 +1321,14 @@ func (s *Server) requeueDetachedReviewerRuns(ctx context.Context) error {
 			ORDER BY created_at DESC, id DESC
 			LIMIT 1
 		) r ON true
+		JOIN run_queue q ON q.run_id = r.id
 		WHERE w.status = $2 AND w.stage = $1
-		  AND EXISTS (SELECT 1 FROM run_queue q WHERE q.run_id = r.id)
 		  AND (
 		    r.status IN ($3, $4)
 		    OR (
 		      r.status = $5
-		      AND EXISTS (
-		        SELECT 1 FROM run_queue q
-		        WHERE q.run_id = r.id
-		          AND q.lease_until IS NOT NULL
-		          AND q.lease_until > clock_timestamp()
-		      )
+		      AND q.lease_until IS NOT NULL
+		      AND q.lease_until > clock_timestamp()
 		    )
 		  )`,
 		store.StageReviewing, store.WorkItemOpen, store.StatusAssigned, store.StatusRunning, store.StatusQueued)
@@ -1322,31 +1336,38 @@ func (s *Server) requeueDetachedReviewerRuns(ctx context.Context) error {
 		return err
 	}
 	defer rows.Close()
-	type detached struct {
-		id     string
-		worker string
-	}
-	var pending []detached
+	var pending []reviewerHold
 	for rows.Next() {
-		var row detached
-		if err := rows.Scan(&row.id, &row.worker); err != nil {
+		var hold reviewerHold
+		if err := rows.Scan(&hold.runID, &hold.workerID, &hold.status, &hold.leaseText, &hold.ownerSession); err != nil {
 			return err
 		}
-		pending = append(pending, row)
+		hold.stage = store.StageReviewing
+		pending = append(pending, hold)
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
 	rows.Close()
 	requeued := false
-	for _, row := range pending {
-		if s.runTracked(row.id) || s.workerLive(row.worker) || s.runSuspended(ctx, row.id) {
+	for _, hold := range pending {
+		if s.runSuspended(ctx, hold.runID) {
 			continue
 		}
-		if err := s.forceExpire(ctx, row.id); err != nil {
+		held, err := s.ownerSessionHeld(ctx, hold.ownerSession)
+		if err != nil {
 			return err
 		}
-		requeued = true
+		if held {
+			continue
+		}
+		ok, err := s.casExpireReviewer(ctx, hold)
+		if err != nil {
+			return err
+		}
+		if ok {
+			requeued = true
+		}
 	}
 	if requeued {
 		s.nudge()
@@ -1354,23 +1375,78 @@ func (s *Server) requeueDetachedReviewerRuns(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) runTracked(runID string) bool {
-	s.mu.Lock()
-	_, ok := s.byRun[runID]
-	s.mu.Unlock()
-	return ok
-}
+// casExpireReviewer requeues one reviewing run when the row still matches
+// the values the sweep observed. Zero rows means a renew or a new claim
+// won. The lease text is the database's own timestamptz rendering, so the
+// comparison does not round through time.Time.
+func (s *Server) casExpireReviewer(ctx context.Context, hold reviewerHold) (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 
-func (s *Server) workerLive(workerID string) bool {
-	if workerID == "" || s.gw == nil {
-		return false
+	var id string
+	err = tx.QueryRow(ctx, `
+		WITH held AS (
+		    SELECT q.run_id
+		    FROM run_queue q
+		    JOIN runs r ON r.id = q.run_id
+		    WHERE q.run_id = $1
+		      AND r.status = $2
+		      AND r.stage = $3
+		      AND r.worker_id IS NOT DISTINCT FROM NULLIF($4::text, '')
+		      AND COALESCE(q.lease_until::text, '') = $5
+		      AND q.owner_session IS NOT DISTINCT FROM NULLIF($6::text, '')
+		    FOR UPDATE OF q, r
+		),
+		cleared AS (
+		    UPDATE run_queue q
+		    SET lease_until = NULL,
+		        owner_session = NULL,
+		        attempts = attempts + 1
+		    FROM held
+		    WHERE q.run_id = held.run_id
+		    RETURNING q.run_id
+		),
+		requeued AS (
+		    UPDATE runs r
+		    SET status = 'queued', worker_id = NULL
+		    FROM cleared
+		    WHERE r.id = cleared.run_id
+		      AND r.status IN ('assigned', 'running', 'queued')
+		    RETURNING r.id
+		),
+		orphaned AS (
+		    UPDATE executions e
+		    SET state = 'orphaned', ended_at = clock_timestamp()
+		    FROM cleared
+		    WHERE e.run_id = cleared.run_id
+		      AND e.state IN ('assigned', 'running')
+		    RETURNING e.id
+		)
+		SELECT run_id FROM cleared`,
+		hold.runID, hold.status, hold.stage, hold.workerID, hold.leaseText, hold.ownerSession,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
 	}
-	for _, info := range s.gw.Connected() {
-		if info.WorkerID == workerID {
-			return true
-		}
+	if err != nil {
+		return false, fmt.Errorf("server: expire reviewer: %w", err)
 	}
-	return false
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("server: expire reviewer: %w", err)
+	}
+	s.mu.Lock()
+	if execID, ok := s.byRun[hold.runID]; ok {
+		delete(s.byRun, hold.runID)
+		delete(s.live, execID)
+	}
+	s.mu.Unlock()
+	return true, nil
 }
 
 func insertQueuedRun(ctx context.Context, tx pgx.Tx, id string, r store.NewRun) error {
@@ -1641,7 +1717,7 @@ func (s *Server) resumeIfParked(ctx context.Context, run store.Run, agentID, que
 		}
 		nextPrompt = resumePrompt(prompt, question, answer)
 		if hasQueue {
-			if _, err := tx.Exec(ctx, `UPDATE run_queue SET lease_until = NULL WHERE run_id = $1`, run.ID); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE run_queue SET lease_until = NULL, owner_session = NULL WHERE run_id = $1`, run.ID); err != nil {
 				return err
 			}
 		}

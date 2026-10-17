@@ -550,8 +550,8 @@ func TestE2EReviewerRetryLeaseRecoveredAfterRestart(t *testing.T) {
 	if again.TaskID != retryID || again.EnvVars["FACTORY_STAGE"] != "reviewing" {
 		t.Fatalf("assignment after leaked lease %s stage %s", again.TaskID, again.EnvVars["FACTORY_STAGE"])
 	}
-	// The reconnected worker holds this attempt. A later sweep must not
-	// orphan it out from under the live socket.
+	// The process that claimed this attempt still holds its session lock.
+	// A later sweep must not orphan it.
 	if err := env.srv.requeueDetachedReviewerRuns(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -571,6 +571,247 @@ func TestE2EReviewerRetryLeaseRecoveredAfterRestart(t *testing.T) {
 		t.Fatalf("reviewing runs %d", env.countStage(t, task.ID, "reviewing"))
 	}
 	w.close()
+}
+
+// TestE2EReviewerLeaseSurvivesLeaderMove is two processes on one database.
+// The owner keeps local-1 connected and keeps renewing. Closing only its
+// leader connection moves leadership. The new leader must not requeue the
+// review, and a compare-and-set on the lease from before the renew must
+// not land.
+func TestE2EReviewerLeaseSurvivesLeaderMove(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	defer w.close()
+	task, review := reachReviewing(t, env, w)
+	failAssignment(t, w, review, "model_unavailable", 21)
+	env.waitRunCount(t, task.ID, "reviewing", 2)
+	retry := w.readAssignment(t)
+	if retry.TaskID == "" || retry.TaskID == review.TaskID || retry.EnvVars["FACTORY_STAGE"] != "reviewing" {
+		t.Fatalf("retry assignment %+v", retry.TaskID)
+	}
+	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: retry.TaskID, WorkerID: "local-1"})
+	env.waitStatus(t, retry.TaskID, "running")
+
+	status, workerID, leaseText, ownerSession, attempts := queueHold(t, env, retry.TaskID)
+	if status != "running" || workerID != "local-1" || leaseText == "" {
+		t.Fatalf("before move status %s worker %s lease %q", status, workerID, leaseText)
+	}
+	if ownerSession != env.srv.sessionID {
+		t.Fatalf("owner session %s, run owned by %s", env.srv.sessionID, ownerSession)
+	}
+
+	gate := make(chan struct{})
+	env.srv.cfg.ScheduleGate = gate
+	peer := openPeer(t, env)
+	if peer.srv.isLeader(context.Background()) {
+		t.Fatal("peer took leadership while the owner holds it")
+	}
+	releaseLeaderConn(t, env.srv)
+	if !peer.srv.isLeader(context.Background()) {
+		t.Fatal("leadership did not move")
+	}
+	if !workerConnected(env.srv, "local-1") {
+		t.Fatal("owner lost local-1")
+	}
+	if workerConnected(peer.srv, "local-1") {
+		t.Fatal("peer sees the owner's worker")
+	}
+	if err := peer.srv.requeueDetachedReviewerRuns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertReviewHeld(t, env, retry.TaskID, retry.ExecutionID, attempts)
+
+	if err := env.srv.renewLease(context.Background(), retry.TaskID, env.srv.cfg.LeaseTTL); err != nil {
+		t.Fatal(err)
+	}
+	var renewed string
+	status, workerID, renewed, ownerSession, attempts = queueHold(t, env, retry.TaskID)
+	if status != "running" || workerID != "local-1" || ownerSession != env.srv.sessionID {
+		t.Fatalf("after renew status %s worker %s owner %s", status, workerID, ownerSession)
+	}
+	if renewed == "" || renewed == leaseText {
+		t.Fatalf("renew did not move the lease %q -> %q", leaseText, renewed)
+	}
+	if err := peer.srv.requeueDetachedReviewerRuns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertReviewHeld(t, env, retry.TaskID, retry.ExecutionID, attempts)
+
+	ok, err := peer.srv.casExpireReviewer(context.Background(), reviewerHold{
+		runID:        retry.TaskID,
+		workerID:     "local-1",
+		status:       "running",
+		stage:        store.StageReviewing,
+		leaseText:    leaseText,
+		ownerSession: env.srv.sessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("stale lease compare-and-set stole the review")
+	}
+	assertReviewHeld(t, env, retry.TaskID, retry.ExecutionID, attempts)
+}
+
+// TestE2EReviewerSameIDReconnectBeforeSweep reconnects local-1, with no
+// execution in the handshake, before the new process sweeps. The stale
+// run is owned by a session that process does not hold. The sweep must
+// requeue it, the old renew must fail, and the worker must then be offered
+// that same run.
+func TestE2EReviewerSameIDReconnectBeforeSweep(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	task, review := reachReviewing(t, env, w)
+	failAssignment(t, w, review, "model_unavailable", 21)
+	env.waitRunCount(t, task.ID, "reviewing", 2)
+	var retryID string
+	if err := env.raw.QueryRow(context.Background(), `
+		SELECT id FROM runs
+		WHERE work_item_id = $1 AND stage = 'reviewing' AND id <> $2`, task.ID, review.TaskID).Scan(&retryID); err != nil {
+		t.Fatal(err)
+	}
+	w.close()
+	env.waitStatus(t, retryID, "queued")
+	env.stop(t)
+
+	execID, err := store.NewID(store.PrefixExec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var token [32]byte
+	if _, err := env.raw.Exec(context.Background(), `
+		UPDATE runs
+		SET status = 'running', worker_id = 'local-1',
+		    started_at = clock_timestamp(), ended_at = NULL
+		WHERE id = $1`, retryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.raw.Exec(context.Background(), `
+		UPDATE run_queue
+		SET lease_until = clock_timestamp() + interval '1 hour',
+		    owner_session = 'srv_dead'
+		WHERE run_id = $1`, retryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.raw.Exec(context.Background(), `
+		INSERT INTO executions (id, run_id, attempt, worker_id, state, run_token_sha256)
+		VALUES (
+		    $1, $2,
+		    (SELECT COALESCE(MAX(attempt), 0) + 1 FROM executions WHERE run_id = $2),
+		    'local-1', 'running', $3)`, execID, retryID, token[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	gate := make(chan struct{})
+	env.srv.cfg.ScheduleGate = gate
+	env.start(t)
+	// The worker id matches the stale run. The dial sends no execution.
+	w = dialWorker(t, env, "local-1")
+	defer w.close()
+	if !workerConnected(env.srv, "local-1") {
+		t.Fatal("local-1 was not connected before the sweep")
+	}
+	if st := env.status(t, retryID); st != "running" {
+		t.Fatalf("run status before sweep %s", st)
+	}
+	if err := env.srv.requeueDetachedReviewerRuns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if st := env.status(t, retryID); st != "queued" {
+		t.Fatalf("same-id reconnect left the run %s", st)
+	}
+	var leaseNull, ownerNull bool
+	if err := env.raw.QueryRow(context.Background(), `
+		SELECT lease_until IS NULL, owner_session IS NULL
+		FROM run_queue WHERE run_id = $1`, retryID).Scan(&leaseNull, &ownerNull); err != nil {
+		t.Fatal(err)
+	}
+	if !leaseNull || !ownerNull {
+		t.Fatalf("queue lease cleared %v owner cleared %v", leaseNull, ownerNull)
+	}
+	if got := env.execState(t, execID); got != "orphaned" {
+		t.Fatalf("execution state %s", got)
+	}
+	if err := env.srv.renewLease(context.Background(), retryID, env.srv.cfg.LeaseTTL); err == nil {
+		t.Fatal("renew after sweep succeeded")
+	}
+	close(gate)
+	again := w.readAssignment(t)
+	if again.TaskID != retryID || again.EnvVars["FACTORY_STAGE"] != "reviewing" {
+		t.Fatalf("assignment after same-id reconnect %s stage %s", again.TaskID, again.EnvVars["FACTORY_STAGE"])
+	}
+	if env.countStage(t, task.ID, "reviewing") != 2 {
+		t.Fatalf("reviewing runs %d", env.countStage(t, task.ID, "reviewing"))
+	}
+}
+
+func releaseLeaderConn(t *testing.T, s *Server) {
+	t.Helper()
+	s.leaderMu.Lock()
+	defer s.leaderMu.Unlock()
+	if s.leader == nil {
+		t.Fatal("no leader connection")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := s.leader.Exec(ctx, `SELECT pg_advisory_unlock($1::int4, $2::int4)`, leaderLockClass, leaderLockObj); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.leader.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s.leader = nil
+}
+
+func workerConnected(s *Server, workerID string) bool {
+	if s == nil || s.gw == nil {
+		return false
+	}
+	for _, info := range s.gw.Connected() {
+		if info.WorkerID == workerID {
+			return true
+		}
+	}
+	return false
+}
+
+func queueHold(t *testing.T, env *env, runID string) (status, workerID, leaseText, ownerSession string, attempts int) {
+	t.Helper()
+	if err := env.raw.QueryRow(context.Background(), `
+		SELECT r.status, COALESCE(r.worker_id, ''),
+		       COALESCE(q.lease_until::text, ''), COALESCE(q.owner_session, ''),
+		       q.attempts
+		FROM runs r
+		JOIN run_queue q ON q.run_id = r.id
+		WHERE r.id = $1`, runID).Scan(&status, &workerID, &leaseText, &ownerSession, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	return status, workerID, leaseText, ownerSession, attempts
+}
+
+func assertReviewHeld(t *testing.T, env *env, runID, execID string, attempts int) {
+	t.Helper()
+	status, workerID, leaseText, ownerSession, gotAttempts := queueHold(t, env, runID)
+	if status != "running" || workerID != "local-1" || leaseText == "" || ownerSession != env.srv.sessionID {
+		t.Fatalf("review stolen: status %s worker %s lease %q owner %s", status, workerID, leaseText, ownerSession)
+	}
+	if gotAttempts != attempts {
+		t.Fatalf("attempts %d, want %d", gotAttempts, attempts)
+	}
+	if got := env.execState(t, execID); got != "running" {
+		t.Fatalf("execution state %s", got)
+	}
 }
 
 func TestE2EReviewerInfraRetrySurvivesCrash(t *testing.T) {

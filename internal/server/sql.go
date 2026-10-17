@@ -2,12 +2,15 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/polds/factory/internal/store"
 )
@@ -37,10 +40,11 @@ func (s *Server) claim(ctx context.Context, runID string, ttl time.Duration) (st
 		    FOR UPDATE SKIP LOCKED
 		)
 		UPDATE run_queue q
-		SET lease_until = clock_timestamp() + ($2::bigint * interval '1 millisecond')
+		SET lease_until = clock_timestamp() + ($2::bigint * interval '1 millisecond'),
+		    owner_session = $3
 		FROM picked
 		WHERE q.run_id = picked.run_id
-		RETURNING q.run_id`, runID, ttl.Milliseconds()).Scan(&id)
+		RETURNING q.run_id`, runID, ttl.Milliseconds(), s.sessionID).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
@@ -72,7 +76,7 @@ func (s *Server) releaseClaim(ctx context.Context, runID string) error {
 		WHERE id = $1 AND status = 'assigned'`, runID); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(ctx, `UPDATE run_queue SET lease_until = NULL WHERE run_id = $1`, runID)
+	_, err := s.db.Exec(ctx, `UPDATE run_queue SET lease_until = NULL, owner_session = NULL WHERE run_id = $1`, runID)
 	return err
 }
 
@@ -90,7 +94,7 @@ func (s *Server) rewind(ctx context.Context, runID, execID string) error {
 		WHERE id = $1 AND status IN ('assigned', 'running')`, runID); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(ctx, `UPDATE run_queue SET lease_until = NULL WHERE run_id = $1`, runID)
+	_, err := s.db.Exec(ctx, `UPDATE run_queue SET lease_until = NULL, owner_session = NULL WHERE run_id = $1`, runID)
 	return err
 }
 
@@ -112,11 +116,19 @@ func (s *Server) prepareRequeue(ctx context.Context, runID string) error {
 func (s *Server) renewLease(ctx context.Context, runID string, ttl time.Duration) error {
 	s.leaseMu.Lock()
 	defer s.leaseMu.Unlock()
-	_, err := s.db.Exec(ctx, `
+	tag, err := s.db.Exec(ctx, `
 		UPDATE run_queue
 		SET lease_until = clock_timestamp() + ($2::bigint * interval '1 millisecond')
-		WHERE run_id = $1 AND lease_until IS NOT NULL`, runID, ttl.Milliseconds())
-	return err
+		WHERE run_id = $1
+		  AND lease_until IS NOT NULL
+		  AND owner_session = $3`, runID, ttl.Milliseconds(), s.sessionID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("server: renew lease: run %s is not leased by this server", runID)
+	}
+	return nil
 }
 
 func (s *Server) liveExecution(ctx context.Context, runID string) (string, error) {
@@ -234,6 +246,8 @@ func (s *Server) matchToken(ctx context.Context, runID string, sum []byte) (stri
 }
 
 func (s *Server) isLeader(ctx context.Context) bool {
+	s.leaderMu.Lock()
+	defer s.leaderMu.Unlock()
 	if s.leader == nil {
 		return false
 	}
@@ -243,4 +257,62 @@ func (s *Server) isLeader(ctx context.Context) bool {
 		return false
 	}
 	return ok
+}
+
+func newServerSessionID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return "srv_" + hex.EncodeToString(buf[:]), nil
+}
+
+func serverSessionLockKey(sessionID string) string {
+	return "factory-server:" + sessionID
+}
+
+func lockServerSession(ctx context.Context, conn *pgx.Conn, sessionID string) error {
+	_, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended($1, $2::bigint))`, serverSessionLockKey(sessionID), serverSessionLockSalt)
+	return err
+}
+
+// ownerSessionHeld reports whether sessionID's process still holds its
+// session advisory lock. An empty id is not held. A successful probe
+// takes the lock only long enough to learn that the owner is gone, then
+// releases it on the same connection.
+func (s *Server) ownerSessionHeld(ctx context.Context, sessionID string) (bool, error) {
+	if sessionID == "" || s.db == nil {
+		return false, nil
+	}
+	conn, err := s.db.Acquire(ctx)
+	if err != nil {
+		return false, err
+	}
+	held, err := probeSessionLock(ctx, conn, sessionID)
+	if err != nil {
+		raw := conn.Hijack()
+		_ = raw.Close(ctx)
+		return false, err
+	}
+	conn.Release()
+	return held, nil
+}
+
+func probeSessionLock(ctx context.Context, conn *pgxpool.Conn, sessionID string) (bool, error) {
+	key := serverSessionLockKey(sessionID)
+	var acquired bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1, $2::bigint))`, key, serverSessionLockSalt).Scan(&acquired); err != nil {
+		return false, err
+	}
+	if !acquired {
+		return true, nil
+	}
+	var released bool
+	if err := conn.QueryRow(ctx, `SELECT pg_advisory_unlock(hashtextextended($1, $2::bigint))`, key, serverSessionLockSalt).Scan(&released); err != nil {
+		return false, err
+	}
+	if !released {
+		return false, errors.New("server: owner session lock was not released")
+	}
+	return false, nil
 }
