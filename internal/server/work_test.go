@@ -491,6 +491,88 @@ func TestE2EReviewerInfraRetryAcrossRestart(t *testing.T) {
 	env.assertRunCountStable(t, task.ID, "building", 2)
 }
 
+// TestE2EReviewerRetryLeaseRecoveredAfterRestart is the restart race behind
+// TestE2EReviewerInfraRetryAcrossRestart: the retry was claimed, then the
+// process stopped before the assignment was rewound. The row survives as
+// running, with a live execution and an unexpired queue lease, and no worker
+// is connected. The next leader has to put that same run back on the queue.
+func TestE2EReviewerRetryLeaseRecoveredAfterRestart(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 3)
+	}})
+	w := dialWorker(t, env, "local-1")
+	task, review := reachReviewing(t, env, w)
+	failAssignment(t, w, review, "model_unavailable", 21)
+	env.waitRunCount(t, task.ID, "reviewing", 2)
+	var retryID string
+	if err := env.raw.QueryRow(context.Background(), `
+		SELECT id FROM runs
+		WHERE work_item_id = $1 AND stage = 'reviewing' AND id <> $2`, task.ID, review.TaskID).Scan(&retryID); err != nil {
+		t.Fatal(err)
+	}
+	w.close()
+	env.waitStatus(t, retryID, "queued")
+	env.stop(t)
+
+	execID, err := store.NewID(store.PrefixExec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var token [32]byte
+	if _, err := env.raw.Exec(context.Background(), `
+		UPDATE runs
+		SET status = 'running', worker_id = 'gone-worker',
+		    started_at = clock_timestamp(), ended_at = NULL
+		WHERE id = $1`, retryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.raw.Exec(context.Background(), `
+		UPDATE run_queue
+		SET lease_until = clock_timestamp() + interval '1 hour'
+		WHERE run_id = $1`, retryID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.raw.Exec(context.Background(), `
+		INSERT INTO executions (id, run_id, attempt, worker_id, state, run_token_sha256)
+		VALUES (
+		    $1, $2,
+		    (SELECT COALESCE(MAX(attempt), 0) + 1 FROM executions WHERE run_id = $2),
+		    'gone-worker', 'running', $3)`, execID, retryID, token[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	env.start(t)
+	w = dialWorker(t, env, "local-1")
+	again := w.readAssignment(t)
+	if again.TaskID != retryID || again.EnvVars["FACTORY_STAGE"] != "reviewing" {
+		t.Fatalf("assignment after leaked lease %s stage %s", again.TaskID, again.EnvVars["FACTORY_STAGE"])
+	}
+	// The reconnected worker holds this attempt. A later sweep must not
+	// orphan it out from under the live socket.
+	if err := env.srv.requeueDetachedReviewerRuns(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if st := env.status(t, retryID); st != "running" && st != "assigned" {
+		t.Fatalf("sweep requeued a connected review: %s", st)
+	}
+	var state string
+	var ended bool
+	if err := env.raw.QueryRow(context.Background(), `
+		SELECT state, ended_at IS NOT NULL FROM executions WHERE id = $1`, execID).Scan(&state, &ended); err != nil {
+		t.Fatal(err)
+	}
+	if state != "orphaned" || !ended {
+		t.Fatalf("detached execution state %s ended %v", state, ended)
+	}
+	if env.countStage(t, task.ID, "reviewing") != 2 {
+		t.Fatalf("reviewing runs %d", env.countStage(t, task.ID, "reviewing"))
+	}
+	w.close()
+}
+
 func TestE2EReviewerInfraRetrySurvivesCrash(t *testing.T) {
 	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
 		t.Skip("FACTORY_TEST_DATABASE_URL unset")

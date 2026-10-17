@@ -882,6 +882,9 @@ func (s *Server) suspendedSnapshot() map[string]struct{} {
 	if err := s.recoverReviewerRetries(sweepCtx); err != nil && s.ctx.Err() == nil && s.log != nil {
 		s.log.Error("reviewer retry", "err", err)
 	}
+	if err := s.requeueDetachedReviewerRuns(sweepCtx); err != nil && s.ctx.Err() == nil && s.log != nil {
+		s.log.Error("detached reviewer", "err", err)
+	}
 	ids, err := s.store.ListSuspendedRunIDs(sweepCtx)
 	if err != nil {
 		if s.ctx.Err() == nil && s.log != nil {
@@ -1275,6 +1278,99 @@ func (s *Server) recoverReviewerRetries(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// requeueDetachedReviewerRuns puts a reviewing run back on the queue when
+// this process does not have it and its worker is gone. A restart drops the
+// worker socket and the in-memory execution. The claim can still be in the
+// database: status running or assigned, a non-terminal execution, and a
+// lease that is not due for HeartbeatWindow. claim skips that row, so the
+// reconnected worker never receives it. WorkerGone requeues when it still
+// has the run tracked. This sweep covers the claim that survived the
+// process. A run this process tracks, or whose worker is connected, stays
+// leased. A second pass matches nothing.
+func (s *Server) requeueDetachedReviewerRuns(ctx context.Context) error {
+	if s.db == nil || s.store == nil || s.gw == nil {
+		return nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT r.id, COALESCE(r.worker_id, '')
+		FROM work_items w
+		JOIN LATERAL (
+			SELECT id, status, worker_id
+			FROM runs
+			WHERE work_item_id = w.id AND stage = $1
+			ORDER BY created_at DESC, id DESC
+			LIMIT 1
+		) r ON true
+		WHERE w.status = $2 AND w.stage = $1
+		  AND EXISTS (SELECT 1 FROM run_queue q WHERE q.run_id = r.id)
+		  AND (
+		    r.status IN ($3, $4)
+		    OR (
+		      r.status = $5
+		      AND EXISTS (
+		        SELECT 1 FROM run_queue q
+		        WHERE q.run_id = r.id
+		          AND q.lease_until IS NOT NULL
+		          AND q.lease_until > clock_timestamp()
+		      )
+		    )
+		  )`,
+		store.StageReviewing, store.WorkItemOpen, store.StatusAssigned, store.StatusRunning, store.StatusQueued)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type detached struct {
+		id     string
+		worker string
+	}
+	var pending []detached
+	for rows.Next() {
+		var row detached
+		if err := rows.Scan(&row.id, &row.worker); err != nil {
+			return err
+		}
+		pending = append(pending, row)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	requeued := false
+	for _, row := range pending {
+		if s.runTracked(row.id) || s.workerLive(row.worker) || s.runSuspended(ctx, row.id) {
+			continue
+		}
+		if err := s.forceExpire(ctx, row.id); err != nil {
+			return err
+		}
+		requeued = true
+	}
+	if requeued {
+		s.nudge()
+	}
+	return nil
+}
+
+func (s *Server) runTracked(runID string) bool {
+	s.mu.Lock()
+	_, ok := s.byRun[runID]
+	s.mu.Unlock()
+	return ok
+}
+
+func (s *Server) workerLive(workerID string) bool {
+	if workerID == "" || s.gw == nil {
+		return false
+	}
+	for _, info := range s.gw.Connected() {
+		if info.WorkerID == workerID {
+			return true
+		}
+	}
+	return false
 }
 
 func insertQueuedRun(ctx context.Context, tx pgx.Tx, id string, r store.NewRun) error {
