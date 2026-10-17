@@ -217,6 +217,53 @@ func TestReviewerInfraRetriesOnce(t *testing.T) {
 	}
 }
 
+func TestReviewerInfraPastLimitDoesNotStartAnotherReview(t *testing.T) {
+	def := acmeDef()
+	preds := M3Predicates()
+	s := driveToReviewing(t, def, preds)
+	for s.RevisionCount < def.RevisionLimit {
+		got, eff, err := Step(def, s, RunFailed{Stage: StageReviewing}, preds)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireEffect(t, eff, StartRun{Stage: StageBuilding, Agent: "implementer"})
+		s = mustStep(t, def, got, RunSucceeded{Stage: StageBuilding}, preds, StartRun{Stage: StageReviewing, Agent: "reviewer"})
+	}
+	if s.RevisionCount != def.RevisionLimit || s.ReviewerRetryUsed {
+		t.Fatalf("at the limit: %#v", s)
+	}
+
+	got, eff, err := Step(def, s, RunFailed{Stage: StageReviewing, Infra: true}, preds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireEffect(t, eff, StartRun{Stage: StageReviewing, Agent: "reviewer"})
+	forbidEffect[Escalate](t, eff)
+	if got.RevisionCount != def.RevisionLimit || !got.ReviewerRetryUsed || got.Stage != StageReviewing {
+		t.Fatalf("retry at the limit: %#v", got)
+	}
+
+	got, eff, err = Step(def, got, RunFailed{Stage: StageReviewing, Infra: true}, preds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireEffect(t, eff, Escalate{})
+	forbidEffect[StartRun](t, eff)
+	if got.Stage != StageReviewing || got.RevisionCount != def.RevisionLimit+1 || !got.ReviewerRetryUsed {
+		t.Fatalf("escalate: %#v", got)
+	}
+
+	again, eff, err := Step(def, got, RunFailed{Stage: StageReviewing, Infra: true}, preds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireEffect(t, eff, Escalate{})
+	forbidEffect[StartRun](t, eff)
+	if again.Stage != StageReviewing || !again.ReviewerRetryUsed {
+		t.Fatalf("later infra failure: %#v", again)
+	}
+}
+
 func TestReviewerAgentFailureStillRevises(t *testing.T) {
 	def := acmeDef()
 	preds := M3Predicates()

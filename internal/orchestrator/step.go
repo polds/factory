@@ -83,8 +83,10 @@ type Def struct {
 // The caller sets it from committed run rows (infrastructure-failed
 // reviewing runs since the latest building run). Step does not store it.
 // A restarted process passes the same value because the count is still in
-// those rows. Step also sets it on the state it returns after consuming
-// the budget, so a pure chain of calls retries once.
+// those rows. Step sets it on the state it returns after consuming the
+// budget, so a pure chain of calls retries once. It clears the flag only
+// when a building run starts. Escalation leaves the flag set, so a later
+// Step does not start another reviewing run.
 type State struct {
 	Stage             string
 	Status            string
@@ -314,8 +316,16 @@ func stepRunFailed(def Def, s State, e RunFailed) (State, []Effect, error) {
 		if err != nil {
 			return s, nil, err
 		}
-		// A new building run opens a new reviewer-retry window.
-		started.ReviewerRetryUsed = false
+		// A building run opens a new reviewer-retry window. Escalation
+		// leaves the flag as it was, so a later Step does not start
+		// another reviewing run past the limit.
+		for _, effect := range eff {
+			start, ok := effect.(StartRun)
+			if ok && start.Stage == StageBuilding {
+				started.ReviewerRetryUsed = false
+				break
+			}
+		}
 		return started, eff, nil
 	}
 	out, eff := escalate(def, s, s.RevisionCount)

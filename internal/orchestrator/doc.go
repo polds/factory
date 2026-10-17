@@ -31,8 +31,10 @@
 // since the latest building run, so a restarted process does not retry a
 // second time. A second infrastructure failure, and any agent or
 // configuration failure, increments RevisionCount and starts building
-// without asking for the spec gate again. When the incremented count is
-// greater than RevisionLimit, Step emits Escalate and does not start a run.
+// without asking for the spec gate again. That building run clears
+// ReviewerRetryUsed. When the incremented count is greater than
+// RevisionLimit, Step emits Escalate, does not start a run, and leaves
+// ReviewerRetryUsed set, so a later Step does not start another review.
 // RunFailed on any other stage leaves the work item open, emits Escalate,
 // and does not start a run, whether or not Infra is set.
 //
