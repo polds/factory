@@ -19,12 +19,25 @@
 # loopback: host.docker.internal resolves inside a container, not on the
 # macOS host. The live model URL from a container is
 # http://host.docker.internal:8317/v1. This script does not rewrite a
-# loopback model URL.
+# loopback model URL into that container URL. The host catalog probe
+# dials 127.0.0.1 with the same scheme, port, and path when the container
+# URL names host.docker.internal or the task host. Live and live-ci
+# rewrite the stub model ids in the mounted copy from M4_LIVE_MODEL.
+# Optional M4_LIVE_MODEL_TRIAGE,
+# M4_LIVE_MODEL_PLANNING, M4_LIVE_MODEL_BUILDING, and
+# M4_LIVE_MODEL_REVIEWING override one role.
 #
 # Live reads deploy/.env when that file exists (KEY=VALUE text, not
 # executed). A non-empty shell variable wins. Secrets stay in that file.
 # The App private key stays at spike/m4/secrets/github-app.pem. Live copies
 # it to spike/m4/.work/live/github-app.pem (mode 644) and mounts the copy.
+# Live applies the factory-ready label with the operator's gh auth. The
+# App token would send the label as a bot, and intake drops that actor.
+# Run gh auth login first. The App token stays on the other GitHub calls.
+# The draft-PR wait stops when that issue's run has failed or the work
+# item has escalated. The webhook hint is only for a missing work item.
+# More than one open draft whose body closes the issue stops the wait
+# and lists each pull request URL. That check does not depend on MODE.
 # live-ci reads M4_GITHUB_APP_PRIVATE_KEY (PEM text) and writes it to
 # spike/m4/.work/live-ci/github-app.pem (mode 644). It does not start a
 # tunnel. It signs a synthetic issues.labeled delivery with
@@ -63,6 +76,10 @@ OFFLINE_WORKER_KEY="m4-worker-7f3c9a2e1b4d"
 OFFLINE_S3="m4s3-secret-7f3c9a2e1b4d"
 PLANTED_DUMMY="m4-planted-dummy-7f3c9a"
 LIVE_MODEL_URL="http://host.docker.internal:8317/v1"
+LIVE_MODEL_ERROR=""
+MODEL_CATALOG_ERROR=""
+LIVE_WAIT_ERROR=""
+DRAFT_PULL_ERROR=""
 
 ISSUE_NUMBER=17
 PR_NUMBER=77
@@ -363,11 +380,97 @@ compose() {
   docker compose -p "$PROJECT" -f "$COMPOSE_BASE" -f "$COMPOSE_OVERLAY" "$@"
 }
 
-remember() {
-  local value="$1"
-  if [[ -n "$value" ]]; then
-    SECRETS+=("$value")
+# run_bounded stops a command after a whole number of seconds.
+# The command runs in its own process group, so a foreground child
+# such as docker compose is signaled with the group leader.
+run_bounded() {
+  local seconds="$1" pid="" waited=0 monitor=0 rc=0
+  shift
+  case $- in
+    *m*) monitor=1 ;;
+  esac
+  set -m
+  "$@" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ "$waited" -ge "$seconds" ]]; then
+      kill -- -"$pid" 2>/dev/null || true
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      if [[ "$monitor" -eq 0 ]]; then
+        set +m
+      fi
+      return 124
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$pid" || rc=$?
+  if [[ "$monitor" -eq 0 ]]; then
+    set +m
   fi
+  return "$rc"
+}
+
+remember() {
+  local value="$1" existing=""
+  if [[ -z "$value" ]]; then
+    return 0
+  fi
+  for existing in "${SECRETS[@]+"${SECRETS[@]}"}"; do
+    if [[ "$existing" == "$value" ]]; then
+      return 0
+    fi
+  done
+  SECRETS+=("$value")
+}
+
+# secret_env_names is the only list of secret-bearing environment variables.
+# Failure-line redaction and the log scanner both read it.
+secret_env_names() {
+  printf '%s\n' \
+    FACTORY_API_KEY \
+    FACTORY_WORKER_API_KEY \
+    S3_SECRET_KEY \
+    S3_ACCESS_KEY \
+    POSTGRES_PASSWORD \
+    OPENAI_API_KEY \
+    FACTORY_INFERENCE_OPENAI_API_KEY \
+    M1_OPENAI_API_KEY \
+    GH_TOKEN \
+    LIVE_TOKEN \
+    FACTORY_SECRET_GH_TOKEN \
+    FACTORY_GITHUB_WEBHOOK_SECRET \
+    M4_GITHUB_APP_PRIVATE_KEY \
+    FACTORY_SLACK_BOT_TOKEN \
+    M4_SLACK_BOT_TOKEN \
+    FACTORY_SLACK_SIGNING_SECRET \
+    SLACK_TEST_USER_TOKEN \
+    FACTORY_LINEAR_API_KEY \
+    FACTORY_LINEAR_WEBHOOK_SECRET
+}
+
+# secret_env_values prints NUL-terminated values from secret_env_names
+# whose length is at least min_len.
+secret_env_values() {
+  local min_len="$1" name="" value=""
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    value="${!name-}"
+    if [[ ${#value} -ge "$min_len" ]]; then
+      printf '%s\0' "$value"
+    fi
+  done < <(secret_env_names)
+}
+
+# remember_secret_env records those values for the log scanner.
+# The failure line redacts whole tokens of length 6 and up. The scanner
+# uses 16 so a short dev password is not matched inside ordinary text.
+remember_secret_env() {
+  local min_len="$1" value=""
+  while IFS= read -r -d '' value; do
+    remember "$value"
+  done < <(secret_env_values "$min_len")
 }
 
 scan_files() {
@@ -446,6 +549,7 @@ log_files() {
 }
 
 scan_logs_for_secrets() {
+  remember_secret_env 16
   log_files
   scan_files "${LOG_FILES[@]+"${LOG_FILES[@]}"}"
 }
@@ -648,6 +752,35 @@ host_router_probe_url() {
   fi
 }
 
+# host_catalog_probe_url is the model URL this process may curl.
+# host.docker.internal does not resolve on the macOS host under OrbStack
+# or Docker Desktop, and the task host is the container-facing name.
+# Those dial 127.0.0.1 with the same scheme, port, and path. Every other
+# host, including a live-ci endpoint, is unchanged. This does not rewrite
+# OPENAI_BASE_URL.
+host_catalog_probe_url() {
+  local raw="$1" task_host="${2:-}"
+  python3 - "$raw" "$task_host" <<'PY'
+import sys
+from urllib.parse import urlparse, urlunparse
+
+raw, task_host = sys.argv[1], sys.argv[2]
+parts = urlparse(raw)
+host = parts.hostname or ""
+if host != "host.docker.internal" and not (task_host and host == task_host):
+    print(raw)
+    raise SystemExit(0)
+netloc = "127.0.0.1"
+if parts.port is not None:
+    netloc = "127.0.0.1:%d" % parts.port
+print(urlunparse((parts.scheme, netloc, parts.path, parts.params, parts.query, "")))
+PY
+}
+
+model_id_safe() {
+  [[ "$1" =~ ^[A-Za-z0-9_.:/+-]+$ ]]
+}
+
 distinct_models() {
   local seen="" item=""
   if [[ "$#" -eq 0 ]]; then
@@ -659,7 +792,7 @@ distinct_models() {
       echo "empty model id" >&2
       return 1
     fi
-    if [[ ! "$item" =~ ^[A-Za-z0-9_.:/+-]+$ ]]; then
+    if ! model_id_safe "$item"; then
       echo "model id has characters this script will not write into the definition" >&2
       return 1
     fi
@@ -671,6 +804,148 @@ distinct_models() {
     esac
     seen="${seen} ${item}"
   done
+}
+
+# safe_model_ids allows one id on every role. Live defaults all four to
+# M4_LIVE_MODEL unless a role override is set.
+safe_model_ids() {
+  local item=""
+  if [[ "$#" -eq 0 ]]; then
+    echo "no model ids" >&2
+    return 1
+  fi
+  for item in "$@"; do
+    if [[ -z "$item" ]]; then
+      echo "empty model id" >&2
+      return 1
+    fi
+    if ! model_id_safe "$item"; then
+      echo "model id has characters this script will not write into the definition" >&2
+      return 1
+    fi
+  done
+}
+
+require_live_model() {
+  local name="" value=""
+  LIVE_MODEL_ERROR=""
+  if [[ -z "${M4_LIVE_MODEL:-}" ]]; then
+    LIVE_MODEL_ERROR="M4_LIVE_MODEL is required for live mode"
+    echo "$LIVE_MODEL_ERROR" >&2
+    return 1
+  fi
+  if ! model_id_safe "$M4_LIVE_MODEL"; then
+    LIVE_MODEL_ERROR="model id is not a safe id"
+    echo "$LIVE_MODEL_ERROR" >&2
+    return 1
+  fi
+  for name in M4_LIVE_MODEL_TRIAGE M4_LIVE_MODEL_PLANNING M4_LIVE_MODEL_BUILDING M4_LIVE_MODEL_REVIEWING; do
+    value="${!name:-}"
+    if [[ -n "$value" ]] && ! model_id_safe "$value"; then
+      LIVE_MODEL_ERROR="model id is not a safe id"
+      echo "$LIVE_MODEL_ERROR" >&2
+      return 1
+    fi
+  done
+}
+
+live_model_value() {
+  local name="$1" value=""
+  value="${!name:-}"
+  if [[ -n "$value" ]]; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  printf '%s\n' "${M4_LIVE_MODEL}"
+}
+
+# assert_listed_models reads an OpenAI-style catalog file. It does not
+# fetch the network. preflight_model_catalog does that for a real run.
+assert_listed_models() {
+  python3 - "$@" <<'PY'
+import json
+import sys
+
+path, ids = sys.argv[1], sys.argv[2:]
+try:
+    doc = json.loads(open(path, encoding="utf-8").read())
+except (OSError, json.JSONDecodeError):
+    raise SystemExit("model list was not a catalog")
+data = doc.get("data") if isinstance(doc, dict) else None
+if not isinstance(data, list):
+    raise SystemExit("model list was not a catalog")
+listed = set()
+for item in data:
+    if isinstance(item, dict) and isinstance(item.get("id"), str):
+        listed.add(item["id"])
+seen = set()
+for model_id in ids:
+    if model_id in seen:
+        continue
+    seen.add(model_id)
+    if model_id not in listed:
+        raise SystemExit("model id %s is not listed" % model_id)
+PY
+}
+
+catalog_probe_error() {
+  local container_host="${1:-unknown}" probe_host="${2:-unknown}"
+  printf 'could not list models from %s (probed %s)\n' "$container_host" "$probe_host"
+}
+
+preflight_model_catalog() {
+  local catalog="" container_host="" probe_url="" probe_host="" url="" err=""
+  local triage="" planning="" building="" reviewing=""
+  local -a curl_args=()
+  MODEL_CATALOG_ERROR=""
+  container_host="$(url_log_host "${OPENAI_BASE_URL:-}")"
+  probe_url="$(host_catalog_probe_url "${OPENAI_BASE_URL:-}" "${TASK_HOST:-}")"
+  probe_host="$(url_log_host "$probe_url")"
+  case "${OPENAI_BASE_URL:-}" in
+    http://* | https://*) ;;
+    *)
+      MODEL_CATALOG_ERROR="$(catalog_probe_error "${container_host:-unknown}" "${probe_host:-unknown}")"
+      echo "$MODEL_CATALOG_ERROR" >&2
+      return 1
+      ;;
+  esac
+  if [[ -z "$container_host" || -z "$probe_host" || "${OPENAI_BASE_URL}" == *"@"* || "$probe_url" == *"@"* ]]; then
+    MODEL_CATALOG_ERROR="$(catalog_probe_error "${container_host:-unknown}" "${probe_host:-unknown}")"
+    echo "$MODEL_CATALOG_ERROR" >&2
+    return 1
+  fi
+  case "$probe_url" in
+    http://* | https://*) ;;
+    *)
+      MODEL_CATALOG_ERROR="$(catalog_probe_error "$container_host" "${probe_host:-unknown}")"
+      echo "$MODEL_CATALOG_ERROR" >&2
+      return 1
+      ;;
+  esac
+  catalog="$(mktemp)"
+  url="${probe_url%/}/models"
+  curl_args=(-fsS --connect-timeout 2 -m 5)
+  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    curl_args+=(-H "Authorization: Bearer ${OPENAI_API_KEY}")
+  fi
+  curl_args+=(-o "$catalog" "$url")
+  if ! curl "${curl_args[@]}"; then
+    rm -f "$catalog"
+    MODEL_CATALOG_ERROR="$(catalog_probe_error "$container_host" "$probe_host")"
+    echo "$MODEL_CATALOG_ERROR" >&2
+    return 1
+  fi
+  triage="$(live_model_value M4_LIVE_MODEL_TRIAGE)"
+  planning="$(live_model_value M4_LIVE_MODEL_PLANNING)"
+  building="$(live_model_value M4_LIVE_MODEL_BUILDING)"
+  reviewing="$(live_model_value M4_LIVE_MODEL_REVIEWING)"
+  if ! err="$(assert_listed_models "$catalog" "$triage" "$planning" "$building" "$reviewing" 2>&1)"; then
+    rm -f "$catalog"
+    MODEL_CATALOG_ERROR="$err"
+    echo "$MODEL_CATALOG_ERROR" >&2
+    return 1
+  fi
+  rm -f "$catalog"
 }
 
 read_model() {
@@ -1107,13 +1382,26 @@ prepare_definition() {
   rm -rf "$dest"
   mkdir -p "$dest"
   cp -a "$SRC_DEF/." "$dest/"
-  DEF_ROOT="$dest" DEF_MODE="$MODE" python3 - <<'PY'
+  # Return the Python status even when errexit is ignored (unit tests).
+  if ! DEF_ROOT="$dest" DEF_MODE="$MODE" python3 - <<'PY'
 import os
 import re
 from pathlib import Path
 
 root = Path(os.environ["DEF_ROOT"])
 mode = os.environ["DEF_MODE"]
+
+
+def replace_exactly_one(text, pattern, replacement, message):
+    found = re.findall(pattern, text, re.M)
+    if len(found) != 1:
+        raise SystemExit(message)
+    updated, count = re.subn(pattern, replacement, text, count=1, flags=re.M)
+    if count != 1 or re.search(pattern, updated, re.M):
+        raise SystemExit(message)
+    return updated
+
+
 if mode == "offline":
     path = root / "automations/hourly/automation.md"
     text = path.read_text(encoding="utf-8")
@@ -1122,6 +1410,25 @@ if mode == "offline":
         raise SystemExit("hourly automation does not have one disabled line")
     path.write_text(text.replace(old, "enabled: true\n", 1), encoding="utf-8")
 elif mode in ("live", "live-ci"):
+    model_safe = re.compile(r"[A-Za-z0-9_.:/+-]+")
+
+    def role_model(name, fallback):
+        raw = os.environ.get(name, "")
+        if not raw:
+            return fallback
+        if model_safe.fullmatch(raw) is None:
+            raise SystemExit("model id is not a safe id")
+        return raw
+
+    default_model = os.environ.get("M4_LIVE_MODEL", "")
+    if not default_model:
+        raise SystemExit("M4_LIVE_MODEL is required for live mode")
+    if model_safe.fullmatch(default_model) is None:
+        raise SystemExit("model id is not a safe id")
+    triage = role_model("M4_LIVE_MODEL_TRIAGE", default_model)
+    planning = role_model("M4_LIVE_MODEL_PLANNING", default_model)
+    building = role_model("M4_LIVE_MODEL_BUILDING", default_model)
+    reviewing = role_model("M4_LIVE_MODEL_REVIEWING", default_model)
     channel = os.environ["M4_SLACK_CHANNEL"]
     user = os.environ.get("M4_SLACK_ALLOWED_USER", "")
     if not re.fullmatch(r"[CG][A-Z0-9]+", channel):
@@ -1132,17 +1439,48 @@ elif mode in ("live", "live-ci"):
         raise SystemExit("slack user is not a safe id")
     path = root / "factory.yaml"
     text = path.read_text(encoding="utf-8")
-    text2 = text.replace("channel: C0M4FACTORY\n", "channel: %s\n" % channel, 1)
+    text = replace_exactly_one(
+        text,
+        r"^(\s*)channel: C0M4FACTORY$",
+        r"\1channel: %s" % channel,
+        "factory.yaml slack channel was not replaced",
+    )
     if user:
-        text2 = text2.replace("- U0M4HUMAN\n", "- %s\n" % user, 1)
-    if text2 == text or "C0M4FACTORY" in text2:
-        raise SystemExit("factory.yaml slack channel was not replaced")
-    if user and "U0M4HUMAN" in text2:
-        raise SystemExit("factory.yaml slack user was not replaced")
-    path.write_text(text2, encoding="utf-8")
+        text = replace_exactly_one(
+            text,
+            r"^(\s*)- U0M4HUMAN$",
+            r"\1- %s" % user,
+            "factory.yaml slack user was not replaced",
+        )
+    text = replace_exactly_one(
+        text,
+        r"^(\s*)model: m4-triage$",
+        r"\1model: %s" % triage,
+        "factory.yaml model was not replaced",
+    )
+    path.write_text(text, encoding="utf-8")
+    for rel, stub, model_id in (
+        ("agents/triage/agent.md", "m4-triage", triage),
+        ("agents/spec/agent.md", "m4-planning", planning),
+        ("agents/implementer/agent.md", "m4-building", building),
+        ("agents/reviewer/agent.md", "m4-reviewing", reviewing),
+    ):
+        agent = root / rel
+        agent.write_text(
+            replace_exactly_one(
+                agent.read_text(encoding="utf-8"),
+                r"^(\s*)model: %s$" % re.escape(stub),
+                r"\1model: %s" % model_id,
+                "%s model was not replaced" % rel,
+            ),
+            encoding="utf-8",
+        )
 else:
     raise SystemExit("unknown mode")
 PY
+  then
+    return 1
+  fi
   chmod -R a+rX "$dest"
 }
 
@@ -1338,19 +1676,36 @@ print_live_checklist() {
 Live checklist
   1. Start a tunnel to factoryd on this machine:
        cloudflared tunnel --url http://localhost:8080
+     A trycloudflare quick tunnel changes URL on every restart.
      Or start the compose tunnel profile yourself. Its URL is not stable.
   2. Set FACTORY_PUBLIC_URL to that https origin.
   3. GitHub App webhook: \${FACTORY_PUBLIC_URL}/api/v1/ingress/github
+     Subscribe to:
+       Issues (required for the labeled intake)
+       Issue comment
+       Pull request
+       Pull request review
+       Push
+       Check run
+       Check suite
      Slack request URL: \${FACTORY_PUBLIC_URL}/api/v1/ingress/slack
   4. Point the model server at ${LIVE_MODEL_URL}
      (FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL). Containers on Docker
      Desktop reach the Mac through host.docker.internal.
+     This machine lists models on 127.0.0.1 at that port.
+     Set M4_LIVE_MODEL to an id the server lists. It replaces m4-triage,
+     m4-planning, m4-building, and m4-reviewing. Optional overrides:
+     M4_LIVE_MODEL_TRIAGE, M4_LIVE_MODEL_PLANNING, M4_LIVE_MODEL_BUILDING,
+     and M4_LIVE_MODEL_REVIEWING.
   5. Put the GitHub App private key at spike/m4/secrets/github-app.pem.
      The script copies it to spike/m4/.work/live/github-app.pem (mode 644)
      and mounts that copy. The original file is left unchanged.
   6. After the draft PR opens, reply in the Slack thread.
      Suggested text: also add a test for an empty name
      Set REPLY_TEXT and SLACK_TEST_USER_TOKEN to post that reply as a user.
+  7. Run gh auth login as yourself before the label step. factory-ready is
+     applied with that user. The App installation token is a bot sender,
+     and intake ignores it.
 
 EOF
   if [[ -n "${FACTORY_PUBLIC_URL:-}" ]]; then
@@ -1443,6 +1798,11 @@ live_ci_cleanup_request() {
   esac
 }
 
+# select_draft_pull reads one `gh pr list` document.
+# Exit 0 prints url, head sha, number, and branch for the only matching
+# open draft. Exit 1 means none match yet. Exit 3 means more than one
+# open draft closes this issue; stderr lists every matching URL.
+# Offline, live, and live-ci share this function. It does not read MODE.
 select_draft_pull() {
   python3 - "$1" "$2" <<'PY'
 import json
@@ -1454,15 +1814,58 @@ if not re.fullmatch(r"[1-9][0-9]*", number):
     raise SystemExit(1)
 pattern = re.compile(r"(?<!\w)Closes #%s(?!\d)" % re.escape(number))
 rows = json.load(open(path, encoding="utf-8"))
+matches = []
 for row in rows:
+    if not isinstance(row, dict):
+        continue
     if row.get("isDraft") and pattern.search(row.get("body") or ""):
-        print(row.get("url") or "")
-        print(row.get("headRefOid") or "")
-        print(row.get("number") or "")
-        print(row.get("headRefName") or "")
-        raise SystemExit(0)
-raise SystemExit(1)
+        matches.append(row)
+if not matches:
+    raise SystemExit(1)
+if len(matches) > 1:
+    urls = []
+    for row in matches:
+        url = row.get("url") or ""
+        if not url:
+            url = "pull request %s" % (row.get("number") or "?")
+        urls.append(url)
+    sys.stderr.write(
+        "more than one open draft pull request matches Closes #%s:\n%s\n"
+        % (number, "\n".join(urls))
+    )
+    raise SystemExit(3)
+row = matches[0]
+print(row.get("url") or "")
+print(row.get("headRefOid") or "")
+print(row.get("number") or "")
+print(row.get("headRefName") or "")
 PY
+}
+
+# take_selected_draft applies select_draft_pull to the live pull globals.
+# 0: exactly one match. 1: none yet. 3: ambiguous; DRAFT_PULL_ERROR is set.
+take_selected_draft() {
+  local path="$1" number="$2" parsed="" select_rc=0 err=""
+  err="$(mktemp)"
+  parsed="$(select_draft_pull "$path" "$number" 2>"$err")" || select_rc=$?
+  if [[ "$select_rc" -eq 0 ]]; then
+    PR_LIVE_URL="$(printf '%s\n' "$parsed" | awk 'NR==1')"
+    PR_LIVE_SHA="$(printf '%s\n' "$parsed" | awk 'NR==2')"
+    PR_LIVE_NUMBER="$(printf '%s\n' "$parsed" | awk 'NR==3')"
+    PR_LIVE_BRANCH="$(printf '%s\n' "$parsed" | awk 'NR==4')"
+    rm -f "$err"
+    if [[ -z "$PR_LIVE_URL" ]]; then
+      return 1
+    fi
+    return 0
+  fi
+  if [[ "$select_rc" -eq 3 ]]; then
+    DRAFT_PULL_ERROR="$(cat "$err")"
+    rm -f "$err"
+    return 3
+  fi
+  rm -f "$err"
+  return 1
 }
 
 record_live_ci_evidence() {
@@ -1507,6 +1910,52 @@ close_live_ci() {
         echo "live-ci cleanup: could not close the ${kind}" >&2
     fi
   done
+}
+
+# operator_gh_user_type prints the type from `gh api user` using the
+# operator's own auth. GH_TOKEN is the App installation token by the time
+# live labels the issue, so this call removes it for gh only.
+operator_gh_user_type() {
+  local tmp="" rc=0
+  tmp="$(mktemp)"
+  if ! env -u GH_TOKEN gh api user >"$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  python3 - "$tmp" <<'PY' || rc=$?
+import json
+import sys
+
+try:
+    doc = json.load(open(sys.argv[1], encoding="utf-8"))
+except json.JSONDecodeError:
+    raise SystemExit(1)
+print(doc.get("type") or "")
+PY
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# label_live_issue applies factory-ready as a human. A Bot sender becomes
+# a [bot] handle, and the automation engine drops those actors.
+label_live_issue() {
+  local user_type=""
+  if ! user_type="$(operator_gh_user_type)"; then
+    echo "gh is not logged in as a GitHub user. Run gh auth login, then retry." >&2
+    return 1
+  fi
+  if [[ "$user_type" != "User" ]]; then
+    echo "gh is not logged in as a GitHub user. Run gh auth login, then retry." >&2
+    return 1
+  fi
+  # A failed POST is not a login problem. Return 2 so the caller can say so.
+  if ! env -u GH_TOKEN gh api --method POST \
+    -H "Accept: application/vnd.github+json" \
+    "/repos/${M4_REPO}/issues/${ISSUE_LIVE}/labels" \
+    -f "labels[]=factory-ready" >/dev/null; then
+    echo "could not apply the factory-ready label" >&2
+    return 2
+  fi
 }
 
 mint_installation_token() {
@@ -1568,21 +2017,299 @@ PY
     >"$WORK/live-issue.json"
 }
 
+live_wait_hint() {
+  printf '%s\n' "https://github.com/${M4_REPO}/issues/${ISSUE_LIVE}"
+  printf '%s\n' "no work item yet: check webhook delivery and sender"
+}
+
+# live_wait_should_hint is true on the first live poll and once a minute
+# after that. live-ci injects the labeled delivery itself, so it stays quiet.
+live_wait_should_hint() {
+  local attempt="$1"
+  [[ "$MODE" == live ]] || return 1
+  [[ "$attempt" -eq 1 || $((attempt % 6)) -eq 0 ]]
+}
+
+# live_wait_note prints the webhook hint only when factoryd has no work
+# item for this issue. A running or failed item is not a delivery stall.
+live_wait_note() {
+  local attempt="$1" state="$2"
+  [[ "$state" == none ]] || return 1
+  live_wait_should_hint "$attempt"
+}
+
+# read_live_work_state classifies one external-ref response.
+# It prints none, open, unknown, or failed. On failed it writes the
+# redacted reason to the message path.
+read_live_work_state() {
+  local code="$1" external="$2" task="$3" events="$4" logs="$5" message_path="$6"
+  local -a secret_values=()
+  local secret_value=""
+  while IFS= read -r -d '' secret_value; do
+    secret_values+=("$secret_value")
+  done < <(secret_env_values 6)
+  python3 - "$code" "$external" "$task" "$events" "$logs" "$message_path" "${secret_values[@]+"${secret_values[@]}"}" <<'PY'
+import json
+import re
+import sys
+
+code, external_path, task_path, events_path, logs_path, message_path = sys.argv[1:7]
+secret_values = sys.argv[7:]
+
+
+def load_json(path):
+    try:
+        raw = open(path, encoding="utf-8").read()
+    except OSError:
+        return None
+    if not raw.strip():
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def redact(text, values):
+    # Longer values first. A match is a whole token: neither side may be
+    # a letter, digit, dot, underscore, or hyphen, so "factory" does not
+    # redact the compose service name factoryd-1.
+    ordered = sorted(set(values), key=len, reverse=True)
+    for value in ordered:
+        if len(value) < 6:
+            continue
+        pattern = re.compile(
+            "(?<![A-Za-z0-9_.-])" + re.escape(value) + "(?![A-Za-z0-9_.-])"
+        )
+        text = pattern.sub("***", text)
+    return text
+
+
+def read_text(path):
+    try:
+        return open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return ""
+
+
+def terminal_bits(text):
+    summaries = []
+    reasons = []
+    for line in text.splitlines():
+        if not line.startswith("data:"):
+            continue
+        raw = line[5:].strip()
+        try:
+            doc = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        summary = doc.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            summaries.append(summary.strip())
+        reason = doc.get("failure_reason")
+        if isinstance(reason, str) and reason.strip():
+            reasons.append(reason.strip())
+    return summaries, reasons
+
+
+def log_lines(text):
+    hits = []
+    for line in text.splitlines():
+        if "provider HTTP" in line or "task_failed" in line or "work item escalated" in line:
+            hits.append(line.strip())
+    return hits
+
+
+def finish(state, message=""):
+    if message:
+        message = redact(message, secret_values)
+        if len(message) > 500:
+            message = message[:500]
+        open(message_path, "w", encoding="utf-8").write(message)
+    print(state)
+
+
+if code == "404":
+    finish("none")
+    raise SystemExit(0)
+external = load_json(external_path)
+if code != "200" or not isinstance(external, dict) or not external.get("work_item_id"):
+    finish("unknown")
+    raise SystemExit(0)
+run = external.get("run")
+if not isinstance(run, dict):
+    finish("open")
+    raise SystemExit(0)
+status = run.get("status") or ""
+if status not in ("failed", "cancelled"):
+    finish("open")
+    raise SystemExit(0)
+
+task = load_json(task_path)
+stage = ""
+item_status = ""
+if isinstance(task, dict):
+    stage = task.get("stage") or ""
+    item_status = task.get("status") or ""
+summaries, reasons = terminal_bits(read_text(events_path))
+summary = summaries[-1] if summaries else ""
+if not summary:
+    hits = log_lines(read_text(logs_path))
+    http_lines = [line for line in hits if "provider HTTP" in line]
+    if http_lines:
+        summary = http_lines[-1]
+    elif hits:
+        summary = hits[-1]
+reason = run.get("failure_reason") or (reasons[-1] if reasons else "")
+work_id = external.get("work_item_id") or ""
+run_id = run.get("id") or ""
+if item_status in ("", "open"):
+    head = "work item %s escalated at stage %s" % (work_id, stage or "unknown")
+else:
+    head = "work item %s run failed at stage %s" % (work_id, stage or "unknown")
+parts = [head, "run %s %s" % (run_id, status)]
+if reason:
+    parts.append(reason)
+if summary:
+    parts.append(summary)
+finish("failed", ": ".join(parts))
+PY
+}
+
+live_json_field() {
+  python3 - "$1" "$2" <<'PY'
+import json
+import sys
+
+path, field = sys.argv[1], sys.argv[2]
+try:
+    cur = json.load(open(path, encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+for part in field.split("."):
+    if not isinstance(cur, dict):
+        raise SystemExit(0)
+    cur = cur.get(part)
+if isinstance(cur, str):
+    print(cur)
+PY
+}
+
+# poll_live_work asks factoryd whether this issue's work item has failed.
+# none: no work item. open: one exists and its latest run has not failed.
+# failed: the latest run failed or the item escalated; LIVE_WAIT_ERROR is set.
+# unknown: the API could not be read, so the wait keeps polling.
+poll_live_work() {
+  local dir="" code="" url="" ref="" body="" task="" events="" logs=""
+  local run_id="" run_status="" work_id="" state=""
+  LIVE_WAIT_ERROR=""
+  dir="$(mktemp -d)"
+  body="$dir/external.json"
+  task="$dir/task.json"
+  events="$dir/events.txt"
+  logs="$dir/logs.txt"
+  : >"$body"
+  : >"$task"
+  : >"$events"
+  : >"$logs"
+  ref="${M4_REPO}#${ISSUE_LIVE}"
+  url="$(
+    python3 - "$ref" <<'PY'
+import sys
+from urllib.parse import urlencode
+
+print(
+    "http://127.0.0.1:8080/api/v1/agent/run-by-external-reference?"
+    + urlencode({"provider": "github", "ref": sys.argv[1]})
+)
+PY
+  )"
+  if [[ -z "${FACTORY_API_KEY:-}" || -z "$url" ]]; then
+    rm -rf "$dir"
+    printf 'unknown\n'
+    return 0
+  fi
+  code="$(
+    curl -sS -o "$body" -w '%{http_code}' --connect-timeout 2 -m 5 \
+      -H "Authorization: Bearer ${FACTORY_API_KEY}" \
+      -H "Accept: application/json" \
+      "$url" 2>"$dir/curl.err"
+  )" || code=""
+  if [[ "$code" == "200" ]]; then
+    run_id="$(live_json_field "$body" "run.id")"
+    run_status="$(live_json_field "$body" "run.status")"
+    work_id="$(live_json_field "$body" "work_item_id")"
+    if [[ "$work_id" =~ ^[A-Za-z0-9_-]+$ && "${FACTORY_NAME}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+      curl -sS -o "$task" --connect-timeout 2 -m 5 \
+        -H "Authorization: Bearer ${FACTORY_API_KEY}" \
+        -H "Accept: application/json" \
+        "http://127.0.0.1:8080/api/v1/factory/${FACTORY_NAME}/tasks/${work_id}" \
+        >/dev/null 2>>"$dir/curl.err" || true
+    fi
+    if [[ "$run_id" =~ ^[A-Za-z0-9_-]+$ && ("$run_status" == failed || "$run_status" == cancelled) ]]; then
+      curl -sS --connect-timeout 2 -m 5 -o "$events" \
+        -H "Authorization: Bearer ${FACTORY_API_KEY}" \
+        -H "Accept: text/event-stream" \
+        "http://127.0.0.1:8080/api/v1/agent/runs/${run_id}/events" \
+        >/dev/null 2>>"$dir/curl.err" || true
+      if ! grep -F -q 'provider HTTP' "$events"; then
+        run_bounded 5 compose logs --tail 200 --no-color factoryd worker >"$logs" 2>/dev/null || true
+      fi
+    fi
+  fi
+  state="$(read_live_work_state "$code" "$body" "$task" "$events" "$logs" "$dir/message")" || state="unknown"
+  if [[ "$state" == failed && -f "$dir/message" ]]; then
+    LIVE_WAIT_ERROR="$(cat "$dir/message")"
+  fi
+  rm -rf "$dir"
+  printf '%s\n' "$state"
+}
+
+finish_wait_draft_pull() {
+  local wait_rc=0
+  wait_draft_pull || wait_rc=$?
+  case "$wait_rc" in
+    0) ;;
+    2)
+      fail "${LIVE_WAIT_ERROR:-work item failed before a draft pull request opened}"
+      ;;
+    3)
+      fail "${DRAFT_PULL_ERROR:-more than one open draft pull request matches this issue}"
+      ;;
+    *)
+      fail "draft pull request did not open"
+      ;;
+  esac
+}
+
 wait_draft_pull() {
-  local parsed=""
+  local attempt=0 work_state="" select_rc=0
   PR_LIVE_URL=""
   PR_LIVE_SHA=""
   PR_LIVE_NUMBER=""
   PR_LIVE_BRANCH=""
   for _ in $(seq 1 360); do
+    attempt=$((attempt + 1))
     GH_TOKEN="$LIVE_TOKEN" gh pr list --repo "$M4_REPO" --state open \
       --json number,isDraft,url,body,headRefOid,headRefName >"$WORK/live-pr.json" || true
-    parsed="$(select_draft_pull "$WORK/live-pr.json" "$ISSUE_LIVE")" &&
-      PR_LIVE_URL="$(printf '%s\n' "$parsed" | awk 'NR==1')" &&
-      PR_LIVE_SHA="$(printf '%s\n' "$parsed" | awk 'NR==2')" &&
-      PR_LIVE_NUMBER="$(printf '%s\n' "$parsed" | awk 'NR==3')" &&
-      PR_LIVE_BRANCH="$(printf '%s\n' "$parsed" | awk 'NR==4')" &&
-      [[ -n "$PR_LIVE_URL" ]] && return 0
+    select_rc=0
+    take_selected_draft "$WORK/live-pr.json" "$ISSUE_LIVE" || select_rc=$?
+    if [[ "$select_rc" -eq 0 ]]; then
+      return 0
+    fi
+    if [[ "$select_rc" -eq 3 ]]; then
+      return 3
+    fi
+    poll_live_work >"$WORK/live-wait-state"
+    work_state="$(cat "$WORK/live-wait-state")"
+    case "$work_state" in
+      failed) return 2 ;;
+    esac
+    if live_wait_note "$attempt" "$work_state"; then
+      live_wait_hint
+    fi
     sleep 10
   done
   return 1
@@ -1687,6 +2414,7 @@ if [[ "$MODE" == live ]]; then
   print_live_checklist
   require_live_ids
   [[ -n "${OPENAI_BASE_URL:-}" ]] || die "OPENAI_BASE_URL or FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL is required for MODE=live"
+  require_live_model || die "${LIVE_MODEL_ERROR}"
   [[ -n "${FACTORY_GITHUB_APP_ID:-}" ]] || die "FACTORY_GITHUB_APP_ID is required for MODE=live"
   [[ -n "${FACTORY_GITHUB_WEBHOOK_SECRET:-}" ]] || die "FACTORY_GITHUB_WEBHOOK_SECRET is required for MODE=live"
   [[ -n "${FACTORY_SLACK_BOT_TOKEN:-}" ]] || die "FACTORY_SLACK_BOT_TOKEN is required for MODE=live"
@@ -1702,6 +2430,7 @@ fi
 if [[ "$MODE" == live-ci ]]; then
   command -v gh >/dev/null || die "gh not found (required for MODE=live-ci)"
   [[ -n "${OPENAI_BASE_URL:-}" ]] || die "M1_OPENAI_BASE_URL or OPENAI_BASE_URL is required for MODE=live-ci"
+  require_live_model || die "${LIVE_MODEL_ERROR}"
   [[ "${M4_GITHUB_APP_ID:-}" =~ ^[1-9][0-9]*$ ]] || die "M4_GITHUB_APP_ID must be a positive integer"
   [[ -n "${M4_GITHUB_APP_PRIVATE_KEY:-}" ]] || die "M4_GITHUB_APP_PRIVATE_KEY is empty"
   [[ -n "${FACTORY_SLACK_BOT_TOKEN:-}" ]] || die "M4_SLACK_BOT_TOKEN is empty"
@@ -1753,6 +2482,7 @@ else
       ;;
   esac
   echo "task OPENAI_BASE_URL host: ${live_host}"
+  preflight_model_catalog || die "${MODEL_CATALOG_ERROR}"
   if [[ "$MODE" == live-ci ]]; then
     key_copy="$WORK/live-ci/github-app.pem"
     if ! stage_app_key_from_env "$key_copy"; then
@@ -1796,8 +2526,13 @@ MODEL_TRIAGE="$(read_model "$DEF/agents/triage/agent.md")"
 MODEL_PLANNING="$(read_model "$DEF/agents/spec/agent.md")"
 MODEL_BUILDING="$(read_model "$DEF/agents/implementer/agent.md")"
 MODEL_REVIEWING="$(read_model "$DEF/agents/reviewer/agent.md")"
-distinct_models "$MODEL_TRIAGE" "$MODEL_PLANNING" "$MODEL_BUILDING" "$MODEL_REVIEWING" ||
-  die "definition model ids must be four distinct values"
+if [[ "$MODE" == offline ]]; then
+  distinct_models "$MODEL_TRIAGE" "$MODEL_PLANNING" "$MODEL_BUILDING" "$MODEL_REVIEWING" ||
+    die "definition model ids must be four distinct values"
+else
+  safe_model_ids "$MODEL_TRIAGE" "$MODEL_PLANNING" "$MODEL_BUILDING" "$MODEL_REVIEWING" ||
+    die "definition model ids are not safe ids"
+fi
 echo "models: triage=${MODEL_TRIAGE} planning=${MODEL_PLANNING} building=${MODEL_BUILDING} reviewing=${MODEL_REVIEWING}"
 
 export FACTORY_DEFINITION_HOST_PATH="$DEF"
@@ -2084,9 +2819,7 @@ if [[ "$MODE" == live-ci ]]; then
   echo "synthetic labeled delivery accepted for issue #${ISSUE_LIVE}"
 
   say "Wait for a draft pull request"
-  if ! wait_draft_pull; then
-    fail "draft pull request did not open"
-  fi
+  finish_wait_draft_pull
   echo "draft pull request: ${PR_LIVE_URL}"
 
   say "Slack thread"
@@ -2105,16 +2838,21 @@ fi
 
 say "Label the issue"
 create_live_issue || fail "issue create did not return a number"
-GH_TOKEN="$LIVE_TOKEN" gh api --method POST \
-  -H "Accept: application/vnd.github+json" \
-  "/repos/${M4_REPO}/issues/${ISSUE_LIVE}/labels" \
-  -f "labels[]=factory-ready" >/dev/null
+label_rc=0
+label_live_issue || label_rc=$?
+case "$label_rc" in
+  0) ;;
+  1)
+    fail "gh is not logged in as a GitHub user. Run gh auth login, then retry."
+    ;;
+  *)
+    fail "could not apply the factory-ready label"
+    ;;
+esac
 echo "labeled issue #${ISSUE_LIVE}"
 
 say "Wait for a draft pull request"
-if ! wait_draft_pull; then
-  fail "draft pull request did not open"
-fi
+finish_wait_draft_pull
 echo "draft pull request: ${PR_LIVE_URL}"
 
 say "Slack thread"

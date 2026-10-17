@@ -26,6 +26,10 @@
 #   M4_SLACK_CHANNEL            Slack channel id
 #   M1_OPENAI_BASE_URL          OpenAI-compatible endpoint
 #   M1_OPENAI_API_KEY           optional; omit the secret to run without a key
+#
+# Dispatch input model is M4_LIVE_MODEL. The default is the M1 live model
+# claude-sonnet-5-5. The driver rewrites the four stub ids to that value
+# before containers start.
 name: m4-live
 
 on:
@@ -40,6 +44,11 @@ on:
         description: Human GitHub login for the synthetic sender (M4_LIVE_CI_SENDER). Empty uses the repo owner.
         required: false
         default: ""
+        type: string
+      model:
+        description: Model id (M4_LIVE_MODEL). Default is the M1 live model.
+        required: false
+        default: claude-sonnet-5-5
         type: string
 
 permissions:
@@ -73,6 +82,7 @@ jobs:
           M4_SLACK_CHANNEL: ${{ secrets.M4_SLACK_CHANNEL }}
           M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
           M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          M4_LIVE_MODEL: ${{ inputs.model }}
         run: MODE=live-ci ./spike/m4/run.sh
       # .work is a hidden directory, so the upload must opt in.
       - name: Upload M4 evidence

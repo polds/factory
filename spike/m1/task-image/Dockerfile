@@ -18,7 +18,7 @@ RUN apk add --no-cache \
     ca-certificates=20260909-r0 \
     curl=8.22.0-r0 \
     git=2.54.0-r0 \
-    github-cli=2.97.0-r1 \
+    github-cli=2.97.0-r2 \
     && mkdir -p /workspace \
     && chmod 1777 /workspace
 
