@@ -381,21 +381,35 @@ compose() {
 }
 
 # run_bounded stops a command after a whole number of seconds.
+# The command runs in its own process group, so a foreground child
+# such as docker compose is signaled with the group leader.
 run_bounded() {
-  local seconds="$1" pid="" waited=0
+  local seconds="$1" pid="" waited=0 monitor=0 rc=0
   shift
+  case $- in
+    *m*) monitor=1 ;;
+  esac
+  set -m
   "$@" &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     if [[ "$waited" -ge "$seconds" ]]; then
+      kill -- -"$pid" 2>/dev/null || true
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
+      if [[ "$monitor" -eq 0 ]]; then
+        set +m
+      fi
       return 124
     fi
     sleep 1
     waited=$((waited + 1))
   done
-  wait "$pid"
+  wait "$pid" || rc=$?
+  if [[ "$monitor" -eq 0 ]]; then
+    set +m
+  fi
+  return "$rc"
 }
 
 remember() {
@@ -418,6 +432,7 @@ secret_env_names() {
     FACTORY_API_KEY \
     FACTORY_WORKER_API_KEY \
     S3_SECRET_KEY \
+    S3_ACCESS_KEY \
     POSTGRES_PASSWORD \
     OPENAI_API_KEY \
     FACTORY_INFERENCE_OPENAI_API_KEY \
@@ -449,8 +464,8 @@ secret_env_values() {
 }
 
 # remember_secret_env records those values for the log scanner.
-# The failure line redacts length 6 and up. The scanner uses 16 so a
-# short dev password is not matched inside ordinary words such as factoryd.
+# The failure line redacts whole tokens of length 6 and up. The scanner
+# uses 16 so a short dev password is not matched inside ordinary text.
 remember_secret_env() {
   local min_len="$1" value=""
   while IFS= read -r -d '' value; do
@@ -909,7 +924,7 @@ preflight_model_catalog() {
   esac
   catalog="$(mktemp)"
   url="${probe_url%/}/models"
-  curl_args=(-fsS --connect-timeout 5 -m 20)
+  curl_args=(-fsS --connect-timeout 2 -m 5)
   if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     curl_args+=(-H "Authorization: Bearer ${OPENAI_API_KEY}")
   fi
@@ -2035,6 +2050,7 @@ read_live_work_state() {
   done < <(secret_env_values 6)
   python3 - "$code" "$external" "$task" "$events" "$logs" "$message_path" "${secret_values[@]+"${secret_values[@]}"}" <<'PY'
 import json
+import re
 import sys
 
 code, external_path, task_path, events_path, logs_path, message_path = sys.argv[1:7]
@@ -2055,11 +2071,17 @@ def load_json(path):
 
 
 def redact(text, values):
+    # Longer values first. A match is a whole token: neither side may be
+    # a letter, digit, dot, underscore, or hyphen, so "factory" does not
+    # redact the compose service name factoryd-1.
     ordered = sorted(set(values), key=len, reverse=True)
     for value in ordered:
         if len(value) < 6:
             continue
-        text = text.replace(value, "***")
+        pattern = re.compile(
+            "(?<![A-Za-z0-9_.-])" + re.escape(value) + "(?![A-Za-z0-9_.-])"
+        )
+        text = pattern.sub("***", text)
     return text
 
 

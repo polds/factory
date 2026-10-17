@@ -1296,6 +1296,16 @@ EOF
     cat "$log" >&2
     rc=1
   fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q -- "--connect-timeout 2" "$log"; then
+    echo "catalog probe did not pass --connect-timeout 2" >&2
+    cat "$log" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! grep -F -q -- "-m 5" "$log"; then
+    echo "catalog probe was not limited to 5 seconds" >&2
+    cat "$log" >&2
+    rc=1
+  fi
   if [[ "$rc" -eq 0 ]] && grep -F -q "host.docker.internal" "$log"; then
     echo "catalog probe dialed host.docker.internal" >&2
     cat "$log" >&2
@@ -1683,7 +1693,7 @@ EOF
 
 case_failure_line_secrets() {
   local dir="" mode="" rc=0 state="" summary="" message="" stars="" name="" i=0
-  local saved_mode="${MODE:-}" status=0 body=""
+  local saved_mode="${MODE:-}" status=0 body="" child_pid="" alive=0
   local -a saved_secrets=() names=()
   local -a was_set=() saved_values=()
   saved_secrets=("${SECRETS[@]+"${SECRETS[@]}"}")
@@ -1700,6 +1710,7 @@ case_failure_line_secrets() {
   done < <(secret_env_names)
   FACTORY_WORKER_API_KEY="worker-m4sec-shared-tail-aa11"
   S3_SECRET_KEY="m4sec-shared-tail-aa11"
+  S3_ACCESS_KEY="m4sec-s3access-778899"
   POSTGRES_PASSWORD="m4sec-pg-bb22cc33"
   FACTORY_API_KEY="m4sec-api-cc334455"
   OPENAI_API_KEY="m4sec-openai-dd445566"
@@ -1719,10 +1730,10 @@ case_failure_line_secrets() {
   dir="$(mktemp -d)"
   printf '%s\n' '{"provider":"github","external_ref":"polds/factory#83","work_item_id":"wi_1","run":{"id":"run_9","status":"failed","failure_reason":"container_exit"}}' >"$dir/failed.json"
   printf '%s\n' '{"id":"wi_1","stage":"triage","status":"open"}' >"$dir/task.json"
-  summary="${FACTORY_WORKER_API_KEY} ${S3_SECRET_KEY} ${POSTGRES_PASSWORD} ${FACTORY_API_KEY} ${OPENAI_API_KEY} ${FACTORY_INFERENCE_OPENAI_API_KEY} ${M1_OPENAI_API_KEY} ${GH_TOKEN} ${LIVE_TOKEN} ${FACTORY_SECRET_GH_TOKEN} ${FACTORY_GITHUB_WEBHOOK_SECRET} ${M4_GITHUB_APP_PRIVATE_KEY} ${FACTORY_SLACK_BOT_TOKEN} ${M4_SLACK_BOT_TOKEN} ${FACTORY_SLACK_SIGNING_SECRET} ${SLACK_TEST_USER_TOKEN} ${FACTORY_LINEAR_API_KEY} ${FACTORY_LINEAR_WEBHOOK_SECRET}"
+  summary="${FACTORY_WORKER_API_KEY} ${S3_SECRET_KEY} ${S3_ACCESS_KEY} ${POSTGRES_PASSWORD} ${FACTORY_API_KEY} ${OPENAI_API_KEY} ${FACTORY_INFERENCE_OPENAI_API_KEY} ${M1_OPENAI_API_KEY} ${GH_TOKEN} ${LIVE_TOKEN} ${FACTORY_SECRET_GH_TOKEN} ${FACTORY_GITHUB_WEBHOOK_SECRET} ${M4_GITHUB_APP_PRIVATE_KEY} ${FACTORY_SLACK_BOT_TOKEN} ${M4_SLACK_BOT_TOKEN} ${FACTORY_SLACK_SIGNING_SECRET} ${SLACK_TEST_USER_TOKEN} ${FACTORY_LINEAR_API_KEY} ${FACTORY_LINEAR_WEBHOOK_SECRET}"
   printf '%s\n' "data: {\"type\":\"run.terminal\",\"summary\":\"${summary}\"}" >"$dir/events.txt"
   : >"$dir/logs.txt"
-  stars="*** *** *** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***"
+  stars="$(printf '%s' "$summary" | awk '{ for (i = 1; i <= NF; i++) printf "%s%s", (i > 1 ? " " : ""), "***" }')"
   message="work item wi_1 escalated at stage triage: run run_9 failed: container_exit: ${stars}"
   for mode in offline live live-ci; do
     MODE="$mode"
@@ -1737,8 +1748,29 @@ case_failure_line_secrets() {
       rc=1
     fi
   done
+  POSTGRES_PASSWORD="factory"
+  : >"$dir/empty-events.txt"
+  printf '%s\n' 'factoryd-1  | provider HTTP 503: factory overloaded' >"$dir/factory-logs.txt"
+  message="work item wi_1 escalated at stage triage: run run_9 failed: container_exit: factoryd-1  | provider HTTP 503: *** overloaded"
+  for mode in offline live live-ci; do
+    MODE="$mode"
+    state="$(read_live_work_state 200 "$dir/failed.json" "$dir/task.json" "$dir/empty-events.txt" "$dir/factory-logs.txt" "$dir/message")"
+    if [[ "$state" != failed || "$(cat "$dir/message")" != "$message" ]]; then
+      echo "${mode}: default password failure line was:" >&2
+      cat "$dir/message" >&2
+      rc=1
+    fi
+    if [[ "$rc" -eq 0 ]] && ! grep -F -q "factoryd-1" "$dir/message"; then
+      echo "${mode}: factoryd-1 was redacted" >&2
+      rc=1
+    fi
+  done
   if [[ "$rc" -eq 0 ]] && ! secret_env_names | grep -F -q FACTORY_WORKER_API_KEY; then
     echo "secret list omitted FACTORY_WORKER_API_KEY" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 ]] && ! secret_env_names | grep -F -q S3_ACCESS_KEY; then
+    echo "secret list omitted S3_ACCESS_KEY" >&2
     rc=1
   fi
   if [[ "$rc" -eq 0 ]] && ! declare -f scan_logs_for_secrets | grep -F -q remember_secret_env; then
@@ -1773,12 +1805,40 @@ case_failure_line_secrets() {
     echo "fail-path compose logs has no bound" >&2
     rc=1
   fi
+  # shellcheck disable=SC2329 # run_bounded invokes this function
+  m4_bounded_child() {
+    python3 -c 'import os,sys,time; open(sys.argv[1],"w").write(str(os.getpid())); time.sleep(45)' "$1"
+  }
   status=0
-  run_bounded 1 sleep 30 || status=$?
+  rm -f "$dir/child.pid"
+  run_bounded 1 m4_bounded_child "$dir/child.pid" || status=$?
   if [[ "$rc" -eq 0 && "$status" -eq 0 ]]; then
-    echo "run_bounded did not stop a long command" >&2
+    echo "run_bounded did not stop a command with a foreground child" >&2
     rc=1
   fi
+  child_pid=""
+  if [[ -s "$dir/child.pid" ]]; then
+    child_pid="$(cat "$dir/child.pid")"
+  elif [[ "$rc" -eq 0 ]]; then
+    echo "bounded child did not start" >&2
+    rc=1
+  fi
+  if [[ "$rc" -eq 0 && -n "$child_pid" ]]; then
+    alive=1
+    for _ in 1 2 3 4 5; do
+      if ! kill -0 "$child_pid" 2>/dev/null; then
+        alive=0
+        break
+      fi
+      sleep 0.2
+    done
+    if [[ "$alive" -eq 1 ]]; then
+      echo "bounded child ${child_pid} survived" >&2
+      kill -- -"$child_pid" 2>/dev/null || kill "$child_pid" 2>/dev/null || true
+      rc=1
+    fi
+  fi
+  unset -f m4_bounded_child
   MODE="$saved_mode"
   SECRETS=("${saved_secrets[@]+"${saved_secrets[@]}"}")
   for name in "${names[@]}"; do
