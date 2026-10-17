@@ -99,6 +99,10 @@ func setEnvDefault(env map[string]string, key, value string) {
 	}
 }
 
+// assignment does not set IdleTimeoutMinutes and does not pass
+// --idle-on-complete. The worker therefore does not keep the container up
+// for the agent's idle window. Steer treats a terminal run as "idle window
+// ended" immediately. See m5_steer.go.
 func (s *Server) assignment(run store.Run, exec store.Execution, bound boundAgent, env map[string]string) protocol.TaskAssignment {
 	now := run.CreatedAt
 	if now.IsZero() {

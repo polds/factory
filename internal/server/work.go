@@ -240,9 +240,13 @@ func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
 	case store.StatusSucceeded:
 		ev = orchestrator.RunSucceeded{Stage: run.Stage}
 	case store.StatusFailed:
+		in, inErr := s.classInput(ctx, run.ID)
+		if inErr != nil {
+			s.log.Error("reviewer class", "run_id", runID, "err", inErr)
+		}
 		ev = orchestrator.RunFailed{
 			Stage: run.Stage,
-			Infra: reviewerInfra(run.Status, run.FailureReason, run.ExitCode),
+			Infra: inErr == nil && reviewerInfra(in),
 		}
 	default:
 		return
@@ -1067,17 +1071,12 @@ func (s *Server) sweepStaleSuspensions(ctx context.Context) error {
 	return nil
 }
 
-// reviewerInfra reports whether this run is an infrastructure failure.
-// Class comes from failure.Classify. The runs row carries status,
-// failure_reason, and exit_code. Harness status and
-// executions.failure_details_json are not columns of runs, so they are
-// not passed.
-func reviewerInfra(status, reason string, exit *int) bool {
-	return failure.Classify(failure.Input{
-		RunStatus:     status,
-		FailureReason: reason,
-		ExitCode:      exit,
-	}).Class == failure.ClassInfrastructure
+// reviewerInfra reports whether this failure is infrastructure.
+// Every Classify input is passed, including harness status and the
+// kubernetes snapshot. A snapshot-only OOMKilled or Evicted row retries.
+// Exit 10 and harness failed_by_agent do not.
+func reviewerInfra(in failure.Input) bool {
+	return failure.Classify(in).Class == failure.ClassInfrastructure
 }
 
 // priorReviewerInfraFails counts infrastructure-failed reviewing runs for the
@@ -1092,7 +1091,7 @@ func (s *Server) priorReviewerInfraFails(ctx context.Context, q interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }, workItemID, currentRunID string) (int, error) {
 	rows, err := q.Query(ctx, `
-		SELECT r.status, COALESCE(r.failure_reason, ''), r.exit_code
+		SELECT r.id
 		FROM runs r
 		WHERE r.work_item_id = $1
 		  AND r.stage = $2
@@ -1109,19 +1108,27 @@ func (s *Server) priorReviewerInfraFails(ctx context.Context, q interface {
 		return 0, err
 	}
 	defer rows.Close()
-	n := 0
+	var ids []string
 	for rows.Next() {
-		var status, reason string
-		var exit *int
-		if err := rows.Scan(&status, &reason, &exit); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			return 0, err
 		}
-		if reviewerInfra(status, reason, exit) {
-			n++
-		}
+		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
+	}
+	rows.Close()
+	n := 0
+	for _, id := range ids {
+		in, err := s.classInput(ctx, id)
+		if err != nil {
+			return 0, err
+		}
+		if reviewerInfra(in) {
+			n++
+		}
 	}
 	return n, nil
 }
@@ -1218,51 +1225,53 @@ func (s *Server) retryReviewerOnce(ctx context.Context, item store.WorkItem, fai
 
 // recoverReviewerRetries starts the one reviewer retry when the failure
 // committed and the process stopped before the retry run did. A retry that
-// is already queued is left alone. A used budget is not revised here; that
-// decision stays on advanceAfterTerminal for the failure that used it.
+// is already queued is left alone. A second infrastructure failure that
+// committed before advanceAfterTerminal ran is revised to building here.
 func (s *Server) recoverReviewerRetries(ctx context.Context) error {
 	if s.db == nil || s.store == nil {
 		return nil
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT r.id, r.status, COALESCE(r.failure_reason, ''), r.exit_code
+		SELECT r.id
 		FROM work_items w
 		JOIN LATERAL (
-			SELECT id, status, failure_reason, exit_code
+			SELECT id
 			FROM runs
 			WHERE work_item_id = w.id AND stage = $1
 			ORDER BY created_at DESC, id DESC
 			LIMIT 1
 		) r ON true
-		WHERE w.status = $2 AND w.stage = $1 AND r.status = $3`,
+		WHERE w.status = $2 AND w.stage = $1
+		  AND EXISTS (
+		    SELECT 1 FROM runs failed
+		    WHERE failed.id = r.id AND failed.status = $3
+		  )`,
 		store.StageReviewing, store.WorkItemOpen, store.StatusFailed)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	type failedReview struct {
-		id     string
-		status string
-		reason string
-		exit   *int
-	}
-	var pending []failedReview
+	var ids []string
 	for rows.Next() {
-		var row failedReview
-		if err := rows.Scan(&row.id, &row.status, &row.reason, &row.exit); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			return err
 		}
-		pending = append(pending, row)
+		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
 	rows.Close()
-	for _, row := range pending {
-		if !reviewerInfra(row.status, row.reason, row.exit) {
+	for _, id := range ids {
+		in, err := s.classInput(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !reviewerInfra(in) {
 			continue
 		}
-		run, err := s.store.GetRun(ctx, row.id)
+		run, err := s.store.GetRun(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -1270,9 +1279,63 @@ func (s *Server) recoverReviewerRetries(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if _, err := s.retryReviewerOnce(ctx, item, run); err != nil {
+		handled, err := s.retryReviewerOnce(ctx, item, run)
+		if err != nil {
 			return err
 		}
+		if handled {
+			continue
+		}
+		if err := s.reviseSpentReviewer(ctx, item.ID, run); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reviseSpentReviewer applies the reviewing-failure revise that
+// advanceAfterTerminal runs when the one retry is already recorded.
+// The work item is read again under orchMu. A stage that already moved
+// is left alone.
+func (s *Server) reviseSpentReviewer(ctx context.Context, workItemID string, run store.Run) error {
+	s.orchMu.Lock()
+	item, err := s.store.GetWorkItem(ctx, workItemID)
+	if err != nil {
+		s.orchMu.Unlock()
+		return err
+	}
+	if item.Status != store.WorkItemOpen || item.Stage != store.StageReviewing {
+		s.orchMu.Unlock()
+		return nil
+	}
+	def, err := s.pipelineDef()
+	if err != nil {
+		s.orchMu.Unlock()
+		return err
+	}
+	state, err := s.loadState(ctx, item)
+	if err != nil {
+		s.orchMu.Unlock()
+		return err
+	}
+	state.ReviewerRetryUsed = true
+	next, effects, err := step(def, state, orchestrator.RunFailed{Stage: store.StageReviewing, Infra: true})
+	if err != nil {
+		s.orchMu.Unlock()
+		return err
+	}
+	updated, err := s.commitStep(ctx, item, next, effects)
+	if err != nil {
+		s.orchMu.Unlock()
+		return err
+	}
+	cancel, err := s.applyEffects(ctx, updated, effects, run.ID)
+	s.orchMu.Unlock()
+	if err != nil {
+		return err
+	}
+	if cancel {
+		s.cancelWorkItemRuns(ctx, item.ID)
 	}
 	return nil
 }

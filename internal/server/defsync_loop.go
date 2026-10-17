@@ -53,6 +53,9 @@ func (s *Server) onDefinitionSync(sha string, changed bool, diags []definition.D
 		}
 		return
 	}
+	s.mu.Lock()
+	s.gitSHA = sha
+	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
 	tree, loaded, loadErr := loadTree(s.cfg.DefinitionPath)

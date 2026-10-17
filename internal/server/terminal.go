@@ -36,7 +36,7 @@ func (s *Server) settleCancel(ctx context.Context, runID string) {
 			return
 		}
 		if execID != "" {
-			s.finish(ctx, runID, execID, store.ExecCancelled, "", "", nil, nil)
+			s.finish(ctx, runID, execID, store.ExecCancelled, "", "", nil, nil, nil)
 		} else if err := s.commitBareCancel(ctx, runID); err != nil {
 			s.log.Error("mark cancelled", "run_id", runID, "err", err)
 			return
@@ -72,14 +72,14 @@ func (s *Server) ensureTerminalEvent(ctx context.Context, run store.Run) {
 		s.log.Error("terminal execution", "run_id", run.ID, "err", err)
 		return
 	}
-	if err := s.appendServerEvent(ctx, run.ID, execID, serverEventBase, terminalPayload(s.now(), run.Status, run.FailureReason, "", run.ExitCode)); err != nil {
+	if err := s.appendServerEvent(ctx, run.ID, execID, serverEventBase, terminalPayload(s.now(), run.Status, run.FailureReason, "", run.FailureClass, run.FailureCode, run.ExitCode)); err != nil {
 		s.log.Error("terminal event", "run_id", run.ID, "err", err)
 		return
 	}
 	s.archive(ctx, run.ID, execID)
 }
 
-func (s *Server) finish(ctx context.Context, runID, execID, state, reason, summary string, exit *int, taskState *protocol.TaskState) {
+func (s *Server) finish(ctx context.Context, runID, execID, state, reason, summary string, exit *int, taskState *protocol.TaskState, details json.RawMessage) {
 	if execID == "" {
 		execID = s.execForRun(runID)
 	}
@@ -98,7 +98,7 @@ func (s *Server) finish(ctx context.Context, runID, execID, state, reason, summa
 	// Status and run.terminal commit together. A reader that sees the terminal
 	// status already sees the event; FinishExecution and AppendEvents were
 	// separate commits, and a poll could land between them.
-	applied, err := s.commitFinish(ctx, runID, execID, state, reason, summary, exit)
+	applied, err := s.commitFinish(ctx, runID, execID, state, reason, summary, exit, details)
 	if err != nil {
 		s.log.Error("finish execution", "run_id", runID, "execution_id", execID, "err", err)
 		return
@@ -106,6 +106,7 @@ func (s *Server) finish(ctx context.Context, runID, execID, state, reason, summa
 	s.stopGrace(runID)
 	s.untrack(execID)
 	if !applied {
+		s.recordLateExit(ctx, runID, execID, reason, exit, details)
 		return
 	}
 	s.clearSuspended(runID)
@@ -125,7 +126,7 @@ func (s *Server) finish(ctx context.Context, runID, execID, state, reason, summa
 // commitFinish applies one terminal transition and inserts run.terminal
 // before it commits. A second call returns false and does not write another
 // event. An execution that is already terminal does not change the run.
-func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason, summary string, exit *int) (bool, error) {
+func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason, summary string, exit *int, details json.RawMessage) (bool, error) {
 	status, err := runStatus(state)
 	if err != nil {
 		return false, err
@@ -144,11 +145,11 @@ func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason,
 		SET state = $2,
 		    failure_reason = NULLIF($3, ''),
 		    exit_code = $4,
-		    failure_details_json = NULL,
+		    failure_details_json = COALESCE($5::jsonb, failure_details_json),
 		    ended_at = clock_timestamp()
-		WHERE id = $1 AND state IN ($5, $6)
+		WHERE id = $1 AND state IN ($6, $7)
 		RETURNING run_id`,
-		execID, state, reason, exit, store.ExecAssigned, store.ExecRunning,
+		execID, state, reason, exit, detailsArg(details), store.ExecAssigned, store.ExecRunning,
 	).Scan(&gotRun)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
@@ -167,21 +168,37 @@ func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason,
 	if gotRun != runID {
 		return false, fmt.Errorf("server: execution %s belongs to run %s", execID, gotRun)
 	}
+	harness, err := harnessStatusTx(ctx, tx, runID)
+	if err != nil {
+		return false, err
+	}
+	var storedDetails []byte
+	if len(details) == 0 {
+		err = tx.QueryRow(ctx, `SELECT failure_details_json FROM executions WHERE id = $1`, execID).Scan(&storedDetails)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return false, err
+		}
+	} else {
+		storedDetails = details
+	}
+	class, code := classNames(classifyRun(status, reason, harness, state, exit, storedDetails))
 	if _, err := tx.Exec(ctx, `
 		UPDATE runs
 		SET status = $2,
 		    failure_reason = NULLIF($3, ''),
 		    exit_code = $4,
+		    failure_class = NULLIF($5, ''),
+		    failure_code = NULLIF($6, ''),
 		    ended_at = clock_timestamp()
-		WHERE id = $1 AND status IN ($5, $6)`,
-		runID, status, reason, exit, store.StatusAssigned, store.StatusRunning,
+		WHERE id = $1 AND status IN ($7, $8)`,
+		runID, status, reason, exit, class, code, store.StatusAssigned, store.StatusRunning,
 	); err != nil {
 		return false, err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
 		return false, err
 	}
-	payload := terminalPayload(s.now(), status, reason, summary, exit)
+	payload := terminalPayload(s.now(), status, reason, summary, class, code, exit)
 	if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
 		return false, err
 	}
@@ -214,10 +231,15 @@ func (s *Server) cancelRun(ctx context.Context, runID string) (store.Run, error)
 	case store.StatusSucceeded, store.StatusFailed, store.StatusCancelled:
 		return store.Run{}, store.ErrAlreadyTerminal
 	case store.StatusQueued, store.StatusAssigned:
+		class, code, classErr := s.cancelClass(ctx, tx, runID)
+		if classErr != nil {
+			return store.Run{}, classErr
+		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE runs
-			SET status = $2, cancel_requested = true, ended_at = clock_timestamp(), worker_id = NULL
-			WHERE id = $1`, runID, store.StatusCancelled); err != nil {
+			SET status = $2, cancel_requested = true, ended_at = clock_timestamp(), worker_id = NULL,
+			    failure_class = NULLIF($3, ''), failure_code = NULLIF($4, '')
+			WHERE id = $1`, runID, store.StatusCancelled, class, code); err != nil {
 			return store.Run{}, err
 		}
 		if _, err := tx.Exec(ctx, `
@@ -234,7 +256,7 @@ func (s *Server) cancelRun(ctx context.Context, runID string) (store.Run, error)
 		if err != nil {
 			return store.Run{}, err
 		}
-		payload := terminalPayload(s.now(), store.StatusCancelled, "", "", nil)
+		payload := terminalPayload(s.now(), store.StatusCancelled, "", "", class, code, nil)
 		if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
 			return store.Run{}, err
 		}
@@ -262,13 +284,19 @@ func (s *Server) commitBareCancel(ctx context.Context, runID string) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	class, code, err := s.cancelClass(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE runs
 		SET status = 'cancelled',
 		    cancel_requested = true,
 		    ended_at = COALESCE(ended_at, clock_timestamp()),
-		    worker_id = NULL
-		WHERE id = $1 AND status NOT IN ('succeeded', 'failed', 'cancelled')`, runID)
+		    worker_id = NULL,
+		    failure_class = COALESCE(failure_class, NULLIF($2, '')),
+		    failure_code = COALESCE(failure_code, NULLIF($3, ''))
+		WHERE id = $1 AND status NOT IN ('succeeded', 'failed', 'cancelled')`, runID, class, code)
 	if err != nil {
 		return err
 	}
@@ -282,11 +310,45 @@ func (s *Server) commitBareCancel(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
-	payload := terminalPayload(s.now(), store.StatusCancelled, "", "", nil)
+	payload := terminalPayload(s.now(), store.StatusCancelled, "", "", class, code, nil)
 	if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func (s *Server) cancelClass(ctx context.Context, tx pgx.Tx, runID string) (string, string, error) {
+	var reason string
+	var exit *int
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE(failure_reason, ''), exit_code FROM runs WHERE id = $1`, runID).Scan(&reason, &exit)
+	if err != nil {
+		return "", "", err
+	}
+	harness, err := harnessStatusTx(ctx, tx, runID)
+	if err != nil {
+		return "", "", err
+	}
+	var details []byte
+	err = tx.QueryRow(ctx, `
+		SELECT failure_details_json FROM executions
+		WHERE run_id = $1
+		ORDER BY attempt DESC
+		LIMIT 1`, runID).Scan(&details)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", "", err
+	}
+	var execState string
+	err = tx.QueryRow(ctx, `
+		SELECT state FROM executions
+		WHERE run_id = $1
+		ORDER BY attempt DESC
+		LIMIT 1`, runID).Scan(&execState)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", "", err
+	}
+	class, code := classNames(classifyRun(store.StatusCancelled, reason, harness, execState, exit, details))
+	return class, code, nil
 }
 
 func executionInTx(ctx context.Context, tx pgx.Tx, runID string) (string, error) {
@@ -390,7 +452,7 @@ func terminalMeta(payload []byte) (string, time.Time, error) {
 	return meta.Type, ts, nil
 }
 
-func terminalPayload(now time.Time, status, reason, summary string, exit *int) []byte {
+func terminalPayload(now time.Time, status, reason, summary, class, code string, exit *int) []byte {
 	payload := map[string]any{
 		"type":   "run.terminal",
 		"ts":     now.UTC().Format(time.RFC3339Nano),
@@ -401,6 +463,10 @@ func terminalPayload(now time.Time, status, reason, summary string, exit *int) [
 	}
 	if reason != "" {
 		payload["failure_reason"] = reason
+	}
+	if class != "" {
+		payload["failure_class"] = class
+		payload["failure_code"] = code
 	}
 	if exit != nil {
 		payload["exit_code"] = *exit
@@ -569,5 +635,5 @@ func (s *Server) failConfig(ctx context.Context, runID, workerID string, cause e
 		}
 		return
 	}
-	s.finish(ctx, runID, exec.ID, store.ExecFailed, "config_invalid", cause.Error(), nil, nil)
+	s.finish(ctx, runID, exec.ID, store.ExecFailed, "config_invalid", cause.Error(), nil, nil, nil)
 }

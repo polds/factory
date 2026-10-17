@@ -36,11 +36,18 @@ const (
 )
 
 // WorkerInfo is one live websocket. WorkerID is a routing label; ConnID is the process.
+//
+// docs/04's handshake is worker_id and the bearer token. It does not carry a
+// version or a backend. Version is the User-Agent when the request has one.
+// Backend is the backend query parameter when the worker sends one. Both stay
+// empty otherwise. The gateway does not invent docker or a version string.
 type WorkerInfo struct {
 	WorkerID string
 	ConnID   string
 	LastPing time.Time
 	InFlight int
+	Version  string
+	Backend  string
 }
 
 // Sessions is the control-plane side of a worker connection.
@@ -117,6 +124,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "worker_id required", http.StatusBadRequest)
 		return
 	}
+	// Version and backend are optional. docs/04 sends neither.
+	version := r.UserAgent()
+	backend := r.URL.Query().Get("backend")
 	// docs/04 reserves the factory prefix the way upstream reserves warp.
 	// Only a key scoped to the factory team may claim one.
 	if strings.HasPrefix(workerID, factoryPrefix) && team != factoryTeam {
@@ -136,7 +146,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = ws.Close()
 		return
 	}
-	c := newConn(g, ws, id, workerID, r.Context())
+	c := newConn(g, ws, id, workerID, version, backend, r.Context())
 	g.register(c)
 	go c.writeLoop()
 
@@ -356,6 +366,8 @@ type conn struct {
 	ws          *websocket.Conn
 	id          string
 	workerID    string
+	version     string
+	backend     string
 	ctx         context.Context
 	connectedAt time.Time
 	lastPing    time.Time
@@ -368,12 +380,14 @@ type conn struct {
 	closeOnce  sync.Once
 }
 
-func newConn(g *Gateway, ws *websocket.Conn, id, workerID string, ctx context.Context) *conn {
+func newConn(g *Gateway, ws *websocket.Conn, id, workerID, version, backend string, ctx context.Context) *conn {
 	c := &conn{
 		g:           g,
 		ws:          ws,
 		id:          id,
 		workerID:    workerID,
+		version:     version,
+		backend:     backend,
 		ctx:         ctx,
 		connectedAt: time.Now(),
 		tasks:       map[string]struct{}{},
@@ -400,6 +414,8 @@ func (c *conn) info() WorkerInfo {
 		ConnID:   c.id,
 		LastPing: c.lastPing,
 		InFlight: len(c.tasks),
+		Version:  c.version,
+		Backend:  c.backend,
 	}
 }
 

@@ -50,7 +50,10 @@ func (s *Server) wire() error {
 	s.integ.githubBase = strings.TrimRight(strings.TrimSpace(s.cfg.GitHubAPIBase), "/")
 
 	s.integ.engine = &automation.Engine{
-		Store:  &store.Automation{Store: s.store, Log: s.log},
+		Store: pausingAutomations{
+			Store:  &store.Automation{Store: s.store, Log: s.log},
+			paused: s.automationPaused,
+		},
 		Answer: resumingAnswerer{s},
 		Tree:   s.definitionTree,
 		Now:    s.now,
@@ -126,6 +129,12 @@ func (s *Server) notifier(app ghclient.App) (*outbound.Notifier, error) {
 		Sleep:       s.cfg.OutboundSleep,
 		Log:         s.log,
 	}
+	if strings.TrimSpace(s.cfg.ExternalURL) != "" && s.consoleOn() {
+		external := s.cfg.ExternalURL
+		cfg.RunURL = func(id string) string {
+			return consoleRunURL(external, id)
+		}
+	}
 	if s.cfg.SlackBotToken != "" {
 		opts := []slack.Option{}
 		if s.cfg.SlackAPIBase != "" {
@@ -142,6 +151,10 @@ func (s *Server) notifier(app ghclient.App) (*outbound.Notifier, error) {
 		cfg.Linear = client
 	}
 	return outbound.New(cfg)
+}
+
+func consoleRunURL(external, id string) string {
+	return strings.TrimRight(external, "/") + "/runs/" + url.PathEscape(id)
 }
 
 func (s *Server) mountIngress() error {
