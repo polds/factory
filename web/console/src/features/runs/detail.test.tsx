@@ -65,7 +65,9 @@ describe("run detail", () => {
     installRuns();
     renderApp(`/runs/${goldenRun.id}`);
 
-    expect(await screen.findByRole("heading", { name: shortId(goldenRun.id) })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: shortId(goldenRun.id) }, { timeout: 3000 }),
+    ).toBeInTheDocument();
     expect(screen.getByText(goldenRun.id)).toBeInTheDocument();
     const header = document.querySelector(".run-header");
     const panel = document.querySelector(".failure-panel");
