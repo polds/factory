@@ -417,7 +417,8 @@ func stepResume(s State) (State, []Effect, error) {
 
 // enter starts stage, or parks on the gate that guards it.
 // The spec gate is not re-checked on the reviewing → building revision path;
-// callers of this function are the forward paths only.
+// callers of this function are the forward paths only. HoldUnapproved is
+// what stops that StartRun when this work item has never approved the gate.
 func enter(def Def, s State, stage string) (State, []Effect, error) {
 	if agentName(def, stage) == "" {
 		return s, nil, fmt.Errorf("%w: %q", ErrNoAgent, stage)
@@ -544,6 +545,31 @@ func gateRequired(def Def, gate string) bool {
 	}
 	g, ok := def.Approvals[gate]
 	return ok && g.Required
+}
+
+// HoldUnapproved parks a StartRun of a required gate when this work item has
+// no approve decision for that gate. approved is keyed by gate name; a missing
+// key is not approved. before is the state Step was given. The parked state
+// keeps that stage, so a revision does not persist the gated stage, and a
+// create whose stage is still empty stays empty for the caller to fill.
+// Any other effect list is returned unchanged. An already-approved gate still
+// starts the run, which is how a revision builds after the spec was approved.
+func HoldUnapproved(def Def, before, after State, effects []Effect, approved map[string]bool) (State, []Effect) {
+	if len(effects) != 1 {
+		return after, effects
+	}
+	start, ok := effects[0].(StartRun)
+	if !ok {
+		return after, effects
+	}
+	gate := gateBefore(start.Stage)
+	if !gateRequired(def, gate) || approved[gate] {
+		return after, effects
+	}
+	parked := before
+	parked.Status = StatusAwaitingApproval
+	parked.PendingGate = gate
+	return parked, []Effect{RequestApproval{Gate: gate}}
 }
 
 func agentName(def Def, stage string) string {

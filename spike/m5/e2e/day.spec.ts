@@ -135,6 +135,22 @@ async function seqs(page: Page): Promise<string[]> {
   );
 }
 
+// Newest run row for this title, from the Runs page. The stage is the
+// suffix of .run-sub (" · building"). The model cell can contain
+// "m5-building" on the offline router and must not count.
+async function newestRunStage(page: Page, title: string): Promise<string> {
+  await openSection(page, "Runs");
+  const listed = page.waitForResponse(
+    (res) => res.url().includes("/api/v1/agent/runs?") && res.ok(),
+    { timeout: 15_000 },
+  );
+  await page.reload();
+  await listed;
+  const row = page.locator("tr[data-run]").filter({ hasText: title }).first();
+  if (!(await row.isVisible().catch(() => false))) return "";
+  return ((await row.locator(".run-sub").textContent()) ?? "").trim();
+}
+
 async function approveOnly(page: Page, title: string): Promise<void> {
   await openSection(page, "Inbox");
   await axe(page, "inbox");
@@ -144,12 +160,24 @@ async function approveOnly(page: Page, title: string): Promise<void> {
     .filter({ hasText: title })
     .filter({ hasText: "spec" })
     .filter({ hasNotText: "Approved by you" });
-  await expect(row).toBeVisible({ timeout: 180_000 });
-  await row.getByRole("button").first().click();
-  await row.getByRole("button", { name: "Approve" }).click();
-  await expect(
-    page.locator("li.inbox-row").filter({ hasText: title }).getByText("Approved by you").first(),
-  ).toBeVisible();
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    const stage = await newestRunStage(page, title);
+    await openSection(page, "Inbox");
+    if (/ · building$/.test(stage)) {
+      throw new Error(`spec gate skipped for ${title}`);
+    }
+    if (await row.isVisible()) {
+      await row.getByRole("button").first().click();
+      await row.getByRole("button", { name: "Approve" }).click();
+      await expect(
+        page.locator("li.inbox-row").filter({ hasText: title }).getByText("Approved by you").first(),
+      ).toBeVisible();
+      return;
+    }
+    await delay(1000);
+  }
+  await expect(row).toBeVisible({ timeout: 1_000 });
 }
 
 async function failureVisible(page: Page, title: string, code: string): Promise<boolean> {

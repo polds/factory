@@ -254,6 +254,130 @@ func TestE2ERevisionLimitEscalates(t *testing.T) {
 	if n := env.countStage(t, task.ID, "building"); n != 2 {
 		t.Fatalf("building runs %d, want 2", n)
 	}
+	// The inbox list is pending-only. The approved spec row must still be the
+	// only spec approval: a revision does not open the gate again.
+	var specRows int
+	if err := env.raw.QueryRow(context.Background(), `
+		SELECT count(*) FROM approvals WHERE work_item_id = $1 AND gate = 'spec'`, task.ID).Scan(&specRows); err != nil {
+		t.Fatal(err)
+	}
+	if specRows != 1 {
+		t.Fatalf("spec approvals %d, want 1", specRows)
+	}
+}
+
+// TestE2ESpecGateHeldDuringTerminal reproduces a work item entering building
+// with no spec approval while another item is created in the terminal window.
+// The scheduler is held, then released, so the reviewing run is assigned only
+// after that gate opens. The failure transaction stays open (beforeTerminalEvent)
+// while the next item is created. A reviewing agent failure revises straight
+// into building and never evaluates approvals.spec.
+func TestE2ESpecGateHeldDuringTerminal(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	schedule := make(chan struct{})
+	env := boot(t, bootOpts{
+		definition: func(t *testing.T) string {
+			return writeReviewBuildPipeline(t)
+		},
+		configure: func(cfg *Config) {
+			cfg.ScheduleGate = schedule
+		},
+	})
+	w := dialWorker(t, env, "local-1")
+	defer w.close()
+
+	previous := env.createTask(t, "previous item", "review fails before any spec approval")
+	close(schedule)
+	asg := w.readAssignment(t)
+	if asg.EnvVars["FACTORY_STAGE"] != "reviewing" {
+		t.Fatalf("stage %s", asg.EnvVars["FACTORY_STAGE"])
+	}
+
+	entered, release := env.holdTerminalEvent(t)
+	w.send(t, protocol.TypeTaskClaimed, protocol.TaskClaimed{TaskID: asg.TaskID, WorkerID: "local-1"})
+	w.send(t, protocol.TypeTaskFailed, protocol.TaskFailed{
+		TaskID: asg.TaskID, ExecutionID: asg.ExecutionID, Message: "agent failed",
+		FailureReason: "failed_by_agent", ExitCode: 10,
+	})
+	select {
+	case <-entered:
+	case <-time.After(8 * time.Second):
+		t.Fatal("terminal hook did not run")
+	}
+	if env.terminalCount(t, asg.TaskID) != 0 {
+		t.Fatal("terminal committed before the next item was created")
+	}
+	next := env.createTask(t, "next item", "created while the previous run is still failing")
+	if env.countStage(t, next.ID, "building") != 0 {
+		t.Fatal("next item entered building while the previous terminal was open")
+	}
+	release()
+
+	deadline := time.Now().Add(8 * time.Second)
+	var got taskJSON
+	var spec []approvalJSON
+	for {
+		if n := env.countStage(t, previous.ID, "building"); n != 0 {
+			t.Fatalf("work item entered building with no spec approval (%d runs)", n)
+		}
+		if n := env.countStage(t, next.ID, "building"); n != 0 {
+			t.Fatalf("next item entered building with no spec approval (%d runs)", n)
+		}
+		got = env.getTask(t, previous.ID)
+		spec = approvalsFor(env.listApprovals(t), previous.ID, "spec")
+		if got.Status == "awaiting_approval" && got.PendingGate == "spec" && len(spec) == 1 && spec[0].Decision == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("spec gate not opened: status %s stage %s gate %q approvals %d", got.Status, got.Stage, got.PendingGate, len(spec))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got.Stage == "building" {
+		t.Fatalf("previous stage %s", got.Stage)
+	}
+	nextTask := env.getTask(t, next.ID)
+	if nextTask.Stage == "building" || nextTask.Status == "awaiting_approval" {
+		t.Fatalf("next item %+v", nextTask)
+	}
+	if len(approvalsFor(env.listApprovals(t), next.ID, "spec")) != 0 {
+		t.Fatal("next item opened a spec gate it has not reached")
+	}
+}
+
+// TestE2EBuildingFirstOpensSpecGate covers a pipeline whose first stage is
+// the gated one. Created must insert the spec approval and no building run.
+func TestE2EBuildingFirstOpensSpecGate(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writeBuildingFirstPipeline(t)
+	}})
+	task := env.createTask(t, "build first", "spec is required")
+	if env.countStage(t, task.ID, "building") != 0 {
+		t.Fatal("work item entered building with no spec approval")
+	}
+	got := env.getTask(t, task.ID)
+	if got.Status != "awaiting_approval" || got.PendingGate != "spec" {
+		t.Fatalf("task %+v", got)
+	}
+	spec := approvalsFor(env.listApprovals(t), task.ID, "spec")
+	if len(spec) != 1 || spec[0].Decision != "" {
+		t.Fatalf("approvals %+v", spec)
+	}
+}
+
+func approvalsFor(rows []approvalJSON, workItemID, gate string) []approvalJSON {
+	var out []approvalJSON
+	for _, row := range rows {
+		if row.WorkItemID == workItemID && row.Gate == gate {
+			out = append(out, row)
+		}
+	}
+	return out
 }
 
 // TestReviewerRetryMatchesClassify checks the retry bit against
@@ -1858,6 +1982,54 @@ routing:
 	writeAgent(t, root, "spec", "SPEC", "model: planning-model")
 	writeAgent(t, root, "implementer", "IMPLEMENT", "model: building-model")
 	writeAgent(t, root, "reviewer", "REVIEW", "model: reviewing-model")
+	return root
+}
+
+// writeReviewBuildPipeline starts at reviewing. Spec is required, so a
+// revision into building has to open that gate before any building run.
+func writeReviewBuildPipeline(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "factory.yaml"), `
+schemaVersion: v1alpha1
+name: pipe
+agentDefaults:
+  model: auto
+  runner: local
+  pool: standard
+pipeline:
+  stages: [reviewing, building]
+  agents:
+    reviewing: reviewer
+    building: implementer
+  approvals:
+    spec: { required: true, approvers: "role:editor" }
+  revisionLimit: 3
+`)
+	writeAgent(t, root, "reviewer", "REVIEW", "model: reviewing-model")
+	writeAgent(t, root, "implementer", "IMPLEMENT", "model: building-model")
+	return root
+}
+
+func writeBuildingFirstPipeline(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "factory.yaml"), `
+schemaVersion: v1alpha1
+name: pipe
+agentDefaults:
+  model: auto
+  runner: local
+  pool: standard
+pipeline:
+  stages: [building]
+  agents:
+    building: implementer
+  approvals:
+    spec: { required: true, approvers: "role:editor" }
+  revisionLimit: 1
+`)
+	writeAgent(t, root, "implementer", "IMPLEMENT", "model: building-model")
 	return root
 }
 
