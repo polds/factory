@@ -417,6 +417,30 @@ test("day of factory", async ({ browser }) => {
 
     await openSection(page, "Definition");
     await chooseFactory(page, "m5");
+    const schemaLink = page.getByRole("link", { name: "Schema: v1alpha1" });
+    await expect(schemaLink).toBeVisible();
+    const schemaHref = await schemaLink.getAttribute("href");
+    if (schemaHref === null || !schemaHref.includes("/api/v1/factory-files/schemas/v1alpha1")) {
+      throw new Error(`definition schema link href ${schemaHref ?? ""}`);
+    }
+    const schemaPage = await page.context().newPage();
+    try {
+      const schemaResponse = await schemaPage.goto(new URL(schemaHref, page.url()).href);
+      if (schemaResponse === null) throw new Error("definition schema navigation had no response");
+      expect(schemaResponse.status()).toBe(200);
+      const schemaType = schemaResponse.headers()["content-type"] ?? "";
+      if (!schemaType.includes("json")) throw new Error(`definition schema content-type ${schemaType}`);
+      const schemaBody: unknown = JSON.parse(await schemaResponse.text());
+      if (
+        typeof schemaBody !== "object" ||
+        schemaBody === null ||
+        !Object.prototype.hasOwnProperty.call(schemaBody, "factory.schema.json")
+      ) {
+        throw new Error("definition schema body missing factory.schema.json");
+      }
+    } finally {
+      await schemaPage.close();
+    }
     await page.getByRole("tree", { name: "Definition files" }).getByRole("treeitem", { name: "factory.yaml" }).click();
     const editor = page.getByRole("textbox", { name: "Contents of factory.yaml" });
     const original = await editor.inputValue();
