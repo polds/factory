@@ -6,7 +6,7 @@
 # finding all fail the job. Versions are pinned so a tool release cannot
 # change the result without a review.
 #
-#   web/package.json                 React/TypeScript console (docs/09)
+#   web/console/package.json         React/TypeScript console (docs/09)
 #   *.py                             not a control-plane language; still linted
 #   *.sql                            Postgres migrations (M2)
 #   deploy/helm/factory/Chart.yaml   Helm chart (docs/10)
@@ -31,24 +31,24 @@ found_any() {
 }
 
 echo "typescript"
-if [[ -f web/package.json ]]; then
+if [[ -f web/console/package.json ]]; then
   node -e '
-    const pkg = require("./web/package.json");
+    const pkg = require("./web/console/package.json");
     const scripts = pkg.scripts || {};
-    const required = ["lint", "format:check", "test", "build"];
+    // lint runs eslint and prettier --check. There is no format:check script.
+    const required = ["lint", "test", "build"];
     const missing = required.filter((name) => !scripts[name]);
     if (missing.length) {
-      console.error("web/package.json is missing scripts: " + missing.join(", "));
+      console.error("web/console/package.json is missing scripts: " + missing.join(", "));
       process.exit(1);
     }
   '
-  npm ci --prefix web
-  npm run lint --prefix web
-  npm run format:check --prefix web
-  npm test --prefix web
-  npm run build --prefix web
+  npm ci --prefix web/console
+  npm run lint --prefix web/console
+  npm test --prefix web/console
+  npm run build --prefix web/console
 else
-  echo "  no web/package.json; console lint runs once the SPA lands"
+  echo "  no web/console/package.json; console lint runs once the SPA lands"
 fi
 
 echo "python"

@@ -8,6 +8,7 @@
 #   deploy/m2-factory         required
 #   deploy/m3-factory         when that directory is present
 #   deploy/m4-factory         required
+#   deploy/m5-factory         required
 #
 # factoryctl prints "file:line: message" and exits 1 when any diagnostic
 # is an error. Warnings stay on stdout and do not fail the run. With
@@ -134,3 +135,9 @@ if [[ ! -f deploy/m4-factory/factory.yaml ]]; then
   exit 1
 fi
 validate_tree "m4-factory" "deploy/m4-factory"
+
+if [[ ! -f deploy/m5-factory/factory.yaml ]]; then
+  echo "factory/config: deploy/m5-factory/factory.yaml is missing" >&2
+  exit 1
+fi
+validate_tree "m5-factory" "deploy/m5-factory"

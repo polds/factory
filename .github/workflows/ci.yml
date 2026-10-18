@@ -26,9 +26,11 @@
 #   m2 offline e2e         MODE=offline ./spike/m2/run.sh
 #   m3 offline e2e         MODE=offline ./spike/m3/run.sh
 #   m4 offline e2e         MODE=offline ./spike/m4/run.sh
+#   m5 offline e2e         MODE=offline ./spike/m5/run.sh
 #   task image platform    task and harness images built for linux/arm64
 #   upcoming languages     TypeScript, Python, SQL, Helm, JSON Schema
-#   console                web/console lint, typecheck, test, build, audit
+#   console                web/console lint, typecheck, test, build, audit,
+#                          and Go/TypeScript console golden parity
 #   factory/config         validate definition trees; succeed without
 #                          validating when those paths did not change
 #
@@ -44,6 +46,7 @@
 #   m2 live                .github/workflows/m2-live.yml (workflow_dispatch)
 #   m3 live                .github/workflows/m3-live.yml (workflow_dispatch)
 #   m4 live                .github/workflows/m4-live.yml (workflow_dispatch)
+#   m5 live                .github/workflows/m5-live.yml (workflow_dispatch)
 name: ci
 
 on:
@@ -437,6 +440,49 @@ jobs:
       - name: Run the offline M4 driver
         run: MODE=offline ./spike/m4/run.sh
 
+  m5-offline:
+    name: m5 offline e2e
+    runs-on: ubuntu-latest
+    # Image builds plus the offline day. Local wall clock is about 7 minutes.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: spike/m5/e2e/package-lock.json
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-m5-playwright-${{ hashFiles('spike/m5/e2e/package-lock.json') }}
+      - name: Install Playwright browsers
+        working-directory: spike/m5/e2e
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install chromium
+      - name: Run the offline M5 driver
+        run: MODE=offline ./spike/m5/run.sh
+      # .work is a hidden directory, so the upload must opt in.
+      # The Playwright trace lives under this evidence directory.
+      - name: Upload M5 evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: m5-offline-evidence
+          path: spike/m5/.work/evidence/
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: warn
+
   task-image-arch:
     name: task image platform
     runs-on: ubuntu-latest
@@ -465,6 +511,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/console/package-lock.json
       - name: Lint TypeScript, Python, SQL, Helm, and JSON Schema when present
         run: ./scripts/ci/lint-upcoming.sh
 
@@ -618,6 +669,8 @@ jobs:
           npm test
           npm run build
           npm audit --omit=dev --audit-level=high
+      - name: Check Go and TypeScript console goldens
+        run: ./scripts/ci/console-goldens.sh
 
   required:
     name: required
@@ -638,6 +691,7 @@ jobs:
       - m2-offline
       - m3-offline
       - m4-offline
+      - m5-offline
       - task-image-arch
       - upcoming-languages
       - console
@@ -664,6 +718,7 @@ jobs:
           M2_OFFLINE: ${{ needs.m2-offline.result }}
           M3_OFFLINE: ${{ needs.m3-offline.result }}
           M4_OFFLINE: ${{ needs.m4-offline.result }}
+          M5_OFFLINE: ${{ needs.m5-offline.result }}
           TASK_IMAGE_ARCH: ${{ needs.task-image-arch.result }}
           UPCOMING: ${{ needs.upcoming-languages.result }}
           CONSOLE: ${{ needs.console.result }}
@@ -700,6 +755,7 @@ jobs:
           report "m2 offline e2e" "${M2_OFFLINE}"
           report "m3 offline e2e" "${M3_OFFLINE}"
           report "m4 offline e2e" "${M4_OFFLINE}"
+          report "m5 offline e2e" "${M5_OFFLINE}"
           report "task image platform" "${TASK_IMAGE_ARCH}"
           report "upcoming languages" "${UPCOMING}"
           report "console" "${CONSOLE}"
