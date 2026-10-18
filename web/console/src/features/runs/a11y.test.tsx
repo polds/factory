@@ -49,7 +49,33 @@ function infraRun(): RunDetailWire {
   };
 }
 
+function decoration(node: Element): string {
+  return getComputedStyle(node).textDecoration;
+}
+
 describe("runs accessibility", () => {
+  it("underlines breadcrumb and in-text links", async () => {
+    installRuns();
+    await renderApp(`/runs/${goldenRun.id}`);
+    const crumb = within(await screen.findByRole("navigation", { name: "Breadcrumb" })).getByRole(
+      "link",
+      { name: "Runs" },
+    );
+    expect(decoration(crumb)).toContain("underline");
+    expect(decoration(screen.getByRole("link", { name: "task_01" }))).toContain("underline");
+    expect(decoration(screen.getByRole("link", { name: "Open PR #94" }))).not.toContain(
+      "underline",
+    );
+
+    installRuns({
+      list: [{ ...(goldenRuns[0] ?? goldenRun), title: "Settle the batch" }],
+    });
+    await renderApp("/runs");
+    expect(decoration(await screen.findByRole("link", { name: "Settle the batch" }))).not.toContain(
+      "underline",
+    );
+  });
+
   it("has no serious or critical violations on the list", async () => {
     const agentRow = goldenRuns[0];
     expect(agentRow).toBeDefined();

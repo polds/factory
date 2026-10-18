@@ -1,0 +1,24 @@
+# M5 day factory. The console drives it. Slack and the GitHub App are off.
+# A generated webhook secret signs simulated deliveries. Approvals stop
+# the pipeline at the spec gate until the inbox approves.
+schemaVersion: v1alpha1
+name: m5
+description: Day of factory.
+secrets:
+  - M5_WEBHOOK
+  - M5_PLANTED
+agentDefaults:
+  model: m5-triage
+  runner: local
+  pool: standard
+  maxTurns: 8
+pipeline:
+  stages: [triage, planning, building, reviewing]
+  agents:
+    triage: triage
+    planning: spec
+    building: implementer
+    reviewing: reviewer
+  approvals:
+    spec: { required: true, approvers: "role:editor" }
+  revisionLimit: 1
