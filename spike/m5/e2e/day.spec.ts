@@ -138,16 +138,22 @@ async function seqs(page: Page): Promise<string[]> {
 // Newest run row for this title, from the Runs page. The stage is the
 // suffix of .run-sub (" · building"). The model cell can contain
 // "m5-building" on the offline router and must not count.
+function isRunList(url: string): boolean {
+  const path = url.split("?")[0] ?? "";
+  return path.endsWith("/api/v1/agent/runs");
+}
+
 async function newestRunStage(page: Page, title: string): Promise<string> {
   await openSection(page, "Runs");
-  const listed = page.waitForResponse(
-    (res) => res.url().includes("/api/v1/agent/runs?") && res.ok(),
-    { timeout: 15_000 },
-  );
+  const listed = page.waitForResponse((res) => isRunList(res.url()) && res.ok(), { timeout: 15_000 });
   await page.reload();
   await listed;
   const row = page.locator("tr[data-run]").filter({ hasText: title }).first();
-  if (!(await row.isVisible().catch(() => false))) return "";
+  const visible = await row
+    .waitFor({ state: "visible", timeout: 5_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!visible) return "";
   return ((await row.locator(".run-sub").textContent()) ?? "").trim();
 }
 
