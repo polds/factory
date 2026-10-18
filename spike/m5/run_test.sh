@@ -505,6 +505,239 @@ print("compose config ok")
 PY
 }
 
+case_prebound_loopback_detected() {
+  local dir="$ROOT/spike/m5/.work/prebound-$$" port="" pid=""
+  mkdir -p "$dir"
+  python3 - "$dir/port" <<'PY' &
+import socket
+import sys
+import time
+
+path = sys.argv[1]
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.bind(("127.0.0.1", 0))
+sock.listen(1)
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write(str(sock.getsockname()[1]))
+while True:
+    time.sleep(0.2)
+PY
+  pid=$!
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if [[ -s "$dir/port" ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  port="$(tr -d '[:space:]' <"$dir/port")"
+  if [[ -z "$port" ]]; then
+    echo "prebound listener did not report a port" >&2
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  local code=0 err
+  err="$(mktemp)"
+  set +e
+  (
+    M5_ROUTER_PORT="$port"
+    resolve_router_port
+  ) 2>"$err"
+  code=$?
+  set -e
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  rm -rf "$dir"
+  if [[ "$code" -eq 0 ]]; then
+    echo "prebound listener was accepted" >&2
+    rm -f "$err"
+    return 1
+  fi
+  grep -F "router port ${port} is answered by another process" "$err"
+  rm -f "$err"
+}
+
+case_router_port_picked() {
+  (
+    unset M5_ROUTER_PORT
+    resolve_router_port
+    [[ "$ROUTER_PORT" =~ ^[1-9][0-9]*$ ]]
+    router_py ensure "$ROUTER_PORT"
+  )
+}
+
+case_router_port_configured() {
+  local port
+  port="$(
+    python3 - <<'PY'
+import socket
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.bind(("127.0.0.1", 0))
+print(sock.getsockname()[1])
+sock.close()
+PY
+  )"
+  (
+    M5_ROUTER_PORT="$port"
+    resolve_router_port
+    [[ "$ROUTER_PORT" == "$port" ]]
+  )
+}
+
+case_router_port_invalid() {
+  (
+    M5_ROUTER_PORT="nope"
+    resolve_router_port
+  )
+}
+
+case_router_identity_matches() {
+  local dir="$ROOT/spike/m5/.work/router-id-$$" port="" pid="" body="" hdr=""
+  mkdir -p "$dir"
+  port="$(
+    unset M5_ROUTER_PORT
+    resolve_router_port
+    printf '%s\n' "$ROUTER_PORT"
+  )"
+  M5_STUB_QUESTION=http://127.0.0.1:9 \
+    M5_STUB_AGENT=http://127.0.0.1:9 \
+    M5_STUB_TRIAGE=http://127.0.0.1:9 \
+    M5_STUB_PLANNING=http://127.0.0.1:9 \
+    M5_STUB_BUILDING=http://127.0.0.1:9 \
+    M5_STUB_REVIEWING=http://127.0.0.1:9 \
+    python3 "$ROOT/spike/m5/router.py" --addr "0.0.0.0:${port}" \
+    >"$dir/router.log" 2>&1 &
+  pid=$!
+  body="$(mktemp)"
+  hdr="$(mktemp)"
+  if ! wait_http "http://127.0.0.1:${port}/healthz"; then
+    echo "router did not become reachable" >&2
+    cat "$dir/router.log" >&2 || true
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    rm -rf "$dir" "$body" "$hdr"
+    return 1
+  fi
+  if ! curl -fsS --connect-timeout 2 -m 5 -D "$hdr" -o "$body" \
+    "http://127.0.0.1:${port}/v1/models"; then
+    echo "models request failed" >&2
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    rm -rf "$dir" "$body" "$hdr"
+    return 1
+  fi
+  if ! grep -i '^X-M5-Router: m5-offline-router' "$hdr" >/dev/null; then
+    echo "identity header missing" >&2
+    cat "$hdr" >&2
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    rm -rf "$dir" "$body" "$hdr"
+    return 1
+  fi
+  if ! host_router_identity_ok "$port"; then
+    echo "host identity check rejected our router" >&2
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    rm -rf "$dir" "$body" "$hdr"
+    return 1
+  fi
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  rm -rf "$dir" "$body" "$hdr"
+}
+
+case_foreign_models_rejected() {
+  local dir="$ROOT/spike/m5/.work/foreign-$$" port="" pid="" code=0
+  mkdir -p "$dir"
+  python3 - "$dir/port" <<'PY' &
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+path = sys.argv[1]
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"object":"list","data":[{"id":"other"}]}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        return
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write(str(server.server_address[1]))
+server.serve_forever()
+PY
+  pid=$!
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if [[ -s "$dir/port" ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  port="$(tr -d '[:space:]' <"$dir/port")"
+  if [[ -z "$port" ]] || ! wait_http "http://127.0.0.1:${port}/"; then
+    echo "foreign listener did not answer" >&2
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  set +e
+  host_router_identity_ok "$port"
+  code=$?
+  set -e
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  rm -rf "$dir"
+  if [[ "$code" -eq 0 ]]; then
+    echo "foreign model list was accepted" >&2
+    return 1
+  fi
+}
+
+case_router_port_static() {
+  grep -F 'M5_ROUTER_PORT' "$ROOT/spike/m5/run.sh" >/dev/null
+  grep -F 'host.docker.internal' "$ROOT/spike/m5/run.sh" >/dev/null
+  grep -F 'router port ' "$ROOT/spike/m5/run.sh" >/dev/null
+  grep -F 'M5_ROUTER_PORT' "$ROOT/spike/m5/README.md" >/dev/null
+  grep -F 'm5-offline-router' "$ROOT/spike/m5/router.py" >/dev/null
+  if grep -F 'ROUTER_PORT=8318' "$ROOT/spike/m5/run.sh"; then
+    echo "router port is still hardcoded" >&2
+    return 1
+  fi
+  if grep -F '0.0.0.0:8318' "$ROOT/spike/m5/router.py"; then
+    echo "router still defaults to 8318" >&2
+    return 1
+  fi
+}
+
+case_container_gateway_linux() {
+  container_needs_host_gateway "Docker Engine" "Linux"
+}
+
+case_container_gateway_orbstack() {
+  if container_needs_host_gateway "OrbStack" "Darwin"; then
+    echo "OrbStack must keep its own host.docker.internal" >&2
+    return 1
+  fi
+}
+
+case_container_gateway_desktop() {
+  if container_needs_host_gateway "Docker Desktop" "Linux"; then
+    echo "Docker Desktop must keep its own host.docker.internal" >&2
+    return 1
+  fi
+}
+
 expect_fail missing-live-url "missing FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL" case_missing_live_url
 expect_fail missing-live-model "missing M5_LIVE_MODEL" case_missing_live_model
 expect_fail missing-live-ci-url "missing M1_OPENAI_BASE_URL" case_missing_live_ci_url
@@ -533,6 +766,16 @@ run_case wipe-locked-inside case_wipe_locked_inside_work
 run_case keep-up-skips-defs case_keep_up_skips_defs_wipe
 run_case prepare-locked-tree case_prepare_definition_locked_tree
 run_case compose-config case_compose_config
+run_case prebound-loopback case_prebound_loopback_detected
+expect_fail router-port-invalid "M5_ROUTER_PORT must be a TCP port" case_router_port_invalid
+run_case router-port-picked case_router_port_picked
+run_case router-port-configured case_router_port_configured
+run_case router-identity case_router_identity_matches
+run_case foreign-models case_foreign_models_rejected
+run_case router-port-static case_router_port_static
+run_case container-gateway-linux case_container_gateway_linux
+run_case container-gateway-orbstack case_container_gateway_orbstack
+run_case container-gateway-desktop case_container_gateway_desktop
 
 if [[ "$fails" -ne 0 ]]; then
   printf '%s case(s) failed\n' "$fails" >&2
