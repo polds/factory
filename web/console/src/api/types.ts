@@ -64,7 +64,10 @@ export type Run = {
   started_at?: string;
   worker?: string;
   source?: string;
+  // List rows are flat. Detail rows nest the same facts under failure.
+  failure_class?: FailureClass;
   failure_code?: string;
+  failure_summary?: string;
   exit_code?: number;
   cost_cents?: number;
   kubernetes_snapshot?: Record<string, string>;
@@ -170,7 +173,7 @@ export type Automation = {
   name: string;
   enabled: boolean;
   runtime_paused: boolean;
-  triggers: unknown[];
+  triggers: string[];
   last_fired_at: string | null;
   match_count: number;
   runs_started: number;
@@ -294,12 +297,54 @@ export type Delivery = {
   normalized_events?: NormalizedEvent[];
 };
 
+export type NormalizedActor = {
+  provider_id?: string;
+  handle?: string;
+  factory_user_id?: string | null;
+};
+
+export type NormalizedRepo = {
+  code_forge: string;
+  owner: string;
+  name: string;
+};
+
+export type NormalizedSubject = {
+  kind?: string;
+  id?: string;
+  number?: number;
+  title?: string;
+  url?: string;
+  repo?: NormalizedRepo;
+  labels?: string[];
+  branch?: string | null;
+  base_branch?: string | null;
+};
+
+export type NormalizedThread = {
+  kind?: string;
+  external_ref?: string;
+};
+
 export type NormalizedEvent = {
   provider?: string;
   event?: string;
-  actor?: { handle?: string };
-  subject?: { kind?: string; id?: string; number?: number; title?: string };
-  thread?: { kind?: string; external_ref?: string };
+  delivery_id?: string;
+  occurred_at?: string;
+  actor?: NormalizedActor;
+  subject?: NormalizedSubject;
+  thread?: NormalizedThread;
+};
+
+// Data object on the factory SSE stream. The writer always adds gid and
+// run_id. The other fields come from the per-run event and vary by type.
+export type FactoryEventData = {
+  gid: number;
+  run_id: string;
+  seq?: number;
+  turn?: number;
+  role?: string;
+  text?: string;
 };
 
 export type InputAnswer = {
