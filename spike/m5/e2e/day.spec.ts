@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const evidence = process.env.M5_EVIDENCE ?? "/evidence";
 const signalDir = process.env.M5_SIGNAL ?? "/signal";
@@ -152,6 +152,46 @@ function isRunList(url: string): boolean {
   return path.endsWith("/api/v1/agent/runs");
 }
 
+function isInbox(url: string): boolean {
+  const path = url.split("?")[0] ?? "";
+  return /\/api\/v1\/factory\/[^/]+\/inbox$/.test(path);
+}
+
+// isVisible() does not wait. After a section click the inbox is still
+// "Loading inbox" until its API response is rendered, so a check in that
+// gap misses a row that is about to appear. Same spec in every mode.
+async function openInbox(page: Page): Promise<void> {
+  const path = new URL(page.url()).pathname;
+  if (!path.endsWith("/inbox")) {
+    const listed = page.waitForResponse((res) => isInbox(res.url()) && res.ok(), {
+      timeout: 15_000,
+    });
+    await openSection(page, "Inbox");
+    await listed;
+  } else {
+    await openSection(page, "Inbox");
+  }
+  await expect(page.getByText("Loading inbox", { exact: true })).toBeHidden({ timeout: 15_000 });
+  if ((await page.getByRole("heading", { name: "Could not load the inbox" }).count()) > 0) {
+    throw new Error("inbox failed to load");
+  }
+  await expect(
+    page
+      .locator("ul.inbox-list")
+      .or(page.getByRole("heading", { name: "Nothing needs you right now" })),
+  ).toBeVisible({ timeout: 15_000 });
+}
+
+async function visibleWithin(target: Locator, timeout: number): Promise<boolean> {
+  try {
+    await target.waitFor({ state: "visible", timeout });
+    return true;
+  } catch (err) {
+    if (err instanceof Error && err.name === "TimeoutError") return false;
+    throw err;
+  }
+}
+
 function stageFromSub(sub: string): string {
   const mark = " · ";
   const at = sub.lastIndexOf(mark);
@@ -209,16 +249,16 @@ async function approveSpecRow(page: Page, title: string): Promise<void> {
 }
 
 async function approveOnly(page: Page, title: string): Promise<void> {
-  await openSection(page, "Inbox");
+  await openInbox(page);
   await axe(page, "inbox");
   // Gate detail is "spec". A failed run of the same title has no Approve button.
   const row = specInboxRow(page, title);
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
     const blocked = runBlocksSpecGate(title, await readNewestRun(page, title));
-    await openSection(page, "Inbox");
+    await openInbox(page);
     if (blocked) throw blocked;
-    if (await row.isVisible()) {
+    if (await visibleWithin(row, 1_000)) {
       await approveSpecRow(page, title);
       return;
     }
@@ -231,38 +271,40 @@ async function approveOnly(page: Page, title: string): Promise<void> {
 // failure at triage, planning, or building. A spec row is not required.
 // When one is already open, approve it so the offline building stub can
 // still report the failure.
+function agentReportedInboxRow(page: Page, runId: string) {
+  return page
+    .locator("li.inbox-row")
+    .filter({ has: page.locator(`a[href$="/runs/${runId}"]`) })
+    .filter({ hasText: "agent_reported" })
+    .filter({ has: page.locator('[data-kind="failed_run"]') });
+}
+
 async function waitAgentReported(page: Page, title: string): Promise<boolean> {
   const deadline = Date.now() + 180_000;
   let approved = false;
   while (Date.now() < deadline) {
     const run = await readNewestRun(page, title);
     if (run?.status === "failed" && run.detail === "agent_reported") {
-      await openSection(page, "Inbox");
-      const inbox = page
-        .locator("li.inbox-row")
-        .filter({ hasText: title })
-        .filter({ hasText: "agent_reported" })
-        .filter({ has: page.locator('[data-kind="failed_run"]') });
-      if (await inbox.first().isVisible()) {
-        const href = (await inbox.first().locator("a[href*='/runs/']").getAttribute("href")) ?? "";
-        if (href.includes(`/runs/${run.id}`)) {
-          await openSection(page, "Runs");
-          const listed = page.waitForResponse((res) => isRunList(res.url()) && res.ok(), {
-            timeout: 15_000,
-          });
-          await page.reload();
-          await listed;
-          const match = page.locator(`tr[data-run="${run.id}"]`).filter({ hasText: "agent_reported" });
-          if (await match.isVisible()) return true;
-        }
+      if (run.id === "") throw new Error(`${title}: agent_reported run has no id`);
+      await openInbox(page);
+      const budget = Math.min(15_000, Math.max(1_000, deadline - Date.now()));
+      if (await visibleWithin(agentReportedInboxRow(page, run.id), budget)) {
+        await openSection(page, "Runs");
+        const listed = page.waitForResponse((res) => isRunList(res.url()) && res.ok(), {
+          timeout: 15_000,
+        });
+        await page.reload();
+        await listed;
+        const match = page.locator(`tr[data-run="${run.id}"]`).filter({ hasText: "agent_reported" });
+        if (await visibleWithin(match, budget)) return true;
       }
     } else if (run?.status === "failed") {
       throw failedRunError(title, run);
     } else if (!approved && run && pastSpecGate.has(run.stage)) {
       throw new Error(`spec gate skipped for ${title}`);
     }
-    await openSection(page, "Inbox");
-    if (!approved && (await specInboxRow(page, title).isVisible())) {
+    await openInbox(page);
+    if (!approved && (await visibleWithin(specInboxRow(page, title), 1_000))) {
       await approveSpecRow(page, title);
       approved = true;
     }
@@ -290,9 +332,12 @@ async function driveInfraKill(page: Page): Promise<void> {
 }
 
 async function driveAgentFailure(page: Page): Promise<void> {
-  const title = "m5-agent-failure the agent should report failure";
+  // The stem stays stable for the offline router and the live prompt.
+  // The attempt suffix keeps the oldest-first inbox from mixing the two runs.
+  const stem = "m5-agent-failure the agent should report failure";
   const body = "Report the failure and stop.";
   for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const title = `${stem} #${attempt}`;
     await createItem(page, title, body);
     if (await waitAgentReported(page, title)) return;
   }
@@ -632,16 +677,16 @@ test("day of factory", async ({ browser }) => {
     );
     if (!matched.startsWith("status 2")) throw new Error(`step 10: match ${matched}`);
 
-    await openSection(page, "Inbox");
+    await openInbox(page);
     const question = page.locator("li.inbox-row").filter({ hasText: "m5-question" });
     const questionDeadline = Date.now() + 90_000;
     let sawQuestion = false;
     while (Date.now() < questionDeadline) {
       const run = await readNewestRun(page, "m5-question");
       if (run?.status === "failed") throw failedRunError("m5-question", run);
-      await openSection(page, "Inbox");
+      await openInbox(page);
       await page.getByRole("group", { name: "Filter by kind" }).getByRole("button", { name: "Questions" }).click();
-      if (await question.getByText("Which staging env?").isVisible()) {
+      if (await visibleWithin(question.getByText("Which staging env?"), 1_000)) {
         sawQuestion = true;
         break;
       }
