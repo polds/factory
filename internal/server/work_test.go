@@ -347,6 +347,90 @@ func TestE2ESpecGateHeldDuringTerminal(t *testing.T) {
 	}
 }
 
+// TestE2ENewItemFirstRunNotBuildingOnContainerExit is the live window.
+// The first item's building run fails with container_exit. While that
+// terminal transaction is still open, a second item is created. That
+// item's first run is minted inside its own CreateTask. On the m5 stage
+// list that run is triage, and a spec approval exists before any building
+// run. The other item's failure escalates and does not start a run.
+func TestE2ENewItemFirstRunNotBuildingOnContainerExit(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writeM5DayPipeline(t)
+	}})
+	w := dialWorker(t, env, "local-1")
+	defer w.close()
+
+	first := env.createTask(t, "m5-infra-kill", "wait for the container to stop")
+	finishStage(t, w, "triage-done")
+	finishStage(t, w, "planning-done")
+	env.waitTask(t, first.ID, "awaiting_approval", "planning")
+	approvals := env.listApprovals(t)
+	if len(approvals) != 1 || approvals[0].WorkItemID != first.ID || approvals[0].Gate != "spec" {
+		t.Fatalf("approvals %+v", approvals)
+	}
+	env.decide(t, approvals[0].ID, "approve", http.StatusOK)
+	building := w.readAssignment(t)
+	if building.EnvVars["FACTORY_STAGE"] != "building" || building.EnvVars["FACTORY_WORK_ITEM_ID"] != first.ID {
+		t.Fatalf("building assignment %+v", building.EnvVars)
+	}
+
+	entered, release := env.holdTerminalEvent(t)
+	failAssignment(t, w, building, "container_exit", 137)
+	select {
+	case <-entered:
+	case <-time.After(8 * time.Second):
+		t.Fatal("terminal hook did not run")
+	}
+	if env.terminalCount(t, building.TaskID) != 0 {
+		t.Fatal("terminal committed before the next item was created")
+	}
+
+	next := env.createTask(t, "m5-agent-failure", "the agent should report failure")
+	stage, n := env.firstRunStage(t, next.ID)
+	if n != 1 || stage != "triage" {
+		t.Fatalf("new item first run stage %q count %d, want triage x1", stage, n)
+	}
+	if env.countStage(t, next.ID, "building") != 0 {
+		t.Fatal("new item's first run is building")
+	}
+	if got := env.getTask(t, next.ID); got.Stage != "triage" || got.Status != "open" || got.PendingGate != "" {
+		t.Fatalf("new item %+v", got)
+	}
+	if len(approvalsFor(env.listApprovals(t), next.ID, "spec")) != 0 {
+		t.Fatal("spec approval exists before planning finished")
+	}
+	release()
+
+	// The building failure escalates after the terminal transaction commits.
+	// It must not insert another building run for either item.
+	env.assertRunCountStable(t, first.ID, "building", 1)
+	env.assertRunCountStable(t, next.ID, "building", 0)
+	triage := w.readAssignment(t)
+	if triage.TaskID == building.TaskID || triage.EnvVars["FACTORY_WORK_ITEM_ID"] != next.ID || triage.EnvVars["FACTORY_STAGE"] != "triage" {
+		t.Fatalf("assignment after container_exit %+v", triage.EnvVars)
+	}
+	completeAssignment(t, w, triage, "triage-done")
+	planning := w.readAssignment(t)
+	if planning.EnvVars["FACTORY_STAGE"] != "planning" || planning.EnvVars["FACTORY_WORK_ITEM_ID"] != next.ID {
+		t.Fatalf("planning assignment %+v", planning.EnvVars)
+	}
+	completeAssignment(t, w, planning, "planning-done")
+	blocked := env.waitTask(t, next.ID, "awaiting_approval", "planning")
+	if blocked.PendingGate != "spec" {
+		t.Fatalf("pending_gate %q", blocked.PendingGate)
+	}
+	if env.countStage(t, next.ID, "building") != 0 {
+		t.Fatal("building run exists before the spec approval")
+	}
+	spec := approvalsFor(env.listApprovals(t), next.ID, "spec")
+	if len(spec) != 1 || spec[0].Decision != "" {
+		t.Fatalf("spec approvals %+v", spec)
+	}
+}
+
 // TestE2EBuildingFirstOpensSpecGate covers a pipeline whose first stage is
 // the gated one. Created must insert the spec approval and no building run.
 func TestE2EBuildingFirstOpensSpecGate(t *testing.T) {
@@ -2011,6 +2095,36 @@ pipeline:
 	return root
 }
 
+// writeM5DayPipeline is the m5 day factory: triage, planning, building,
+// reviewing, and a required spec gate. No skip predicates.
+func writeM5DayPipeline(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "factory.yaml"), `
+schemaVersion: v1alpha1
+name: pipe
+agentDefaults:
+  model: auto
+  runner: local
+  pool: standard
+pipeline:
+  stages: [triage, planning, building, reviewing]
+  agents:
+    triage: triage
+    planning: spec
+    building: implementer
+    reviewing: reviewer
+  approvals:
+    spec: { required: true, approvers: "role:editor" }
+  revisionLimit: 1
+`)
+	writeAgent(t, root, "triage", "TRIAGE", "model: triage-model")
+	writeAgent(t, root, "spec", "SPEC", "model: planning-model")
+	writeAgent(t, root, "implementer", "IMPLEMENT", "model: building-model")
+	writeAgent(t, root, "reviewer", "REVIEW", "model: reviewing-model")
+	return root
+}
+
 func writeBuildingFirstPipeline(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -2271,6 +2385,22 @@ type runAPI struct {
 	ConversationID string `json:"conversation_id"`
 	Stage          string `json:"stage"`
 	ModelID        string `json:"model_id"`
+}
+
+func (e *env) firstRunStage(t *testing.T, workItemID string) (string, int) {
+	t.Helper()
+	var stage string
+	var n int
+	err := e.raw.QueryRow(context.Background(), `
+		SELECT COALESCE(stage, ''), count(*) OVER ()
+		FROM runs
+		WHERE work_item_id = $1
+		ORDER BY created_at, id
+		LIMIT 1`, workItemID).Scan(&stage, &n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stage, n
 }
 
 func (e *env) countStage(t *testing.T, workItemID, stage string) int {
