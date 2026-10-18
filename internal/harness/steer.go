@@ -30,9 +30,10 @@ const (
 	// empty hold cannot stretch an idle-0 run.
 	steerFinalPoll = 250 * time.Millisecond
 	// steerProbeBudget is how long the agent loop waits for the opening
-	// wait=0 poll. A 200 inside this budget emits run.capabilities before
-	// the first model call. A poll that does not return must not stall the
-	// loop; the poller still emits when that response arrives.
+	// poll. A 200 inside this budget emits run.capabilities before the
+	// first model call. A poll still open at the deadline is a server
+	// holding the long-poll, so the loop emits then and continues. A fast
+	// 404 or 501 closes the probe first and leaves steering unannounced.
 	steerProbeBudget = 200 * time.Millisecond
 )
 
@@ -307,10 +308,12 @@ func (p steerPoller) MarshalJSON() ([]byte, error) { return []byte(`"steerPoller
 
 // startSteerPoller long-polls until stop is called or ctx is canceled.
 // stop waits for the goroutine so it cannot emit after the terminal event.
-// The opening poll is wait=0. When that returns 200 inside steerProbeBudget,
-// run.capabilities is already emitted before this returns, which is before
-// the first model call. A held poll does not block the agent loop past
-// that budget.
+// The opening poll is wait=0. A 200 inside steerProbeBudget emits
+// run.capabilities before this returns, which is before the first model
+// call. A poll still open at the deadline emits too: factoryd ignores
+// wait=0 and holds a live steer route, while a missing route has already
+// returned 404 or 501. Either way the agent loop is not stalled past the
+// budget.
 func startSteerPoller(ctx context.Context, endpoint string, token secretValue, log *Log, hub *steerHub) func() {
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -330,6 +333,7 @@ func startSteerPoller(ctx context.Context, endpoint string, token secretValue, l
 	case <-probeDone:
 	case <-ctx.Done():
 	case <-time.After(steerProbeBudget):
+		p.hub.emitCapability(p.log)
 	}
 	var once sync.Once
 	return func() {
@@ -481,26 +485,27 @@ func pollSteer(ctx context.Context, client *http.Client, endpoint string, token 
 	return out, resp.StatusCode, nil
 }
 
-// emitCapability records steering once, on the first 200. The opening
-// wait=0 poll is that 200 when the channel is up at run start, so the
-// event precedes the first model call. Later polls, including the idle-0
-// final poll, do not emit it again. A 404 or 501 never reaches this.
+// emitCapability records steering once. The opening poll emits on a 200,
+// or the agent loop emits when that poll is still held after
+// steerProbeBudget. Later polls, including the idle-0 final poll, do not
+// emit it again. A fast 404 or 501 never reaches this. Concurrent callers
+// share one event.
 func (h *steerHub) emitCapability(log *Log) {
 	if h == nil || log == nil {
 		return
 	}
 	h.mu.Lock()
-	sent := h.capabilitySent
-	h.mu.Unlock()
-	if sent {
+	if h.capabilitySent {
+		h.mu.Unlock()
 		return
 	}
-	if err := log.Emit(Event{Type: "run.capabilities", Steer: true}); err != nil {
-		return
-	}
-	h.mu.Lock()
 	h.capabilitySent = true
 	h.mu.Unlock()
+	if err := log.Emit(Event{Type: "run.capabilities", Steer: true}); err != nil {
+		h.mu.Lock()
+		h.capabilitySent = false
+		h.mu.Unlock()
+	}
 }
 
 // collectImmediate stops nothing itself. The caller stops the long-poller

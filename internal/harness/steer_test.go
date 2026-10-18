@@ -1217,6 +1217,58 @@ func TestSteerCapabilityBeforeFirstModelCall(t *testing.T) {
 	}
 }
 
+// factoryd's steer handler ignores wait=0 and holds every poll. The
+// capability event still has to be in the log before the model handler
+// runs, while that poll is outstanding.
+func TestSteerCapabilityBeforeFirstModelCallWhenServerHolds(t *testing.T) {
+	const token = "steer-held-before-model-token"
+	rt := t.TempDir()
+	eventsPath := filepath.Join(rt, "events.ndjson")
+	longPoll := make(chan struct{})
+	var longOnce sync.Once
+	var mu sync.Mutex
+	var sawBefore bool
+	var orderOK bool
+
+	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		longOnce.Do(func() { close(longPoll) })
+		<-r.Context().Done()
+	})
+	model := func(w http.ResponseWriter, r *http.Request) {
+		raw, err := os.ReadFile(eventsPath)
+		mu.Lock()
+		if err == nil {
+			text := string(raw)
+			sawBefore = strings.Contains(text, `"type":"run.capabilities"`)
+			capAt := strings.Index(text, `"type":"run.capabilities"`)
+			turnAt := strings.Index(text, `"type":"turn.started"`)
+			orderOK = capAt >= 0 && turnAt >= 0 && capAt < turnAt
+		}
+		mu.Unlock()
+		select {
+		case <-longPoll:
+		case <-time.After(2 * time.Second):
+			t.Errorf("long-poll was not in flight during the model call")
+		}
+		writeAssistant(w, "done early")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	code, events, stderr := runSteerAt(t, ctx, plane.eventsURL, token, "be interruptible", "0s", model, nil, t.TempDir(), rt)
+	if code != ExitOK {
+		t.Fatalf("exit %d, stderr %s\nevents:\n%s", code, stderr, events)
+	}
+	mu.Lock()
+	before, ordered := sawBefore, orderOK
+	mu.Unlock()
+	if !before || !ordered {
+		t.Fatalf("run.capabilities was not before the first model call\nevents:\n%s", events)
+	}
+	if countType(decodeSteerEvents(t, events), "run.capabilities") != 1 {
+		t.Fatalf("capability count:\n%s", events)
+	}
+}
+
 func TestSteerPollDoesNotBlockAgentLoop(t *testing.T) {
 	const token = "steer-block-token"
 	var mu sync.Mutex

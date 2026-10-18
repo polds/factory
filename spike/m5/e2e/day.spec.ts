@@ -376,13 +376,15 @@ async function expectAcknowledgedInterrupt(page: Page): Promise<void> {
 }
 
 // Steer comes from the run snapshot. The harness emits run.capabilities
-// before the first model call, so a reload during turn 1 enables the
-// button without waiting out the steer long-poll.
+// before the first model call, including while the steer poll is still
+// held. This wait is shorter than the 25s long-poll, so a capability that
+// arrives only when that poll returns fails the check. A reload during
+// turn 1 enables the button.
 async function waitUntilInterruptEnabled(page: Page): Promise<void> {
   const interrupt = page.locator("#interrupt-run");
-  const deadline = Date.now() + 42_000;
+  const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
-    const enabled = await interrupt.isEnabled({ timeout: 10_000 }).catch(() => false);
+    const enabled = await interrupt.isEnabled({ timeout: 1_000 }).catch(() => false);
     if (enabled) return;
     await page.reload();
     await expect(page.getByRole("log", { name: "Run transcript" }).locator("[data-seq]").first()).toBeVisible();
