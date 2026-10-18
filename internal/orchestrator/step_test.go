@@ -14,6 +14,34 @@ import (
 	"testing"
 )
 
+func TestHoldUnapproved(t *testing.T) {
+	def := acmeDef()
+	before := State{Stage: StageReviewing, Status: StatusOpen, RevisionCount: 0}
+	after, eff, err := Step(def, before, RunFailed{Stage: StageReviewing}, M3Predicates())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := eff[0].(StartRun); !ok {
+		t.Fatalf("revision effect %#v", eff)
+	}
+	got, held := HoldUnapproved(def, before, after, eff, nil)
+	if got.Stage != StageReviewing || got.Status != StatusAwaitingApproval || got.PendingGate != GateSpec {
+		t.Fatalf("parked %+v", got)
+	}
+	if len(held) != 1 {
+		t.Fatalf("effects %#v", held)
+	}
+	req, ok := held[0].(RequestApproval)
+	if !ok || req.Gate != GateSpec {
+		t.Fatalf("effect %#v", held[0])
+	}
+	passed, kept := HoldUnapproved(def, before, after, eff, map[string]bool{GateSpec: true})
+	start, ok := kept[0].(StartRun)
+	if !ok || start.Stage != StageBuilding || passed.Stage != StageBuilding {
+		t.Fatalf("approved %+v %#v", passed, kept)
+	}
+}
+
 func TestStep(t *testing.T) {
 	for _, tc := range stepCases() {
 		t.Run(tc.name, func(t *testing.T) {

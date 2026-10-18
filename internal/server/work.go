@@ -33,7 +33,12 @@ func (s *Server) CreateTask(ctx context.Context, factoryID string, req api.TaskR
 	if err != nil {
 		return api.Task{}, err
 	}
-	next, effects, err := step(def, orchestrator.State{}, orchestrator.Created{})
+	before := orchestrator.State{}
+	next, effects, err := step(def, before, orchestrator.Created{})
+	if err != nil {
+		return api.Task{}, err
+	}
+	next, effects, err = s.holdUnapproved(ctx, "", def, before, next, effects)
 	if err != nil {
 		return api.Task{}, err
 	}
@@ -117,6 +122,10 @@ func (s *Server) CancelTask(ctx context.Context, factoryID, id string) (api.Task
 		next, effects, err := step(def, state, orchestrator.Cancel{})
 		if err != nil {
 			return orchErr(err)
+		}
+		next, effects, err = s.holdUnapproved(ctx, current.ID, def, state, next, effects)
+		if err != nil {
+			return err
 		}
 		updated, err := s.commitStep(ctx, current, next, effects)
 		if err != nil {
@@ -215,6 +224,11 @@ func (s *Server) DecideApproval(ctx context.Context, id, decision, decidedBy, no
 		s.orchMu.Unlock()
 		return api.Approval{}, orchErr(err)
 	}
+	next, effects, err = s.holdUnapproved(ctx, item.ID, def, state, next, effects)
+	if err != nil {
+		s.orchMu.Unlock()
+		return api.Approval{}, err
+	}
 	updated, err := s.commitStep(ctx, item, next, effects)
 	if err != nil {
 		s.orchMu.Unlock()
@@ -298,6 +312,12 @@ func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
 	if err != nil {
 		s.orchMu.Unlock()
 		s.log.Error("orchestrator", "work_item_id", item.ID, "run_id", runID, "err", err)
+		return
+	}
+	next, effects, err = s.holdUnapproved(ctx, item.ID, def, state, next, effects)
+	if err != nil {
+		s.orchMu.Unlock()
+		s.log.Error("approval gate", "work_item_id", item.ID, "run_id", runID, "err", err)
 		return
 	}
 	updated, err := s.commitStep(ctx, item, next, effects)
@@ -538,6 +558,25 @@ func (s *Server) loadState(ctx context.Context, item store.WorkItem) (orchestrat
 	}, nil
 }
 
+// holdUnapproved rewrites a StartRun of a required gate into RequestApproval
+// when this work item has no approve row for that gate. Another item's
+// terminal event cannot satisfy the gate: the lookup is this work item only.
+// An empty work item id (create, before the row exists) has no approval.
+func (s *Server) holdUnapproved(ctx context.Context, workItemID string, def orchestrator.Def, before, after orchestrator.State, effects []orchestrator.Effect) (orchestrator.State, []orchestrator.Effect, error) {
+	approved := map[string]bool{}
+	if workItemID != "" {
+		for _, gate := range []string{orchestrator.GateSpec, orchestrator.GateHandoff} {
+			ok, err := s.store.HasApprovalDecision(ctx, workItemID, gate, store.DecisionApprove)
+			if err != nil {
+				return after, effects, err
+			}
+			approved[gate] = ok
+		}
+	}
+	next, held := orchestrator.HoldUnapproved(def, before, after, effects, approved)
+	return next, held, nil
+}
+
 // commitStep persists the orchestrator state. A RequestApproval effect is
 // inserted in the same transaction as the work-item update, so a crash cannot
 // leave a pending row without awaiting_approval, and a reader of that status
@@ -549,7 +588,14 @@ func (s *Server) commitStep(ctx context.Context, item store.WorkItem, next orche
 		if !ok {
 			continue
 		}
-		_, updated, err := s.store.OpenApprovalGate(ctx, item.ID, req.Gate, next.Stage, next.Status, next.RevisionCount)
+		stage := next.Stage
+		if stage == "" {
+			stage = item.Stage
+		}
+		if stage == "" {
+			stage = store.StageTriage
+		}
+		_, updated, err := s.store.OpenApprovalGate(ctx, item.ID, req.Gate, stage, next.Status, next.RevisionCount)
 		if err != nil {
 			return store.WorkItem{}, err
 		}
@@ -1197,6 +1243,10 @@ func (s *Server) retryReviewerOnce(ctx context.Context, item store.WorkItem, fai
 	if err != nil {
 		return false, err
 	}
+	next, effects, err = s.holdUnapproved(ctx, item.ID, def, state, next, effects)
+	if err != nil {
+		return false, err
+	}
 	if len(effects) != 1 {
 		return false, fmt.Errorf("server: reviewer retry effects %d", len(effects))
 	}
@@ -1323,6 +1373,11 @@ func (s *Server) reviseSpentReviewer(ctx context.Context, workItemID string, run
 	}
 	state.ReviewerRetryUsed = true
 	next, effects, err := step(def, state, orchestrator.RunFailed{Stage: store.StageReviewing, Infra: true})
+	if err != nil {
+		s.orchMu.Unlock()
+		return err
+	}
+	next, effects, err = s.holdUnapproved(ctx, item.ID, def, state, next, effects)
 	if err != nil {
 		s.orchMu.Unlock()
 		return err

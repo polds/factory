@@ -410,6 +410,27 @@ func (s *Store) ListApprovals(ctx context.Context, factoryID string, pendingOnly
 	return out, nil
 }
 
+// HasApprovalDecision reports whether this work item has a row for gate
+// whose decision is exactly decision. Pending rows do not count.
+func (s *Store) HasApprovalDecision(ctx context.Context, workItemID, gate, decision string) (bool, error) {
+	workItemID = strings.TrimSpace(workItemID)
+	gate = strings.TrimSpace(gate)
+	decision = strings.TrimSpace(decision)
+	if workItemID == "" || gate == "" || decision == "" {
+		return false, fmt.Errorf("store: work item, gate, and decision are required")
+	}
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM approvals
+			WHERE work_item_id = $1 AND gate = $2 AND decision = $3
+		)`, workItemID, gate, decision).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("store: approval decision: %w", err)
+	}
+	return exists, nil
+}
+
 func validSource(source string) error {
 	switch source {
 	case SourceIssue, SourceManual, SourceAPI, SourceWebhook, SourceChat, SourceSchedule, SourceMCP,
