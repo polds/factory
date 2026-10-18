@@ -48,6 +48,7 @@ type Config struct {
 	Log                 *slog.Logger
 	// SchemasPath is the directory of schemas/<version>/*.json. Empty
 	// searches upward from the working directory and the executable.
+	// When that search misses, the handler serves the embedded schemas.
 	SchemasPath string
 	// DefinitionGitURL enables the defsync poller. The local
 	// DefinitionPath is still loaded at boot and remains the published tree.

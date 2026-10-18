@@ -70,7 +70,8 @@ place is not where the person is.
 
 ### Definition
 A file tree editor over the definition with schema-aware completion and inline validation
-against the same JSON Schemas the editor modeline uses.
+against the same JSON Schemas the editor modeline uses. The Schema link loads those
+documents from factoryd, which embeds them for images that have no schemas directory.
 
 - **Git-backed factories:** read-only, with links to the forge and a prominent indication
   that changes go through a PR.

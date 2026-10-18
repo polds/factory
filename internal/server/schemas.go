@@ -6,20 +6,20 @@ import (
 	"path/filepath"
 
 	"github.com/polds/factory/internal/schema"
+	"github.com/polds/factory/schemas"
 )
 
-// SchemaHandler is the unauthenticated JSON Schema mount. Nil when the
-// schema directory cannot be found; the API then answers 404.
+// SchemaHandler is the unauthenticated JSON Schema mount. It serves the
+// on-disk tree when one is found, and the embedded schemas otherwise.
 func (s *Server) SchemaHandler() http.Handler {
 	return s.schemas
 }
 
 func schemaHandler(explicit string) http.Handler {
-	dir := findSchemaDir(explicit)
-	if dir == "" {
-		return nil
+	if dir := findSchemaDir(explicit); dir != "" {
+		return schema.NewHandler(os.DirFS(dir))
 	}
-	return schema.NewHandler(os.DirFS(dir))
+	return schema.NewHandler(schemas.FS)
 }
 
 // findSchemaDir returns the schemas directory (the parent of v1alpha1).
