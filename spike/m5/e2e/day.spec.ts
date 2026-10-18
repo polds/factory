@@ -136,14 +136,30 @@ async function seqs(page: Page): Promise<string[]> {
 }
 
 // Newest run row for this title, from the Runs page. The stage is the
-// suffix of .run-sub (" · building"). The model cell can contain
+// last segment of .run-sub (" · building"). The model cell can contain
 // "m5-building" on the offline router and must not count.
+type NewestRun = {
+  id: string;
+  stage: string;
+  status: string;
+  detail: string;
+};
+
+const pastSpecGate = new Set(["building", "reviewing", "human_handoff"]);
+
 function isRunList(url: string): boolean {
   const path = url.split("?")[0] ?? "";
   return path.endsWith("/api/v1/agent/runs");
 }
 
-async function newestRunStage(page: Page, title: string): Promise<string> {
+function stageFromSub(sub: string): string {
+  const mark = " · ";
+  const at = sub.lastIndexOf(mark);
+  if (at < 0) return "";
+  return sub.slice(at + mark.length).trim();
+}
+
+async function readNewestRun(page: Page, title: string): Promise<NewestRun | null> {
   await openSection(page, "Runs");
   const listed = page.waitForResponse((res) => isRunList(res.url()) && res.ok(), { timeout: 15_000 });
   await page.reload();
@@ -153,32 +169,57 @@ async function newestRunStage(page: Page, title: string): Promise<string> {
     .waitFor({ state: "visible", timeout: 5_000 })
     .then(() => true)
     .catch(() => false);
-  if (!visible) return "";
-  return ((await row.locator(".run-sub").textContent()) ?? "").trim();
+  if (!visible) return null;
+  const id = (await row.getAttribute("data-run")) ?? "";
+  const sub = ((await row.locator(".run-sub").textContent()) ?? "").trim();
+  const status = (await row.locator("[data-status]").getAttribute("data-status")) ?? "";
+  const code = row.locator(".failure-cell .mono");
+  const detail = (await code.count()) > 0 ? ((await code.first().textContent()) ?? "").trim() : "";
+  return { id, stage: stageFromSub(sub), status, detail };
+}
+
+function failedRunError(title: string, run: NewestRun): Error {
+  return new Error(`${title}: run ${run.id} ${run.stage} failed (${run.detail || "unknown"})`);
+}
+
+// A failed run at any stage, or a run already past the spec gate, is reported
+// on the poll that sees it. Triage and planning failures do not wait 180s.
+function runBlocksSpecGate(title: string, run: NewestRun | null): Error | null {
+  if (!run) return null;
+  if (run.status === "failed") return failedRunError(title, run);
+  if (pastSpecGate.has(run.stage)) return new Error(`spec gate skipped for ${title}`);
+  return null;
+}
+
+function specInboxRow(page: Page, title: string) {
+  return page
+    .locator("li.inbox-row")
+    .filter({ hasText: title })
+    .filter({ hasText: "spec" })
+    .filter({ hasNotText: "Approved by you" });
+}
+
+async function approveSpecRow(page: Page, title: string): Promise<void> {
+  const row = specInboxRow(page, title);
+  await row.getByRole("button").first().click();
+  await row.getByRole("button", { name: "Approve" }).click();
+  await expect(
+    page.locator("li.inbox-row").filter({ hasText: title }).getByText("Approved by you").first(),
+  ).toBeVisible();
 }
 
 async function approveOnly(page: Page, title: string): Promise<void> {
   await openSection(page, "Inbox");
   await axe(page, "inbox");
   // Gate detail is "spec". A failed run of the same title has no Approve button.
-  const row = page
-    .locator("li.inbox-row")
-    .filter({ hasText: title })
-    .filter({ hasText: "spec" })
-    .filter({ hasNotText: "Approved by you" });
+  const row = specInboxRow(page, title);
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
-    const stage = await newestRunStage(page, title);
+    const blocked = runBlocksSpecGate(title, await readNewestRun(page, title));
     await openSection(page, "Inbox");
-    if (/ · building$/.test(stage)) {
-      throw new Error(`spec gate skipped for ${title}`);
-    }
+    if (blocked) throw blocked;
     if (await row.isVisible()) {
-      await row.getByRole("button").first().click();
-      await row.getByRole("button", { name: "Approve" }).click();
-      await expect(
-        page.locator("li.inbox-row").filter({ hasText: title }).getByText("Approved by you").first(),
-      ).toBeVisible();
+      await approveSpecRow(page, title);
       return;
     }
     await delay(1000);
@@ -186,21 +227,52 @@ async function approveOnly(page: Page, title: string): Promise<void> {
   await expect(row).toBeVisible({ timeout: 1_000 });
 }
 
-async function failureVisible(page: Page, title: string, code: string): Promise<boolean> {
-  await openSection(page, "Runs");
-  const deadline = Date.now() + 120_000;
+// Same path in offline, live, and live-ci. Success is an agent_reported
+// failure at triage, planning, or building. A spec row is not required.
+// When one is already open, approve it so the offline building stub can
+// still report the failure.
+async function waitAgentReported(page: Page, title: string): Promise<boolean> {
+  const deadline = Date.now() + 180_000;
+  let approved = false;
   while (Date.now() < deadline) {
-    const row = page.locator("tr[data-run]").filter({ hasText: title }).filter({ hasText: code }).first();
-    if (await row.isVisible()) return true;
-    await page.reload();
+    const run = await readNewestRun(page, title);
+    if (run?.status === "failed" && run.detail === "agent_reported") {
+      await openSection(page, "Inbox");
+      const inbox = page
+        .locator("li.inbox-row")
+        .filter({ hasText: title })
+        .filter({ hasText: "agent_reported" })
+        .filter({ has: page.locator('[data-kind="failed_run"]') });
+      if (await inbox.first().isVisible()) {
+        const href = (await inbox.first().locator("a[href*='/runs/']").getAttribute("href")) ?? "";
+        if (href.includes(`/runs/${run.id}`)) {
+          await openSection(page, "Runs");
+          const listed = page.waitForResponse((res) => isRunList(res.url()) && res.ok(), {
+            timeout: 15_000,
+          });
+          await page.reload();
+          await listed;
+          const match = page.locator(`tr[data-run="${run.id}"]`).filter({ hasText: "agent_reported" });
+          if (await match.isVisible()) return true;
+        }
+      }
+    } else if (run?.status === "failed") {
+      throw failedRunError(title, run);
+    } else if (!approved && run && pastSpecGate.has(run.stage)) {
+      throw new Error(`spec gate skipped for ${title}`);
+    }
+    await openSection(page, "Inbox");
+    if (!approved && (await specInboxRow(page, title).isVisible())) {
+      await approveSpecRow(page, title);
+      approved = true;
+    }
     await delay(1000);
   }
   return false;
 }
 
-// Live and live-ci use the same path as offline. The failure prompts are on
-// the implementer, so each item is approved through the spec gate first.
-// Two attempts, then a step 8 failure. No skip.
+// Two attempts, then a step 8 failure. approveOnly fail-fasts when a run
+// has already failed or moved past the spec gate.
 async function driveInfraKill(page: Page): Promise<void> {
   const title = "m5-infra-kill wait for the container to stop";
   const body = "Stay in the model call until the container stops.";
@@ -222,8 +294,7 @@ async function driveAgentFailure(page: Page): Promise<void> {
   const body = "Report the failure and stop.";
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     await createItem(page, title, body);
-    await approveOnly(page, title);
-    if (await failureVisible(page, title, "agent_reported")) return;
+    if (await waitAgentReported(page, title)) return;
   }
   throw new Error("step 8: agent failure was not agent / agent_reported after two attempts");
 }
@@ -404,13 +475,13 @@ test("day of factory", async ({ browser }) => {
     const agentPanel = page.getByRole("region", { name: "Failure" });
     await expect(agentPanel).toHaveAttribute("data-failure-class", "agent");
     await expect(page.locator(".meta-row > div").filter({ hasText: "Stage" }).locator("dd")).toHaveText(
-      "building",
+      /^(triage|planning|building)$/,
     );
     await expect(agentPanel.locator("code", { hasText: "agent_reported" })).toBeVisible();
     await expect(agentPanel.getByText("Agent reported this run as failed")).toBeVisible();
     await expect(agentPanel.getByRole("list", { name: "Evidence" }).getByRole("listitem").first()).toBeVisible();
     await expect(
-      page.getByRole("log", { name: "Run transcript" }).getByText("m5 agent failure").first(),
+      page.getByRole("log", { name: "Run transcript" }).getByText(/m5 agent failure|failed_by_agent/).first(),
     ).toBeVisible();
     await saveShot(page, "agent-failure");
 
@@ -538,13 +609,20 @@ test("day of factory", async ({ browser }) => {
     if (!matched.startsWith("status 2")) throw new Error(`step 10: match ${matched}`);
 
     await openSection(page, "Inbox");
-    await page.getByRole("group", { name: "Filter by kind" }).getByRole("button", { name: "Questions" }).click();
     const question = page.locator("li.inbox-row").filter({ hasText: "m5-question" });
-    const sawQuestion = await question
-      .getByText("Which staging env?")
-      .waitFor({ timeout: 90_000 })
-      .then(() => true)
-      .catch(() => false);
+    const questionDeadline = Date.now() + 90_000;
+    let sawQuestion = false;
+    while (Date.now() < questionDeadline) {
+      const run = await readNewestRun(page, "m5-question");
+      if (run?.status === "failed") throw failedRunError("m5-question", run);
+      await openSection(page, "Inbox");
+      await page.getByRole("group", { name: "Filter by kind" }).getByRole("button", { name: "Questions" }).click();
+      if (await question.getByText("Which staging env?").isVisible()) {
+        sawQuestion = true;
+        break;
+      }
+      await delay(1000);
+    }
     if (!sawQuestion) {
       await openSection(page, "Runs");
       const rows = page.locator("tr[data-run]").filter({ hasText: "m5-question" });
