@@ -29,6 +29,11 @@ const (
 	// One immediate poll after the long-poller stops. Short enough that an
 	// empty hold cannot stretch an idle-0 run.
 	steerFinalPoll = 250 * time.Millisecond
+	// steerProbeBudget is how long the agent loop waits for the opening
+	// wait=0 poll. A 200 inside this budget emits run.capabilities before
+	// the first model call. A poll that does not return must not stall the
+	// loop; the poller still emits when that response arrives.
+	steerProbeBudget = 200 * time.Millisecond
 )
 
 // steerDeliveredHook, when set, runs on the poller after a batch that
@@ -302,9 +307,14 @@ func (p steerPoller) MarshalJSON() ([]byte, error) { return []byte(`"steerPoller
 
 // startSteerPoller long-polls until stop is called or ctx is canceled.
 // stop waits for the goroutine so it cannot emit after the terminal event.
+// The opening poll is wait=0. When that returns 200 inside steerProbeBudget,
+// run.capabilities is already emitted before this returns, which is before
+// the first model call. A held poll does not block the agent loop past
+// that budget.
 func startSteerPoller(ctx context.Context, endpoint string, token secretValue, log *Log, hub *steerHub) func() {
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
+	probeDone := make(chan struct{})
 	p := &steerPoller{
 		endpoint: endpoint,
 		token:    token,
@@ -314,8 +324,13 @@ func startSteerPoller(ctx context.Context, endpoint string, token secretValue, l
 	}
 	go func() {
 		defer close(done)
-		p.loop(ctx)
+		p.loop(ctx, probeDone)
 	}()
+	select {
+	case <-probeDone:
+	case <-ctx.Done():
+	case <-time.After(steerProbeBudget):
+	}
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -328,18 +343,27 @@ func startSteerPoller(ctx context.Context, endpoint string, token secretValue, l
 	}
 }
 
-func (p *steerPoller) loop(ctx context.Context) {
+func (p *steerPoller) loop(ctx context.Context, probeDone chan struct{}) {
+	var once sync.Once
+	finishProbe := func() { once.Do(func() { close(probeDone) }) }
+	defer finishProbe()
+	immediate := true
 	backoff := steerBackoffMin
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		started := time.Now()
-		items, status, err := p.poll(ctx, p.hub.ackCursor())
+		items, status, err := p.poll(ctx, p.hub.ackCursor(), immediate)
+		opening := immediate
+		immediate = false
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
+			if opening {
+				finishProbe()
+			}
 			if !sleepCtx(ctx, backoff) {
 				return
 			}
@@ -352,6 +376,9 @@ func (p *steerPoller) loop(ctx context.Context) {
 			return
 		}
 		if status != http.StatusOK {
+			if opening {
+				finishProbe()
+			}
 			if !sleepCtx(ctx, backoff) {
 				return
 			}
@@ -360,6 +387,11 @@ func (p *steerPoller) loop(ctx context.Context) {
 		}
 		backoff = steerBackoffMin
 		p.hub.emitCapability(p.log)
+		if opening {
+			// Release the agent loop before the empty-poll floor. The
+			// capability event is already in the log.
+			finishProbe()
+		}
 		fresh := 0
 		for _, item := range items {
 			if item.ID == "" {
@@ -391,8 +423,8 @@ func nextSteerBackoff(current time.Duration) time.Duration {
 	return next
 }
 
-func (p *steerPoller) poll(ctx context.Context, after string) ([]steerMsg, int, error) {
-	return pollSteer(ctx, p.client, p.endpoint, p.token, after, false)
+func (p *steerPoller) poll(ctx context.Context, after string, immediate bool) ([]steerMsg, int, error) {
+	return pollSteer(ctx, p.client, p.endpoint, p.token, after, immediate)
 }
 
 // pollSteer reads one steer batch. immediate sets wait=0 so a server that
@@ -449,8 +481,10 @@ func pollSteer(ctx context.Context, client *http.Client, endpoint string, token 
 	return out, resp.StatusCode, nil
 }
 
-// emitCapability records steering once. Later polls, including the idle-0
-// final poll, do not emit it again.
+// emitCapability records steering once, on the first 200. The opening
+// wait=0 poll is that 200 when the channel is up at run start, so the
+// event precedes the first model call. Later polls, including the idle-0
+// final poll, do not emit it again. A 404 or 501 never reaches this.
 func (h *steerHub) emitCapability(log *Log) {
 	if h == nil || log == nil {
 		return

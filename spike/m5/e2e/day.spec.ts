@@ -7,6 +7,7 @@ const evidence = process.env.M5_EVIDENCE ?? "/evidence";
 const signalDir = process.env.M5_SIGNAL ?? "/signal";
 const gitURL = process.env.FACTORY_GIT_URL ?? "http://factoryd-git:8080";
 const apiKey = process.env.M5_API_KEY ?? "";
+const mode = process.env.M5_MODE ?? "offline";
 const prURL = "https://github.com/polds/m5/pull/7";
 
 let replayPosts = 0;
@@ -344,9 +345,39 @@ async function driveAgentFailure(page: Page): Promise<void> {
   throw new Error("step 8: agent failure was not agent / agent_reported after two attempts");
 }
 
-// Steer comes from the run snapshot, and the harness emits run.capabilities
-// only after its first steer long-poll. Reload until that snapshot enables
-// the button, while the building model call is still open.
+function liveInterruptMode(value: string): boolean {
+  return value === "live" || value === "live-ci";
+}
+
+// A finished turn has an Assistant row. No Turn row means nothing is in
+// flight yet. Either one means an interrupt can be discarded.
+async function turnAlreadyFinished(page: Page): Promise<boolean> {
+  const log = page.getByRole("log", { name: "Run transcript" });
+  const assistant = await log.getByText("Assistant", { exact: true }).isVisible().catch(() => false);
+  if (assistant) return true;
+  const turn = await log.getByText("Turn", { exact: true }).isVisible().catch(() => false);
+  return !turn;
+}
+
+// A discarded interrupt is acknowledged on the next steer poll and stored
+// as delivered. The open page keeps the local row pending until reload.
+async function expectAcknowledgedInterrupt(page: Page): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const item = page.locator("ul.steer-list li").filter({ hasText: "interrupt" });
+    if ((await item.count()) > 0) {
+      const text = (await item.first().innerText()) ?? "";
+      if (text.includes("delivered")) return;
+    }
+    await page.reload();
+    await expect(page.getByRole("log", { name: "Run transcript" }).locator("[data-seq]").first()).toBeVisible();
+  }
+  throw new Error("step 5: discarded interrupt was not delivered");
+}
+
+// Steer comes from the run snapshot. The harness emits run.capabilities
+// before the first model call, so a reload during turn 1 enables the
+// button without waiting out the steer long-poll.
 async function waitUntilInterruptEnabled(page: Page): Promise<void> {
   const interrupt = page.locator("#interrupt-run");
   const deadline = Date.now() + 42_000;
@@ -417,8 +448,38 @@ test("day of factory", async ({ browser }) => {
     const interrupt = page.locator("#interrupt-run");
     await interrupt.click();
     const confirm = page.getByRole("dialog", { name: "Interrupt this turn?" });
+    const accepted = page.waitForResponse(
+      (res) => res.url().includes("/interrupt") && res.request().method() === "POST",
+    );
     await confirm.getByRole("button", { name: "Interrupt" }).click();
-    await expect(log.getByText("Interrupt", { exact: true })).toBeVisible({ timeout: 30_000 });
+    const interruptResponse = await accepted;
+    if (interruptResponse.status() !== 202) {
+      throw new Error(`step 5: interrupt HTTP ${interruptResponse.status()}`);
+    }
+    if (!liveInterruptMode(mode)) {
+      await expect(log.getByText("Interrupt", { exact: true })).toBeVisible({ timeout: 30_000 });
+    } else {
+      const interruptRow = log.getByText("Interrupt", { exact: true });
+      const deadline = Date.now() + 30_000;
+      let applied = false;
+      let finished = false;
+      while (Date.now() < deadline) {
+        if (await interruptRow.isVisible().catch(() => false)) {
+          applied = true;
+          break;
+        }
+        if (await turnAlreadyFinished(page)) {
+          finished = true;
+          break;
+        }
+        await delay(200);
+      }
+      if (!applied && finished) {
+        await expectAcknowledgedInterrupt(page);
+      } else if (!applied) {
+        throw new Error("step 5: turn was still in flight and the Interrupt row did not appear");
+      }
+    }
     const followUp = page.locator("#follow-up");
     await expect(followUp).toBeEnabled({ timeout: 60_000 });
     await followUp.fill("m5-follow-up Reply with a one-line summary and no tool calls.");

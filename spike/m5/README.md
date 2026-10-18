@@ -9,3 +9,5 @@ Offline drives a day of factory work through the console. The model router is `s
 ```
 
 Scratch is `spike/m5/.work/`, which is gitignored.
+
+Playwright receives `M5_MODE`. Offline step 5 requires the Interrupt transcript row. Live and live-ci still require that row when the turn is in flight. If the turn had already finished (an Assistant row, or no turn in flight) when the interrupt was accepted, those modes accept HTTP 202 and the steer shown as delivered. A discarded interrupt is acknowledged on the next steer poll and stored with `delivered_at` set. Offline does not use that exception.
