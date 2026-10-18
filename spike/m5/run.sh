@@ -14,6 +14,13 @@
 # its next step is the final reply. That process stays up across the
 # parked run and the resumed execution.
 #
+# The offline router port is M5_ROUTER_PORT. When that is unset, the
+# driver picks a port that binds on both 0.0.0.0 and 127.0.0.1. After
+# the router is up, GET /v1/models on 127.0.0.1 and from a container
+# via host.docker.internal must list the m5-* models. Anything else
+# stops with "router port <p> is answered by another process".
+# Live and live-ci do not start this router.
+#
 # live reads FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL and M5_LIVE_MODEL.
 # live-ci reads M1_OPENAI_BASE_URL, M1_OPENAI_API_KEY, and M5_LIVE_MODEL.
 # A missing variable prints "missing <NAME>" and exits before any
@@ -42,7 +49,7 @@ SIGNAL="$WORK/signal"
 EVIDENCE="$WORK/evidence"
 DEFS="$WORK/defs"
 PLAYWRIGHT_IMAGE="${PLAYWRIGHT_IMAGE:-mcr.microsoft.com/playwright:v1.58.2-noble@sha256:6446946a1d9fd62d9ae501312a2d76a43ee688542b21622056a372959b65d63d}"
-ROUTER_PORT=8318
+ROUTER_PORT=""
 MODE="${MODE:-offline}"
 MANUAL=0
 COMPOSE_STARTED=0
@@ -420,6 +427,112 @@ raise SystemExit(0 if name in names else 1)' "$name"; then
   return 1
 }
 
+# router_py runs one command in spike/m5/router.py.
+# The port number is the only stdout. Refusals stay on stderr.
+router_py() {
+  python3 - "$ROOT/spike/m5/router.py" "$@" <<'PY'
+import importlib.util
+import sys
+
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("m5router", path)
+if spec is None or spec.loader is None:
+    raise SystemExit("router import failed")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+cmd = sys.argv[2]
+args = sys.argv[3:]
+if cmd == "resolve":
+    configured = args[0] if args else ""
+    print(mod.resolve_port(configured))
+elif cmd == "ensure":
+    mod.ensure_port_available(int(args[0]))
+elif cmd == "identity":
+    raise SystemExit(0 if mod.file_is_router(args[0]) else 1)
+else:
+    raise SystemExit("unknown router command")
+PY
+}
+
+resolve_router_port() {
+  local chosen=""
+  if ! chosen="$(router_py resolve "${M5_ROUTER_PORT-}")"; then
+    return 1
+  fi
+  if [[ ! "$chosen" =~ ^[1-9][0-9]*$ ]]; then
+    echo "M5_ROUTER_PORT must be a TCP port" >&2
+    return 1
+  fi
+  ROUTER_PORT="$chosen"
+}
+
+# container_needs_host_gateway is true when the engine does not already
+# publish host.docker.internal. OrbStack and Docker Desktop do, and that
+# name is the one that forwards to the host loopback. Replacing it with
+# host-gateway would hide a process bound only to 127.0.0.1.
+container_needs_host_gateway() {
+  local os="$1" kernel="$2"
+  case "$os" in
+    *OrbStack* | *Docker\ Desktop*)
+      return 1
+      ;;
+  esac
+  if [[ "$kernel" == "Darwin" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+fetch_container_router_models() {
+  local port="$1" dest="$2"
+  local url="http://host.docker.internal:${port}/v1/models"
+  if container_needs_host_gateway "${OS_NAME:-}" "$(uname -s)"; then
+    docker run --rm --network bridge \
+      --add-host=host.docker.internal:host-gateway \
+      busybox:1.36 \
+      wget -q -T 5 -O - "$url" >"$dest"
+    return
+  fi
+  docker run --rm --network bridge \
+    busybox:1.36 \
+    wget -q -T 5 -O - "$url" >"$dest"
+}
+
+host_router_identity_ok() {
+  local port="$1" body
+  body="$(mktemp)"
+  if ! curl -fsS --connect-timeout 2 -m 5 -o "$body" \
+    "http://127.0.0.1:${port}/v1/models"; then
+    rm -f "$body"
+    return 1
+  fi
+  if ! router_py identity "$body"; then
+    rm -f "$body"
+    return 1
+  fi
+  rm -f "$body"
+}
+
+verify_router_identity() {
+  local port="$1" body
+  if ! host_router_identity_ok "$port"; then
+    echo "router port ${port} is answered by another process" >&2
+    return 1
+  fi
+  body="$(mktemp)"
+  if ! fetch_container_router_models "$port" "$body"; then
+    echo "router port ${port} is answered by another process" >&2
+    rm -f "$body"
+    return 1
+  fi
+  if ! router_py identity "$body"; then
+    echo "router port ${port} is answered by another process" >&2
+    rm -f "$body"
+    return 1
+  fi
+  rm -f "$body"
+}
+
 start_stub() {
   local name="$1" port="$2" script="$3"
   "$WORK/model-stub" -addr "127.0.0.1:${port}" -script "$script" \
@@ -443,6 +556,9 @@ start_offline_models() {
   start_stub planning 9094 "$WORK/scripts/planning.json"
   start_stub building 9095 "$WORK/scripts/building.json"
   start_stub reviewing 9096 "$WORK/scripts/reviewing.json"
+  if ! router_py ensure "$ROUTER_PORT"; then
+    return 1
+  fi
   M5_STUB_QUESTION=http://127.0.0.1:9091 \
     M5_STUB_AGENT=http://127.0.0.1:9092 \
     M5_STUB_TRIAGE=http://127.0.0.1:9093 \
@@ -454,6 +570,9 @@ start_offline_models() {
   ROUTER_PID=$!
   if ! wait_http "http://127.0.0.1:${ROUTER_PORT}/healthz"; then
     echo "model router did not become reachable" >&2
+    return 1
+  fi
+  if ! verify_router_identity "$ROUTER_PORT"; then
     return 1
   fi
 }
@@ -983,6 +1102,10 @@ fi
 printf 'task host: %s\n' "$TASK_HOST"
 
 if [[ "$MODE" == offline ]]; then
+  if ! resolve_router_port; then
+    exit 1
+  fi
+  printf 'router port: %s\n' "$ROUTER_PORT"
   export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="http://${TASK_HOST}:${ROUTER_PORT}/v1"
 else
   live_model="${M5_LIVE_MODEL}"

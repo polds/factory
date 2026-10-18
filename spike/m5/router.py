@@ -35,8 +35,104 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
 MODELS = ("m5-triage", "m5-planning", "m5-building", "m5-reviewing")
+ROUTER_ID = "m5-offline-router"
 HOLD_SECONDS = 55
 INFRA_HOLD_SECONDS = 120
+
+
+def port_is_free(port: int) -> bool:
+    """Return True when both 0.0.0.0 and 127.0.0.1 can bind port.
+
+    macOS allows those two addresses to listen on one port at the same
+    time. Binding only 0.0.0.0 can succeed while another process already
+    owns 127.0.0.1. Each probe is closed before the next bind: on Linux
+    a wildcard socket occupies the port for every address until then.
+    """
+    for host in ("0.0.0.0", "127.0.0.1"):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+        finally:
+            sock.close()
+    return True
+
+
+def loopback_accepts(port: int) -> bool:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.5)
+    try:
+        sock.connect(("127.0.0.1", port))
+    except OSError:
+        return False
+    else:
+        return True
+    finally:
+        sock.close()
+
+
+def ensure_port_available(port: int) -> None:
+    if loopback_accepts(port) or not port_is_free(port):
+        raise SystemExit(f"router port {port} is answered by another process")
+
+
+def pick_free_port() -> int:
+    for _ in range(50):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.bind(("127.0.0.1", 0))
+            port = int(probe.getsockname()[1])
+        finally:
+            probe.close()
+        if not loopback_accepts(port) and port_is_free(port):
+            return port
+    raise SystemExit("could not find a free router port")
+
+
+def resolve_port(configured: str) -> int:
+    text = configured.strip()
+    if text == "":
+        return pick_free_port()
+    if not text.isdecimal():
+        raise SystemExit("M5_ROUTER_PORT must be a TCP port")
+    port = int(text)
+    if port < 1 or port > 65535:
+        raise SystemExit("M5_ROUTER_PORT must be a TCP port")
+    ensure_port_available(port)
+    return port
+
+
+def models_document() -> dict:
+    return {
+        "object": "list",
+        "m5_router": ROUTER_ID,
+        "data": [{"id": model, "object": "model"} for model in MODELS],
+    }
+
+
+def payload_is_router(data: object) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if data.get("m5_router") != ROUTER_ID:
+        return False
+    rows = data.get("data")
+    if not isinstance(rows, list):
+        return False
+    ids: list[str] = []
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("id"), str):
+            ids.append(row["id"])
+    return all(model in ids for model in MODELS)
+
+
+def file_is_router(path: str) -> bool:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return payload_is_router(data)
 
 
 def blob(body: dict) -> str:
@@ -80,11 +176,7 @@ class Router(BaseHTTPRequestHandler):
             self._send(200, b"ok\n", "text/plain")
             return
         if self.path in ("/v1/models", "/models"):
-            data = {
-                "object": "list",
-                "data": [{"id": model, "object": "model"} for model in MODELS],
-            }
-            raw = json.dumps(data).encode()
+            raw = json.dumps(models_document()).encode()
             self._send(200, raw, "application/json")
             return
         self._send(404, b"not found\n", "text/plain")
@@ -181,6 +273,7 @@ class Router(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(payload)))
+            self.send_header("X-M5-Router", ROUTER_ID)
             self.end_headers()
             self.wfile.write(payload)
         except OSError:
@@ -189,9 +282,14 @@ class Router(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--addr", default="0.0.0.0:8318")
+    parser.add_argument("--addr", default="0.0.0.0:0")
     args = parser.parse_args()
-    host, _, port = args.addr.rpartition(":")
+    host, _, port_text = args.addr.rpartition(":")
+    if not port_text.isdecimal():
+        raise SystemExit("router address must end with a TCP port")
+    port = int(port_text)
+    if port != 0:
+        ensure_port_available(port)
     Router.stubs = {
         "question": os.environ["M5_STUB_QUESTION"],
         "agent": os.environ["M5_STUB_AGENT"],
@@ -200,8 +298,12 @@ def main() -> None:
         "building": os.environ["M5_STUB_BUILDING"],
         "reviewing": os.environ["M5_STUB_REVIEWING"],
     }
-    server = ThreadingHTTPServer((host or "0.0.0.0", int(port)), Router)
-    sys.stderr.write(f"listening addr={args.addr}\n")
+    try:
+        server = ThreadingHTTPServer((host or "0.0.0.0", port), Router)
+    except OSError:
+        raise SystemExit(f"router port {port} is answered by another process") from None
+    bound_host, bound_port = server.server_address
+    sys.stderr.write(f"listening addr={bound_host}:{bound_port}\n")
     server.serve_forever()
 
 
