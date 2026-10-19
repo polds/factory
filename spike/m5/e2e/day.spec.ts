@@ -348,7 +348,7 @@ async function driveAgentFailure(page: Page): Promise<void> {
   throw new Error("step 8: agent failure was not agent / agent_reported after two attempts");
 }
 
-function liveInterruptMode(value: string): boolean {
+function liveMode(value: string): boolean {
   return value === "live" || value === "live-ci";
 }
 
@@ -395,6 +395,163 @@ async function waitUntilInterruptEnabled(page: Page): Promise<void> {
   const reason = ((await page.locator("#steer-reason").textContent().catch(() => "")) ?? "").trim();
   throw new Error(`step 5: interrupt stayed disabled (${reason || "no reason"})`);
 }
+
+// Offline still matches the stub's ask_input text. Live and live-ci match
+// the work item, the question kind, and the run link. The question sentence
+// is the model copying the prompt.
+function questionInboxRow(page: Page): Locator {
+  const row = page
+    .locator("li.inbox-row")
+    .filter({ has: page.locator('[data-kind="question"]') })
+    .filter({ has: page.locator("a[href*='/runs/']") })
+    .filter({ hasText: "m5-question" });
+  if (liveMode(mode)) return row;
+  return row.filter({ hasText: "Which staging env?" });
+}
+
+type TranscriptLine = {
+  index: number;
+  label: string;
+  body: string;
+};
+
+// The log virtualizes rows. Walk it so a row above the pinned tail still counts.
+async function readTranscript(log: Locator): Promise<TranscriptLine[]> {
+  const lines = new Map<number, TranscriptLine>();
+  const pull = async (): Promise<void> => {
+    const batch = await log.locator(".transcript-row").evaluateAll((nodes) =>
+      nodes.map((node) => ({
+        index: Number(node.getAttribute("data-index") ?? "-1"),
+        label: (node.querySelector(".transcript-label")?.textContent ?? "").replace(/\s+/g, " ").trim(),
+        body: (node.querySelector(".transcript-body")?.textContent ?? "").replace(/\s+/g, " ").trim(),
+      })),
+    );
+    for (const row of batch) {
+      if (Number.isInteger(row.index) && row.index >= 0) lines.set(row.index, row);
+    }
+  };
+  await log.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await delay(100);
+  for (let step = 0; step < 40; step += 1) {
+    await pull();
+    const atEnd = await log.evaluate(
+      (element) => element.scrollTop + element.clientHeight >= element.scrollHeight - 2,
+    );
+    if (atEnd) break;
+    await log.evaluate((element) => {
+      element.scrollTop = Math.min(
+        element.scrollHeight,
+        element.scrollTop + Math.max(40, Math.floor(element.clientHeight / 2)),
+      );
+    });
+    await delay(100);
+  }
+  await pull();
+  for (let fill = 0; fill < 8; fill += 1) {
+    if (lines.size === 0) break;
+    const max = Math.max(...lines.keys());
+    let missing = -1;
+    for (let index = 0; index <= max; index += 1) {
+      if (!lines.has(index)) {
+        missing = index;
+        break;
+      }
+    }
+    if (missing < 0) break;
+    await log.evaluate((element, index) => {
+      element.scrollTop = Math.max(0, index * 36 - 40);
+    }, missing);
+    await delay(100);
+    await pull();
+  }
+  if (lines.size === 0) return [];
+  const max = Math.max(...lines.keys());
+  for (let index = 0; index <= max; index += 1) {
+    if (!lines.has(index)) return [];
+  }
+  return [...lines.values()].sort((left, right) => left.index - right.index);
+}
+
+// Exec 1 ends as Terminal "succeeded · waiting for an answer", not Run ended.
+// The resumed execution is an Assistant row after that, then Run ended succeeded.
+function questionResumed(lines: readonly TranscriptLine[]): boolean {
+  const waiting = lines.find(
+    (line) => line.label === "Terminal" && line.body.includes("waiting for an answer"),
+  );
+  if (!waiting) return false;
+  const assistant = lines.some((line) => line.label === "Assistant" && line.index > waiting.index);
+  const ended = lines.some(
+    (line) =>
+      line.label === "Run ended" &&
+      line.index > waiting.index &&
+      (line.body === "succeeded" || line.body.startsWith("succeeded ")),
+  );
+  return assistant && ended;
+}
+
+async function expectQuestionSettled(page: Page): Promise<void> {
+  const log = page.getByRole("log", { name: "Run transcript" });
+  await expect(log.locator("[data-seq]").first()).toBeVisible({ timeout: 30_000 });
+  const deadline = Date.now() + 120_000;
+  let last = "no rows";
+  while (Date.now() < deadline) {
+    const lines = await readTranscript(log);
+    const noted = lines.some((line) => line.body.includes("staging noted"));
+    if (lines.length > 0) {
+      last = lines.map((line) => `${line.label}: ${line.body}`).join(" | ");
+    }
+    // The posted answer is not a transcript row. The Question row is the
+    // model's ask_input text, so live modes do not look for "staging-a".
+    if (questionResumed(lines) && (liveMode(mode) || noted)) {
+      await log.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      return;
+    }
+    await delay(500);
+  }
+  throw new Error(
+    `step 7: resumed execution did not show an Assistant row after Terminal waiting for an answer and Run ended succeeded (${last.slice(0, 500)})`,
+  );
+}
+
+test("question resume ignores the pre-answer terminal", () => {
+  const waiting = {
+    index: 4,
+    label: "Terminal",
+    body: "succeeded · waiting for an answer",
+  };
+  const earlyAssistant = { index: 1, label: "Assistant", body: "before the question" };
+  const assistant = { index: 7, label: "Assistant", body: "noted the env" };
+  const ended = { index: 9, label: "Run ended", body: "succeeded · noted the env" };
+  expect(questionResumed([])).toBe(false);
+  expect(questionResumed([waiting])).toBe(false);
+  expect(questionResumed([earlyAssistant, waiting])).toBe(false);
+  expect(questionResumed([waiting, assistant])).toBe(false);
+  expect(
+    questionResumed([
+      waiting,
+      assistant,
+      { index: 8, label: "Terminal", body: "succeeded · noted the env" },
+    ]),
+  ).toBe(false);
+  expect(
+    questionResumed([
+      { index: 2, label: "Run ended", body: "succeeded" },
+      waiting,
+      assistant,
+    ]),
+  ).toBe(false);
+  expect(questionResumed([waiting, assistant, { index: 9, label: "Run ended", body: "failed" }])).toBe(
+    false,
+  );
+  expect(questionResumed([earlyAssistant, waiting, assistant, ended])).toBe(true);
+  expect(
+    questionResumed([waiting, assistant, { index: 9, label: "Run ended", body: "succeeded" }]),
+  ).toBe(true);
+});
 
 test("day of factory", async ({ browser }) => {
   if (apiKey === "") throw new Error("M5_API_KEY is empty");
@@ -461,7 +618,7 @@ test("day of factory", async ({ browser }) => {
     if (interruptResponse.status() !== 202) {
       throw new Error(`step 5: interrupt HTTP ${interruptResponse.status()}`);
     }
-    if (!liveInterruptMode(mode)) {
+    if (!liveMode(mode)) {
       await expect(log.getByText("Interrupt", { exact: true })).toBeVisible({ timeout: 30_000 });
     } else {
       const interruptRow = log.getByText("Interrupt", { exact: true });
@@ -746,7 +903,7 @@ test("day of factory", async ({ browser }) => {
     if (!matched.startsWith("status 2")) throw new Error(`step 10: match ${matched}`);
 
     await openInbox(page);
-    const question = page.locator("li.inbox-row").filter({ hasText: "m5-question" });
+    const question = questionInboxRow(page);
     const questionDeadline = Date.now() + 90_000;
     let sawQuestion = false;
     while (Date.now() < questionDeadline) {
@@ -754,7 +911,7 @@ test("day of factory", async ({ browser }) => {
       if (run?.status === "failed") throw failedRunError("m5-question", run);
       await openInbox(page);
       await page.getByRole("group", { name: "Filter by kind" }).getByRole("button", { name: "Questions" }).click();
-      if (await visibleWithin(question.getByText("Which staging env?"), 1_000)) {
+      if (await visibleWithin(question, 1_000)) {
         sawQuestion = true;
         break;
       }
@@ -786,15 +943,13 @@ test("day of factory", async ({ browser }) => {
     }
     await question.getByRole("button").first().click();
     const runHref = await question.locator("a[href*='/runs/']").getAttribute("href");
+    if (runHref === null || runHref === "") throw new Error("step 7: question row had no run link");
     await question.getByLabel("Answer").fill("staging-a");
     await question.getByRole("button", { name: "Send answer" }).click();
-    await expect(question.getByText("Which staging env?")).toBeHidden({ timeout: 30_000 });
-    if (runHref) await page.goto(runHref);
-    await expect(
-      page.getByRole("log", { name: "Run transcript" }).getByText("staging noted").first(),
-    ).toBeVisible({
-      timeout: 120_000,
-    });
+    // Same row as the wait. A missing question sentence must not satisfy this.
+    await expect(question).toBeHidden({ timeout: 30_000 });
+    await page.goto(runHref);
+    await expectQuestionSettled(page);
     await saveShot(page, "question");
     assertAxe();
   } finally {
