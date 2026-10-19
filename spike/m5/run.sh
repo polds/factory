@@ -31,6 +31,17 @@
 # when that is set, otherwise M5_LIVE_MODEL. The Done card asserts
 # "reviewer · " plus that id.
 #
+# Live and live-ci keep going after a report-only assertion fails, so
+# one run lists every independent mismatch. Navigation, the next click
+# target, and work-item state transitions stay hard expects. Offline
+# keeps hard expects for every check. A failed run still exits
+# non-zero, prints the Playwright failure list, and prints M5 FAIL.
+#
+# Preflight, outside live-ci and GitHub Actions, fetches origin when
+# this directory is a git checkout. When HEAD is behind origin/main it
+# prints a warning with the commit count and git pull. The warning
+# does not fail the run. A fetch that cannot reach origin is skipped.
+#
 # --manual leaves the stack up and prints the console URL plus the live
 # checklist. HEADED=1 runs Playwright on the host and requires Node.
 # The default browser is the pinned Playwright image on the compose
@@ -982,6 +993,82 @@ if trace.is_file() and api_key:
 PY
 }
 
+# fetch_origin_quiet updates origin and gives up after 15 seconds.
+# The status is 0 only when fetch itself succeeds. python3 is already
+# required, and its timeout is not the GNU timeout command.
+fetch_origin_quiet() {
+  local root="$1"
+  python3 - "$root" <<'PY'
+import os, subprocess, sys
+root = sys.argv[1]
+env = os.environ.copy()
+env["GIT_TERMINAL_PROMPT"] = "0"
+try:
+    subprocess.run(
+        ["git", "-C", root, "fetch", "--quiet", "origin"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
+        check=True,
+    )
+except (subprocess.SubprocessError, OSError):
+    raise SystemExit(1)
+PY
+}
+
+# warn_stale_checkout prints a warning when HEAD is behind origin/main.
+# It does not fail the run. live-ci and GitHub Actions skip the fetch.
+# root defaults to this repo. Tests pass a temporary checkout.
+warn_stale_checkout() {
+  local root="${1:-$ROOT}" behind=""
+  if [[ "${MODE:-}" == "live-ci" || -n "${GITHUB_ACTIONS:-}" ]]; then
+    return 0
+  fi
+  if ! command -v git >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! git -C "$root" remote get-url origin >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! fetch_origin_quiet "$root"; then
+    return 0
+  fi
+  if ! git -C "$root" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null 2>&1; then
+    return 0
+  fi
+  behind="$(git -C "$root" rev-list --count HEAD..origin/main 2>/dev/null || true)"
+  if [[ "$behind" == "1" ]]; then
+    printf 'WARNING: HEAD is 1 commit behind origin/main. Run git pull to update this checkout.\n' >&2
+    return 0
+  fi
+  if [[ "$behind" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'WARNING: HEAD is %s commits behind origin/main. Run git pull to update this checkout.\n' "$behind" >&2
+  fi
+  return 0
+}
+
+# print_playwright_failures repeats the list reporter's failure block.
+# That block is where soft expects show up together. A passing log
+# prints nothing.
+print_playwright_failures() {
+  local log="${1:-}"
+  if [[ ! -f "$log" ]]; then
+    return 0
+  fi
+  if ! grep -E '^[[:space:]]+[0-9]+\) ' "$log" >/dev/null 2>&1; then
+    return 0
+  fi
+  printf '\n== Playwright failures\n' >&2
+  awk '
+    /^[[:space:]]+[0-9]+\) / { show = 1 }
+    show { print }
+  ' "$log" >&2
+}
+
 print_checklist() {
   cat <<'EOF'
 Live run checklist
@@ -1067,6 +1154,7 @@ say "Preflight"
 if ! accept_mode "$MODE"; then
   die "MODE must be offline, live, or live-ci (got ${MODE})"
 fi
+warn_stale_checkout
 if [[ -f "$ROOT/deploy/.env" ]]; then
   load_env_file "$ROOT/deploy/.env"
 fi
@@ -1200,8 +1288,10 @@ fi
 
 say "Playwright"
 set +e
-run_playwright
-play_code=$?
+mkdir -p "$EVIDENCE"
+play_log="$EVIDENCE/playwright.log"
+run_playwright 2>&1 | tee "$play_log"
+play_code="${PIPESTATUS[0]}"
 set -e
 if [[ ! -f "$SIGNAL/done" ]]; then
   touch "$SIGNAL/done"
@@ -1211,6 +1301,9 @@ if [[ -n "$WATCH_PID" ]]; then
   WATCH_PID=""
 fi
 save_logs
+if [[ "$play_code" -ne 0 ]]; then
+  print_playwright_failures "$play_log"
+fi
 if ! assert_evidence; then
   die "M5 FAIL — evidence check"
 fi
