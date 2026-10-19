@@ -738,6 +738,270 @@ case_container_gateway_desktop() {
   fi
 }
 
+git_quiet() {
+  git -c user.email=factory@example.com -c user.name=factory "$@"
+}
+
+# make_behind_checkout prints a clone that is extra commits behind origin/main.
+# extra 0 is level with origin. Git chatter stays off stdout.
+make_behind_checkout() {
+  local parent="$1" extra="$2"
+  local origin="$parent/origin.git" seed="$parent/seed" checkout="$parent/checkout" i=0
+  git init --bare -b main "$origin" >/dev/null
+  git init -b main "$seed" >/dev/null
+  git_quiet -C "$seed" commit --allow-empty -m base >/dev/null
+  git -C "$seed" remote add origin "$origin"
+  git -C "$seed" push origin HEAD:main >/dev/null 2>&1
+  git clone -q "$origin" "$checkout"
+  while [[ "$i" -lt "$extra" ]]; do
+    i=$((i + 1))
+    git_quiet -C "$seed" commit --allow-empty -m "extra ${i}" >/dev/null
+    git -C "$seed" push origin HEAD:main >/dev/null 2>&1
+  done
+  printf '%s\n' "$checkout"
+}
+
+assert_no_warning() {
+  local err="$1"
+  if grep -F "WARNING:" "$err" >/dev/null; then
+    echo "unexpected stale-checkout warning" >&2
+    cat "$err" >&2
+    return 1
+  fi
+}
+
+case_stale_offline_behind() {
+  local parent checkout err before after seed_head
+  parent="$(mktemp -d)"
+  checkout="$(make_behind_checkout "$parent" 2)"
+  err="$(mktemp)"
+  before="$(git -C "$checkout" rev-parse origin/main)"
+  seed_head="$(git -C "$parent/seed" rev-parse HEAD)"
+  [[ "$before" != "$seed_head" ]]
+  (
+    MODE=offline
+    unset GITHUB_ACTIONS
+    warn_stale_checkout "$checkout"
+  ) 2>"$err"
+  after="$(git -C "$checkout" rev-parse origin/main)"
+  [[ "$after" == "$seed_head" ]]
+  grep -F "WARNING: HEAD is 2 commits behind origin/main." "$err" >/dev/null
+  grep -F "Run git pull to update this checkout." "$err" >/dev/null
+  rm -rf "$parent"
+  rm -f "$err"
+}
+
+case_stale_live_behind() {
+  local parent checkout err
+  parent="$(mktemp -d)"
+  checkout="$(make_behind_checkout "$parent" 1)"
+  err="$(mktemp)"
+  (
+    MODE=live
+    unset GITHUB_ACTIONS
+    warn_stale_checkout "$checkout"
+  ) 2>"$err"
+  grep -F "WARNING: HEAD is 1 commit behind origin/main." "$err" >/dev/null
+  grep -F "Run git pull to update this checkout." "$err" >/dev/null
+  rm -rf "$parent"
+  rm -f "$err"
+}
+
+case_stale_live_ci_skips() {
+  local parent checkout err before after
+  parent="$(mktemp -d)"
+  checkout="$(make_behind_checkout "$parent" 2)"
+  err="$(mktemp)"
+  before="$(git -C "$checkout" rev-parse origin/main)"
+  (
+    MODE=live-ci
+    unset GITHUB_ACTIONS
+    warn_stale_checkout "$checkout"
+  ) 2>"$err"
+  after="$(git -C "$checkout" rev-parse origin/main)"
+  [[ "$before" == "$after" ]]
+  assert_no_warning "$err"
+  rm -rf "$parent"
+  rm -f "$err"
+}
+
+case_stale_actions_offline_skips() {
+  local parent checkout err before after
+  parent="$(mktemp -d)"
+  checkout="$(make_behind_checkout "$parent" 2)"
+  err="$(mktemp)"
+  before="$(git -C "$checkout" rev-parse origin/main)"
+  (
+    MODE=offline
+    GITHUB_ACTIONS=true
+    warn_stale_checkout "$checkout"
+  ) 2>"$err"
+  after="$(git -C "$checkout" rev-parse origin/main)"
+  [[ "$before" == "$after" ]]
+  assert_no_warning "$err"
+  rm -rf "$parent"
+  rm -f "$err"
+}
+
+case_stale_actions_live_skips() {
+  local parent checkout err before after
+  parent="$(mktemp -d)"
+  checkout="$(make_behind_checkout "$parent" 2)"
+  err="$(mktemp)"
+  before="$(git -C "$checkout" rev-parse origin/main)"
+  (
+    MODE=live
+    GITHUB_ACTIONS=true
+    warn_stale_checkout "$checkout"
+  ) 2>"$err"
+  after="$(git -C "$checkout" rev-parse origin/main)"
+  [[ "$before" == "$after" ]]
+  assert_no_warning "$err"
+  rm -rf "$parent"
+  rm -f "$err"
+}
+
+case_stale_fetch_failure() {
+  local parent repo err
+  parent="$(mktemp -d)"
+  repo="$parent/repo"
+  git init -b main "$repo" >/dev/null
+  git_quiet -C "$repo" commit --allow-empty -m base >/dev/null
+  git -C "$repo" remote add origin "$parent/missing.git"
+  err="$(mktemp)"
+  (
+    MODE=offline
+    unset GITHUB_ACTIONS
+    warn_stale_checkout "$repo"
+  ) 2>"$err"
+  assert_no_warning "$err"
+  rm -rf "$parent"
+  rm -f "$err"
+}
+
+case_stale_current() {
+  local parent checkout err
+  parent="$(mktemp -d)"
+  checkout="$(make_behind_checkout "$parent" 0)"
+  err="$(mktemp)"
+  (
+    MODE=offline
+    unset GITHUB_ACTIONS
+    warn_stale_checkout "$checkout"
+  ) 2>"$err"
+  assert_no_warning "$err"
+  rm -rf "$parent"
+  rm -f "$err"
+}
+
+case_stale_ahead() {
+  local parent checkout err
+  parent="$(mktemp -d)"
+  checkout="$(make_behind_checkout "$parent" 0)"
+  git_quiet -C "$checkout" commit --allow-empty -m local >/dev/null
+  err="$(mktemp)"
+  (
+    MODE=live
+    unset GITHUB_ACTIONS
+    warn_stale_checkout "$checkout"
+  ) 2>"$err"
+  assert_no_warning "$err"
+  rm -rf "$parent"
+  rm -f "$err"
+}
+
+case_stale_not_checkout() {
+  local parent err
+  parent="$(mktemp -d)"
+  err="$(mktemp)"
+  (
+    MODE=live
+    unset GITHUB_ACTIONS
+    warn_stale_checkout "$parent"
+  ) 2>"$err"
+  assert_no_warning "$err"
+  rm -rf "$parent"
+  rm -f "$err"
+}
+
+case_stale_no_origin() {
+  local parent repo err
+  parent="$(mktemp -d)"
+  repo="$parent/repo"
+  git init -b main "$repo" >/dev/null
+  git_quiet -C "$repo" commit --allow-empty -m base >/dev/null
+  err="$(mktemp)"
+  (
+    MODE=offline
+    unset GITHUB_ACTIONS
+    warn_stale_checkout "$repo"
+  ) 2>"$err"
+  assert_no_warning "$err"
+  rm -rf "$parent"
+  rm -f "$err"
+}
+
+case_playwright_failure_summary() {
+  local log out
+  log="$(mktemp)"
+  out="$(mktemp)"
+  cat >"$log" <<'EOF'
+Running 2 tests using 1 worker
+
+  ✘  1 soft.spec.ts:9:5 › two soft failures and continue (8ms)
+
+  1) soft.spec.ts:9:5 › two soft failures and continue ─────────────────────────────────────────────
+
+    Error: card text
+
+    Expected: 2
+    Received: 1
+
+    Error: model id
+
+    Expected: other-model
+    Received: m5-reviewing
+
+  2 failed
+    soft.spec.ts:9:5 › two soft failures and continue ──────────────────────────────────────────────
+EOF
+  print_playwright_failures "$log" 2>"$out"
+  grep -F "== Playwright failures" "$out" >/dev/null
+  grep -F "Error: card text" "$out" >/dev/null
+  grep -F "Error: model id" "$out" >/dev/null
+  if grep -F "Running 2 tests" "$out" >/dev/null; then
+    echo "summary included the progress log" >&2
+    rm -f "$log" "$out"
+    return 1
+  fi
+  printf '%s\n' "  1 passed" >"$log"
+  if print_playwright_failures "$log" 2>&1 | grep -F "Playwright"; then
+    echo "summary printed for a passing log" >&2
+    rm -f "$log" "$out"
+    return 1
+  fi
+  rm -f "$log" "$out"
+}
+
+case_spec_outcome_modes() {
+  local spec="$ROOT/spike/m5/e2e/day.spec.ts"
+  grep -F 'function outcome<T>' "$spec" >/dev/null
+  grep -F 'const check = liveMode(mode) ? expect.soft : expect;' "$spec" >/dev/null
+  grep -F 'await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();' "$spec" >/dev/null
+  grep -F 'await expect(building.first()).toBeVisible({ timeout: 180_000 });' "$spec" >/dev/null
+  grep -F 'await expect(followUp).toBeEnabled({ timeout: 60_000 });' "$spec" >/dev/null
+  grep -F 'await expect(dayCard).toBeVisible({ timeout: 8 * 60 * 1000 });' "$spec" >/dev/null
+  grep -F 'await expect(agentListRow).toBeVisible({ timeout: 60_000 });' "$spec" >/dev/null
+  grep -F 'await expect(infraListRow).toBeVisible();' "$spec" >/dev/null
+  grep -F 'outcome(dayCard).toContainText(' "$spec" >/dev/null
+  grep -F 'outcome(replayPosts, "step 10: replay posted once")' "$spec" >/dev/null
+  grep -F 'outcome(axeFindings.join("\n"), "axe")' "$spec" >/dev/null
+  if grep -F 'expect(dayCard).toContainText(' "$spec" >/dev/null; then
+    echo "reviewer model id is still a hard expect" >&2
+    return 1
+  fi
+}
+
 expect_fail missing-live-url "missing FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL" case_missing_live_url
 expect_fail missing-live-model "missing M5_LIVE_MODEL" case_missing_live_model
 expect_fail missing-live-ci-url "missing M1_OPENAI_BASE_URL" case_missing_live_ci_url
@@ -776,6 +1040,18 @@ run_case router-port-static case_router_port_static
 run_case container-gateway-linux case_container_gateway_linux
 run_case container-gateway-orbstack case_container_gateway_orbstack
 run_case container-gateway-desktop case_container_gateway_desktop
+run_case stale-offline-behind case_stale_offline_behind
+run_case stale-live-behind case_stale_live_behind
+run_case stale-live-ci-skips case_stale_live_ci_skips
+run_case stale-actions-offline-skips case_stale_actions_offline_skips
+run_case stale-actions-live-skips case_stale_actions_live_skips
+run_case stale-fetch-failure case_stale_fetch_failure
+run_case stale-current case_stale_current
+run_case stale-ahead case_stale_ahead
+run_case stale-not-checkout case_stale_not_checkout
+run_case stale-no-origin case_stale_no_origin
+run_case playwright-failure-summary case_playwright_failure_summary
+run_case spec-outcome-modes case_spec_outcome_modes
 
 if [[ "$fails" -ne 0 ]]; then
   printf '%s case(s) failed\n' "$fails" >&2

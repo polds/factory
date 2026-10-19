@@ -44,10 +44,8 @@ async function axe(page: Page, name: string): Promise<void> {
   }
 }
 
-function assertAxe(): void {
-  if (axeFindings.length > 0) {
-    throw new Error(`axe\n${axeFindings.join("\n")}`);
-  }
+async function assertAxe(): Promise<void> {
+  await outcome(axeFindings.join("\n"), "axe").toBe("");
 }
 
 async function signal(name: string, body: string): Promise<string> {
@@ -352,6 +350,19 @@ function liveMode(value: string): boolean {
   return value === "live" || value === "live-ci";
 }
 
+// outcome is a hard expect offline and a soft expect in live and live-ci.
+// Soft checks only report a step: card text, model ids, transcript text,
+// badge labels, and other facts the next step does not click or wait on.
+// Navigation, the element that gets clicked next, and state transitions
+// stay on expect in every mode, so a miss fails there instead of timing
+// out on the next action. Playwright still fails the test if any soft
+// expect failed.
+function outcome<T>(actual: T, message?: string) {
+  const check = liveMode(mode) ? expect.soft : expect;
+  if (message === undefined) return check(actual);
+  return check(actual, message);
+}
+
 // A finished turn has an Assistant row. No Turn row means nothing is in
 // flight yet. Either one means an interrupt can be discarded.
 async function turnAlreadyFinished(page: Page): Promise<boolean> {
@@ -512,9 +523,12 @@ async function expectQuestionSettled(page: Page): Promise<void> {
     }
     await delay(500);
   }
-  throw new Error(
+  // Nothing after this reads the transcript. Live modes record the miss
+  // and continue. Offline still fails the test here.
+  await outcome(
+    false,
     `step 7: resumed execution did not show an Assistant row after Terminal waiting for an answer and Run ended succeeded (${last.slice(0, 500)})`,
-  );
+  ).toBe(true);
 }
 
 test("question resume ignores the pre-answer terminal", () => {
@@ -581,11 +595,11 @@ test("day of factory", async ({ browser }) => {
     const issueAck = await signal("deliver", '{"op":"issue"}\n');
     if (!issueAck.startsWith("status 2")) throw new Error(`step 6: issue delivery ${issueAck}`);
     const boardRuns = runListURLs.filter((url) => url.includes("factory_id=fac_")).length;
-    if (boardRuns === 0) throw new Error("board runs were fetched without factory_id");
+    await outcome(boardRuns > 0, "board runs were fetched without factory_id").toBe(true);
 
     await approveOnly(page, "m5-day");
     const inboxRuns = runListURLs.filter((url) => url.includes("factory_id=fac_")).length;
-    if (inboxRuns <= boardRuns) throw new Error("inbox runs were fetched without factory_id");
+    await outcome(inboxRuns > boardRuns, "inbox runs were fetched without factory_id").toBe(true);
 
     await openSection(page, "Runs");
     const building = page
@@ -599,11 +613,11 @@ test("day of factory", async ({ browser }) => {
     const log = page.getByRole("log", { name: "Run transcript" });
     await expect(log.locator("[data-seq]").first()).toBeVisible({ timeout: 60_000 });
     const before = await seqs(page);
-    if (new Set(before).size !== before.length) throw new Error("step 4: duplicate seqs");
+    await outcome(new Set(before).size, "step 4: duplicate seqs").toBe(before.length);
     await page.reload();
     await expect(log.locator("[data-seq]").first()).toBeVisible();
     const after = await seqs(page);
-    expect(after).toEqual(before);
+    await outcome(after, "step 4: transcript seqs changed across reload").toEqual(before);
     await saveShot(page, "transcript");
 
     await waitUntilInterruptEnabled(page);
@@ -646,38 +660,38 @@ test("day of factory", async ({ browser }) => {
     await expect(followUp).toBeEnabled({ timeout: 60_000 });
     await followUp.fill("m5-follow-up Reply with a one-line summary and no tool calls.");
     await page.getByRole("button", { name: "Send follow-up" }).click();
-    await expect(log.getByText("Follow-up", { exact: true })).toBeVisible({ timeout: 60_000 });
+    await outcome(log.getByText("Follow-up", { exact: true })).toBeVisible({ timeout: 60_000 });
     const steerList = page.locator("ul.steer-list");
-    await expect(steerList.getByText("interrupt", { exact: true })).toBeVisible({ timeout: 30_000 });
-    await expect(steerList.getByText("followup", { exact: true })).toBeVisible({ timeout: 30_000 });
-    await expect(steerList.getByText("delivered", { exact: true })).toHaveCount(2, { timeout: 30_000 });
+    await outcome(steerList.getByText("interrupt", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await outcome(steerList.getByText("followup", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await outcome(steerList.getByText("delivered", { exact: true })).toHaveCount(2, { timeout: 30_000 });
     const idleAck = await signal("idle", `${dayRun}\n`);
     if (idleAck !== "running") throw new Error(`step 5: container was ${idleAck} during idle`);
 
     await openSection(page, "Workers");
     await expect(page.getByRole("heading", { name: "Workers" })).toBeVisible();
     const worker = page.getByRole("row", { name: /local-1/ });
-    await expect(worker).toBeVisible({ timeout: 60_000 });
-    await expect(worker).toContainText("/ 3");
-    await expect(worker).not.toContainText("never");
-    await expect(page.getByText("Queue depth")).toBeVisible();
+    await outcome(worker).toBeVisible({ timeout: 60_000 });
+    await outcome(worker).toContainText("/ 3");
+    await outcome(worker).not.toContainText("never");
+    await outcome(page.getByText("Queue depth")).toBeVisible();
     await axe(page, "workers");
     await saveShot(page, "workers");
 
     await openSection(page, "Secrets");
     await expect(page.getByRole("heading", { name: "Secrets" })).toBeVisible();
-    await expect(
+    await outcome(
       page.getByText("Values are never shown. This page lists names, providers and presence only."),
     ).toBeVisible();
     const secrets = page.getByRole("table", { name: "Secret names and presence" });
-    await expect(secrets.getByRole("row", { name: /M5_WEBHOOK/ })).toContainText("Present");
-    await expect(secrets.getByRole("row", { name: /M5_PLANTED/ })).toContainText("Present");
+    await outcome(secrets.getByRole("row", { name: /M5_WEBHOOK/ })).toContainText("Present");
+    await outcome(secrets.getByRole("row", { name: /M5_PLANTED/ })).toContainText("Present");
     await axe(page, "secrets");
     await saveDom(page, "secrets");
     await saveShot(page, "secrets");
 
     await openSection(page, "Automations");
-    await expect(
+    await outcome(
       page.getByText("Runtime override: survives definition applies and doesn't edit the definition."),
     ).toBeVisible();
     await axe(page, "automations");
@@ -686,7 +700,7 @@ test("day of factory", async ({ browser }) => {
     await expect(page.getByText("Paused at runtime")).toBeVisible();
     await page.getByRole("switch", { name: "Resume issue-intake" }).click();
     await page.getByRole("dialog", { name: "Resume issue-intake?" }).getByRole("button", { name: "Resume" }).click();
-    await expect(page.getByText("Paused at runtime")).toHaveCount(0);
+    await outcome(page.getByText("Paused at runtime")).toHaveCount(0);
 
     await openSection(page, "Work items");
     const done = page.getByRole("region", { name: "Done" });
@@ -695,15 +709,15 @@ test("day of factory", async ({ browser }) => {
     // reviewing starts only then. This wait covers that idle plus the review run.
     await expect(dayCard).toBeVisible({ timeout: 8 * 60 * 1000 });
     if (reviewingModel === "") throw new Error("M5_REVIEWING_MODEL is empty");
-    await expect(dayCard).toContainText("reviewer · ");
-    await expect(dayCard).toContainText(`reviewer · ${reviewingModel}`);
+    await outcome(dayCard).toContainText("reviewer · ");
+    await outcome(dayCard).toContainText(`reviewer · ${reviewingModel}`);
     await dayCard.click();
-    await expect(page.locator("strong").filter({ hasText: /^Handoff$/ })).toBeVisible();
+    await outcome(page.locator("strong").filter({ hasText: /^Handoff$/ })).toBeVisible();
     const prAck = await signal("deliver", '{"op":"pr"}\n');
     if (!prAck.startsWith("status 2")) throw new Error(`step 6: pr delivery ${prAck}`);
     await page.reload();
-    await expect(page.locator("strong").filter({ hasText: /^Handoff$/ })).toBeVisible();
-    await expect(page.getByRole("link", { name: prURL })).toBeVisible({ timeout: 30_000 });
+    await outcome(page.locator("strong").filter({ hasText: /^Handoff$/ })).toBeVisible();
+    await outcome(page.getByRole("link", { name: prURL })).toBeVisible({ timeout: 30_000 });
     await axe(page, "work-item");
     await saveShot(page, "handoff");
 
@@ -712,10 +726,11 @@ test("day of factory", async ({ browser }) => {
     await expect(page.getByRole("columnheader", { name: "Started" })).toBeVisible();
     const questionAt = await rowIndex(page, "m5-question");
     const agentAt = await rowIndex(page, "m5-agent-failure");
-    if (questionAt < 0 || agentAt < 0 || questionAt > agentAt) {
-      throw new Error(`created_at order question ${questionAt} agent ${agentAt}`);
-    }
-    await expect(
+    await outcome(
+      questionAt >= 0 && agentAt >= 0 && questionAt <= agentAt,
+      `created_at order question ${questionAt} agent ${agentAt}`,
+    ).toBe(true);
+    await outcome(
       page
         .locator("tr[data-run]")
         .filter({ hasText: "m5-agent-failure" })
@@ -725,11 +740,11 @@ test("day of factory", async ({ browser }) => {
         .locator("time"),
     ).toHaveAttribute("datetime", /^\d{4}-/);
     await page.locator("#filter-source").selectOption("manual");
-    await expect(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" }).first()).toBeVisible();
-    await expect(page.locator("tr[data-run]").filter({ hasText: "m5-day" })).toHaveCount(0);
+    await outcome(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" }).first()).toBeVisible();
+    await outcome(page.locator("tr[data-run]").filter({ hasText: "m5-day" })).toHaveCount(0);
     await page.getByRole("button", { name: "Clear filters" }).click();
     await page.locator("#filter-worker").selectOption("local-1");
-    await expect(page.locator("tr[data-run]").first()).toBeVisible();
+    await outcome(page.locator("tr[data-run]").first()).toBeVisible();
     await page.getByRole("button", { name: "Clear filters" }).click();
     const failureGroup = page.getByRole("group", { name: "Failure class" });
     await failureGroup.getByRole("button", { name: "Agent" }).click();
@@ -739,18 +754,18 @@ test("day of factory", async ({ browser }) => {
       .filter({ hasText: "agent_reported" })
       .first();
     await expect(agentListRow).toBeVisible({ timeout: 60_000 });
-    await expect(agentListRow).toContainText("agent_reported");
-    await expect(page.locator("tr[data-run]").filter({ hasText: "m5-infra-kill" })).toHaveCount(0);
+    await outcome(agentListRow).toContainText("agent_reported");
+    await outcome(page.locator("tr[data-run]").filter({ hasText: "m5-infra-kill" })).toHaveCount(0);
     await agentListRow.getByRole("link").click();
     const agentPanel = page.getByRole("region", { name: "Failure" });
-    await expect(agentPanel).toHaveAttribute("data-failure-class", "agent");
-    await expect(page.locator(".meta-row > div").filter({ hasText: "Stage" }).locator("dd")).toHaveText(
+    await outcome(agentPanel).toHaveAttribute("data-failure-class", "agent");
+    await outcome(page.locator(".meta-row > div").filter({ hasText: "Stage" }).locator("dd")).toHaveText(
       /^(triage|planning|building)$/,
     );
-    await expect(agentPanel.locator("code", { hasText: "agent_reported" })).toBeVisible();
-    await expect(agentPanel.getByText("Agent reported this run as failed")).toBeVisible();
-    await expect(agentPanel.getByRole("list", { name: "Evidence" }).getByRole("listitem").first()).toBeVisible();
-    await expect(
+    await outcome(agentPanel.locator("code", { hasText: "agent_reported" })).toBeVisible();
+    await outcome(agentPanel.getByText("Agent reported this run as failed")).toBeVisible();
+    await outcome(agentPanel.getByRole("list", { name: "Evidence" }).getByRole("listitem").first()).toBeVisible();
+    await outcome(
       page.getByRole("log", { name: "Run transcript" }).getByText(/m5 agent failure|failed_by_agent/).first(),
     ).toBeVisible();
     await saveShot(page, "agent-failure");
@@ -763,28 +778,28 @@ test("day of factory", async ({ browser }) => {
       .filter({ hasText: "container_killed" })
       .first();
     await expect(infraListRow).toBeVisible();
-    await expect(infraListRow).toContainText("container_killed");
-    await expect(infraListRow).toContainText("exit 137");
-    await expect(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" })).toHaveCount(0);
+    await outcome(infraListRow).toContainText("container_killed");
+    await outcome(infraListRow).toContainText("exit 137");
+    await outcome(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" })).toHaveCount(0);
     await infraListRow.getByRole("link").click();
     const infraPanel = page.getByRole("region", { name: "Failure" });
-    await expect(infraPanel).toHaveAttribute("data-failure-class", "infrastructure");
-    await expect(page.locator(".meta-row > div").filter({ hasText: "Stage" }).locator("dd")).toHaveText(
+    await outcome(infraPanel).toHaveAttribute("data-failure-class", "infrastructure");
+    await outcome(page.locator(".meta-row > div").filter({ hasText: "Stage" }).locator("dd")).toHaveText(
       "building",
     );
-    await expect(infraPanel.locator("code", { hasText: "container_killed" })).toBeVisible();
-    await expect(infraPanel.getByRole("list", { name: "Evidence" }).getByRole("listitem").first()).toBeVisible();
-    await expect(page.locator(".meta-row > div").filter({ hasText: "Created" }).locator("time")).toHaveAttribute(
+    await outcome(infraPanel.locator("code", { hasText: "container_killed" })).toBeVisible();
+    await outcome(infraPanel.getByRole("list", { name: "Evidence" }).getByRole("listitem").first()).toBeVisible();
+    await outcome(page.locator(".meta-row > div").filter({ hasText: "Created" }).locator("time")).toHaveAttribute(
       "datetime",
       /^\d{4}-/,
     );
-    await expect(page.locator(".meta-row > div").filter({ hasText: "Started" }).locator("time")).toHaveAttribute(
+    await outcome(page.locator(".meta-row > div").filter({ hasText: "Started" }).locator("time")).toHaveAttribute(
       "datetime",
       /^\d{4}-/,
     );
-    await expect(page.locator(".meta-row > div").filter({ hasText: "Cost" }).locator("dd")).toHaveText(/^(—|\$)/);
+    await outcome(page.locator(".meta-row > div").filter({ hasText: "Cost" }).locator("dd")).toHaveText(/^(—|\$)/);
     await page.getByText("Raw details").click();
-    await expect(
+    await outcome(
       page.locator(".raw-details dt").filter({ hasText: "exit_code" }).locator("xpath=following-sibling::dd[1]"),
     ).toHaveText("137");
     await axe(page, "run-detail");
@@ -802,16 +817,21 @@ test("day of factory", async ({ browser }) => {
     try {
       const schemaResponse = await schemaPage.goto(new URL(schemaHref, page.url()).href);
       if (schemaResponse === null) throw new Error("definition schema navigation had no response");
-      expect(schemaResponse.status()).toBe(200);
+      await outcome(schemaResponse.status(), "definition schema status").toBe(200);
       const schemaType = schemaResponse.headers()["content-type"] ?? "";
-      if (!schemaType.includes("json")) throw new Error(`definition schema content-type ${schemaType}`);
-      const schemaBody: unknown = JSON.parse(await schemaResponse.text());
-      if (
-        typeof schemaBody !== "object" ||
-        schemaBody === null ||
-        !Object.prototype.hasOwnProperty.call(schemaBody, "factory.schema.json")
-      ) {
-        throw new Error("definition schema body missing factory.schema.json");
+      await outcome(schemaType, "definition schema content-type").toContain("json");
+      if (schemaResponse.status() === 200 && schemaType.includes("json")) {
+        let hasFactorySchema = false;
+        try {
+          const schemaBody: unknown = JSON.parse(await schemaResponse.text());
+          hasFactorySchema =
+            typeof schemaBody === "object" &&
+            schemaBody !== null &&
+            Object.prototype.hasOwnProperty.call(schemaBody, "factory.schema.json");
+        } catch {
+          hasFactorySchema = false;
+        }
+        await outcome(hasFactorySchema, "definition schema body missing factory.schema.json").toBe(true);
       }
     } finally {
       await schemaPage.close();
@@ -822,27 +842,28 @@ test("day of factory", async ({ browser }) => {
     await editor.fill(original.replace("schemaVersion: v1alpha1", "schemaVersion: no-such"));
     await page.getByRole("button", { name: "Validate" }).click();
     const diagnostics = page.getByRole("region", { name: /Diagnostics/ });
-    await expect(diagnostics.getByRole("button", { name: /factory\.yaml:\d+/ })).toBeVisible();
-    await expect(diagnostics.getByText(/unsupported schemaVersion/)).toBeVisible();
+    await outcome(diagnostics.getByRole("button", { name: /factory\.yaml:\d+/ })).toBeVisible();
+    await outcome(diagnostics.getByText(/unsupported schemaVersion/)).toBeVisible();
     const fixed = original.replace(
       "description: Day of factory.",
       "description: Day of factory. m5-applied-marker",
     );
     await editor.fill(fixed);
-    await expect(editor).toHaveValue(/m5-applied-marker/);
+    await outcome(editor).toHaveValue(/m5-applied-marker/);
     await page.getByRole("button", { name: "Validate" }).click();
-    await expect(diagnostics.getByText("0 errors")).toBeVisible({ timeout: 30_000 });
-    await expect(diagnostics.getByText(/not an authorization boundary/).first()).toBeVisible();
+    await outcome(diagnostics.getByText("0 errors")).toBeVisible({ timeout: 30_000 });
+    await outcome(diagnostics.getByText(/not an authorization boundary/).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Apply" })).toBeEnabled();
     await page.getByRole("button", { name: "Apply" }).click();
     const apply = page.getByRole("dialog", { name: "Apply definition" });
-    await expect(apply.getByText("factory.yaml")).toBeVisible();
+    await expect(apply).toBeVisible();
+    await outcome(apply.getByText("factory.yaml")).toBeVisible();
     await apply.getByRole("button", { name: "Confirm apply" }).click();
     await expect(apply).toBeHidden({ timeout: 30_000 });
-    await expect(page.getByText("The server applied a different definition than your edits")).toHaveCount(0);
+    await outcome(page.getByText("The server applied a different definition than your edits")).toHaveCount(0);
     await page.reload();
     await page.getByRole("tree", { name: "Definition files" }).getByRole("treeitem", { name: "factory.yaml" }).click();
-    await expect(page.getByRole("textbox", { name: "Contents of factory.yaml" })).toHaveValue(
+    await outcome(page.getByRole("textbox", { name: "Contents of factory.yaml" })).toHaveValue(
       /m5-applied-marker/,
     );
     await axe(page, "definition");
@@ -854,9 +875,9 @@ test("day of factory", async ({ browser }) => {
     await expect(page.getByText(/Read-only\. Changes go through a pull request\./)).toBeVisible({
       timeout: 90_000,
     });
-    await expect(page.getByText(/Production ref\s+main\s+@\s+[0-9a-f]{7}/)).toBeVisible();
-    await expect(page.getByRole("button", { name: "Validate" })).toHaveCount(0);
-    await expect(page.getByRole("textbox", { name: /Contents of/ })).toHaveCount(0);
+    await outcome(page.getByText(/Production ref\s+main\s+@\s+[0-9a-f]{7}/)).toBeVisible();
+    await outcome(page.getByRole("button", { name: "Validate" })).toHaveCount(0);
+    await outcome(page.getByRole("textbox", { name: /Contents of/ })).toHaveCount(0);
     await axe(page, "definition-git");
     await saveShot(page, "definition-git");
 
@@ -875,15 +896,15 @@ test("day of factory", async ({ browser }) => {
     if (!unmatched.startsWith("status 2")) throw new Error(`step 10: unmatched ${unmatched}`);
     await page.getByRole("button", { name: "ci", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Recent deliveries" })).toBeVisible();
-    await expect(page.getByText(/m5-wh-/).first()).toBeVisible();
+    await outcome(page.getByText(/m5-wh-/).first()).toBeVisible();
     await openSection(page, "Deliveries");
     await axe(page, "deliveries");
     await page.getByRole("tab", { name: /Unmatched/ }).click();
     await page.locator("table").getByRole("button", { name: /^m5-pr-/ }).click();
     const normalized = page.getByRole("region", { name: "Normalized event" });
-    await expect(normalized).toBeVisible();
-    await expect(normalized).toContainText("github");
-    await expect(normalized).toContainText("pull_request_opened");
+    await outcome(normalized).toBeVisible();
+    await outcome(normalized).toContainText("github");
+    await outcome(normalized).toContainText("pull_request_opened");
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     const delivery = page.locator("table").getByRole("button", { name: /^m5-wh-/ });
@@ -891,8 +912,8 @@ test("day of factory", async ({ browser }) => {
     await delivery.click();
     await page.getByRole("button", { name: "Replay delivery" }).click();
     await page.getByRole("dialog", { name: "Replay this delivery?" }).getByRole("button", { name: "Replay" }).click();
-    await expect(page.getByText("Replayed just now").first()).toBeVisible();
-    expect(replayPosts).toBe(1);
+    await outcome(page.getByText("Replayed just now").first()).toBeVisible();
+    await outcome(replayPosts, "step 10: replay posted once").toBe(1);
     await saveShot(page, "replay");
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -900,7 +921,7 @@ test("day of factory", async ({ browser }) => {
       "deliver",
       `${JSON.stringify({ op: "webhook", match: true, uid })}\n`,
     );
-    if (!matched.startsWith("status 2")) throw new Error(`step 10: match ${matched}`);
+    await outcome(matched.startsWith("status 2"), `step 10: match ${matched}`).toBe(true);
 
     await openInbox(page);
     const question = questionInboxRow(page);
@@ -951,7 +972,7 @@ test("day of factory", async ({ browser }) => {
     await page.goto(runHref);
     await expectQuestionSettled(page);
     await saveShot(page, "question");
-    assertAxe();
+    await assertAxe();
   } finally {
     await fs.writeFile(path.join(signalDir, "done"), "done\n");
     await context.tracing.stop({ path: path.join(evidence, "day-trace.zip") });
