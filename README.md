@@ -18,9 +18,12 @@ M2 and M3 are done: the control plane, the work-item pipeline, and the
 blocking spec gate. Laptop exits are `MODE=live ./spike/m2/run.sh` and
 `MODE=live APPROVAL_DECISION=approve ./spike/m3/run.sh`. The M3 run on
 Peter's Mac opened draft
-[PR #50](https://github.com/polds/factory/pull/50). Evidence is in
-[`docs/12-build-sequence.md`](docs/12-build-sequence.md). The `claude-code`
-adapter is not in this build.
+[PR #50](https://github.com/polds/factory/pull/50). M5 is done. Peter's Mac,
+`MODE=live ./spike/m5/run.sh`, printed `M5 LIVE PASS` (2 passed, 1 skipped)
+on 2026-10-19, `main` at `dd186bd`
+([#120](https://github.com/polds/factory/pull/120)). Evidence is in
+[`docs/12-build-sequence.md`](docs/12-build-sequence.md). `m5-live.yml` is
+still open. The `claude-code` adapter is not in this build.
 
 ## Quickstart
 
