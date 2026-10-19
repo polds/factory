@@ -494,6 +494,8 @@ if defs not in text or "/definitions" not in text:
 # The parent mount is read-write. A :ro short form or read_only: true
 # on that target fails the check.
 section = text.split("factoryd:", 1)[1].split("\n  factoryd-git:", 1)[0]
+if "FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS" not in section:
+    raise SystemExit("factoryd is missing extra header passthrough")
 if "read_only: true" in section and "/definitions" in section:
     # read_only true is allowed on other mounts in the same service.
     # The /definitions bind must not be read-only.
@@ -1010,6 +1012,236 @@ case_spec_outcome_modes() {
   fi
 }
 
+install_curl_stub() {
+  local dir="$1"
+  cat >"$dir/curl" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+out="${CURL_ARGS_FILE:?}"
+: >"$out"
+chmod 600 "$out"
+prev=""
+dest=""
+for arg in "$@"; do
+  printf '%s\0' "$arg" >>"$out"
+  if [[ "$prev" == "-o" ]]; then
+    dest="$arg"
+  fi
+  prev="$arg"
+done
+if [[ -n "$dest" ]]; then
+  printf '%s\n' '{"data":[{"id":"listed-model"}]}' >"$dest"
+fi
+EOF
+  chmod 755 "$dir/curl"
+}
+
+# probe_with_stub runs catalog_probe through a fake curl. The fake curl
+# records arguments and does not print them. mode selects the assertion.
+probe_with_stub() {
+  local mode="$1" dir="" code=0
+  dir="$(mktemp -d)"
+  chmod 700 "$dir"
+  install_curl_stub "$dir"
+  # Assignments in the caller are not exported. Export here so the probe
+  # and the checker see them, without an export inside each case subshell.
+  export FACTORY_INFERENCE_OPENAI_API_KEY
+  export FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS
+  CURL_ARGS_FILE="$dir/args" CATALOG_CURL="$dir/curl" \
+    catalog_probe "http://127.0.0.1:9/v1" "$dir/catalog.json" >"$dir/out" 2>"$dir/err" || code=$?
+  python3 - "$mode" "$dir" "$code" <<'PY'
+import os, sys
+mode, root, code = sys.argv[1], sys.argv[2], int(sys.argv[3])
+out = open(os.path.join(root, "out"), encoding="utf-8").read()
+err = open(os.path.join(root, "err"), encoding="utf-8").read()
+args_path = os.path.join(root, "args")
+args = []
+if os.path.exists(args_path):
+    raw = open(args_path, "rb").read().split(b"\0")
+    args = [item.decode() for item in raw if item]
+headers = []
+prev = ""
+for arg in args:
+    if prev == "-H":
+        headers.append(arg)
+    prev = arg
+key = os.environ.get("FACTORY_INFERENCE_OPENAI_API_KEY", "")
+extra = os.environ.get("FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS", "")
+secrets = [key]
+for line in extra.split("\n"):
+    if ":" in line:
+        secrets.append(line.split(":", 1)[1].strip())
+        value = secrets[-1]
+        if value.lower().startswith("bearer "):
+            secrets.append(value[7:].strip())
+secrets = [item for item in secrets if len(item) >= 8]
+
+def leaked():
+    blob = out + "\n" + err
+    return any(item in blob for item in secrets)
+
+if leaked():
+    sys.stderr.write("probe output contains a secret\n")
+    raise SystemExit(1)
+
+if mode == "reject":
+    if code == 0:
+        sys.stderr.write("malformed headers were accepted\n")
+        raise SystemExit(1)
+    if os.path.exists(args_path):
+        sys.stderr.write("curl ran for malformed headers\n")
+        raise SystemExit(1)
+    if "CR or LF inside a header value" not in err and "is malformed" not in err:
+        sys.stderr.write("missing header parse error\n")
+        raise SystemExit(1)
+    raise SystemExit(0)
+
+if code != 0:
+    sys.stderr.write("catalog probe failed\n")
+    raise SystemExit(1)
+auth = [item for item in headers if item.lower().startswith("authorization:")]
+if mode == "auth":
+    want = "Authorization: Bearer " + key
+    if auth != [want]:
+        sys.stderr.write("authorization header was not sent\n")
+        raise SystemExit(1)
+    if len(headers) != 1:
+        sys.stderr.write("unexpected extra header\n")
+        raise SystemExit(1)
+elif mode == "override":
+    replacement = ""
+    for line in extra.split("\n"):
+        if ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        if name.strip().lower() == "authorization":
+            replacement = value.strip()
+    sent = auth[0].split(":", 1)[1].strip() if len(auth) == 1 else ""
+    if len(auth) != 1 or replacement == "" or sent != replacement or (key and key in sent):
+        sys.stderr.write("extra authorization did not replace the api key\n")
+        raise SystemExit(1)
+    if key and any(key in item for item in headers):
+        sys.stderr.write("api key still present after override\n")
+        raise SystemExit(1)
+elif mode == "auth-and-extra":
+    want = "Authorization: Bearer " + key
+    if auth != [want]:
+        sys.stderr.write("authorization header was not sent\n")
+        raise SystemExit(1)
+    if not any(item.lower().startswith("x-litellm-api-key:") for item in headers):
+        sys.stderr.write("extra header was not sent\n")
+        raise SystemExit(1)
+elif mode == "no-auth":
+    if auth or headers:
+        sys.stderr.write("empty api key sent a header\n")
+        raise SystemExit(1)
+else:
+    sys.stderr.write("unknown probe mode\n")
+    raise SystemExit(1)
+PY
+  local py=$?
+  rm -rf "$dir"
+  return "$py"
+}
+
+case_catalog_auth_live() {
+  (
+    MODE=live
+    FACTORY_INFERENCE_OPENAI_API_KEY='sk-planted-api-key-value'
+    unset FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS
+    unset M1_OPENAI_EXTRA_HEADERS
+    apply_live_inference_env
+    probe_with_stub auth
+  )
+}
+
+case_catalog_auth_live_ci() {
+  (
+    MODE=live-ci
+    M1_OPENAI_BASE_URL='http://127.0.0.1:9/v1'
+    M1_OPENAI_API_KEY='sk-planted-api-key-value'
+    unset M1_OPENAI_EXTRA_HEADERS
+    unset FACTORY_INFERENCE_OPENAI_API_KEY
+    unset FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS
+    apply_live_inference_env
+    probe_with_stub auth
+  )
+}
+
+case_catalog_auth_override() {
+  (
+    FACTORY_INFERENCE_OPENAI_API_KEY='sk-planted-api-key-value'
+    FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS='authorization: Bearer oauth-planted-token-value'
+    probe_with_stub override
+  )
+}
+
+case_catalog_extra_and_auth() {
+  (
+    FACTORY_INFERENCE_OPENAI_API_KEY='sk-planted-api-key-value'
+    FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS='x-litellm-api-key: Bearer sk-planted-extra-header-value'
+    probe_with_stub auth-and-extra
+  )
+}
+
+case_catalog_omits_empty_auth() {
+  (
+    FACTORY_INFERENCE_OPENAI_API_KEY=''
+    unset FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS
+    probe_with_stub no-auth
+  )
+}
+
+case_catalog_rejects_header_cr() {
+  (
+    FACTORY_INFERENCE_OPENAI_API_KEY='sk-planted-api-key-value'
+    FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS=$'x-litellm-api-key: Bearer sk-planted-extra-header-value\r'
+    probe_with_stub reject
+  )
+}
+
+case_compose_extra_headers_passthrough() {
+  local out defs gitdir err code=0
+  defs="$(mktemp -d)"
+  gitdir="$(mktemp -d)"
+  out="$ROOT/spike/m5/.work/compose-headers.yml"
+  err="$ROOT/spike/m5/.work/compose-headers.err"
+  mkdir -p "$ROOT/spike/m5/.work" "$defs" "$gitdir"
+  M5_DEFS_HOST="$defs" \
+    M5_GIT_HOST="$gitdir" \
+    FACTORY_DEFINITION_HOST_PATH="$defs" \
+    FACTORY_DEFINITION_MOUNT=/definitions \
+    FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS=$'x-litellm-api-key: Bearer sk-planted-extra-header-value\nX-Request-Tag: alpha' \
+    docker compose -p factory-m5 \
+    -f "$ROOT/deploy/docker-compose.yml" \
+    -f "$ROOT/spike/m5/compose.yml" \
+    --profile m5 config >"$out" 2>"$err" || code=$?
+  if [[ "$code" != 0 ]]; then
+    if grep -F 'sk-planted-extra-header-value' "$err" >/dev/null 2>&1; then
+      printf 'compose stderr contains a header value\n' >&2
+    else
+      printf 'compose config failed\n' >&2
+    fi
+    rm -f "$out" "$err"
+    return 1
+  fi
+  python3 - "$out" "$err" <<'PY' || code=$?
+import sys
+text = open(sys.argv[1], encoding="utf-8").read()
+err = open(sys.argv[2], encoding="utf-8").read()
+planted = "sk-planted-extra-header-value"
+if planted in err:
+    sys.stderr.write("compose stderr contains a header value\n")
+    raise SystemExit(1)
+section = text.split("factoryd:", 1)[1].split("\n  factoryd-git:", 1)[0]
+if "x-litellm-api-key:" not in section or "X-Request-Tag:" not in section or planted not in section:
+    sys.stderr.write("extra headers were not passed to factoryd\n")
+    raise SystemExit(1)
+PY
+  rm -f "$out" "$err"
+  return "$code"
+}
+
 expect_fail missing-live-url "missing FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL" case_missing_live_url
 expect_fail missing-live-model "missing M5_LIVE_MODEL" case_missing_live_model
 expect_fail missing-live-ci-url "missing M1_OPENAI_BASE_URL" case_missing_live_ci_url
@@ -1038,6 +1270,13 @@ run_case wipe-locked-inside case_wipe_locked_inside_work
 run_case keep-up-skips-defs case_keep_up_skips_defs_wipe
 run_case prepare-locked-tree case_prepare_definition_locked_tree
 run_case compose-config case_compose_config
+run_case compose-extra-headers case_compose_extra_headers_passthrough
+run_case catalog-auth-live case_catalog_auth_live
+run_case catalog-auth-live-ci case_catalog_auth_live_ci
+run_case catalog-auth-override case_catalog_auth_override
+run_case catalog-extra-and-auth case_catalog_extra_and_auth
+run_case catalog-omits-empty-auth case_catalog_omits_empty_auth
+run_case catalog-rejects-header-cr case_catalog_rejects_header_cr
 run_case prebound-loopback case_prebound_loopback_detected
 expect_fail router-port-invalid "M5_ROUTER_PORT must be a TCP port" case_router_port_invalid
 run_case router-port-picked case_router_port_picked

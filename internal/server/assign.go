@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/polds/factory/internal/inference"
 	"github.com/polds/factory/internal/protocol"
 	"github.com/polds/factory/internal/store"
 )
@@ -81,6 +82,12 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 	if s.cfg.InferenceAPIKey != "" {
 		env["OPENAI_API_KEY"] = s.cfg.InferenceAPIKey
 		values = append(values, s.cfg.InferenceAPIKey)
+	}
+	// The upstream worker copies EnvVars into the task container. The
+	// harness reads this variable on every model call, including review.
+	if formatted := inference.Format(s.cfg.InferenceExtraHeaders); formatted != "" {
+		env[inference.ExtraHeadersEnv] = formatted
+		values = append(values, inference.Values(s.cfg.InferenceExtraHeaders)...)
 	}
 	env["FACTORY_SECRET_VALUES"] = strings.Join(values, "\n")
 	// The task image has no git user (arbitrary uid, empty global config).

@@ -11,6 +11,7 @@ import (
 
 	"github.com/polds/factory/internal/artifacts"
 	"github.com/polds/factory/internal/forge/github"
+	"github.com/polds/factory/internal/inference"
 	"github.com/polds/factory/internal/server"
 )
 
@@ -74,21 +75,30 @@ func configFromEnv(getenv func(string) string, environ []string) (processConfig,
 	if err != nil {
 		return processConfig{}, err
 	}
+	extraHeaders, err := inference.ParseExtraHeaders(getenv(inference.ExtraHeadersEnv))
+	if err != nil {
+		return processConfig{}, err
+	}
+	for _, value := range inference.Values(extraHeaders) {
+		hide(value)
+	}
+	hide(getenv(inference.ExtraHeadersEnv))
 	return processConfig{
 		server: server.Config{
-			DatabaseURL:         strings.TrimSpace(getenv("FACTORY_DATABASE_URL")),
-			APIKey:              getenv("FACTORY_API_KEY"),
-			WorkerAPIKey:        getenv("FACTORY_WORKER_API_KEY"),
-			DefinitionPath:      strings.TrimSpace(getenv("FACTORY_DEFINITION_PATH")),
-			ExternalURL:         strings.TrimSpace(getenv("FACTORY_EXTERNAL_URL")),
-			TaskServerURL:       taskServerURL(getenv),
-			HTTPAddr:            httpAddr(getenv),
-			InferenceBaseURL:    strings.TrimSpace(getenv("FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL")),
-			InferenceAPIKey:     getenv("FACTORY_INFERENCE_OPENAI_API_KEY"),
-			Secrets:             secrets,
-			WorkerPool:          strings.TrimSpace(getenv("FACTORY_WORKER_POOL")),
-			WorkerPlatform:      strings.TrimSpace(getenv("FACTORY_WORKER_PLATFORM")),
-			WorkerMaxConcurrent: atoiPositive(getenv("FACTORY_WORKER_MAX_CONCURRENT")),
+			DatabaseURL:           strings.TrimSpace(getenv("FACTORY_DATABASE_URL")),
+			APIKey:                getenv("FACTORY_API_KEY"),
+			WorkerAPIKey:          getenv("FACTORY_WORKER_API_KEY"),
+			DefinitionPath:        strings.TrimSpace(getenv("FACTORY_DEFINITION_PATH")),
+			ExternalURL:           strings.TrimSpace(getenv("FACTORY_EXTERNAL_URL")),
+			TaskServerURL:         taskServerURL(getenv),
+			HTTPAddr:              httpAddr(getenv),
+			InferenceBaseURL:      strings.TrimSpace(getenv("FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL")),
+			InferenceAPIKey:       getenv("FACTORY_INFERENCE_OPENAI_API_KEY"),
+			InferenceExtraHeaders: extraHeaders,
+			Secrets:               secrets,
+			WorkerPool:            strings.TrimSpace(getenv("FACTORY_WORKER_POOL")),
+			WorkerPlatform:        strings.TrimSpace(getenv("FACTORY_WORKER_PLATFORM")),
+			WorkerMaxConcurrent:   atoiPositive(getenv("FACTORY_WORKER_MAX_CONCURRENT")),
 			S3: artifacts.S3{
 				Endpoint:  strings.TrimSpace(getenv("FACTORY_S3_ENDPOINT")),
 				Bucket:    strings.TrimSpace(getenv("FACTORY_S3_BUCKET")),

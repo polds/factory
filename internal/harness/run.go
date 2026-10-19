@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/polds/factory/internal/inference"
 )
 
 const adapterName = "generic-openai"
@@ -136,6 +138,12 @@ func Run(ctx context.Context, opt Options) int {
 	if tok := lookupEnv(opt.Env, "FACTORY_RUN_TOKEN"); tok != "" {
 		secrets = append(secrets, tok)
 	}
+	apiKey := lookupEnv(opt.Env, "OPENAI_API_KEY")
+	extra, err := inference.ParseExtraHeaders(lookupEnv(opt.Env, inference.ExtraHeadersEnv))
+	if err != nil {
+		return finish(ExitConfigInvalid, "config_invalid", err.Error())
+	}
+	secrets = append(secrets, inference.Values(extra)...)
 
 	turns, err := maxTurnsFrom(opt.Env)
 	if err != nil {
@@ -156,7 +164,6 @@ func Run(ctx context.Context, opt Options) int {
 		}
 	}
 
-	apiKey := lookupEnv(opt.Env, "OPENAI_API_KEY")
 	box := toolbox{workspace: opt.Workspace, env: scrubEnv(opt.Env, toolEnvDeny(task.HarnessAuthEnv))}
 	// Parsed up front so an interrupt during the conversation can wait
 	// out the same idle budget. A bad value is reported only after the
@@ -170,6 +177,7 @@ func Run(ctx context.Context, opt Options) int {
 		box:      box,
 		baseURL:  baseURL,
 		apiKey:   apiKey,
+		extra:    extra,
 		model:    model,
 		secrets:  secrets,
 		maxTurns: turns,
@@ -351,6 +359,7 @@ type conversation struct {
 	box      toolbox
 	baseURL  string
 	apiKey   string
+	extra    []inference.Header
 	model    string
 	secrets  []string
 	maxTurns int
@@ -415,7 +424,7 @@ func (c *conversation) oneTurn(ctx context.Context, turn int, messages []chatMes
 			defer turnCommitHook()
 		}
 	}
-	resp, err := completeChat(turnCtx, c.baseURL, c.apiKey, chatRequest{
+	resp, err := completeChat(turnCtx, c.baseURL, c.apiKey, c.extra, chatRequest{
 		Model:    c.model,
 		Messages: messages,
 		Tools:    toolSchema,

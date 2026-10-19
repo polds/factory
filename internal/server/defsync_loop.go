@@ -11,6 +11,7 @@ import (
 
 	"github.com/polds/factory/internal/definition"
 	"github.com/polds/factory/internal/defsync"
+	"github.com/polds/factory/internal/inference"
 )
 
 var userinfoRe = regexp.MustCompile(`://[^/\s]*@`)
@@ -77,7 +78,7 @@ func (s *Server) redact(text string) string {
 		}
 		text = strings.ReplaceAll(text, value, "[REDACTED]")
 	}
-	for _, value := range []string{
+	secretVals := []string{
 		s.cfg.InferenceAPIKey,
 		s.cfg.APIKey,
 		s.cfg.WorkerAPIKey,
@@ -89,7 +90,9 @@ func (s *Server) redact(text string) string {
 		s.cfg.LinearWebhookSecret,
 		s.cfg.S3.SecretKey,
 		s.cfg.S3.AccessKey,
-	} {
+	}
+	secretVals = append(secretVals, inference.Values(s.cfg.InferenceExtraHeaders)...)
+	for _, value := range secretVals {
 		if len(value) < 4 {
 			continue
 		}

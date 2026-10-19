@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/polds/factory/internal/inference"
 )
 
 const toolOutputLimit = 16 << 10
@@ -348,9 +350,10 @@ func pathMatch(pattern, name string) (bool, error) {
 
 func scrubEnv(parent, drop []string) []string {
 	deny := map[string]bool{
-		"OPENAI_API_KEY":        true,
-		"ANTHROPIC_API_KEY":     true,
-		"FACTORY_SECRET_VALUES": true,
+		"OPENAI_API_KEY":          true,
+		"ANTHROPIC_API_KEY":       true,
+		"FACTORY_SECRET_VALUES":   true,
+		inference.ExtraHeadersEnv: true,
 	}
 	for _, k := range drop {
 		deny[k] = true

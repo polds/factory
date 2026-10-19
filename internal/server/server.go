@@ -21,6 +21,7 @@ import (
 	"github.com/polds/factory/internal/defsync"
 	"github.com/polds/factory/internal/events"
 	"github.com/polds/factory/internal/gateway"
+	"github.com/polds/factory/internal/inference"
 	"github.com/polds/factory/internal/scheduler"
 	"github.com/polds/factory/internal/store"
 )
@@ -28,24 +29,29 @@ import (
 // Config is the process configuration. Secret values live only in Secrets
 // and in task env at assignment time; they are not written to the log.
 type Config struct {
-	DatabaseURL         string
-	APIKey              string
-	WorkerAPIKey        string
-	DefinitionPath      string
-	ExternalURL         string
-	TaskServerURL       string
-	HTTPAddr            string
-	InferenceBaseURL    string
-	InferenceAPIKey     string
-	Secrets             map[string]string
-	WorkerPool          string
-	WorkerPlatform      string
-	WorkerMaxConcurrent int
-	S3                  artifacts.S3
-	CancelGrace         time.Duration
-	LeaseTTL            time.Duration
-	Now                 func() time.Time
-	Log                 *slog.Logger
+	DatabaseURL      string
+	APIKey           string
+	WorkerAPIKey     string
+	DefinitionPath   string
+	ExternalURL      string
+	TaskServerURL    string
+	HTTPAddr         string
+	InferenceBaseURL string
+	InferenceAPIKey  string
+	// InferenceExtraHeaders come from FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS.
+	// Values redact. A name that matches Authorization or Content-Type
+	// replaces that default on the model request. An empty API key omits
+	// Authorization unless one of these lines sets it.
+	InferenceExtraHeaders []inference.Header
+	Secrets               map[string]string
+	WorkerPool            string
+	WorkerPlatform        string
+	WorkerMaxConcurrent   int
+	S3                    artifacts.S3
+	CancelGrace           time.Duration
+	LeaseTTL              time.Duration
+	Now                   func() time.Time
+	Log                   *slog.Logger
 	// SchemasPath is the directory of schemas/<version>/*.json. Empty
 	// searches upward from the working directory and the executable.
 	// When that search misses, the handler serves the embedded schemas.

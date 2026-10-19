@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/polds/factory/internal/definition"
+	"github.com/polds/factory/internal/handoff"
+	"github.com/polds/factory/internal/inference"
 	"github.com/polds/factory/internal/store"
 )
 
@@ -63,5 +65,47 @@ func TestTaskEnvGitIdentityYieldsToAllowlistedSecret(t *testing.T) {
 	}
 	if env["GIT_COMMITTER_NAME"] != "Agent" || env["GIT_COMMITTER_EMAIL"] != "agent@example.com" {
 		t.Fatalf("missing committer default: %q <%s>", env["GIT_COMMITTER_NAME"], env["GIT_COMMITTER_EMAIL"])
+	}
+}
+
+func TestTaskEnvExtraHeaders(t *testing.T) {
+	const planted = "sk-planted-extra-header-value"
+	headers, err := inference.ParseExtraHeaders("x-litellm-api-key: Bearer " + planted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		cfg: Config{
+			TaskServerURL:         "http://172.17.0.1:8080",
+			InferenceExtraHeaders: headers,
+		},
+		loaded: loaded{tree: &definition.Tree{}},
+	}
+	env, err := s.taskEnv(context.Background(), store.Run{ID: "run_test", Prompt: "edit greet"}, boundAgent{
+		agent: definition.Agent{MaxTurns: 3},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["OPENAI_API_KEY"] != "" {
+		t.Fatal("empty api key was copied into the task")
+	}
+	if env[inference.ExtraHeadersEnv] == "" {
+		t.Fatal("extra headers were not copied into the task")
+	}
+	if !strings.Contains(env["FACTORY_SECRET_VALUES"], planted) {
+		t.Fatal("header value missing from secret list")
+	}
+	again, err := inference.ParseExtraHeaders(env[inference.ExtraHeadersEnv])
+	if err != nil || len(again) != 1 || again[0].Name != "x-litellm-api-key" {
+		t.Fatal("task env headers did not parse")
+	}
+	red := s.redact("proxy said " + planted)
+	if strings.Contains(red, planted) {
+		t.Fatal("server redact left the header value")
+	}
+	prompt := handoff.BuildPrompt(definition.Agent{Name: "impl", Body: "token " + planted}, handoff.Context{Env: s.redactEnv()})
+	if strings.Contains(prompt, planted) {
+		t.Fatal("prompt contains header value")
 	}
 }

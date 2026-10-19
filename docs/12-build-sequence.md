@@ -278,7 +278,10 @@ Open item, separate from the Mac exit: `m5-live.yml` has not passed.
 and
 [run 39303213478](https://github.com/polds/factory/actions/runs/39303213478)
 failed in preflight. Each log shows `catalog probe failed` after curl returned
-401. The `M1_OPENAI_*` repo secrets are pending Peter.
+401. The `M1_OPENAI_*` repo secrets are pending Peter. Optional
+`M1_OPENAI_EXTRA_HEADERS` supplies newline-separated `Name: value` request
+headers for that endpoint (LiteLLM placeholder: `x-litellm-api-key: Bearer sk-...`).
+An `Authorization` line replaces the default bearer header.
 
 ## M6 — Measure and improve (weeks)
 
