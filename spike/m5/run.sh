@@ -832,6 +832,7 @@ run_playwright() {
   if [[ "${HEADED:-}" == 1 ]]; then
     (cd "$WORK/e2e" && npm ci &&
       M5_API_KEY="$FACTORY_API_KEY" \
+        M5_MODE="$MODE" \
         M5_SIGNAL="$SIGNAL" \
         M5_EVIDENCE="$EVIDENCE" \
         FACTORY_URL="http://127.0.0.1:8080" \
@@ -845,6 +846,7 @@ run_playwright() {
     -v "$EVIDENCE:/evidence" \
     -v "$SIGNAL:/signal" \
     -e "M5_API_KEY=${FACTORY_API_KEY}" \
+    -e "M5_MODE=${MODE}" \
     -e M5_SIGNAL=/signal \
     -e M5_EVIDENCE=/evidence \
     -e FACTORY_URL=http://factoryd:8080 \

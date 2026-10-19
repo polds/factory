@@ -101,6 +101,7 @@ mirrors human-readable logs to stderr). The worker relays these to the control p
 `run_event` messages in native mode, or collects them for terminal upload in v1 mode.
 
 ```jsonc
+{"ts":"…","type":"run.capabilities","steer":true}
 {"ts":"…","type":"turn.started","turn":1,"model_id":"claude-5-sonnet-high"}
 {"ts":"…","type":"message.delta","turn":1,"role":"assistant","text":"Reading the test…"}
 {"ts":"…","type":"tool.call","turn":1,"tool":"bash","redacted_input":"pnpm test -- link",
@@ -113,17 +114,23 @@ mirrors human-readable logs to stderr). The worker relays these to the control p
  "cost_cents":31}
 {"ts":"…","type":"question","gate":"clarification","text":"Which staging env?"}
 {"ts":"…","type":"terminal","status":"succeeded","summary":"Opened PR #1182"}
-{"ts":"…","type":"run.capabilities","steer":true}
 {"ts":"…","type":"turn.interrupted"}
 {"ts":"…","type":"followup.received","steer_id":"str_…"}
 ```
 
-`run.capabilities` with `"steer": true` is the first successful steer poll. The
-harness long-polls `GET /api/v1/agent/runs/{id}/steer`. The `after` query
+`run.capabilities` with `"steer": true` is emitted once, before the first model
+call, when the steer channel is available. The harness probes
+`GET /api/v1/agent/runs/{id}/steer?wait=0` at run start. A 200 announces
+steering. A probe that is still open when a short budget elapses announces it
+too, and the model starts without waiting for that body: a live steer route
+holds the poll (factoryd ignores `wait=0` and holds for up to 25s), while a
+missing route returns 404 or 501 inside the budget, leaves the capability
+unannounced, and stops polling. Later long-polls do not emit it again. The `after` query
 parameter is the acknowledgement: an interrupt is acknowledged when it is
-accepted, and a follow-up is acknowledged when the harness takes it, so every
-steer id at or before `after` for that run has been applied. There is no
-separate ack call.
+accepted, including one discarded because no turn is in flight, and a follow-up
+is acknowledged when the harness takes it, so every steer id at or before
+`after` for that run has been applied. There is no separate ack call. The
+server marks those ids delivered on that poll.
 
 Rules that matter:
 
