@@ -1,6 +1,7 @@
 import { Link, useRouter, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { X } from "lucide-react";
+import { useState } from "react";
 import { client } from "../../api/client";
 import { Button } from "../../components/Button";
 import { DurationPair } from "../../components/DurationPair";
@@ -23,10 +24,25 @@ import { RunStatusBadge } from "./status";
 import { ensureRunsStreamFallback } from "./testing/ensure";
 import type { FilterKey, RunRow } from "./types";
 
-// Factory SSE tails run_events. Inserting a run notifies run_queue and writes
-// no event, so a stream alone misses the row until the harness appends one.
-// The interval covers that gap. Events still refresh the list once activity exists.
+// Factory SSE tails run_events. Creating a run, and moving it through
+// queued, assigned, running, or idle, notifies run_queue and writes no event.
+// Poll on that cadence while a listed run is in one of those states, and for
+// a short window after subscribe, so a row inserted just before the first
+// fetch still appears. An idle page of finished runs stops after the window.
 export const RUNS_LIST_REFRESH_MS = 2000;
+export const RUNS_LIST_CATCHUP_MS = 30_000;
+
+const LIVE_RUN_STATUSES = new Set(["queued", "assigned", "running", "idle"]);
+
+export function runsListRefetchInterval(
+  rows: readonly { status: string }[] | undefined,
+  subscribedAt: number,
+  now = Date.now(),
+): number | false {
+  if (rows?.some((row) => LIVE_RUN_STATUSES.has(row.status))) return RUNS_LIST_REFRESH_MS;
+  if (now - subscribedAt < RUNS_LIST_CATCHUP_MS) return RUNS_LIST_REFRESH_MS;
+  return false;
+}
 
 const STATUSES = ["queued", "assigned", "running", "idle", "succeeded", "failed", "cancelled"];
 
@@ -50,11 +66,12 @@ export function RunsListPage() {
   const router = useRouter();
   const searchStr = useRouterState({ select: (state) => state.location.searchStr });
   const filters = filtersFromSearch(searchStr);
+  const [subscribedAt] = useState(() => Date.now());
   const factories = useQuery({ queryKey: ["factories"], queryFn: () => client.listFactories() });
   const runs = useQuery({
     queryKey: ["runs", filters],
     queryFn: () => client.listRuns(filtersToQuery(filters)) as Promise<RunRow[]>,
-    refetchInterval: RUNS_LIST_REFRESH_MS,
+    refetchInterval: (query) => runsListRefetchInterval(query.state.data, subscribedAt),
   });
 
   function update(key: FilterKey, value: string) {
