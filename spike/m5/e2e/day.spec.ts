@@ -8,6 +8,9 @@ const signalDir = process.env.M5_SIGNAL ?? "/signal";
 const gitURL = process.env.FACTORY_GIT_URL ?? "http://factoryd-git:8080";
 const apiKey = process.env.M5_API_KEY ?? "";
 const mode = process.env.M5_MODE ?? "offline";
+// Offline is m5-reviewing. Live and live-ci are the reviewing model
+// run.sh wrote into the definition (M5_LIVE_MODEL_REVIEWING or M5_LIVE_MODEL).
+const reviewingModel = process.env.M5_REVIEWING_MODEL ?? "";
 const prURL = "https://github.com/polds/m5/pull/7";
 
 let replayPosts = 0;
@@ -534,7 +537,9 @@ test("day of factory", async ({ browser }) => {
     // The harness emits the terminal event after idleTimeoutMinutes (5), and
     // reviewing starts only then. This wait covers that idle plus the review run.
     await expect(dayCard).toBeVisible({ timeout: 8 * 60 * 1000 });
-    await expect(dayCard).toContainText("m5-reviewing");
+    if (reviewingModel === "") throw new Error("M5_REVIEWING_MODEL is empty");
+    await expect(dayCard).toContainText("reviewer · ");
+    await expect(dayCard).toContainText(`reviewer · ${reviewingModel}`);
     await dayCard.click();
     await expect(page.locator("strong").filter({ hasText: /^Handoff$/ })).toBeVisible();
     const prAck = await signal("deliver", '{"op":"pr"}\n');
