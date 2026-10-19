@@ -993,11 +993,19 @@ case_spec_outcome_modes() {
   grep -F 'await expect(dayCard).toBeVisible({ timeout: 8 * 60 * 1000 });' "$spec" >/dev/null
   grep -F 'await expect(agentListRow).toBeVisible({ timeout: 60_000 });' "$spec" >/dev/null
   grep -F 'await expect(infraListRow).toBeVisible();' "$spec" >/dev/null
+  grep -F 'await expect(infraPanel).toBeVisible();' "$spec" >/dev/null
+  grep -F 'await outcome(infraPanel).toHaveAttribute("data-failure-class", "infrastructure");' "$spec" >/dev/null
+  grep -F 'await outcome(page.getByText("All factories")).toBeVisible();' "$spec" >/dev/null
+  grep -F 'await expect(page.getByRole("button", { name: "Close", exact: true })).toBeVisible();' "$spec" >/dev/null
   grep -F 'outcome(dayCard).toContainText(' "$spec" >/dev/null
   grep -F 'outcome(replayPosts, "step 10: replay posted once")' "$spec" >/dev/null
   grep -F 'outcome(axeFindings.join("\n"), "axe")' "$spec" >/dev/null
   if grep -F 'expect(dayCard).toContainText(' "$spec" >/dev/null; then
     echo "reviewer model id is still a hard expect" >&2
+    return 1
+  fi
+  if grep -F 'await expect(page.getByText("All factories")).toBeVisible();' "$spec" >/dev/null; then
+    echo "dashboard subtitle is still a hard expect" >&2
     return 1
   fi
 }

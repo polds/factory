@@ -73,7 +73,7 @@ async function signIn(page: Page, start = "/", shot = "dashboard"): Promise<void
   await page.getByLabel("API key").fill(apiKey);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-  await expect(page.getByText("All factories")).toBeVisible();
+  await outcome(page.getByText("All factories")).toBeVisible();
   await axe(page, shot);
   await saveShot(page, shot);
 }
@@ -783,6 +783,9 @@ test("day of factory", async ({ browser }) => {
     await outcome(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" })).toHaveCount(0);
     await infraListRow.getByRole("link").click();
     const infraPanel = page.getByRole("region", { name: "Failure" });
+    // Raw details is rendered only inside this panel. Wait for the panel
+    // before the content checks so a missing panel fails once.
+    await expect(infraPanel).toBeVisible();
     await outcome(infraPanel).toHaveAttribute("data-failure-class", "infrastructure");
     await outcome(page.locator(".meta-row > div").filter({ hasText: "Stage" }).locator("dd")).toHaveText(
       "building",
@@ -901,6 +904,9 @@ test("day of factory", async ({ browser }) => {
     await axe(page, "deliveries");
     await page.getByRole("tab", { name: /Unmatched/ }).click();
     await page.locator("table").getByRole("button", { name: /^m5-pr-/ }).click();
+    // Close is the next click. The event text below is report-only and must
+    // not be the only wait for this control.
+    await expect(page.getByRole("button", { name: "Close", exact: true })).toBeVisible();
     const normalized = page.getByRole("region", { name: "Normalized event" });
     await outcome(normalized).toBeVisible();
     await outcome(normalized).toContainText("github");
