@@ -6,6 +6,7 @@ import { demoAPIKey } from "../../mocks/demo-key";
 import { server } from "../../mocks/server";
 import { renderApp } from "../../test/render";
 import { QUEUE_CAVEAT } from "./format";
+import { RUNS_LIST_REFRESH_MS } from "./list-page";
 import { goldenRuns, installRuns } from "./test-support";
 import type { RunRow } from "./types";
 
@@ -135,5 +136,48 @@ describe("runs list", () => {
     expect(screen.getByText("$0.00")).toBeInTheDocument();
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
     expect(screen.getByText(QUEUE_CAVEAT)).toBeInTheDocument();
+  });
+
+  it("shows a run created after the first list fetch without a reload", async () => {
+    const created: RunRow = {
+      id: "run_created_later",
+      status: "running",
+      factory_id: "fac_payments",
+      agent: "implementer",
+      title: "Created after fetch",
+      stage: "building",
+      queue_wait_ms: 1,
+      exec_ms: 2,
+    };
+    let release = false;
+    let calls = 0;
+    installRuns({
+      onList() {
+        calls += 1;
+      },
+      rows: () => (release ? [...goldenRuns, created] : goldenRuns),
+    });
+    const { router } = await renderApp("/runs");
+
+    const table = await screen.findByRole("table");
+    expect(calls).toBeGreaterThan(0);
+    expect(
+      within(table).queryByRole("link", { name: "Created after fetch" }),
+    ).not.toBeInTheDocument();
+    const afterFirst = calls;
+    release = true;
+
+    const link = await screen.findByRole(
+      "link",
+      { name: "Created after fetch" },
+      { timeout: RUNS_LIST_REFRESH_MS + 2_000 },
+    );
+    expect(calls).toBeGreaterThan(afterFirst);
+    const row = link.closest("tr");
+    if (!row) throw new Error("created run is not in a row");
+    expect(row).toHaveAttribute("data-run", "run_created_later");
+    expect(row).toHaveTextContent("Running");
+    expect(row).toHaveTextContent("building");
+    expect(router.state.location.pathname).toBe("/runs");
   });
 });

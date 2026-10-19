@@ -8,6 +8,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
 import { FailureClassFilter } from "../../components/FailureClassFilter";
 import { StatusBadge } from "../../components/StatusBadge";
+import { useFactoryEvents } from "../dashboard/live";
 import { Caveat } from "./caveat";
 import { formatCost, isFailureClass, QUEUE_CAVEAT, shortId } from "./format";
 import {
@@ -19,7 +20,13 @@ import {
   withFilter,
 } from "./search";
 import { RunStatusBadge } from "./status";
+import { ensureRunsStreamFallback } from "./testing/ensure";
 import type { FilterKey, RunRow } from "./types";
+
+// Factory SSE tails run_events. Inserting a run notifies run_queue and writes
+// no event, so a stream alone misses the row until the harness appends one.
+// The interval covers that gap. Events still refresh the list once activity exists.
+export const RUNS_LIST_REFRESH_MS = 2000;
 
 const STATUSES = ["queued", "assigned", "running", "idle", "succeeded", "failed", "cancelled"];
 
@@ -39,12 +46,15 @@ function messageOf(error: unknown): string {
 }
 
 export function RunsListPage() {
+  ensureRunsStreamFallback();
   const router = useRouter();
   const searchStr = useRouterState({ select: (state) => state.location.searchStr });
   const filters = filtersFromSearch(searchStr);
+  const factories = useQuery({ queryKey: ["factories"], queryFn: () => client.listFactories() });
   const runs = useQuery({
     queryKey: ["runs", filters],
     queryFn: () => client.listRuns(filtersToQuery(filters)) as Promise<RunRow[]>,
+    refetchInterval: RUNS_LIST_REFRESH_MS,
   });
 
   function update(key: FilterKey, value: string) {
@@ -65,6 +75,9 @@ export function RunsListPage() {
 
   return (
     <div className="runs-feature">
+      {(factories.data ?? []).map((factory) => (
+        <RunsFactoryStream key={factory.id} factoryId={factory.id} />
+      ))}
       <header className="page-header">
         <h1>Runs</h1>
         <p className="muted">All factories</p>
@@ -154,6 +167,11 @@ export function RunsListPage() {
       ) : null}
     </div>
   );
+}
+
+function RunsFactoryStream({ factoryId }: { factoryId: string }) {
+  useFactoryEvents(factoryId);
+  return null;
 }
 
 function FilterSelect({

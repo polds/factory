@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Response } from "@playwright/test";
 
 const evidence = process.env.M5_EVIDENCE ?? "/evidence";
 const signalDir = process.env.M5_SIGNAL ?? "/signal";
@@ -243,13 +243,20 @@ function specInboxRow(page: Page, title: string) {
     .filter({ hasNotText: "Approved by you" });
 }
 
+function isDecidePost(response: Response): boolean {
+  const path = response.url().split("?")[0] ?? "";
+  return response.request().method() === "POST" && path.endsWith(":decide");
+}
+
+// "Approved by you · Saving…" paints before POST :decide returns. The next
+// stage's run is inserted inside that request, so this waits for the 2xx.
 async function approveSpecRow(page: Page, title: string): Promise<void> {
   const row = specInboxRow(page, title);
   await row.getByRole("button").first().click();
+  const decided = page.waitForResponse(isDecidePost, { timeout: 30_000 });
   await row.getByRole("button", { name: "Approve" }).click();
-  await expect(
-    page.locator("li.inbox-row").filter({ hasText: title }).getByText("Approved by you").first(),
-  ).toBeVisible();
+  const response = await decided;
+  if (!response.ok()) throw new Error(`approve ${title}: decide HTTP ${response.status()}`);
 }
 
 async function approveOnly(page: Page, title: string): Promise<void> {
