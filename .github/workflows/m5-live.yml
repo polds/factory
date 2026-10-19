@@ -6,7 +6,9 @@
 #
 # permissions is contents:read only. GITHUB_TOKEN cannot push or open
 # PRs. MODE=live-ci reads M1_OPENAI_BASE_URL and M1_OPENAI_API_KEY.
-# A missing variable prints "missing <NAME>" and exits before any
+# M1_OPENAI_EXTRA_HEADERS is optional. Unset leaves the catalog probe
+# and model calls on Authorization: Bearer plus the API key. A missing
+# required variable prints "missing <NAME>" and exits before any
 # container starts. There is no skip path. M5_LIVE_MODEL is the
 # dispatch input, not a secret. The default is the M1 live model
 # claude-sonnet-5-5.
@@ -14,6 +16,10 @@
 # Repository secrets (values are masked; never printed):
 #   M1_OPENAI_BASE_URL   OpenAI-compatible endpoint
 #   M1_OPENAI_API_KEY    key for that endpoint
+#   M1_OPENAI_EXTRA_HEADERS
+#       Optional newline-separated "Name: value" lines. A name that
+#       matches Authorization replaces the default bearer header.
+#       LiteLLM placeholder: x-litellm-api-key: Bearer sk-...
 name: m5-live
 
 on:
@@ -46,10 +52,36 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Mask optional inference headers
+        env:
+          M1_OPENAI_EXTRA_HEADERS: ${{ secrets.M1_OPENAI_EXTRA_HEADERS }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import sys
+
+          def mask(value):
+              if value == "" or "\r" in value or "\n" in value:
+                  return
+              escaped = value.replace("%", "%25")
+              sys.stdout.write("::add-mask::" + escaped + "\n")
+
+          raw = os.environ.get("M1_OPENAI_EXTRA_HEADERS", "")
+          for line in raw.splitlines():
+              mask(line)
+              if ":" not in line:
+                  continue
+              value = line.split(":", 1)[1].strip()
+              mask(value)
+              if value.lower().startswith("bearer "):
+                  mask(value[7:].strip())
+          PY
       - name: Run the CI live M5 driver
         env:
           M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
           M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          M1_OPENAI_EXTRA_HEADERS: ${{ secrets.M1_OPENAI_EXTRA_HEADERS }}
           M5_LIVE_MODEL: ${{ inputs.model }}
         run: MODE=live-ci ./spike/m5/run.sh
       # .work is a hidden directory, so the upload must opt in.

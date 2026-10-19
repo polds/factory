@@ -185,6 +185,11 @@ Environment:
   FACTORY_S3_ENDPOINT, FACTORY_S3_BUCKET, FACTORY_S3_ACCESS_KEY, FACTORY_S3_SECRET_KEY
   FACTORY_S3_FORCE_PATH_STYLE (default true), FACTORY_S3_REGION (default us-east-1)
   FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL, FACTORY_INFERENCE_OPENAI_API_KEY
+  FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS
+      Optional newline-separated "Name: value" lines sent on every
+      request to the OpenAI-compatible endpoint. A matching name
+      replaces the default Authorization or Content-Type header.
+      Example: x-litellm-api-key: Bearer sk-...
   FACTORY_HTTP_ADDR (default :8080)
   FACTORY_HEALTHCHECK_URL (default http://127.0.0.1:8080/healthz)
   FACTORY_LOG_LEVEL

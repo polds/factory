@@ -23,8 +23,14 @@
 #
 # live reads FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL and M5_LIVE_MODEL.
 # live-ci reads M1_OPENAI_BASE_URL, M1_OPENAI_API_KEY, and M5_LIVE_MODEL.
-# A missing variable prints "missing <NAME>" and exits before any
-# container starts. The model id must be listed by GET $base/models.
+# M1_OPENAI_EXTRA_HEADERS is optional. live-ci copies it to
+# FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS. live reads that
+# variable from the environment. A missing required variable prints
+# "missing <NAME>" and exits before any container starts. The model id
+# must be listed by GET $base/models. That probe sends
+# Authorization: Bearer when the API key is non-empty, then any extra
+# headers. An extra Authorization line replaces the default. Values
+# are not printed.
 #
 # Playwright receives M5_REVIEWING_MODEL. Offline sets it to
 # m5-reviewing. Live and live-ci set it to M5_LIVE_MODEL_REVIEWING
@@ -281,6 +287,111 @@ if parts.port is not None:
     netloc = "127.0.0.1:%d" % parts.port
 print(urlunparse((parts.scheme, netloc, parts.path, parts.params, parts.query, "")))
 PY
+}
+
+# apply_live_inference_env copies the live-ci secrets onto the factory
+# inference variables. M1_OPENAI_EXTRA_HEADERS is optional. Unset leaves
+# the extra-headers variable unset. MODE=live keeps the caller's values.
+apply_live_inference_env() {
+  if [[ "${MODE:-}" != live-ci ]]; then
+    return 0
+  fi
+  export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$M1_OPENAI_BASE_URL"
+  export FACTORY_INFERENCE_OPENAI_API_KEY="$M1_OPENAI_API_KEY"
+  if [[ -n "${M1_OPENAI_EXTRA_HEADERS:-}" ]]; then
+    export FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS="$M1_OPENAI_EXTRA_HEADERS"
+  else
+    unset FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS
+  fi
+}
+
+# write_catalog_headers writes the curl -H lines for the catalog probe.
+# A non-empty API key becomes Authorization: Bearer. Extra headers then
+# replace a default of the same name, case-insensitively. The file is
+# the only copy of the values. Errors name the variable and the line
+# number and do not include the line text.
+write_catalog_headers() {
+  local dest="$1" code=0
+  python3 - "$dest" <<'PY' || code=$?
+import os, re, sys, unicodedata
+
+dest = sys.argv[1]
+env_name = "FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS"
+name_re = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+def fail(msg):
+    sys.stderr.write(msg + "\n")
+    raise SystemExit(1)
+
+def bad_value(value):
+    for ch in value:
+        if ord(ch) < 32 or ord(ch) == 127 or unicodedata.category(ch) == "Cc":
+            return True
+    return False
+
+key = os.environ.get("FACTORY_INFERENCE_OPENAI_API_KEY", "")
+raw = os.environ.get(env_name, "")
+headers = []
+index = {}
+
+def put(name, value):
+    key_name = name.lower()
+    if key_name in index:
+        headers[index[key_name]] = (name, value)
+        return
+    index[key_name] = len(headers)
+    headers.append((name, value))
+
+if key:
+    if "\r" in key or "\n" in key:
+        fail("FACTORY_INFERENCE_OPENAI_API_KEY: CR or LF inside a header value")
+    put("Authorization", "Bearer " + key)
+
+if "\r" in raw:
+    fail(env_name + ": CR or LF inside a header value")
+text = raw.strip()
+if text:
+    for n, line in enumerate(text.split("\n"), 1):
+        if line.strip() == "" or ":" not in line:
+            fail("%s: line %d is malformed" % (env_name, n))
+        name, value = line.split(":", 1)
+        name = name.strip()
+        value = value.strip()
+        if not name_re.fullmatch(name) or not value or bad_value(value):
+            fail("%s: line %d is malformed" % (env_name, n))
+        put(name, value)
+
+body = "\n".join("%s: %s" % (name, value) for name, value in headers)
+fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    if body:
+        fh.write(body)
+PY
+  if [[ "$code" != 0 ]]; then
+    return "$code"
+  fi
+  chmod 600 "$dest"
+}
+
+# catalog_probe GETs $base/models. Header values are passed to curl as
+# -H arguments and are not written to stdout or stderr.
+catalog_probe() {
+  local base="$1" dest="$2" hdr="" line=""
+  local -a args=(-fsS --connect-timeout 2 -m 5 -o "$dest")
+  hdr="$(mktemp)"
+  if ! write_catalog_headers "$hdr"; then
+    rm -f "$hdr"
+    return 1
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ -n "$line" ]]; then
+      args+=(-H "$line")
+    fi
+  done <"$hdr"
+  rm -f "$hdr"
+  args+=("${base%/}/models")
+  # CATALOG_CURL is the test seam. Production leaves it unset.
+  "${CATALOG_CURL:-curl}" "${args[@]}"
 }
 
 catalog_contains_id() {
@@ -918,6 +1029,25 @@ for name in (
     value = os.environ.get(name, "")
     if len(value) >= 8:
         planted.append(value.encode())
+
+def add_planted(value):
+    if len(value) >= 8:
+        planted.append(value.encode())
+
+for raw_name in (
+    "FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS",
+    "M1_OPENAI_EXTRA_HEADERS",
+):
+    raw = os.environ.get(raw_name, "")
+    if "\r" in raw:
+        continue
+    for line in raw.split("\n"):
+        if ":" not in line:
+            continue
+        value = line.split(":", 1)[1].strip()
+        add_planted(value)
+        if value.lower().startswith("bearer "):
+            add_planted(value[7:].strip())
 api_key = os.environ.get("FACTORY_API_KEY", "").encode()
 
 def walk_files():
@@ -1194,10 +1324,7 @@ if [[ "$MODE" == offline ]]; then
   FACTORY_INFERENCE_OPENAI_API_KEY="$(random_hex)"
   export FACTORY_INFERENCE_OPENAI_API_KEY
 fi
-if [[ "$MODE" == live-ci ]]; then
-  export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$M1_OPENAI_BASE_URL"
-  export FACTORY_INFERENCE_OPENAI_API_KEY="$M1_OPENAI_API_KEY"
-fi
+apply_live_inference_env
 
 mkdir -p "$WORK"
 umask 077
@@ -1226,7 +1353,7 @@ else
   live_model="${M5_LIVE_MODEL}"
   probe="$(host_catalog_probe_url "$FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL" "$TASK_HOST")"
   catalog="$WORK/catalog.json"
-  if ! curl -fsS --connect-timeout 2 -m 5 -o "$catalog" "${probe%/}/models"; then
+  if ! catalog_probe "$probe" "$catalog"; then
     die "catalog probe failed"
   fi
   for id in \

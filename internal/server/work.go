@@ -13,6 +13,7 @@ import (
 	"github.com/polds/factory/internal/definition"
 	"github.com/polds/factory/internal/failure"
 	"github.com/polds/factory/internal/handoff"
+	"github.com/polds/factory/internal/inference"
 	"github.com/polds/factory/internal/orchestrator"
 	"github.com/polds/factory/internal/store"
 )
@@ -761,6 +762,9 @@ func (s *Server) redactEnv() map[string]string {
 	}
 	if s.cfg.InferenceAPIKey != "" {
 		env["OPENAI_API_KEY"] = s.cfg.InferenceAPIKey
+	}
+	for i, value := range inference.Values(s.cfg.InferenceExtraHeaders) {
+		env[fmt.Sprintf("inference-header-%d", i)] = value
 	}
 	return env
 }

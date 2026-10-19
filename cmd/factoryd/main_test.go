@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/polds/factory/internal/inference"
 	"github.com/polds/factory/internal/server"
 )
 
@@ -36,6 +38,9 @@ func TestUsageMentionsTaskServerURL(t *testing.T) {
 	text := stderr.String()
 	if !strings.Contains(text, "FACTORY_TASK_SERVER_URL") || !strings.Contains(text, "172.17.0.1") {
 		t.Fatal(text)
+	}
+	if !strings.Contains(text, "FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS") {
+		t.Fatal("usage omits extra headers")
 	}
 	stderr.Reset()
 	if execute([]string{"migrate", "down"}, func(string) string { return "" }, nil, io.Discard, &stderr) != 2 {
@@ -287,5 +292,58 @@ func TestConsoleFlag(t *testing.T) {
 	}
 	if _, err := configFromEnv(base("sometimes"), nil); err == nil || !strings.Contains(err.Error(), "FACTORY_CONSOLE") {
 		t.Fatalf("error %v", err)
+	}
+}
+
+func TestConfigExtraHeaders(t *testing.T) {
+	const planted = "sk-planted-extra-header-value"
+	raw := "x-litellm-api-key: Bearer " + planted
+	cfg, err := configFromEnv(func(k string) string {
+		switch k {
+		case "FACTORY_DATABASE_URL":
+			return "postgres://example"
+		case "FACTORY_API_KEY":
+			return "api-key-value"
+		case "FACTORY_WORKER_API_KEY":
+			return "worker-key-value"
+		case "FACTORY_DEFINITION_PATH":
+			return "/definitions"
+		case inference.ExtraHeadersEnv:
+			return raw
+		default:
+			return ""
+		}
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.server.InferenceExtraHeaders) != 1 || cfg.server.InferenceExtraHeaders[0].Name != "x-litellm-api-key" {
+		t.Fatal("extra headers were not parsed")
+	}
+	found := false
+	for _, secret := range cfg.secrets {
+		if secret == planted || secret == "Bearer "+planted || secret == raw {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("header value missing from redact list")
+	}
+	text := fmt.Sprintf("%v %+v %#v", cfg.server.InferenceExtraHeaders, cfg.server.InferenceExtraHeaders[0], &cfg.server.InferenceExtraHeaders[0])
+	if strings.Contains(text, planted) {
+		t.Fatal("config formatting leaked header value")
+	}
+
+	bad, err := configFromEnv(func(k string) string {
+		if k == inference.ExtraHeadersEnv {
+			return "not a header " + planted
+		}
+		return ""
+	}, nil)
+	if err == nil {
+		t.Fatal("malformed headers were accepted")
+	}
+	if strings.Contains(err.Error(), planted) || bad.server.InferenceAPIKey != "" {
+		t.Fatal("malformed header error leaked the value")
 	}
 }

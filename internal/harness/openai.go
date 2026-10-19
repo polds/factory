@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/polds/factory/internal/inference"
 )
 
 type chatMessage struct {
@@ -140,7 +142,7 @@ func fnTool(name, desc string, params map[string]any) map[string]any {
 	}
 }
 
-func completeChat(ctx context.Context, baseURL, apiKey string, req chatRequest) (chatResponse, error) {
+func completeChat(ctx context.Context, baseURL, apiKey string, extra []inference.Header, req chatRequest) (chatResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return chatResponse{}, err
@@ -148,21 +150,18 @@ func completeChat(ctx context.Context, baseURL, apiKey string, req chatRequest) 
 	url := strings.TrimRight(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return chatResponse{}, &providerError{Message: err.Error()}
+		return chatResponse{}, &providerError{Message: inference.Redact(err.Error(), extra)}
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	}
+	inference.Apply(httpReq.Header, apiKey, extra)
 	client := &http.Client{Timeout: 60 * time.Second}
 	res, err := client.Do(httpReq)
 	if err != nil {
-		return chatResponse{}, &providerError{Message: err.Error()}
+		return chatResponse{}, &providerError{Message: inference.Redact(err.Error(), extra)}
 	}
 	defer func() { _ = res.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return chatResponse{}, &providerError{Status: res.StatusCode, Message: err.Error()}
+		return chatResponse{}, &providerError{Status: res.StatusCode, Message: inference.Redact(err.Error(), extra)}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		msg := strings.TrimSpace(string(raw))
@@ -170,7 +169,7 @@ func completeChat(ctx context.Context, baseURL, apiKey string, req chatRequest) 
 		if json.Unmarshal(raw, &parsed) == nil && parsed.Error != nil && parsed.Error.Message != "" {
 			msg = parsed.Error.Message
 		}
-		return chatResponse{}, &providerError{Status: res.StatusCode, Message: msg}
+		return chatResponse{}, &providerError{Status: res.StatusCode, Message: inference.Redact(msg, extra)}
 	}
 	var parsed chatResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
