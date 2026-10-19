@@ -149,7 +149,20 @@ This is why scorer eligibility filters on `failure_reason == null`
 - `task_steer` (server → worker): injects a follow-up turn or interrupt into a live
   session — the "attach for steering" capability.
 
-A v1 worker loses live events and steering, keeps everything else.
+A v1 worker loses live events and `task_steer`, keeps everything else.
+
+**M5 steering (shipped).** Steering on the unmodified v1 worker is the harness
+long-poll, described in [05](05-harness-contract.md#output-ndjson-events). The
+harness probes `GET /api/v1/agent/runs/{id}/steer?wait=0` at run start and emits
+`run.capabilities` with `"steer": true` once, before the first model call, when
+the steer channel is available. A 200 announces steering. A probe that is still
+open when a short budget elapses announces it too, and the model starts without
+waiting for that body: factoryd holds a live steer route for up to 25s. A 404 or
+501 inside the budget leaves the capability unannounced and stops polling. Later
+polls do not emit the event again. The `after` query parameter is the
+acknowledgement of applied steer ids. `POST /agent/runs/{id}/interrupt` and
+`POST /agent/runs/{id}/followups` return `202` `{steer_id}` or `409` with the
+reason.
 
 ---
 
@@ -195,7 +208,8 @@ GET    /agent/runs                          list (filter: agent, status, worker,
 GET    /agent/runs/{runId}
 POST   /agent/runs/{runId}/cancel
 POST   /agent/runs/{runId}/interrupt        stop the current turn, keep the session
-POST   /agent/runs/{runId}/followups        queue an additional turn
+POST   /agent/runs/{runId}/followups        {text} → 202 {steer_id}, or 409 {reason}
+GET    /agent/runs/{runId}/steer            run-token long-poll (?after=, ≤ 25s)
 GET    /agent/runs/{runId}/transcript
 GET    /agent/runs/{runId}/timeline         stage/event summary
 GET    /agent/runs/{runId}/conversation     structured turns + tool calls
@@ -218,6 +232,16 @@ POST   /approvals/{id}:decide               {decision: approve|reject, note}
 Not present upstream because upstream's gates are prompt-resident
 ([03](03-definition-schema.md#deviation-declarative-pipeline)). Declarative gates need an
 API or they cannot be actioned outside the console.
+
+```
+POST   /work-items/{id}/input               {text} answers a pending question
+```
+
+A harness `question` event (`gate` `clarification`, `text` the question) sets the
+work item to `awaiting_input` and releases the worker slot. This route records the
+answer and queues the next execution of that run, with the question and the answer
+appended to the prompt. The same text returns the stored row. A different text
+conflicts. A terminal run is left unanswered.
 
 ### Schedules, identities, infrastructure
 
@@ -285,6 +309,10 @@ event: screenshot      {seq, artifact_uid}
 event: approval.requested {seq, gate, work_item_id}
 event: usage           {seq, model_id, input_tokens, output_tokens, cost_cents}
 event: run.terminal    {seq, status, failure_reason?, exit_code?}
+event: run.capabilities {seq, steer:true}   once, before the first model call
+event: question         {seq, gate, text}
+event: turn.interrupted {seq}
+event: followup.received {seq, steer_id}
 ```
 
 `tool.call` carries a **digest plus a redacted rendering**, never raw input. Tool inputs

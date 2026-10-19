@@ -51,13 +51,22 @@ heart of the console:
   "the run failed" into "the pod was OOMKilled at 4Gi", which is the difference between a
   ticket and a fix.
 
-**Attach and steer.** A live run can be interrupted (`/interrupt` — stop the turn, keep the
-session) or given a follow-up turn (`/followups`). With a native-mode worker this is a
-`task_steer` message ([04](04-protocols-and-apis.md#native-mode-protocol-v2)); on a v1
-worker the controls are disabled with the reason shown, rather than silently absent.
+**Attach and steer.** A live run can be interrupted
+(`POST /agent/runs/{id}/interrupt` — stop the turn, keep the session) or given a
+follow-up turn (`POST /agent/runs/{id}/followups` with `{text}`). Each returns `202`
+and a `steer_id`, or `409` with a reason. The harness long-polls
+`GET /agent/runs/{id}/steer` with the run token
+([04](04-protocols-and-apis.md#native-mode-protocol-v2),
+[05](05-harness-contract.md#output-ndjson-events)). It emits `run.capabilities` with
+`"steer": true` once, before the first model call, when that route is available: the
+opening `wait=0` probe returned 200, or the probe was still open when a short budget
+elapsed. A 404 or 501 leaves the capability unannounced. The console enables the
+controls when `steer.enabled` is true and `idle_until`, if set, is still ahead.
+Otherwise it shows `steer.reason` ("worker/harness does not support steering", "run
+has not started", or "run finished; idle window ended at …").
 
-A completed run stays attachable for `idleTimeoutMinutes` (1–60), which is what makes a
-follow-up a continuation rather than a new run with a cold context.
+`idleTimeoutMinutes` (1–60) is the idle window while the run is still `running`.
+Once the run is terminal, interrupt and follow-up return the idle-window 409.
 
 ### Inbox
 Everything waiting on *you*: approval gates, agent questions, improvement PRs awaiting
@@ -68,14 +77,19 @@ The inbox is a second surface for the same gates that appear in Slack or Linear,
 only one. A gate reachable from exactly one place is a gate that blocks work when that
 place is not where the person is.
 
+An agent question is a `question` event (`gate` `clarification`). The work item
+becomes `awaiting_input` and the worker slot is released. The inbox answer is
+`POST /work-items/{id}/input` with `{text}`, which records the answer and queues
+the next execution of that run.
+
 ### Definition
-A file tree editor over the definition with schema-aware completion and inline validation
-against the same JSON Schemas the editor modeline uses. The Schema link loads those
-documents from factoryd, which embeds them for images that have no schemas directory.
+A file tree and a textarea. Validate is a button; diagnostics then mark the file and
+line. The Schema link loads those documents from factoryd, which embeds them for
+images that have no schemas directory.
 
 - **Git-backed factories:** read-only, with links to the forge and a prominent indication
   that changes go through a PR.
-- **Local/managed factories:** editable, with validate-on-save and atomic apply.
+- **Local/managed factories:** editable. Validate, then atomic apply.
 
 A diff preview shows which resources a change will create, update, or delete before it is
 applied — the same summary the pre-merge check posts.

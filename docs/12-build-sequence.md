@@ -198,13 +198,87 @@ retries a transient GitHub token error that had shown up as `config_invalid`.
 live-test issues and PRs #77–#90, except #79, were closed on 2026-10-16 with
 Peter's approval. #90 is a closed draft.
 
-## M5 — Console (weeks)
+## M5 — Console ✅ **done**
 
 Dashboard, work items board, run detail with live transcript and attach/steer, inbox,
 definition viewer/editor, automations, workers, secrets.
 
-**Exit criterion:** a day of factory work is operable without `kubectl` or `curl` — and a
-failed run's cause is identifiable from the UI alone (agent failure vs. infrastructure).
+**Exit criterion met.** A day of factory work is operable without `kubectl` or `curl`, and
+a failed run's cause is identifiable from the UI alone (agent failure vs. infrastructure).
+
+Peter's Mac (`Peters-MacBook-Pro.local`), `MODE=live ./spike/m5/run.sh`, `main` at
+`dd186bddda970e80d69e06b6432ab1c513cff397`
+([#120](https://github.com/polds/factory/pull/120)). The evidence checkout was that
+SHA on `main`, with one unrelated uncommitted path,
+`internal/definition/testdata/invalid/duplicate-agent/agents/implementer/agent.md`.
+The `day.har` window is 2026-10-19 11:52:52 AM to 11:58:51 AM PT (953 entries).
+The script result is `M5 LIVE PASS` (2 passed, 1 skipped).
+`spike/m5/.work/e2e/test-results/.last-run.json` records
+`{"status":"passed","failedTests":[]}` (mtime 11:58:52 AM PT). Every run used
+model `claude-sonnet-5-5` via VibeProxy at `host.docker.internal:8317`. Factory
+`fac_01M5AR4J3839YRXTGZ9VMVERDH` (`m5`). This environment has no live
+credentials, so `MODE=live` is not re-run here. `MODE=offline` passed earlier
+on Peter's Mac; that run's id and time are not recorded. The `m5-offline` job
+is in required CI.
+
+The day work item `task_01M5AR5FJFZB9KREAPMN2YA7JC` (`m5-day`, GitHub
+`polds/m5#42`) ended `human_handoff` / `complete`. Triage
+`run_01M5AR5FJJ6GJQ84KNY81794A2`, planning `run_01M5AR5R1W77RD7MTDYQCS2HKJ`,
+building `run_01M5AR5WWNN76110K8709FX451`, and reviewing
+`run_01M5ARF682XWGJV2R3TG1WDZ9Q` all succeeded. On the building run, interrupt
+`str_01M5AR5Y2DGSZR5H22XT748H7M` was POST 202 at 11:53:29.037 AM PT, and
+follow-up `str_01M5AR5YRVQHTA93ACRZ8RTES4` was POST 202 at 11:53:29.755 AM PT
+(text `m5-follow-up Reply with a one-line summary and no tool calls.`). Spec
+approval `apr_01M5AR5V4ETANRBHDA54PQQ77G` was approved at 11:53:27 AM PT. The
+pull request URL is <https://github.com/polds/m5/pull/7> (simulated
+`pull_request` delivery). The Playwright trace artifact is `day-trace.zip`.
+
+The infrastructure failure is building `run_01M5AR545EY7NVJR41EJZNBFES` on
+`task_01M5AR4V2MFV4KAJ0A83N6QVJZ` (`m5-infra-kill`, `building` / `open`):
+class `infrastructure`, code `container_killed`, exit 137, at 11:53:02 AM PT.
+The one-line summary is not recorded. Triage `run_01M5AR4V2RKR02J8TV3KB1GKP4`
+and planning `run_01M5AR505G30BRB7WDB8AFSEZH` on that work item succeeded.
+Approval `apr_01M5AR541978C8KGEFZNFJMKTX` was approved at 11:53:02 AM PT. The
+driver killed container `d50d32056123`.
+
+The agent failure is triage `run_01M5AR55QCDR1CCKDF9P4XKD37` on
+`task_01M5AR55Q9VTGSH73C3TC61WKV` (`m5-agent-failure`, `triage` / `open`):
+class `agent`, code `agent_reported`, exit 10, at 11:53:04 AM PT. The one-line
+summary is not recorded.
+
+`task_01M5AR5F7DVWZFJT1ACFQ72Q3T` (`m5-question`) was `triage` /
+`awaiting_input` at the last list. Its triage run is
+`run_01M5AR5F7J06PFBKD9WTF4P5Q3`. The answer `staging-a` was POSTed to
+`/work-items/{id}/input` at 11:58:44 AM PT, and resume was running at the last
+capture. `task_01M5AR5EQQ8E98EADGV61GM7XC` (`m5-scratch`) was `planning` /
+`awaiting_approval`. Triage `run_01M5AR5EQZTMSYFKB7TP7XAFE9` and planning
+`run_01M5AR5P63M14TDKB92PCTF17Z` succeeded. Approval
+`apr_01M5AR5VBB2QJWF08BJD8H9KCD` was seen and not decided; the evidence calls
+it most likely that spec gate. `task_01M5ARFHSJ13WRG5K221BCZ0VK` (webhook
+`whk_01M5AR4J3BQXCYC85XDZP9YR06`) was in triage, run
+`run_01M5ARFHSVWKS9STEZQZZ50G3E`, running at the last capture.
+
+Driver deliveries recorded HTTP 200 for issue `m5-issue-27770`, pull request
+`m5-pr-31943`, and webhooks `m5-wh-30273` and `m5-wh-13330`. An idle line
+names building run `run_01M5AR5WWNN76110K8709FX451` as running.
+
+Peter's manual checklist (`KEEP_UP=1 MODE=live ./spike/m5/run.sh --manual`)
+was signed off 2026-10-17 8:17 PM PT. Every item passed except the schema
+404, which T51b then fixed.
+
+Leak grep of every evidence file, including every member of `day-trace.zip`:
+0 hits for the API key, 0 hits for every secret, key, token, or password
+value, and 0 hits for the secret patterns (`sk-`, `gh*_`, Bearer tokens,
+`xox`, `AKIA`, private key). The 321 `Authorization` headers in `day.har` are
+the literal `REDACTED`. The non-secret model id `claude-sonnet-5-5` and the
+VibeProxy base URL `host.docker.internal:8317` do appear.
+
+Open item, separate from the Mac exit: `m5-live.yml` has not passed.
+[Run 39296548765](https://github.com/polds/factory/actions/runs/39296548765)
+and
+[run 39303213478](https://github.com/polds/factory/actions/runs/39303213478)
+failed in preflight. Each log shows `catalog probe failed` after curl returned
+401. The `M1_OPENAI_*` repo secrets are pending Peter.
 
 ## M6 — Measure and improve (weeks)
 
