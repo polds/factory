@@ -18,6 +18,7 @@ export const SECRET = "rt_SECRET_PLANT";
 type RunsHandlers = {
   run?: RunDetailWire;
   list?: RunRow[];
+  rows?: () => RunRow[];
   onList?: (url: URL) => void;
   events?: (request: Request) => Response;
   onInterrupt?: () => void;
@@ -41,7 +42,7 @@ export function installRuns(options: RunsHandlers = {}): void {
     http.get("/api/v1/agent/runs", ({ request }) => {
       const url = new URL(request.url);
       options.onList?.(url);
-      return HttpResponse.json(options.list ?? goldenRuns);
+      return HttpResponse.json(options.rows?.() ?? options.list ?? goldenRuns);
     }),
     http.get("/api/v1/agent/runs/:id/steers", () => HttpResponse.json([])),
     http.get("/api/v1/agent/runs/:id/timeline", () => HttpResponse.json(goldenTimeline)),
