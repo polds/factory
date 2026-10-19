@@ -26,6 +26,11 @@
 # A missing variable prints "missing <NAME>" and exits before any
 # container starts. The model id must be listed by GET $base/models.
 #
+# Playwright receives M5_REVIEWING_MODEL. Offline sets it to
+# m5-reviewing. Live and live-ci set it to M5_LIVE_MODEL_REVIEWING
+# when that is set, otherwise M5_LIVE_MODEL. The Done card asserts
+# "reviewer · " plus that id.
+#
 # --manual leaves the stack up and prints the console URL plus the live
 # checklist. HEADED=1 runs Playwright on the host and requires Node.
 # The default browser is the pinned Playwright image on the compose
@@ -318,6 +323,17 @@ for dirpath, _, files in os.walk(root):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(text)
 PY
+}
+
+# reviewing_model_id matches the model prepare_definition leaves on the
+# reviewer agent. Offline keeps the definition id. Live and live-ci use
+# the reviewing override, then M5_LIVE_MODEL.
+reviewing_model_id() {
+  if [[ "$MODE" == offline ]]; then
+    printf '%s\n' "m5-reviewing"
+    return 0
+  fi
+  printf '%s\n' "${M5_LIVE_MODEL_REVIEWING:-$M5_LIVE_MODEL}"
 }
 
 write_offline_scripts() {
@@ -826,6 +842,13 @@ copy_e2e() {
 
 run_playwright() {
   copy_e2e
+  local reviewing=""
+  reviewing="$(reviewing_model_id)"
+  if [[ -z "$reviewing" ]]; then
+    echo "M5_REVIEWING_MODEL is empty" >&2
+    return 1
+  fi
+  export M5_REVIEWING_MODEL="$reviewing"
   : >"$EVIDENCE/driver.log"
   watch_signals &
   WATCH_PID=$!
@@ -833,6 +856,7 @@ run_playwright() {
     (cd "$WORK/e2e" && npm ci &&
       M5_API_KEY="$FACTORY_API_KEY" \
         M5_MODE="$MODE" \
+        M5_REVIEWING_MODEL="$M5_REVIEWING_MODEL" \
         M5_SIGNAL="$SIGNAL" \
         M5_EVIDENCE="$EVIDENCE" \
         FACTORY_URL="http://127.0.0.1:8080" \
@@ -847,6 +871,7 @@ run_playwright() {
     -v "$SIGNAL:/signal" \
     -e "M5_API_KEY=${FACTORY_API_KEY}" \
     -e "M5_MODE=${MODE}" \
+    -e "M5_REVIEWING_MODEL=${M5_REVIEWING_MODEL}" \
     -e M5_SIGNAL=/signal \
     -e M5_EVIDENCE=/evidence \
     -e FACTORY_URL=http://factoryd:8080 \
