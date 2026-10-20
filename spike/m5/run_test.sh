@@ -1242,6 +1242,146 @@ PY
   return "$code"
 }
 
+# write_m5_har writes day.har. Each spec is method|path|mime|rtype.
+# rtype "-" omits _resourceType. An empty rtype writes the field as "".
+write_m5_har() {
+  local dest="$1"
+  shift
+  python3 - "$dest" "$@" <<'PY'
+import json, sys
+
+dest = sys.argv[1]
+entries = []
+for spec in sys.argv[2:]:
+    method, path, mime, rtype = spec.split("|", 3)
+    item = {
+        "request": {
+            "method": method,
+            "url": "http://127.0.0.1:8080" + path,
+            "headers": [],
+        },
+        "response": {"content": {"mimeType": mime, "text": "ok"}},
+    }
+    if rtype != "-":
+        item["_resourceType"] = rtype
+    entries.append(item)
+with open(dest, "w", encoding="utf-8") as fh:
+    json.dump({"log": {"entries": entries}}, fh)
+PY
+}
+
+# clear_evidence_secrets keeps assert_evidence from matching the parent env.
+clear_evidence_secrets() {
+  unset FACTORY_API_KEY \
+    FACTORY_SECRET_M5_WEBHOOK \
+    FACTORY_WORKER_API_KEY \
+    S3_SECRET_KEY \
+    FACTORY_SECRET_M5_PLANTED \
+    FACTORY_INFERENCE_OPENAI_API_KEY \
+    FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS \
+    M1_OPENAI_EXTRA_HEADERS
+}
+
+case_har_type_missing_allowed() {
+  local dir="$WORK/har-missing-allowed"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  write_m5_har "$dir/day.har" \
+    'GET|/api/v1/factory|application/json|-' \
+    'GET|/api/v1/agent/runs|application/json|xhr' \
+    'GET|/assets/index-abc.js|text/javascript|-' \
+    'GET|/assets/app.css|text/css|' \
+    'GET|/favicon.ico|image/x-icon|-' \
+    'GET|/f/m5/work-items|text/html; charset=utf-8|-'
+  (
+    clear_evidence_secrets
+    EVIDENCE="$dir"
+    assert_evidence
+  )
+}
+
+case_har_type_missing_rejected() {
+  local dir="$WORK/har-missing-rejected" omit=0 empty=0
+  rm -rf "$dir"
+  mkdir -p "$dir/omit" "$dir/empty"
+  write_m5_har "$dir/omit/day.har" 'GET|/hooks/github|application/json|-'
+  write_m5_har "$dir/empty/day.har" 'GET|/hooks/github|application/json|'
+  if (
+    clear_evidence_secrets
+    EVIDENCE="$dir/omit"
+    assert_evidence
+  ); then
+    echo "omitted _resourceType was allowed" >&2
+    omit=1
+  fi
+  if (
+    clear_evidence_secrets
+    EVIDENCE="$dir/empty"
+    assert_evidence
+  ); then
+    echo "empty _resourceType was allowed" >&2
+    empty=1
+  fi
+  if [[ "$omit" -eq 1 || "$empty" -eq 1 ]]; then
+    return 0
+  fi
+  return 1
+}
+
+case_har_type_present_rejected() {
+  local dir="$WORK/har-present-rejected"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  write_m5_har "$dir/day.har" 'GET|/assets/app.js|text/javascript|xhr'
+  (
+    clear_evidence_secrets
+    EVIDENCE="$dir"
+    assert_evidence
+  )
+}
+
+case_har_woff2_allowed() {
+  local dir="$WORK/har-woff2-allowed"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  write_m5_har "$dir/day.har" \
+    'GET|/assets/ibm-plex-sans-latin-400-normal.woff2|font/woff2|-' \
+    'GET|/fonts/ibm-plex-mono-400.woff2|application/octet-stream|-'
+  (
+    clear_evidence_secrets
+    EVIDENCE="$dir"
+    assert_evidence
+  )
+}
+
+case_offline_idle_on_copy() {
+  local dir src
+  dir="$(mktemp -d)"
+  src="$ROOT/deploy/m5-factory"
+  cp -R "$src" "$dir/copy"
+  rewrite_offline_idle "$dir/copy"
+  grep -F 'idleTimeoutMinutes: 1' "$dir/copy/agents/implementer/agent.md" >/dev/null
+  if grep -F 'idleTimeoutMinutes: 5' "$dir/copy/agents/implementer/agent.md" >/dev/null; then
+    echo "offline copy still has idleTimeoutMinutes: 5" >&2
+    return 1
+  fi
+  if ! grep -F 'idleTimeoutMinutes: 5' "$src/agents/implementer/agent.md" >/dev/null; then
+    echo "deploy implementer lost idleTimeoutMinutes: 5" >&2
+    return 1
+  fi
+  if grep -F 'idleTimeoutMinutes: 1' "$src/agents/implementer/agent.md" >/dev/null; then
+    echo "offline rewrite touched deploy/m5-factory" >&2
+    return 1
+  fi
+  cp -R "$src" "$dir/live"
+  rewrite_live_models "$dir/live" "live-triage" "live-planning" "live-building" "live-reviewing"
+  if ! grep -F 'idleTimeoutMinutes: 5' "$dir/live/agents/implementer/agent.md" >/dev/null; then
+    echo "live rewrite changed idleTimeoutMinutes" >&2
+    return 1
+  fi
+  rm -rf "$dir"
+}
+
 expect_fail missing-live-url "missing FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL" case_missing_live_url
 expect_fail missing-live-model "missing M5_LIVE_MODEL" case_missing_live_model
 expect_fail missing-live-ci-url "missing M1_OPENAI_BASE_URL" case_missing_live_ci_url
@@ -1299,6 +1439,11 @@ run_case stale-not-checkout case_stale_not_checkout
 run_case stale-no-origin case_stale_no_origin
 run_case playwright-failure-summary case_playwright_failure_summary
 run_case spec-outcome-modes case_spec_outcome_modes
+run_case har-type-missing-allowed case_har_type_missing_allowed
+expect_fail har-type-missing-rejected "non-api GET /hooks/github" case_har_type_missing_rejected
+expect_fail har-type-present-rejected "non-api xhr /assets/app.js" case_har_type_present_rejected
+run_case har-woff2-allowed case_har_woff2_allowed
+run_case offline-idle-on-copy case_offline_idle_on_copy
 
 if [[ "$fails" -ne 0 ]]; then
   printf '%s case(s) failed\n' "$fails" >&2

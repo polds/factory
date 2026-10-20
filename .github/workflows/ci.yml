@@ -443,7 +443,9 @@ jobs:
   m5-offline:
     name: m5 offline e2e
     runs-on: ubuntu-latest
-    # Image builds plus the offline day. Local wall clock is about 7 minutes.
+    # Image builds plus the offline day. The offline copy sets the
+    # implementer idleTimeoutMinutes to 1. Live and live-ci keep 5.
+    # day.spec.ts still waits up to 8 minutes for the Done card.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

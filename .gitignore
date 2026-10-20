@@ -10,6 +10,10 @@ deploy/.env
 /bin/
 *.test
 
+# Python bytecode. spike/m5/router.py is imported by path.
+__pycache__/
+*.pyc
+
 # stray go build output at repo root
 /m0-spike
 

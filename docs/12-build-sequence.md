@@ -278,7 +278,18 @@ Open item, separate from the Mac exit: `m5-live.yml` has not passed.
 and
 [run 39303213478](https://github.com/polds/factory/actions/runs/39303213478)
 failed in preflight. Each log shows `catalog probe failed` after curl returned
-401. The `M1_OPENAI_*` repo secrets are pending Peter. Optional
+401. The `M1_OPENAI_*` repo secrets are set and masked in the logs. The
+catalog probe sent no Authorization header. T51j
+([#124](https://github.com/polds/factory/pull/124), `e38d200`) added
+`M1_OPENAI_EXTRA_HEADERS`.
+[Run 39319422444](https://github.com/polds/factory/actions/runs/39319422444),
+[run 39330770655](https://github.com/polds/factory/actions/runs/39330770655),
+and
+[run 39345319401](https://github.com/polds/factory/actions/runs/39345319401)
+failed as well.
+[Run 39345319401](https://github.com/polds/factory/actions/runs/39345319401)
+passed preflight and then failed on an upstream 429. No `m5-live.yml` run
+has passed. Optional
 `M1_OPENAI_EXTRA_HEADERS` supplies newline-separated `Name: value` request
 headers for that endpoint (LiteLLM placeholder: `x-litellm-api-key: Bearer sk-...`).
 An `Authorization` line replaces the default bearer header.
