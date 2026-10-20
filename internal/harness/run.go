@@ -257,6 +257,13 @@ func Run(ctx context.Context, opt Options) int {
 			stopSteer()
 		}
 		hub.collectImmediate(ctx, steerURL, steerToken, log)
+		// stopSteer already released the cursor from before this poll.
+		// Read it again when Run returns, so a follow-up this poll took
+		// is acknowledged when its turn parks or fails inside the loop
+		// and not only when the loop falls through.
+		defer func() {
+			releaseSteerClaims(steerURL, steerToken, hub.ackCursor())
+		}()
 		for {
 			msg, ok := hub.takeFollowup()
 			if !ok {
@@ -267,10 +274,6 @@ func Run(ctx context.Context, opt Options) int {
 				return finish(code, status, summary)
 			}
 		}
-		// The final poll claimed what it returned. Ack those ids now that
-		// they have been taken. stopSteer already released the cursor from
-		// before that poll.
-		releaseSteerClaims(steerURL, steerToken, hub.ackCursor())
 	}
 	return finish(ExitOK, "succeeded", summary)
 }

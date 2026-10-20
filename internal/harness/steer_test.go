@@ -1728,6 +1728,146 @@ func TestSteerFollowupDuringAskReachesNextExecution(t *testing.T) {
 	}
 }
 
+// A follow-up that arrives on the idle-0 final poll is taken after
+// stopSteer has already released claims. Parking that turn has to ack
+// the id before the process exits, or the resume applies it again.
+func TestSteerFinalPollParkAcksFollowupOnce(t *testing.T) {
+	const (
+		token  = "steer-final-park-token"
+		prompt = "which env"
+		follow = "also update the docs"
+		id     = "fu-park"
+	)
+	var mu sync.Mutex
+	type steerRow struct {
+		id   string
+		text string
+	}
+	pending := []steerRow{{id: id, text: follow}}
+	claimed := map[string]bool{}
+	var abandons []string
+	steerAbandonHook = func(after string) {
+		mu.Lock()
+		defer mu.Unlock()
+		abandons = append(abandons, after)
+		for key := range claimed {
+			if after == "" || key > after {
+				delete(claimed, key)
+			}
+		}
+		kept := pending[:0]
+		for _, item := range pending {
+			if after != "" && item.id <= after {
+				continue
+			}
+			kept = append(kept, item)
+		}
+		pending = kept
+	}
+	t.Cleanup(func() { steerAbandonHook = nil })
+
+	var wait0 int
+	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("wait") == "0" {
+			mu.Lock()
+			wait0++
+			n := wait0
+			var out []map[string]string
+			if n > 1 {
+				for _, item := range pending {
+					if claimed[item.id] {
+						continue
+					}
+					claimed[item.id] = true
+					out = append(out, map[string]string{
+						"id": item.id, "kind": "followup", "text": item.text,
+					})
+				}
+			}
+			mu.Unlock()
+			writeSteers(w, out)
+			return
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	})
+
+	var calls int
+	model := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			if strings.Contains(string(body), follow) {
+				t.Errorf("opening turn saw the final-poll follow-up")
+			}
+			writeAssistant(w, "turn done")
+			return
+		}
+		if !strings.Contains(string(body), follow) {
+			t.Errorf("parked turn missed the final-poll follow-up:\n%s", body)
+		}
+		writeTool(w, "ask_input", `{"text":"Which staging env?"}`)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	code, events, stderr := runSteer(t, ctx, plane.eventsURL, token, prompt, "0s", model, nil)
+	if code != ExitOK {
+		t.Fatalf("parked exit %d, stderr %s\nevents:\n%s", code, stderr, events)
+	}
+	parked := decodeSteerEvents(t, events)
+	if countType(parked, "question") != 1 {
+		t.Fatalf("question events:\n%s", events)
+	}
+	if countSteer(parked, "followup.received", id) != 1 {
+		t.Fatalf("parked run follow-ups:\n%s", events)
+	}
+	mu.Lock()
+	gotAbandon := append([]string(nil), abandons...)
+	mu.Unlock()
+	acked := false
+	for _, after := range gotAbandon {
+		if after == id {
+			acked = true
+		}
+	}
+	if !acked {
+		t.Fatalf("final poll did not ack %s, abandons %q", id, gotAbandon)
+	}
+
+	var resumeCalls int
+	var sawFollow bool
+	resume := func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		resumeCalls++
+		if strings.Contains(string(raw), follow) {
+			sawFollow = true
+		}
+		mu.Unlock()
+		writeAssistant(w, "resumed")
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel2()
+	code, events2, stderr := runSteer(t, ctx2, plane.eventsURL, token, "staging", "0s", resume, nil)
+	if code != ExitOK {
+		t.Fatalf("resume exit %d, stderr %s\nevents:\n%s", code, stderr, events2)
+	}
+	mu.Lock()
+	n, again := resumeCalls, sawFollow
+	mu.Unlock()
+	if n != 1 || again {
+		t.Fatalf("resume calls %d, follow-up reapplied %v\nevents:\n%s", n, again, events2)
+	}
+	if countSteer(decodeSteerEvents(t, events2), "followup.received", id) != 0 {
+		t.Fatalf("resume applied %s again:\n%s", id, events2)
+	}
+}
+
 type steerEvent struct {
 	Type    string `json:"type"`
 	Steer   *bool  `json:"steer"`
