@@ -57,6 +57,13 @@
 # host.docker.internal dials 127.0.0.1 with the same scheme, port, and
 # path.
 #
+# Offline copies deploy/m5-factory and sets the implementer
+# idleTimeoutMinutes to 1. The file in deploy stays at 5, which live
+# and live-ci keep. Review still starts only after that idle.
+#
+# Each phase prints one line, "m5 phase <name> <seconds>s", for image
+# build, stack up, Playwright, and evidence. The line has no env values.
+#
 # Each run generates a fresh FACTORY_API_KEY and ignores deploy/.env for
 # that one variable. The driver signs deliveries with the run's webhook
 # secret. Evidence strips the API key. Planted secrets must be absent.
@@ -86,6 +93,13 @@ die() {
 
 say() {
   printf '\n== %s\n' "$*"
+}
+
+# phase_report prints the seconds since start, which is a bash SECONDS
+# value taken at the say marker for that phase.
+phase_report() {
+  local name="$1" start="$2"
+  printf 'm5 phase %s %ss\n' "$name" "$((SECONDS - start))"
 }
 
 accept_mode() {
@@ -419,6 +433,26 @@ reject_unlisted_model() {
   return 1
 }
 
+# rewrite_offline_idle edits a copy. deploy/m5-factory stays at 5 minutes
+# so live and live-ci keep the longer idle. Offline review starts after
+# one minute instead of five.
+rewrite_offline_idle() {
+  local dir="$1"
+  python3 - "$dir" <<'PY'
+import os, sys
+
+path = os.path.join(sys.argv[1], "agents", "implementer", "agent.md")
+with open(path, encoding="utf-8") as fh:
+    text = fh.read()
+old = "idleTimeoutMinutes: 5\n"
+new = "idleTimeoutMinutes: 1\n"
+if text.count(old) != 1:
+    raise SystemExit("offline idle rewrite: implementer idleTimeoutMinutes: 5 not found")
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write(text.replace(old, new, 1))
+PY
+}
+
 # rewrite_live_models edits a copy. deploy/m5-factory is not a target.
 rewrite_live_models() {
   local dir="$1"
@@ -497,7 +531,9 @@ prepare_definition() {
   wipe_dir "$DEFS"
   mkdir -p "$DEFS"
   cp -R "$ROOT/deploy/m5-factory" "$DEFS/m5-factory"
-  if [[ "$MODE" != offline ]]; then
+  if [[ "$MODE" == offline ]]; then
+    rewrite_offline_idle "$DEFS/m5-factory"
+  else
     local triage="${M5_LIVE_MODEL_TRIAGE:-$M5_LIVE_MODEL}"
     local planning="${M5_LIVE_MODEL_PLANNING:-$M5_LIVE_MODEL}"
     local building="${M5_LIVE_MODEL_BUILDING:-$M5_LIVE_MODEL}"
@@ -717,6 +753,7 @@ start_offline_models() {
 
 build_images() {
   say "Build images for ${OCI_PLATFORM}"
+  local phase_start="$SECONDS"
   docker build --platform "$OCI_PLATFORM" -t factoryd:dev \
     -f "$ROOT/deploy/factoryd/Dockerfile" "$ROOT"
   docker build --platform "$OCI_PLATFORM" -t factory-upstream-worker:dev \
@@ -729,6 +766,7 @@ build_images() {
     "$ROOT/spike/m1/task-image"
   docker build --platform "$OCI_PLATFORM" -t factoryd-git:dev \
     -f "$ROOT/spike/m5/factoryd-git.Dockerfile" "$ROOT/spike/m5"
+  phase_report "image build" "$phase_start"
 }
 
 driver_log() {
@@ -1050,6 +1088,30 @@ for raw_name in (
             add_planted(value[7:].strip())
 api_key = os.environ.get("FACTORY_API_KEY", "").encode()
 
+def har_mime(entry):
+    content = (entry.get("response") or {}).get("content") or {}
+    return str(content.get("mimeType") or "").split(";", 1)[0].strip().lower()
+
+def har_static_asset(path):
+    if path.startswith("/assets/"):
+        return True
+    name = path.rsplit("/", 1)[-1].lower()
+    if name in {"favicon.ico", "favicon.png", "favicon.svg"}:
+        return True
+    return path.lower().endswith((".woff", ".woff2", ".ttf", ".otf", ".eot"))
+
+# har_allowed_without_type classifies a HAR entry whose _resourceType
+# is missing or empty. /api/v1 is any method. Static console assets and
+# HTML documents are GET only.
+def har_allowed_without_type(method, path, entry):
+    if path.startswith("/api/v1/"):
+        return True
+    if method == "GET" and har_static_asset(path):
+        return True
+    if method == "GET" and har_mime(entry) == "text/html":
+        return True
+    return False
+
 def walk_files():
     for path in root.rglob("*"):
         if path.is_file():
@@ -1080,10 +1142,15 @@ if har_path.is_file():
         if host not in allowed_hosts:
             sys.stderr.write("off-origin %s\n" % url)
             raise SystemExit(1)
-        rtype = entry.get("_resourceType") or ""
+        rtype = str(entry.get("_resourceType") or "").strip()
         path = urlparse(url).path or ""
-        if rtype in {"xhr", "fetch", "eventsource", "websocket"} and not path.startswith("/api/v1/"):
-            sys.stderr.write("non-api %s %s\n" % (rtype, path))
+        method = str(req.get("method") or "").upper()
+        if rtype:
+            if rtype in {"xhr", "fetch", "eventsource", "websocket"} and not path.startswith("/api/v1/"):
+                sys.stderr.write("non-api %s %s\n" % (rtype, path))
+                raise SystemExit(1)
+        elif not har_allowed_without_type(method, path, entry):
+            sys.stderr.write("non-api %s %s\n" % (method, path))
             raise SystemExit(1)
         content = ((entry.get("response") or {}).get("content") or {}).get("text") or ""
         if api_key and api_key.decode() in content:
@@ -1376,26 +1443,33 @@ fi
 
 say "Build and start the stack"
 build_images
+stack_start="$SECONDS"
 compose down -v --remove-orphans >/dev/null 2>&1 || true
 COMPOSE_STARTED=1
 if ! compose up -d --wait; then
   mkdir -p "$EVIDENCE"
   save_logs || true
+  phase_report "stack up" "$stack_start"
   die "compose up failed"
 fi
 
 if ! wait_http "http://127.0.0.1:8080/healthz"; then
+  phase_report "stack up" "$stack_start"
   die "factoryd /healthz did not become ready"
 fi
 if ! wait_http "http://127.0.0.1:8081/healthz"; then
+  phase_report "stack up" "$stack_start"
   die "factoryd-git /healthz did not become ready"
 fi
 if ! wait_factory_name "http://127.0.0.1:8080/api/v1/factory" "m5"; then
+  phase_report "stack up" "$stack_start"
   die "factory m5 did not appear"
 fi
 if ! wait_factory_name "http://127.0.0.1:8081/api/v1/factory" "m5-git"; then
+  phase_report "stack up" "$stack_start"
   die "factory m5-git did not appear"
 fi
+phase_report "stack up" "$stack_start"
 
 if [[ "$MANUAL" == 1 ]]; then
   printf 'console: http://127.0.0.1:8080\n'
@@ -1414,12 +1488,14 @@ if [[ "$MANUAL" == 1 ]]; then
 fi
 
 say "Playwright"
+play_start="$SECONDS"
 set +e
 mkdir -p "$EVIDENCE"
 play_log="$EVIDENCE/playwright.log"
 run_playwright 2>&1 | tee "$play_log"
 play_code="${PIPESTATUS[0]}"
 set -e
+phase_report "Playwright" "$play_start"
 if [[ ! -f "$SIGNAL/done" ]]; then
   touch "$SIGNAL/done"
 fi
@@ -1431,9 +1507,12 @@ save_logs
 if [[ "$play_code" -ne 0 ]]; then
   print_playwright_failures "$play_log"
 fi
+evidence_start="$SECONDS"
 if ! assert_evidence; then
+  phase_report "evidence" "$evidence_start"
   die "M5 FAIL — evidence check"
 fi
+phase_report "evidence" "$evidence_start"
 if [[ "$play_code" -ne 0 ]]; then
   die "M5 FAIL — playwright exit ${play_code}"
 fi

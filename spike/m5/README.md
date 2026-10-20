@@ -2,6 +2,8 @@
 
 Offline drives a day of factory work through the console. The model router is `spike/m5/router.py`, in front of `spike/m1/model-stub`. Live and live-ci use the real model server and do not start that router.
 
+Offline copies `deploy/m5-factory` and sets the implementer's `idleTimeoutMinutes` to 1. The file in `deploy/m5-factory` stays at 5, and live and live-ci use that copy unchanged. Review still starts only after the idle. `run.sh` prints one `m5 phase <name> <seconds>s` line each for image build, stack up, Playwright, and evidence.
+
 `M5_ROUTER_PORT` sets the offline router port. When it is unset, `run.sh` picks a port that binds on both `0.0.0.0` and `127.0.0.1`. After the router starts, `GET /v1/models` on `127.0.0.1` and from a container via `host.docker.internal` must return the `m5-*` model list. Anything else stops with `router port <port> is answered by another process`.
 
 ```bash
