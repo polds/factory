@@ -989,7 +989,7 @@ case_spec_outcome_modes() {
   local spec="$ROOT/spike/m5/e2e/day.spec.ts"
   grep -F 'function outcome<T>' "$spec" >/dev/null
   grep -F 'const check = liveMode(mode) ? expect.soft : expect;' "$spec" >/dev/null
-  grep -F 'await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();' "$spec" >/dev/null
+  grep -F 'await expect(page.getByRole("heading", { name: "Factory", exact: true })).toBeVisible();' "$spec" >/dev/null
   grep -F 'await expect(building.first()).toBeVisible({ timeout: 180_000 });' "$spec" >/dev/null
   grep -F 'await expect(followUp).toBeEnabled({ timeout: 60_000 });' "$spec" >/dev/null
   grep -F 'await expect(dayCard).toBeVisible({ timeout: 8 * 60 * 1000 });' "$spec" >/dev/null
