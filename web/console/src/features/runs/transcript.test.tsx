@@ -156,6 +156,45 @@ describe("run transcript", () => {
     }
   });
 
+  it("keeps message seqs when run.status arrives beside an unknown event", async () => {
+    const restore = mockTranscriptViewport(320);
+    const secret = "rt_SECRET_PLANT";
+    const bus = createEventBus();
+    const run = runningRun();
+    try {
+      installRuns({
+        run,
+        events: (request) => bus.response(request),
+      });
+      await renderApp(`/runs/${run.id}`);
+      await screen.findByRole("log", { name: "Run transcript" });
+      bus.send(
+        sseEvent(1, "message.delta", { role: "assistant", text: "kept" }) +
+          sseEvent(2, "run.created", {
+            run_id: run.id,
+            status: "queued",
+            stage: "building",
+            token: secret,
+          }) +
+          sseEvent(3, "run.status", {
+            run_id: run.id,
+            status: "running",
+            stage: "building",
+            token: secret,
+          }) +
+          sseEvent(4, "message.delta", { role: "assistant", text: "after" }),
+      );
+      await waitFor(() => expect(screen.getByText("after")).toBeInTheDocument());
+      expect(screen.getByText("kept")).toBeInTheDocument();
+      expect(screen.getByText("Unrecognized event")).toBeInTheDocument();
+      expect(screen.getByText("running")).toBeInTheDocument();
+      expect(document.body.textContent).not.toContain(secret);
+      expect(seqValues()).toEqual(["1", "2", "3", "4"]);
+    } finally {
+      restore();
+    }
+  });
+
   it("stops reconnecting when a terminal run's stream closes", async () => {
     const calls: string[] = [];
     const bus = createEventBus();

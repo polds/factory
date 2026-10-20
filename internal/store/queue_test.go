@@ -652,7 +652,8 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := h.raw.QueryRow(ctx, `SELECT count(*), count(DISTINCT filename) FROM schema_migrations`).Scan(&files, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if files != 8 || distinct != 8 {
+	wantFiles := embeddedMigrations(t)
+	if files != len(wantFiles) || distinct != len(wantFiles) {
 		t.Fatalf("schema_migrations rows %d distinct %d", files, distinct)
 	}
 	nameRows, err := h.raw.Query(ctx, `SELECT filename FROM schema_migrations ORDER BY filename`)
@@ -671,32 +672,32 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := nameRows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	wantFiles := []string{
-		"0001_init.sql", "0002_m3.sql", "0003_m4.sql", "0004_automation.sql",
-		"0005_building_guard.sql", "0006_m5.sql", "0007_owner_session.sql",
-		"0008_m5_api.sql",
-	}
 	if strings.Join(filenames, ",") != strings.Join(wantFiles, ",") {
 		t.Fatalf("filenames %v", filenames)
 	}
-	var tables int
-	if err := h.raw.QueryRow(ctx, `
-		SELECT count(*) FROM information_schema.tables
+	var gotTables []string
+	tableRows, err := h.raw.Query(ctx, `
+		SELECT table_name FROM information_schema.tables
 		WHERE table_schema = current_schema()
-		  AND table_name IN (
-		    'factories', 'definitions', 'agents', 'runners', 'runs', 'executions',
-		    'run_events', 'workers', 'run_queue', 'schema_migrations',
-		    'work_items', 'approvals', 'routers', 'skills', 'automations',
-		    'scorers', 'webhooks', 'deliveries', 'integration_installations',
-		    'webhook_registrations', 'schedules', 'leader_leases',
-		    'external_refs', 'outbound_threads', 'input_requests',
-		    'intake_slots', 'delivery_effects',
-		    'worker_rejections', 'steer_requests', 'automation_overrides'
-		  )`).Scan(&tables); err != nil {
+		  AND table_type = 'BASE TABLE'
+		ORDER BY table_name`)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if tables != 30 {
-		t.Fatalf("tables %d", tables)
+	defer tableRows.Close()
+	for tableRows.Next() {
+		var name string
+		if err := tableRows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		gotTables = append(gotTables, name)
+	}
+	if err := tableRows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	wantTables := embeddedTables(t)
+	if strings.Join(gotTables, ",") != strings.Join(wantTables, ",") {
+		t.Fatalf("tables %v", gotTables)
 	}
 	assertColumns(t, h, "run_queue", []string{"owner_session"})
 	assertColumns(t, h, "runs", []string{

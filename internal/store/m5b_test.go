@@ -42,15 +42,7 @@ func TestM5bMigrationIdempotent(t *testing.T) {
 func TestM5bMigrationFrom0006(t *testing.T) {
 	h := newHarness(t, false)
 	ctx := context.Background()
-	for _, name := range []string{
-		"0001_init.sql",
-		"0002_m3.sql",
-		"0003_m4.sql",
-		"0004_automation.sql",
-		"0005_building_guard.sql",
-		"0006_m5.sql",
-		"0008_m5_api.sql",
-	} {
+	for _, name := range embeddedMigrations(t) {
 		body, err := os.ReadFile(filepath.Join("migrations", name))
 		if err != nil {
 			t.Fatal(err)
