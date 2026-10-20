@@ -87,11 +87,11 @@ function WorkersScreen() {
   const { workers, pools } = query.data;
   return (
     <div>
-      <header className="mb-4">
-        <h1 className="text-xl font-semibold">Workers</h1>
-        <p className="text-sm text-[var(--muted-foreground)]">
-          All factories · workers connect to factoryd and pull runs by pool
-        </p>
+      <header className="page-header mb-5">
+        <div>
+          <h1>Workers</h1>
+          <p className="muted">All factories · workers connect to factoryd and pull runs by pool</p>
+        </div>
       </header>
       <div className="mb-4 grid gap-3 lg:grid-cols-3">
         {pools.map((pool) => {
@@ -100,51 +100,42 @@ function WorkersScreen() {
             <section
               key={pool.pool}
               aria-labelledby={`pool-${pool.pool}`}
-              className={
-                pool.rejected_1h > 0
-                  ? "border-2 border-[var(--foreground)] bg-[var(--card)] p-3"
-                  : "border border-[var(--border)] bg-[var(--card)] p-3"
-              }
+              className={pool.rejected_1h > 0 ? "pool-card pool-card-alert" : "pool-card"}
             >
               <div className="flex items-baseline justify-between">
                 <h2 id={`pool-${pool.pool}`} className="font-mono text-sm font-semibold">
                   {pool.pool}
                 </h2>
-                <p className="font-sans text-xs text-[var(--muted-foreground)]">
+                <p className="font-sans text-xs text-muted-foreground">
                   {count} {count === 1 ? "worker" : "workers"}
                 </p>
               </div>
               <dl className="mt-2 grid grid-cols-3 gap-2">
                 <div>
-                  <dt className="text-xs text-[var(--muted-foreground)]">Queue depth</dt>
+                  <dt className="text-xs text-muted-foreground">Queue depth</dt>
                   <dd className="font-mono text-xl font-semibold">{pool.queue_depth}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-[var(--muted-foreground)]">
-                    p50 time to first start
-                  </dt>
+                  <dt className="text-xs text-muted-foreground">p50 time to first start</dt>
                   <dd className="font-mono text-xl font-semibold">
                     {p50Label(pool.p50_time_to_assign_ms, pool.queue_depth)}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-[var(--muted-foreground)]">Rejections (1h)</dt>
+                  <dt className="text-xs text-muted-foreground">Rejections (1h)</dt>
                   <dd className="font-mono text-xl font-semibold">{pool.rejected_1h}</dd>
                 </div>
               </dl>
-              <p className="mt-2 flex items-start gap-1.5 text-xs text-[var(--muted-foreground)]">
+              <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
                 <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />
                 <span>measured to the first start; a requeue doesn&apos;t restart it</span>
               </p>
               {pool.rejected_1h > 0 ? (
                 <p
                   role="status"
-                  className="mt-2 flex items-start gap-1.5 border border-dashed border-[var(--border)] bg-[var(--muted)] p-2 text-sm"
+                  className="mt-2 flex items-start gap-1.5 border border-dashed border-border bg-muted p-2 text-sm"
                 >
-                  <AlertTriangle
-                    className="mt-0.5 size-4 shrink-0 text-[var(--danger)]"
-                    aria-hidden
-                  />
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden />
                   Sustained rejections usually mean the pool is too small.
                 </p>
               ) : null}
@@ -152,11 +143,11 @@ function WorkersScreen() {
           );
         })}
       </div>
-      <div className="overflow-x-auto border border-[var(--border)] bg-[var(--card)]">
+      <div className="panel table-scroll">
         <table className="w-full border-collapse text-sm">
           <caption className="sr-only">Connected workers</caption>
-          <thead className="bg-[var(--muted)] text-xs text-[var(--muted-foreground)]">
-            <tr className="border-b border-[var(--border)] text-left">
+          <thead className="data-head">
+            <tr>
               {[
                 "Worker",
                 "Pool",
@@ -168,7 +159,7 @@ function WorkersScreen() {
                 "Reconnects",
                 "Rejected (1h)",
               ].map((heading) => (
-                <th key={heading} scope="col" className="px-3 py-2 font-medium whitespace-nowrap">
+                <th key={heading} scope="col" className="px-3 py-2 whitespace-nowrap">
                   {heading}
                 </th>
               ))}
@@ -181,7 +172,7 @@ function WorkersScreen() {
           </tbody>
         </table>
       </div>
-      <div className="mt-2 space-y-1 text-sm text-[var(--muted-foreground)]">
+      <div className="mt-2 space-y-1 text-sm text-muted-foreground">
         <p className="flex items-start gap-1.5">
           <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
           <span>Stale = no heartbeat for 30s+.</span>
@@ -203,8 +194,8 @@ function WorkerRowView({ worker }: { worker: WorkerRow }) {
     <tr
       className={
         stale
-          ? "border-b border-[var(--border)] bg-[var(--muted)] last:border-b-0"
-          : "border-b border-[var(--border)] last:border-b-0"
+          ? "border-b border-border bg-muted last:border-b-0"
+          : "border-b border-border last:border-b-0"
       }
     >
       <td className="px-3 py-2 font-mono text-xs font-semibold">{worker.id}</td>
@@ -217,8 +208,8 @@ function WorkerRowView({ worker }: { worker: WorkerRow }) {
           <span className="font-mono text-xs">
             {worker.in_flight} / {worker.capacity}
           </span>
-          <span className="h-2 w-16 border border-[var(--border)] bg-[var(--muted)]" aria-hidden>
-            <span className="block h-full bg-[var(--foreground)]" style={{ width: `${width}%` }} />
+          <span className="h-2 w-16 border border-border bg-muted" aria-hidden>
+            <span className="block h-full bg-foreground" style={{ width: `${width}%` }} />
           </span>
         </span>
       </td>
@@ -230,7 +221,7 @@ function WorkerRowView({ worker }: { worker: WorkerRow }) {
           </span>
         ) : stale ? (
           <span className="inline-flex items-center gap-1">
-            <AlertTriangle className="size-4 text-[var(--danger)]" aria-hidden />
+            <AlertTriangle className="size-4 text-danger" aria-hidden />
             <span>Stale</span>
             <span className="font-mono text-xs">{formatDuration(worker.heartbeat_age_ms)}</span>
           </span>

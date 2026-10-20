@@ -1,26 +1,26 @@
 .def-editor {
   --line: 1.45rem;
-  --syn-key: #1e3a8a;
-  --syn-str: #166534;
-  --syn-num: #9a3412;
-  --syn-comment: #44403c;
-  --code-line: #f0eeea;
+  --syn-key: var(--class-infrastructure-fg);
+  --syn-str: var(--phase-ok);
+  --syn-num: var(--signal-ink);
+  --syn-comment: var(--muted-foreground);
+  --code-line: var(--muted);
   display: grid;
   grid-template-columns: 4.75rem minmax(0, 1fr);
   border: 1px solid var(--border);
   background: var(--card);
   color: var(--foreground);
-  font-family: ui-monospace, sfmono-regular, menlo, consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   line-height: var(--line);
 }
 
 :root[data-theme="dark"] .def-editor {
-  --syn-key: #93c5fd;
-  --syn-str: #86efac;
-  --syn-num: #fdba74;
-  --syn-comment: #e7e5e4;
-  --code-line: #3a3532;
+  --syn-key: var(--class-infrastructure-fg);
+  --syn-str: var(--phase-ok);
+  --syn-num: var(--signal-ink);
+  --syn-comment: var(--muted-foreground);
+  --code-line: var(--muted);
 }
 
 .def-gutter {

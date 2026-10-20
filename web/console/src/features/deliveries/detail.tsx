@@ -39,7 +39,7 @@ export function DeliveryDetail({
       <div className="flex items-start justify-between gap-2">
         <div>
           <h2 className="font-mono text-sm font-semibold">{delivery.id}</h2>
-          <p className="text-xs text-[var(--muted-foreground)]">
+          <p className="text-xs text-muted-foreground">
             <time dateTime={delivery.received_at}>{formatWhen(delivery.received_at)}</time>
             {" · "}
             {replayed ? <Replayed /> : <DeliveryStatus status={delivery.status} />}
@@ -53,27 +53,22 @@ export function DeliveryDetail({
         ) : null}
       </div>
       <section>
-        <h3 className="mb-1 text-xs font-semibold tracking-wide text-[var(--muted-foreground)]">
-          Headers
-        </h3>
+        <h3 className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground">Headers</h3>
         {delivery.headers.length === 0 ? (
-          <p className="text-sm text-[var(--muted-foreground)]">No headers</p>
+          <p className="text-sm text-muted-foreground">No headers</p>
         ) : (
           <table className="w-full border-collapse font-mono text-xs">
             <caption className="sr-only">Delivery headers</caption>
             <tbody>
               {delivery.headers.map((header) => (
-                <tr key={header.name} className="border-t border-[var(--border)]">
-                  <th
-                    scope="row"
-                    className="py-1 pr-2 text-left font-normal text-[var(--muted-foreground)]"
-                  >
+                <tr key={header.name} className="border-t border-border">
+                  <th scope="row" className="py-1 pr-2 text-left font-normal text-muted-foreground">
                     {header.name}
                   </th>
                   <td
                     className={
                       header.value === "[redacted]"
-                        ? "py-1 italic text-[var(--muted-foreground)]"
+                        ? "py-1 italic text-muted-foreground"
                         : "py-1 break-all"
                     }
                   >
@@ -87,7 +82,7 @@ export function DeliveryDetail({
       </section>
       {delivery.events.length > 0 ? (
         <section aria-label="Normalized event">
-          <h3 className="mb-1 text-xs font-semibold tracking-wide text-[var(--muted-foreground)]">
+          <h3 className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground">
             Normalized event
           </h3>
           <ul className="space-y-2">
@@ -109,10 +104,10 @@ export function DeliveryDetail({
         </section>
       ) : null}
       <section>
-        <h3 className="mb-1 flex items-center gap-2 text-xs font-semibold tracking-wide text-[var(--muted-foreground)]">
+        <h3 className="mb-1 flex items-center gap-2 text-xs font-semibold tracking-wide text-muted-foreground">
           Body
           {delivery.truncated ? (
-            <span className="inline-flex items-center gap-1 font-normal tracking-normal text-[var(--foreground)]">
+            <span className="inline-flex items-center gap-1 font-normal tracking-normal text-foreground">
               <Scissors className="size-3.5" aria-hidden />
               truncated
             </span>
@@ -120,7 +115,7 @@ export function DeliveryDetail({
         </h3>
         <pre
           aria-label={`Body of ${delivery.id}`}
-          className="overflow-x-auto border border-[var(--border)] bg-[var(--card)] p-2 font-mono text-xs whitespace-pre-wrap"
+          className="overflow-x-auto border border-border bg-card p-2 font-mono text-xs whitespace-pre-wrap"
         >
           {delivery.bodyText || " "}
         </pre>
@@ -148,7 +143,7 @@ function eventLine(label: string, value: string) {
   if (!value) return null;
   return (
     <>
-      <dt className="text-[var(--muted-foreground)]">{label}</dt>
+      <dt className="text-muted-foreground">{label}</dt>
       <dd className="break-all">{value}</dd>
     </>
   );

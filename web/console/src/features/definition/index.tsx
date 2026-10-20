@@ -63,7 +63,7 @@ function ApplyDialog({
           <DiffList label="Updated" paths={diff.updated} />
           <DiffList label="Deleted" paths={diff.deleted} />
           {error ? (
-            <p role="alert" className="mt-3 text-sm text-[var(--danger)]">
+            <p role="alert" className="mt-3 text-sm text-danger">
               {error}
             </p>
           ) : null}
@@ -88,7 +88,7 @@ function DiffList({ label, paths }: { label: string; paths: readonly string[] })
         {label} ({paths.length})
       </h3>
       {paths.length === 0 ? (
-        <p className="text-sm text-[var(--muted-foreground)]">None</p>
+        <p className="text-sm text-muted-foreground">None</p>
       ) : (
         <ul className="mt-1 list-disc pl-5 font-mono text-xs">
           {paths.map((path) => (
@@ -264,10 +264,10 @@ function DefinitionScreen({ factoryId }: { factoryId: string }) {
 
   return (
     <div>
-      <header className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <header className="page-header mb-5">
         <div>
-          <h1 className="text-xl font-semibold">Definition</h1>
-          <p className="text-sm text-[var(--muted-foreground)]">
+          <h1>Definition</h1>
+          <p className="muted">
             Factory <span className="font-mono">{factoryId}</span>
           </p>
         </div>
@@ -275,7 +275,7 @@ function DefinitionScreen({ factoryId }: { factoryId: string }) {
           {version ? (
             <a
               href={`/api/v1/factory-files/schemas/${encodeURIComponent(version)}`}
-              className="inline-flex items-center gap-1 border border-[var(--border)] px-2 py-1 font-mono text-xs hover:underline"
+              className="inline-flex items-center gap-1 border border-border px-2 py-1 font-mono text-xs hover:underline"
             >
               <FileJson className="size-3.5" aria-hidden />
               Schema: {version}
@@ -289,7 +289,7 @@ function DefinitionScreen({ factoryId }: { factoryId: string }) {
               {applyReason ? (
                 <span
                   id="apply-reason"
-                  className="inline-flex items-center gap-1 text-sm text-[var(--danger)]"
+                  className="inline-flex items-center gap-1 text-sm text-danger"
                 >
                   <XCircle className="size-4" aria-hidden />
                   {applyReason}
@@ -311,7 +311,7 @@ function DefinitionScreen({ factoryId }: { factoryId: string }) {
       {readOnly ? (
         <section
           aria-label="Definition source"
-          className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-2 border-[var(--foreground)] bg-[var(--card)] p-3"
+          className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-2 border-foreground bg-card p-3"
         >
           <GitBranch className="size-5 shrink-0" aria-hidden />
           <p className="font-semibold">Read-only. Changes go through a pull request.</p>
@@ -325,7 +325,7 @@ function DefinitionScreen({ factoryId }: { factoryId: string }) {
               href={view.forge_url}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 text-sm text-[var(--ring)] hover:underline"
+              className="inline-flex items-center gap-1 text-sm text-link hover:underline"
             >
               <ExternalLink className="size-4" aria-hidden />
               View on forge
@@ -335,23 +335,23 @@ function DefinitionScreen({ factoryId }: { factoryId: string }) {
       ) : (
         <section
           aria-label="Definition source"
-          className="mb-4 flex flex-wrap items-center gap-2 border border-dashed border-[var(--border)] bg-[var(--card)] p-3"
+          className="mb-4 flex flex-wrap items-center gap-2 border border-dashed border-border bg-card p-3"
         >
           <Pencil className="size-4" aria-hidden />
           <p className="font-semibold">Local definition — editable</p>
-          <p className="text-sm text-[var(--muted-foreground)]">
+          <p className="text-sm text-muted-foreground">
             Stored on the control plane. Validate, then Apply to take effect.
           </p>
         </section>
       )}
 
       {mismatch ? (
-        <p role="alert" className="mb-3 border border-[var(--danger)] px-3 py-2 text-sm">
+        <p role="alert" className="mb-3 border border-danger px-3 py-2 text-sm">
           The server applied a different definition than your edits
         </p>
       ) : null}
       {actionError ? (
-        <p role="alert" className="mb-3 text-sm text-[var(--danger)]">
+        <p role="alert" className="mb-3 text-sm text-danger">
           {actionError}
         </p>
       ) : null}
@@ -372,9 +372,9 @@ function DefinitionScreen({ factoryId }: { factoryId: string }) {
           <div className="min-w-0">
             {selectedFile ? (
               <>
-                <div className="flex items-center justify-between border border-b-0 border-[var(--border)] bg-[var(--muted)] px-3 py-1.5 font-mono text-xs">
+                <div className="flex items-center justify-between border border-b-0 border-border bg-muted px-3 py-1.5 font-mono text-xs">
                   <span>{selectedFile.path}</span>
-                  <span className="text-[var(--muted-foreground)]">
+                  <span className="text-muted-foreground">
                     {readOnly ? "read-only" : "editing"} · YAML
                   </span>
                 </div>
@@ -395,11 +395,11 @@ function DefinitionScreen({ factoryId }: { factoryId: string }) {
             {readOnly ? null : (
               <section
                 aria-labelledby="diagnostics-heading"
-                className="mt-3 border border-[var(--border)] bg-[var(--card)]"
+                className="mt-3 border border-border bg-card"
               >
                 <h2
                   id="diagnostics-heading"
-                  className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2 text-sm font-semibold"
+                  className="flex items-center gap-2 border-b border-border px-3 py-2 text-sm font-semibold"
                 >
                   Diagnostics
                   <span className="font-mono text-xs font-normal">
@@ -419,11 +419,11 @@ function DefinitionScreen({ factoryId }: { factoryId: string }) {
                       >
                         <button
                           type="button"
-                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--muted)]"
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
                           onClick={() => focusDiagnostic(diagnostic)}
                         >
                           {diagnostic.severity.toLowerCase() === "error" ? (
-                            <XCircle className="size-4 shrink-0 text-[var(--danger)]" aria-hidden />
+                            <XCircle className="size-4 shrink-0 text-danger" aria-hidden />
                           ) : (
                             <AlertCircle className="size-4 shrink-0" aria-hidden />
                           )}
@@ -437,7 +437,7 @@ function DefinitionScreen({ factoryId }: { factoryId: string }) {
                     ))}
                   </ul>
                 )}
-                <p className="flex items-center gap-1 border-t border-[var(--border)] px-3 py-1.5 text-xs text-[var(--muted-foreground)]">
+                <p className="flex items-center gap-1 border-t border-border px-3 py-1.5 text-xs text-muted-foreground">
                   <AlertCircle className="size-3.5" aria-hidden />
                   Apply is atomic: all resources change together, or none do.
                 </p>
@@ -457,7 +457,7 @@ function DefinitionScreen({ factoryId }: { factoryId: string }) {
                     <input
                       value={newPath}
                       onChange={(event) => setNewPath(event.target.value)}
-                      className="border border-[var(--border)] bg-[var(--card)] px-2 py-1 font-mono text-sm"
+                      className="border border-border bg-card px-2 py-1 font-mono text-sm"
                     />
                   </label>
                   <Button type="submit">Add file</Button>

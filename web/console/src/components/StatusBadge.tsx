@@ -1,6 +1,5 @@
 import { Ban, Bot, ServerCrash, Settings2, type LucideIcon } from "lucide-react";
 import type { CSSProperties } from "react";
-import { useTheme, type ThemeName } from "../lib/theme";
 import type { FailureClass } from "../api/types";
 
 const labels = {
@@ -17,32 +16,26 @@ const icons = {
   cancelled: Ban,
 } as const satisfies Record<FailureClass, LucideIcon>;
 
-const palette: Record<ThemeName, Record<FailureClass, CSSProperties>> = {
-  light: {
-    agent: { color: "#9f1239", backgroundColor: "#ffe4e6" },
-    infrastructure: { color: "#1e3a8a", backgroundColor: "#dbeafe" },
-    configuration: { color: "#78350f", backgroundColor: "#fef3c7" },
-    cancelled: { color: "#292524", backgroundColor: "#e7e5e4" },
-  },
-  dark: {
-    agent: { color: "#fecdd3", backgroundColor: "#4c0519" },
-    infrastructure: { color: "#dbeafe", backgroundColor: "#172554" },
-    configuration: { color: "#fde68a", backgroundColor: "#451a03" },
-    cancelled: { color: "#f5f5f4", backgroundColor: "#292524" },
-  },
-};
+// Colours live in index.css as --class-<name>-fg/bg so the badge, the
+// failure panel, and the dashboard cells read one source and the dark theme
+// is one override. The inline style only points at the pair for this class.
+export function failureClassStyle(failureClass: FailureClass): CSSProperties {
+  return {
+    color: `var(--class-${failureClass}-fg)`,
+    backgroundColor: `var(--class-${failureClass}-bg)`,
+    borderColor: `var(--class-${failureClass}-fg)`,
+  };
+}
 
 export function StatusBadge({ failureClass }: { failureClass: FailureClass }) {
-  const { theme } = useTheme();
   const Icon = icons[failureClass];
-  const colors = palette[theme][failureClass];
   return (
     <span
       className="status-badge"
       data-failure-class={failureClass}
-      style={{ ...colors, borderColor: colors.color }}
+      style={failureClassStyle(failureClass)}
     >
-      <Icon aria-hidden="true" size={16} />
+      <Icon aria-hidden="true" size={14} />
       <span>{labels[failureClass]}</span>
     </span>
   );

@@ -24,3 +24,13 @@ harness/generic-openai/factory-harness
 web/console/node_modules/
 web/console/dist/
 internal/console/dist/
+
+# Local assistant tooling. OpenWolf state, hook session files, and the
+# per-tool instruction files it generates are machine-specific.
+.wolf/
+.claude/
+.codex/
+.cursor/
+AGENTS.md
+CLAUDE.md
+GEMINI.md

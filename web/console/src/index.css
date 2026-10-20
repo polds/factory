@@ -1,29 +1,135 @@
 @import "tailwindcss";
+@import "@fontsource-variable/ibm-plex-sans/index.css";
+@import "@fontsource/ibm-plex-sans-condensed/500.css";
+@import "@fontsource/ibm-plex-sans-condensed/600.css";
+@import "@fontsource/ibm-plex-sans-condensed/700.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+/*
+ * Tokens
+ *
+ * One source for every colour, type role, and radius. Tailwind utilities on
+ * the utility-styled pages and the hand-written classes below both resolve
+ * here, so the two styling systems cannot drift.
+ *
+ * The palette reads as a shop floor: warm paper, graphite ink, and one signal
+ * colour reserved for "a person has to act". Failure classes borrow industrial
+ * signage so agent and infrastructure failures never look alike.
+ */
 
 :root {
-  --background: #f7f6f3;
-  --foreground: #1c1917;
-  --muted: #f0eeea;
-  --muted-foreground: #44403c;
-  --border: #d6d3d1;
-  --ring: #1d4ed8;
-  --card: #ffffff;
-  --danger: #9f1239;
-  --danger-foreground: #fff1f2;
+  /* surfaces and ink */
+  --background: #f3f1ec;
+  --foreground: #1d1b18;
+  --muted: #e9e6df;
+  --muted-foreground: #5c5750;
+  --border: #cfcac0;
+  --border-strong: #1d1b18;
+  --card: #fbfaf7;
+  --card-raised: #ffffff;
+  --ring: #0f6b5c;
+  --link: #0f6b5c;
+
+  /* the one accent: a person has to act */
+  --signal: #d9480f;
+  --signal-foreground: #ffffff;
+  --signal-soft: #fde7d9;
+  --signal-ink: #8a2e07;
+
+  /* destructive */
+  --danger: #9b1c1c;
+  --danger-foreground: #fff5f5;
+
+  /* failure classes (industrial signage, not Tailwind) */
+  --class-agent-fg: #8a1f2b;
+  --class-agent-bg: #f9dfe1;
+  --class-infrastructure-fg: #253d5a;
+  --class-infrastructure-bg: #dbe4ee;
+  --class-configuration-fg: #6e4a00;
+  --class-configuration-bg: #f6e5b8;
+  --class-cancelled-fg: #4a463f;
+  --class-cancelled-bg: #e2ded5;
+
+  /* run phases */
+  --phase-ok: #1f6f4a;
+  --diff-add: #1f6f4a;
+  --diff-del: #9b1c1c;
+
+  /* type */
+  --font-sans: "IBM Plex Sans Variable", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "IBM Plex Sans Condensed", "IBM Plex Sans Variable", ui-sans-serif, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --background: #1c1917;
-  --foreground: #fafaf9;
-  --muted: #292524;
-  --muted-foreground: #e7e5e4;
-  --border: #57534e;
-  --ring: #93c5fd;
-  --card: #292524;
-  --danger: #fecdd3;
-  --danger-foreground: #4c0519;
+  --background: #15130f;
+  --foreground: #efebe3;
+  --muted: #221f1a;
+  --muted-foreground: #a8a196;
+  --border: #3b362e;
+  --border-strong: #efebe3;
+  --card: #1c1915;
+  --card-raised: #26221c;
+  --ring: #6cc8b5;
+  --link: #6cc8b5;
+
+  --signal: #ff7a3d;
+  --signal-foreground: #1a0a02;
+  --signal-soft: #3d1a08;
+  --signal-ink: #ffb68f;
+
+  --danger: #ff8080;
+  --danger-foreground: #3a0a0a;
+
+  --class-agent-fg: #ffb3ba;
+  --class-agent-bg: #4a1a20;
+  --class-infrastructure-fg: #b9cde6;
+  --class-infrastructure-bg: #1f2e42;
+  --class-configuration-fg: #f1d48a;
+  --class-configuration-bg: #3d2f08;
+  --class-cancelled-fg: #d6d0c5;
+  --class-cancelled-bg: #332f28;
+
+  --phase-ok: #6fcf97;
+  --diff-add: #6fcf97;
+  --diff-del: #ff8080;
+
   color-scheme: dark;
+}
+
+/* Tailwind v4 theme: utilities on the utility-styled pages resolve to the
+ * same tokens as the hand-written classes. */
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-display: var(--font-display);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-card: var(--card);
+  --color-card-raised: var(--card-raised);
+  --color-ring: var(--ring);
+  --color-link: var(--link);
+  --color-signal: var(--signal);
+  --color-signal-foreground: var(--signal-foreground);
+  --color-signal-soft: var(--signal-soft);
+  --color-signal-ink: var(--signal-ink);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --radius: 0;
+}
+
+/* Base */
+
+html {
+  font-size: 15px;
 }
 
 body {
@@ -31,10 +137,20 @@ body {
   min-height: 100vh;
   background: var(--background);
   color: var(--foreground);
-  font:
-    16px/1.5 ui-sans-serif,
-    system-ui,
-    sans-serif;
+  font: 400 1rem/1.5 var(--font-sans);
+  font-feature-settings: "ss02";
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  text-wrap: balance;
 }
 
 :focus-visible {
@@ -46,13 +162,29 @@ a {
   color: inherit;
 }
 
+code,
+kbd,
+pre,
+.mono,
+.font-mono,
+time {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: var(--signal-soft);
+  color: var(--signal-ink);
+}
+
 .skip-link {
   position: absolute;
   left: 0.5rem;
   top: 0.5rem;
+  z-index: 10;
   transform: translateY(-200%);
-  background: var(--card);
-  color: var(--foreground);
+  background: var(--signal);
+  color: var(--signal-foreground);
   padding: 0.4rem 0.6rem;
 }
 
@@ -60,30 +192,81 @@ a {
   transform: none;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Shell: a fixed rail on the left, the work area on the right. On phones the
+ * rail collapses to a single top strip with a horizontally scrolling nav. */
+
 .shell {
   display: grid;
   min-height: 100vh;
-  grid-template-columns: 16rem minmax(0, 1fr);
-}
-
-.sidebar,
-.topbar,
-.dialog-content,
-.login,
-.state-block {
-  background: var(--card);
-  color: var(--foreground);
+  grid-template-columns: 15rem minmax(0, 1fr);
 }
 
 .sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--card);
+  color: var(--foreground);
   border-right: 1px solid var(--border);
-  padding: 1rem;
+  padding: 1rem 0.75rem 1.25rem;
 }
 
-.sidebar h1,
-.sidebar h2 {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
+.wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0 0.5rem;
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.wordmark small {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.rail-label {
+  margin: 0 0 0.35rem;
+  padding: 0 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.sidebar p {
+  margin: 0;
+  padding: 0 0.5rem;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
 }
 
 .sidebar ul,
@@ -93,24 +276,56 @@ a {
   padding: 0;
 }
 
-.sidebar li + li,
-.filter {
-  margin-top: 0.25rem;
+.sidebar li + li {
+  margin-top: 1px;
 }
 
 .sidebar a,
 .sidebar button,
 .sidebar [aria-disabled="true"] {
-  display: block;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
   width: 100%;
+  font: inherit;
+  font-size: 0.9375rem;
   text-align: left;
-  padding: 0.35rem 0.4rem;
+  text-decoration: none;
+  color: var(--foreground);
+  background: transparent;
+  border: 0;
+  border-left: 3px solid transparent;
+  padding: 0.3rem 0.5rem;
+  cursor: pointer;
+}
+
+.sidebar a:hover,
+.sidebar button:hover {
+  background: var(--muted);
+}
+
+.sidebar [aria-disabled="true"] {
+  color: var(--muted-foreground);
+  cursor: not-allowed;
 }
 
 .sidebar [aria-current="page"],
 .sidebar [aria-current="true"] {
-  font-weight: 700;
-  text-decoration: underline;
+  font-weight: 600;
+  border-left-color: var(--signal);
+  background: var(--muted);
+}
+
+.sidebar .factory-alias {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+
+.rail-foot {
+  margin-top: auto;
+  padding: 0 0.5rem;
 }
 
 .muted {
@@ -123,40 +338,118 @@ a {
   flex-direction: column;
 }
 
-.topbar {
-  display: flex;
-  justify-content: flex-end;
-  border-bottom: 1px solid var(--border);
-  padding: 0.5rem 1rem;
+main {
+  min-width: 0;
+  padding: 1.25rem;
 }
 
-main {
-  padding: 1rem;
-}
+/* Login: the only page without the rail. */
 
 .login {
-  max-width: 28rem;
-  margin: 4rem auto;
-  padding: 1.5rem;
-  border: 1px solid var(--border);
+  max-width: 24rem;
+  margin: 12vh auto 0;
+  padding: 0 1rem;
+}
+
+.login h1 {
+  margin: 0 0 0.25rem;
+  font-size: 2.25rem;
+  letter-spacing: -0.03em;
+  text-transform: uppercase;
+}
+
+.login > p {
+  margin: 0 0 1.5rem;
+  color: var(--muted-foreground);
 }
 
 .login form {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.6rem;
+  border-top: 3px solid var(--signal);
+  padding-top: 1rem;
 }
+
+.login label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.login [role="alert"] {
+  margin: 0;
+  color: var(--danger);
+}
+
+.login > button {
+  margin-top: 1.5rem;
+}
+
+/* Controls */
 
 .login input,
 .button,
 .filter > button,
-.topbar button,
-.sidebar button,
-.login > button {
+.login > button,
+.chips button,
+.tablist button {
   font: inherit;
   color: var(--foreground);
-  background: var(--muted);
+  background: var(--card);
   border: 1px solid var(--border);
-  padding: 0.4rem 0.6rem;
+  padding: 0.4rem 0.7rem;
+  line-height: 1.3;
+}
+
+.login input {
+  font-family: var(--font-mono);
+}
+
+.button,
+.login > button,
+.filter > button,
+.chips button,
+.tablist button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.button:hover,
+.login > button:hover,
+.filter > button:hover,
+.chips button:hover {
+  border-color: var(--border-strong);
+}
+
+.rail-foot .button {
+  width: 100%;
+  font-size: 0.8125rem;
+  padding: 0.3rem 0.6rem;
+}
+
+.button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.button-primary {
+  background: var(--foreground);
+  color: var(--background);
+  border-color: var(--foreground);
+}
+
+.button-primary:hover {
+  background: var(--signal);
+  color: var(--signal-foreground);
+  border-color: var(--signal);
 }
 
 .button-danger {
@@ -165,14 +458,26 @@ main {
   border-color: var(--danger);
 }
 
+.button-outline-danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* Failure-class badge: a square tag with a thick left bar, so it reads as a
+ * stamp rather than a pill. */
+
 .status-badge {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   border: 1px solid;
-  border-radius: 999px;
-  padding: 0.1rem 0.5rem;
-  font-weight: 650;
+  border-left-width: 4px;
+  padding: 0.05rem 0.5rem 0.05rem 0.4rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
 }
 
 .filter {
@@ -181,8 +486,14 @@ main {
   gap: 0.4rem;
 }
 
+.filter > button[aria-pressed="true"] {
+  border-color: var(--border-strong);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
 .duration-pair {
   margin: 0;
+  white-space: nowrap;
 }
 
 .virtual-list {
@@ -206,7 +517,7 @@ main {
 .dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgb(28 25 23 / 45%);
+  background: rgb(29 27 24 / 55%);
 }
 
 .dialog-content {
@@ -214,30 +525,118 @@ main {
   top: 50%;
   left: 50%;
   width: min(32rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
   transform: translate(-50%, -50%);
+  background: var(--card-raised);
+  color: var(--foreground);
   border: 1px solid var(--border);
-  padding: 1rem;
+  border-top: 4px solid var(--signal);
+  padding: 1.25rem;
+}
+
+.dialog-content h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.35rem;
+}
+
+.dialog-content > p {
+  margin: 0;
+  color: var(--muted-foreground);
 }
 
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
-  margin-top: 1rem;
+  margin-top: 1.25rem;
 }
 
+/* Empty and error states: a dashed frame, not a card, so they read as the
+ * absence of a thing instead of another thing. */
+
 .state-block {
-  border: 1px solid var(--border);
-  padding: 1rem;
+  color: var(--foreground);
+  border: 1px dashed var(--border);
+  padding: 1.5rem 1.25rem;
+}
+
+.state-block h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.15rem;
+}
+
+.state-block p {
+  margin: 0 0 0.75rem;
+  color: var(--muted-foreground);
+}
+
+.state-block[role="alert"] {
+  border-style: solid;
+  border-left: 4px solid var(--danger);
 }
 
 @media (max-width: 720px) {
   .shell {
     grid-template-columns: 1fr;
+    /* auto for the rail, 1fr for the work area; without this the two auto rows
+     * split the min-height and the rail floats above a tall empty band. */
+    grid-template-rows: auto 1fr;
   }
 
   .sidebar {
+    position: static;
+    height: auto;
+    gap: 0.75rem;
     border-right: 0;
     border-bottom: 1px solid var(--border);
+    padding: 0.75rem 0.75rem 0.5rem;
+  }
+
+  .rail-label {
+    display: none;
+  }
+
+  .sidebar nav ul {
+    display: flex;
+    gap: 0.25rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .sidebar li + li {
+    margin-top: 0;
+  }
+
+  .sidebar a,
+  .sidebar button,
+  .sidebar [aria-disabled="true"] {
+    width: auto;
+    white-space: nowrap;
+    border-left: 0;
+    border-bottom: 3px solid transparent;
+    padding: 0.3rem 0.5rem;
+  }
+
+  .sidebar [aria-current="page"],
+  .sidebar [aria-current="true"] {
+    border-bottom-color: var(--signal);
+  }
+
+  .rail-foot {
+    position: absolute;
+    top: 0.6rem;
+    right: 0.75rem;
+    margin: 0;
+    padding: 0;
+  }
+
+  .sidebar {
+    position: relative;
+  }
+
+  main {
+    padding: 1rem;
   }
 }

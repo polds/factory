@@ -131,11 +131,7 @@ export function FileTree({
   }
 
   return (
-    <div
-      role="tree"
-      aria-label="Definition files"
-      className="border border-[var(--border)] bg-[var(--card)] py-1"
-    >
+    <div role="tree" aria-label="Definition files" className="border border-border bg-card py-1">
       {rows.map((row, index) => {
         const expanded = row.folder ? !collapsed.has(row.path) : undefined;
         return (
@@ -151,7 +147,7 @@ export function FileTree({
               if (node) itemRefs.current.set(row.path, node);
               else itemRefs.current.delete(row.path);
             }}
-            className="flex cursor-pointer items-center gap-1 py-0.5 pr-2 text-sm hover:bg-[var(--muted)]"
+            className="flex cursor-pointer items-center gap-1 py-0.5 pr-2 text-sm hover:bg-muted"
             style={{ paddingLeft: `${0.4 + row.depth * 0.9}rem` }}
             onClick={() => {
               setFocused(row.path);
@@ -170,7 +166,7 @@ export function FileTree({
               <span className="inline-block size-3.5 shrink-0" aria-hidden />
             )}
             {errorPaths.has(row.path) ? (
-              <span className="text-[var(--danger)]" aria-hidden>
+              <span className="text-danger" aria-hidden>
                 ●
               </span>
             ) : null}

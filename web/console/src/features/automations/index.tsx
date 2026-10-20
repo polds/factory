@@ -113,11 +113,14 @@ function AutomationsScreen({ factoryId }: { factoryId: string }) {
 
   return (
     <div>
-      <header className="mb-4">
-        <h1 className="text-xl font-semibold">Automations</h1>
-        <p className="text-sm text-[var(--muted-foreground)]">
-          Factory <span className="font-mono">{factoryId}</span> · defined in the factory definition
-        </p>
+      <header className="page-header mb-5">
+        <div>
+          <h1>Automations</h1>
+          <p className="muted">
+            Factory <span className="font-mono">{factoryId}</span> · defined in the factory
+            definition
+          </p>
+        </div>
       </header>
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Automations" value={rows.length} />
@@ -126,7 +129,7 @@ function AutomationsScreen({ factoryId }: { factoryId: string }) {
         <Stat label="Runs started" value={started} />
       </div>
       {error ? (
-        <p role="alert" className="mb-3 text-sm text-[var(--danger)]">
+        <p role="alert" className="mb-3 text-sm text-danger">
           {error}
         </p>
       ) : null}
@@ -136,11 +139,11 @@ function AutomationsScreen({ factoryId }: { factoryId: string }) {
           message="This factory definition has no automations."
         />
       ) : (
-        <div className="overflow-x-auto border border-[var(--border)] bg-[var(--card)]">
+        <div className="panel table-scroll">
           <table className="w-full border-collapse text-sm">
             <caption className="sr-only">Automations</caption>
-            <thead className="bg-[var(--muted)] text-xs text-[var(--muted-foreground)]">
-              <tr className="border-b border-[var(--border)] text-left">
+            <thead className="data-head">
+              <tr>
                 {[
                   "Name",
                   "Triggers",
@@ -150,7 +153,7 @@ function AutomationsScreen({ factoryId }: { factoryId: string }) {
                   "Matches",
                   "Runs started",
                 ].map((heading) => (
-                  <th key={heading} scope="col" className="px-3 py-2 font-medium whitespace-nowrap">
+                  <th key={heading} scope="col" className="px-3 py-2 whitespace-nowrap">
                     {heading}
                   </th>
                 ))}
@@ -158,17 +161,14 @@ function AutomationsScreen({ factoryId }: { factoryId: string }) {
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr
-                  key={row.name}
-                  className="border-b border-[var(--border)] align-top last:border-b-0"
-                >
+                <tr key={row.name} className="border-b border-border align-top last:border-b-0">
                   <td className="px-3 py-2 font-mono text-xs font-semibold">{row.name}</td>
                   <td className="px-3 py-2">
                     <ul className="flex flex-wrap gap-1">
                       {row.triggers.map((trigger) => (
                         <li
                           key={trigger}
-                          className="inline-flex items-center gap-1 border border-[var(--border)] bg-[var(--muted)] px-1.5 font-mono text-xs"
+                          className="inline-flex items-center gap-1 border border-border bg-muted px-1.5 font-mono text-xs"
                         >
                           {triggerMark(trigger)}
                           {trigger}
@@ -183,7 +183,7 @@ function AutomationsScreen({ factoryId }: { factoryId: string }) {
                         Enabled
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1 text-[var(--muted-foreground)]">
+                      <span className="inline-flex items-center gap-1 text-muted-foreground">
                         <CircleSlash className="size-4" aria-hidden />
                         Disabled
                       </span>
@@ -195,7 +195,7 @@ function AutomationsScreen({ factoryId }: { factoryId: string }) {
                       role="switch"
                       aria-checked={row.runtime_paused}
                       aria-label={row.runtime_paused ? `Resume ${row.name}` : `Pause ${row.name}`}
-                      className="inline-flex items-center gap-1 border border-[var(--border)] bg-[var(--muted)] px-2 py-1 text-sm"
+                      className="inline-flex items-center gap-1 border border-border bg-muted px-2 py-1 text-sm"
                       onClick={() =>
                         setPending({
                           name: row.name,
@@ -235,7 +235,7 @@ function AutomationsScreen({ factoryId }: { factoryId: string }) {
           </table>
         </div>
       )}
-      <div className="mt-2 space-y-1 text-sm text-[var(--muted-foreground)]">
+      <div className="mt-2 space-y-1 text-sm text-muted-foreground">
         <p className="flex items-start gap-1.5">
           <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
           <span>
@@ -267,9 +267,9 @@ function AutomationsScreen({ factoryId }: { factoryId: string }) {
 
 function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <section className="border border-[var(--border)] bg-[var(--card)] p-3">
-      <p className="text-sm text-[var(--muted-foreground)]">{label}</p>
-      <p className="font-mono text-2xl font-semibold">{value}</p>
+    <section className="stat-card">
+      <p className="stat-card-label">{label}</p>
+      <p className="metric">{value}</p>
     </section>
   );
 }

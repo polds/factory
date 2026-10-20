@@ -90,14 +90,16 @@ function SecretsScreen({ factoryId }: { factoryId: string }) {
   const missing = rows.filter((row) => !row.present).length;
   return (
     <div>
-      <header className="mb-4">
-        <h1 className="text-xl font-semibold">Secrets</h1>
-        <p className="text-sm text-[var(--muted-foreground)]">
-          Factory <span className="font-mono">{factoryId}</span> · {rows.length} referenced
-          {missing > 0 ? ` · ${missing} missing` : ""}
-        </p>
+      <header className="page-header mb-5">
+        <div>
+          <h1>Secrets</h1>
+          <p className="muted">
+            Factory <span className="font-mono">{factoryId}</span> · {rows.length} referenced
+            {missing > 0 ? ` · ${missing} missing` : ""}
+          </p>
+        </div>
       </header>
-      <p className="mb-3 flex items-center gap-2 border-2 border-[var(--foreground)] bg-[var(--card)] px-3 py-2 font-medium">
+      <p className="mb-3 flex items-center gap-2 border-2 border-foreground bg-card px-3 py-2 font-medium">
         <ShieldCheck className="size-5 shrink-0" aria-hidden />
         Values are never shown. This page lists names, providers and presence only.
       </p>
@@ -107,13 +109,13 @@ function SecretsScreen({ factoryId }: { factoryId: string }) {
           message="This factory definition does not reference any secrets."
         />
       ) : (
-        <div className="overflow-x-auto border border-[var(--border)] bg-[var(--card)]">
+        <div className="panel table-scroll">
           <table className="w-full border-collapse text-sm">
             <caption className="sr-only">Secret names and presence</caption>
-            <thead className="bg-[var(--muted)] text-xs text-[var(--muted-foreground)]">
-              <tr className="border-b border-[var(--border)] text-left">
+            <thead className="data-head">
+              <tr>
                 {["Name", "Provider", "Presence", "Used by", "Last used run"].map((heading) => (
-                  <th key={heading} scope="col" className="px-3 py-2 font-medium whitespace-nowrap">
+                  <th key={heading} scope="col" className="px-3 py-2 whitespace-nowrap">
                     {heading}
                   </th>
                 ))}
@@ -125,8 +127,8 @@ function SecretsScreen({ factoryId }: { factoryId: string }) {
                   key={row.name}
                   className={
                     row.present
-                      ? "border-b border-[var(--border)] last:border-b-0"
-                      : "border-b border-[var(--border)] bg-[var(--muted)] last:border-b-0"
+                      ? "border-b border-border last:border-b-0"
+                      : "border-b border-border bg-muted last:border-b-0"
                   }
                 >
                   <td className="px-3 py-2 font-mono text-xs font-semibold">{row.name}</td>
@@ -138,7 +140,7 @@ function SecretsScreen({ factoryId }: { factoryId: string }) {
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1">
-                        <AlertCircle className="size-4 text-[var(--danger)]" aria-hidden /> Missing
+                        <AlertCircle className="size-4 text-danger" aria-hidden /> Missing
                       </span>
                     )}
                   </td>
@@ -147,10 +149,10 @@ function SecretsScreen({ factoryId }: { factoryId: string }) {
                       {row.used_by.map((used) => (
                         <li
                           key={`${used.kind}:${used.name}`}
-                          className="inline-flex items-center gap-1 border border-[var(--border)] bg-[var(--muted)] px-1.5 text-xs"
+                          className="inline-flex items-center gap-1 border border-border bg-muted px-1.5 text-xs"
                         >
                           {kindMark(used.kind)}
-                          <span className="text-[var(--muted-foreground)]">{used.kind}</span>
+                          <span className="text-muted-foreground">{used.kind}</span>
                           <span className="font-mono">{used.name}</span>
                         </li>
                       ))}
@@ -161,12 +163,12 @@ function SecretsScreen({ factoryId }: { factoryId: string }) {
                       <Link
                         to="/runs/$runId"
                         params={{ runId: row.last_used_run_id }}
-                        className="font-mono text-xs text-[var(--ring)] hover:underline"
+                        className="font-mono text-xs text-link hover:underline"
                       >
                         {row.last_used_run_id}
                       </Link>
                     ) : (
-                      <span className="text-[var(--muted-foreground)]">—</span>
+                      <span className="text-muted-foreground">—</span>
                     )}
                   </td>
                 </tr>
@@ -176,19 +178,19 @@ function SecretsScreen({ factoryId }: { factoryId: string }) {
         </div>
       )}
       <section
-        className="mt-5 border border-[var(--border)] bg-[var(--card)] p-3"
+        className="mt-5 border border-border bg-card p-3"
         aria-labelledby="identities-heading"
       >
         <h2 id="identities-heading" className="mb-2 text-sm font-semibold">
           Identities (read-only)
         </h2>
         {identities.data.length === 0 ? (
-          <p className="text-sm text-[var(--muted-foreground)]">No identities.</p>
+          <p className="text-sm text-muted-foreground">No identities.</p>
         ) : (
           <table className="w-full border-collapse text-sm">
             <caption className="sr-only">Identities</caption>
-            <thead className="text-xs text-[var(--muted-foreground)]">
-              <tr className="border-b border-[var(--border)] text-left">
+            <thead className="text-xs text-muted-foreground">
+              <tr>
                 {["Subject", "Kind", "Scope", "Last used"].map((heading) => (
                   <th key={heading} scope="col" className="py-1.5 pr-3 font-medium">
                     {heading}
@@ -198,10 +200,7 @@ function SecretsScreen({ factoryId }: { factoryId: string }) {
             </thead>
             <tbody>
               {identities.data.map((identity) => (
-                <tr
-                  key={identity.subject}
-                  className="border-b border-[var(--border)] last:border-b-0"
-                >
+                <tr key={identity.subject} className="border-b border-border last:border-b-0">
                   <td className="py-2 pr-3 font-medium">{identity.subject}</td>
                   <td className="py-2 pr-3 font-mono text-xs">{identity.kind}</td>
                   <td className="py-2 pr-3 font-mono text-xs">{identity.scope}</td>

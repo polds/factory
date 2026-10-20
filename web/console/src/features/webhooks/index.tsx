@@ -89,13 +89,15 @@ function WebhooksScreen({ factoryId }: { factoryId: string }) {
   const rows = query.data;
   return (
     <div>
-      <header className="mb-4">
-        <h1 className="text-xl font-semibold">Webhooks</h1>
-        <p className="text-sm text-[var(--muted-foreground)]">
-          Factory <span className="font-mono">{factoryId}</span> · {rows.length} registrations
-        </p>
+      <header className="page-header mb-5">
+        <div>
+          <h1>Webhooks</h1>
+          <p className="muted">
+            Factory <span className="font-mono">{factoryId}</span> · {rows.length} registrations
+          </p>
+        </div>
       </header>
-      <p className="mb-3 flex items-center gap-1.5 border border-dashed border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">
+      <p className="mb-3 flex items-center gap-1.5 border border-dashed border-border bg-card px-3 py-2 text-sm">
         <Lock className="size-4 shrink-0" aria-hidden />
         Immutable: delete and recreate the webhook to change this
       </p>
@@ -107,7 +109,7 @@ function WebhooksScreen({ factoryId }: { factoryId: string }) {
       ) : (
         <ul className="space-y-2">
           {rows.map((row) => (
-            <li key={row.uid} className="border border-[var(--border)] bg-[var(--card)]">
+            <li key={row.uid} className="border border-border bg-card">
               <WebhookSummary
                 row={row}
                 open={openUid === row.uid}
@@ -127,7 +129,7 @@ function WebhooksScreen({ factoryId }: { factoryId: string }) {
           ))}
         </ul>
       )}
-      <p className="mt-2 flex items-start gap-1.5 text-sm text-[var(--muted-foreground)]">
+      <p className="mt-2 flex items-start gap-1.5 text-sm text-muted-foreground">
         <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
         <span>Signing secrets are stored as factory secrets and are never displayed here.</span>
       </p>
@@ -189,11 +191,11 @@ function WebhookSummary({
           <CheckCircle2 className="size-4" aria-hidden /> Enabled
         </span>
       ) : (
-        <span className="inline-flex items-center gap-1 text-sm text-[var(--muted-foreground)]">
+        <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
           <CircleSlash className="size-4" aria-hidden /> Disabled
         </span>
       )}
-      <span className="ml-auto font-mono text-xs text-[var(--muted-foreground)]">
+      <span className="ml-auto font-mono text-xs text-muted-foreground">
         {row.last_delivery_at ? (
           <time dateTime={row.last_delivery_at}>{formatWhen(row.last_delivery_at)}</time>
         ) : (
@@ -220,13 +222,13 @@ function WebhookDeliveries({
   onRetry: () => void;
 }) {
   return (
-    <div id={`webhook-${webhook.uid}`} className="border-t border-[var(--border)] px-3 py-2">
+    <div id={`webhook-${webhook.uid}`} className="border-t border-border px-3 py-2">
       <div className="mb-2 flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">Recent deliveries</h2>
         <Link
           to="/f/$factory/deliveries"
           params={{ factory: factoryId }}
-          className="text-sm text-[var(--ring)] hover:underline"
+          className="text-sm text-link hover:underline"
         >
           All deliveries
         </Link>
@@ -240,7 +242,7 @@ function WebhookDeliveries({
         />
       ) : null}
       {!loading && !error && rows.length === 0 ? (
-        <p className="text-sm text-[var(--muted-foreground)]">No deliveries for this webhook.</p>
+        <p className="text-sm text-muted-foreground">No deliveries for this webhook.</p>
       ) : null}
       {rows.length > 0 ? (
         <ul className="space-y-1">

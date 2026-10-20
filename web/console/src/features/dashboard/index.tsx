@@ -157,16 +157,16 @@ function DashboardBody({
   return (
     <>
       <div className="tiles">
-        <section className="tile" aria-labelledby="tile-active">
-          <h3 id="tile-active">Active runs</h3>
-          <p className="metric">{active}</p>
-          <Caveat>queued + running</Caveat>
-        </section>
-        <section className="tile" aria-labelledby="tile-waiting">
+        <section className="tile tile-hero" aria-labelledby="tile-waiting">
           <h3 id="tile-waiting">Waiting on human</h3>
           <p className="metric">{waiting}</p>
           <Caveat>approvals + agent questions</Caveat>
           <FactoryLinks factories={factories} section="inbox" label="Inbox" />
+        </section>
+        <section className="tile" aria-labelledby="tile-active">
+          <h3 id="tile-active">Active runs</h3>
+          <p className="metric">{active}</p>
+          <Caveat>queued + running</Caveat>
         </section>
         <section className="tile" aria-labelledby="tile-p50">
           <h3 id="tile-p50">Queue wait p50</h3>
@@ -174,7 +174,9 @@ function DashboardBody({
             {factories.map((factory, index) => (
               <li key={factory.id}>
                 <span className="mono">{factory.id}</span>{" "}
-                <span>{formatDuration(summaries[index]?.queue_wait_p50_ms ?? 0)}</span>
+                <span className="mono">
+                  {formatDuration(summaries[index]?.queue_wait_p50_ms ?? 0)}
+                </span>
               </li>
             ))}
           </ul>
