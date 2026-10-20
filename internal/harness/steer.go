@@ -29,13 +29,13 @@ const (
 	// One immediate poll after the long-poller stops. Short enough that an
 	// empty hold cannot stretch an idle-0 run.
 	steerFinalPoll = 250 * time.Millisecond
-	// steerProbeBudget is how long the agent loop waits for the opening
-	// poll. A 200 inside this budget emits run.capabilities before the
-	// first model call. A poll still open at the deadline is a server
-	// holding the long-poll, so the loop emits then and continues. A fast
-	// 404 or 501 closes the probe first and leaves steering unannounced.
-	steerProbeBudget = 200 * time.Millisecond
 )
+
+// steerBatchGapHook, when set, runs inside the hub lock between two
+// messages of one steer response. It must not call the hub. Tests hold
+// the turn there to prove a follow-up cannot start a new conversation
+// in that gap. Production leaves it nil.
+var steerBatchGapHook func()
 
 // steerDeliveredHook, when set, runs on the poller after a batch that
 // contained a new steer id. Tests rendezvous there. Production leaves it nil.
@@ -137,6 +137,48 @@ func (h *steerHub) deliver(m steerMsg) bool {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.deliverLocked(m)
+}
+
+// deliverAll accepts one steer response under a single lock, in order.
+// An interrupt and the follow-up after it are both queued before the
+// canceled turn can drain, so idle 0 cannot start a fresh conversation
+// in the gap between two lock acquisitions.
+func (h *steerHub) deliverAll(items []steerMsg) int {
+	if h == nil || len(items) == 0 {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	fresh := 0
+	for i, m := range items {
+		if m.ID == "" {
+			continue
+		}
+		if h.deliverLocked(m) {
+			fresh++
+		}
+		if steerBatchGapHook == nil {
+			continue
+		}
+		later := false
+		for _, next := range items[i+1:] {
+			if next.ID != "" {
+				later = true
+				break
+			}
+		}
+		if later {
+			steerBatchGapHook()
+		}
+	}
+	return fresh
+}
+
+func (h *steerHub) deliverLocked(m steerMsg) bool {
+	if m.ID == "" {
+		return false
+	}
 	if _, ok := h.seen[m.ID]; ok {
 		return false
 	}
@@ -307,13 +349,12 @@ func (p steerPoller) LogValue() slog.Value         { return slog.StringValue("st
 func (p steerPoller) MarshalJSON() ([]byte, error) { return []byte(`"steerPoller"`), nil }
 
 // startSteerPoller long-polls until stop is called or ctx is canceled.
-// stop waits for the goroutine so it cannot emit after the terminal event.
-// The opening poll is wait=0. A 200 inside steerProbeBudget emits
-// run.capabilities before this returns, which is before the first model
-// call. A poll still open at the deadline emits too: factoryd ignores
-// wait=0 and holds a live steer route, while a missing route has already
-// returned 404 or 501. Either way the agent loop is not stalled past the
-// budget.
+// stop waits for the goroutine so it cannot emit after the terminal event,
+// then releases unacked claims. The opening poll is wait=0. This returns
+// after that response: a 200 has already emitted run.capabilities, so the
+// event is in the log before the first model call. A 404 or 501 leaves
+// the capability unannounced and stops polling. A 5xx or a network error
+// leaves it unannounced, unblocks the agent loop, and keeps polling.
 func startSteerPoller(ctx context.Context, endpoint string, token secretValue, log *Log, hub *steerHub) func() {
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -332,8 +373,6 @@ func startSteerPoller(ctx context.Context, endpoint string, token secretValue, l
 	select {
 	case <-probeDone:
 	case <-ctx.Done():
-	case <-time.After(steerProbeBudget):
-		p.hub.emitCapability(p.log)
 	}
 	var once sync.Once
 	return func() {
@@ -343,6 +382,7 @@ func startSteerPoller(ctx context.Context, endpoint string, token secretValue, l
 			case <-done:
 			case <-time.After(2 * time.Second):
 			}
+			releaseSteerClaims(p.endpoint, p.token, p.hub.ackCursor())
 		})
 	}
 }
@@ -396,15 +436,7 @@ func (p *steerPoller) loop(ctx context.Context, probeDone chan struct{}) {
 			// capability event is already in the log.
 			finishProbe()
 		}
-		fresh := 0
-		for _, item := range items {
-			if item.ID == "" {
-				continue
-			}
-			if p.hub.deliver(item) {
-				fresh++
-			}
-		}
+		fresh := p.hub.deliverAll(items)
 		if fresh > 0 && steerDeliveredHook != nil {
 			steerDeliveredHook()
 		}
@@ -485,11 +517,11 @@ func pollSteer(ctx context.Context, client *http.Client, endpoint string, token 
 	return out, resp.StatusCode, nil
 }
 
-// emitCapability records steering once. The opening poll emits on a 200,
-// or the agent loop emits when that poll is still held after
-// steerProbeBudget. Later polls, including the idle-0 final poll, do not
-// emit it again. A fast 404 or 501 never reaches this. Concurrent callers
-// share one event.
+// emitCapability records steering once, and only after an HTTP 200.
+// The opening poll emits it before the agent loop continues. Later polls,
+// including the idle-0 final poll, do not emit it again. A 404, a 501, a
+// 5xx, or a network error never reaches this until a later 200. Concurrent
+// callers share one event.
 func (h *steerHub) emitCapability(log *Log) {
 	if h == nil || log == nil {
 		return
@@ -524,18 +556,44 @@ func (h *steerHub) collectImmediate(ctx context.Context, endpoint string, token 
 		return
 	}
 	h.emitCapability(log)
-	fresh := 0
-	for _, item := range items {
-		if item.ID == "" {
-			continue
-		}
-		if h.deliver(item) {
-			fresh++
-		}
-	}
+	fresh := h.deliverAll(items)
 	if fresh > 0 && steerDeliveredHook != nil {
 		steerDeliveredHook()
 	}
+}
+
+// releaseSteerClaims tells factoryd to ack the cursor and drop leases on
+// steers this process did not take. The run token stays in the
+// Authorization header. Errors are ignored: a missing route has nothing
+// to release, and a failed release still expires with the lease.
+func releaseSteerClaims(endpoint string, token secretValue, after string) {
+	if endpoint == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return
+	}
+	q := u.Query()
+	q.Set("abandon", "1")
+	if after != "" {
+		q.Set("after", after)
+	}
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token.reveal())
+	client := &http.Client{CheckRedirect: refuseRedirect}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,9 +16,54 @@ import (
 // maxSteerWait is the long-poll cap for GET …/steer.
 const maxSteerWait = 25 * time.Second
 
-// steerWait is the wait passed to NextSteers. Tests shorten it.
-// Values above maxSteerWait are capped.
+// steerWait is the wait passed to NextSteers when the request omits wait.
+// Tests shorten it. Values above maxSteerWait are capped. A request that
+// sends wait=0 does not use this default.
 var steerWait = maxSteerWait
+
+// steerReleaseCtx marks a poll that acks its cursor and drops unacked
+// claims without taking a new lease. The harness sends it when polling
+// stops, so a follow-up a parked process held is visible to the next one.
+type steerReleaseCtx struct{}
+
+func contextWithSteerRelease(ctx context.Context) context.Context {
+	return context.WithValue(ctx, steerReleaseCtx{}, true)
+}
+
+// SteerReleaseRequested reports that NextSteers should release claims.
+func SteerReleaseRequested(ctx context.Context) bool {
+	v, _ := ctx.Value(steerReleaseCtx{}).(bool)
+	return v
+}
+
+func clampDefaultSteerWait(d time.Duration) time.Duration {
+	if d <= 0 || d > maxSteerWait {
+		return maxSteerWait
+	}
+	return d
+}
+
+// steerRequestWait reads the wait query. A missing value uses the package
+// default, clamped to maxSteerWait. 0 returns at once. A positive number of
+// seconds is clamped to the cap. Anything else is invalid.
+func steerRequestWait(r *http.Request) (time.Duration, error) {
+	q := r.URL.Query()
+	if !q.Has("wait") {
+		return clampDefaultSteerWait(steerWait), nil
+	}
+	raw := q.Get("wait")
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, errors.New("wait is invalid")
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	if n > uint64(maxSteerWait/time.Second) {
+		return maxSteerWait, nil
+	}
+	return time.Duration(n) * time.Second, nil
+}
 
 // consoleRoute is one M5 route. Registration and the handler tests share
 // this list so a new route is covered by the 401, 404, and 501 walks.
@@ -210,13 +256,32 @@ func (h *handler) handleSteer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	wait := steerWait
-	if wait <= 0 || wait > maxSteerWait {
-		wait = maxSteerWait
+	after := r.URL.Query().Get("after")
+	runID := r.PathValue("runId")
+	if r.URL.Query().Get("abandon") == "1" {
+		steers, err := cb.NextSteers(contextWithSteerRelease(r.Context()), tok, runID, after, 0)
+		if r.Context().Err() != nil {
+			return
+		}
+		if err != nil {
+			h.writeConsoleErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, orEmpty(steers))
+		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), wait)
-	defer cancel()
-	steers, err := cb.NextSteers(ctx, tok, r.PathValue("runId"), r.URL.Query().Get("after"), wait)
+	wait, err := steerRequestWait(r)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "wait is invalid")
+		return
+	}
+	ctx := r.Context()
+	if wait > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, wait)
+		defer cancel()
+	}
+	steers, err := cb.NextSteers(ctx, tok, runID, after, wait)
 	if r.Context().Err() != nil {
 		return
 	}
