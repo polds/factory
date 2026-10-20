@@ -60,6 +60,19 @@ const mapping = [
   ["webhook-deliveries.json", "API.Delivery[]"],
   ["webhooks.json", "API.Webhook[]"],
   ["workers.json", "API.ConnectedWorkers"],
+  ["factory-event-lifecycle.json", "API.FactoryEventData"],
+  ["m6-benchmark-accepted.json", "API.BenchmarkAccepted"],
+  ["m6-benchmark-trials.json", "API.BenchmarkTrials"],
+  ["m6-benchmarks.json", "API.BenchmarkSummary[]"],
+  ["m6-capture-benchmark-task.json", "API.CapturedBenchmarkTask"],
+  ["m6-improvement-batches.json", "API.ImprovementBatch[]"],
+  ["m6-improvement-run-now.json", "API.ImprovementRunNow"],
+  ["m6-inbox-improvement.json", "API.InboxItem[]"],
+  ["m6-metrics.json", "API.FactoryMetrics"],
+  ["m6-run-scores.json", "API.RunScore[]"],
+  ["m6-score-accepted.json", "API.ScoreAccepted"],
+  ["m6-scorer-results.json", "API.ScorerResult[]"],
+  ["m6-scorers.json", "API.ScorerSummary[]"],
 ];
 
 const errors = [];

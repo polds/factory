@@ -1,0 +1,27 @@
+{
+  "cells": [
+    {
+      "configuration": "Candidate",
+      "task": "broken-doc-link",
+      "n": 2,
+      "pass": 1,
+      "errored": 0,
+      "pass_rate": 0.5,
+      "ci_low": 0.25,
+      "ci_high": 0.75,
+      "median_cost_cents": 12,
+      "median_duration_ms": 45000,
+      "tokens_by_model": [
+        {
+          "model_id": "judge",
+          "input_tokens": 100,
+          "output_tokens": 20
+        }
+      ]
+    }
+  ],
+  "report": {
+    "winner": "Candidate",
+    "reason": "higher pass rate than Baseline"
+  }
+}

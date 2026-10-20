@@ -80,6 +80,36 @@ export type Run = {
 
 export type RunDetail = Run;
 
+// RunRow is one flat GET /agent/runs element. queue_wait_ms and exec_ms are
+// always present. failure_class, failure_code, and failure_summary sit on
+// the row. The nested failure object, steer, and pr_url belong to the detail.
+export type RunRow = {
+  id: string;
+  status: string;
+  factory_id?: string;
+  agent?: string;
+  title?: string;
+  priority?: string;
+  repo?: string;
+  work_item_id?: string;
+  parent_run_id?: string;
+  conversation_id?: string;
+  stage?: string;
+  model_id?: string;
+  failure_reason?: string;
+  created_at?: string;
+  started_at?: string;
+  worker?: string;
+  source?: string;
+  failure_class?: FailureClass;
+  failure_code?: string;
+  failure_summary?: string;
+  queue_wait_ms: number;
+  exec_ms: number;
+  cost_cents?: number;
+  exit_code?: number;
+};
+
 export type RunListQuery = {
   factory_id?: string;
   failure_class?: FailureClass;
@@ -156,7 +186,7 @@ export type DefinitionView = {
   files: DefinitionFile[];
 };
 
-export type InboxKind = "approval" | "question" | "failed_run";
+export type InboxKind = "approval" | "question" | "failed_run" | "improvement_pr";
 
 export type InboxItem = {
   kind: InboxKind;
@@ -345,6 +375,211 @@ export type FactoryEventData = {
   turn?: number;
   role?: string;
   text?: string;
+  status?: string;
+  stage?: string;
+};
+
+export type ScorerResultStatus = "ok" | "scorer_invalid" | "pending";
+
+export type ScoreAccepted = {
+  result_id: string;
+  judge_run_id: string;
+};
+
+export type ScorerResult = {
+  id: string;
+  run_id: string;
+  label: string;
+  score: number;
+  passed: boolean;
+  reasoning: string;
+  status: ScorerResultStatus;
+  created_at: string;
+  reviewed_at?: string;
+};
+
+export type BenchmarkAccepted = {
+  benchmark_run_id: string;
+};
+
+export type ModelTokens = {
+  model_id: string;
+  input_tokens: number;
+  output_tokens: number;
+};
+
+export type BenchmarkCell = {
+  configuration: string;
+  task: string;
+  n: number;
+  pass: number;
+  errored: number;
+  pass_rate: number;
+  ci_low: number;
+  ci_high: number;
+  median_cost_cents: number;
+  median_duration_ms: number;
+  tokens_by_model: ModelTokens[];
+};
+
+export type BenchmarkReport = {
+  winner: string;
+  reason: string;
+};
+
+export type BenchmarkTrials = {
+  cells: BenchmarkCell[];
+  report: BenchmarkReport;
+};
+
+export type ImprovementBatchStatus =
+  "queued" | "running" | "pr_open" | "merged" | "closed" | "failed";
+
+export type ImprovementFailure = {
+  run_id: string;
+  result_id: string;
+  scorer: string;
+  label: string;
+};
+
+export type ImprovementBatch = {
+  id: string;
+  agent: string;
+  status: ImprovementBatchStatus;
+  failures: ImprovementFailure[];
+  pr_url: string;
+  created_at: string;
+};
+
+export type ImprovementRunNow = {
+  checked_agents: string[];
+  batches: ImprovementBatch[];
+};
+
+export type DayPassRate = {
+  day: string;
+  pass_rate: number;
+  n: number;
+};
+
+export type ScorerSummary = {
+  name: string;
+  agents: string[];
+  labels: string[];
+  passing_score: number;
+  sampling_rate: number;
+  model: string;
+  self_improvement: boolean;
+  pass_rate_by_day: DayPassRate[];
+};
+
+export type RunScore = {
+  scorer: string;
+  label: string;
+  score: number;
+  passed: boolean;
+  reasoning: string;
+  status: ScorerResultStatus;
+};
+
+export type BenchmarkLastRun = {
+  id: string;
+  created_at: string;
+  repetitions: number;
+};
+
+export type BenchmarkSummary = {
+  suite: string;
+  agent: string;
+  configurations: string[];
+  tasks: string[];
+  last_run?: BenchmarkLastRun;
+};
+
+export type HeadRef = {
+  host: string;
+  owner: string;
+  repo: string;
+  sha: string;
+};
+
+export type CapturedBenchmarkTask = {
+  path: string;
+  content: string;
+  head_refs: HeadRef[];
+};
+
+export type NamedCount = {
+  name: string;
+  count: number;
+};
+
+export type RunTotals = {
+  by_agent: NamedCount[];
+  by_status: NamedCount[];
+  by_source: NamedCount[];
+  by_model: NamedCount[];
+  measurement: number;
+};
+
+export type AutonomyMetric = {
+  share: number;
+  n: number;
+  forge_connected_at?: string;
+};
+
+export type CycleTimeStage = {
+  name: string;
+  p50_ms: number;
+};
+
+export type CycleTimeMetric = {
+  p50_ms: number;
+  stages: CycleTimeStage[];
+};
+
+export type PRSizeCost = {
+  S: number;
+  M: number;
+  L: number;
+  XL: number;
+};
+
+export type CostPerPRMetric = {
+  median_cents: number;
+  by_size: PRSizeCost;
+};
+
+export type ExpensivePR = {
+  repo: string;
+  number: number;
+  cost_cents: number;
+  changed_lines: number;
+  url: string;
+};
+
+export type ScorerCard = {
+  name: string;
+  pass_rate_by_day: DayPassRate[];
+};
+
+export type ImprovementPR = {
+  batch_id: string;
+  agent: string;
+  url: string;
+  created_at: string;
+};
+
+export type FactoryMetrics = {
+  total_runs: RunTotals;
+  prs_opened: number;
+  prs_merged: number;
+  autonomy: AutonomyMetric;
+  cycle_time: CycleTimeMetric;
+  cost_per_pr: CostPerPRMetric;
+  most_expensive_prs: ExpensivePR[];
+  scorer_cards: ScorerCard[];
+  improvement_prs: ImprovementPR[];
 };
 
 export type InputAnswer = {

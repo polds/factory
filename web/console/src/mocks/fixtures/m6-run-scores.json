@@ -1,0 +1,10 @@
+[
+  {
+    "scorer": "correctness",
+    "label": "missed_tests",
+    "score": 0.25,
+    "passed": false,
+    "reasoning": "The agent opened the PR without running tests.",
+    "status": "ok"
+  }
+]

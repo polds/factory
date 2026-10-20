@@ -1,0 +1,12 @@
+{
+  "path": "benchmarks/pr-review/tasks/broken-doc-link.yaml",
+  "content": "title: Fix a broken documentation link\nprompt: Find the broken internal documentation link and update it.\nsuccessCriteria: The destination resolves and the link text names the destination.\nsourceRunId: run_1\ntags: [docs]\nstartingRepoRefs:\n  - github.com:acme/payments-docs@0123456789abcdef0123456789abcdef01234567\n",
+  "head_refs": [
+    {
+      "host": "github.com",
+      "owner": "acme",
+      "repo": "payments-docs",
+      "sha": "0123456789abcdef0123456789abcdef01234567"
+    }
+  ]
+}
