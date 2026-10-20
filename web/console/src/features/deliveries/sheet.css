@@ -8,5 +8,6 @@
   background: var(--card);
   color: var(--foreground);
   border-left: 1px solid var(--border);
+  box-shadow: -24px 0 48px -32px rgb(0 0 0 / 45%);
   padding: 1rem;
 }

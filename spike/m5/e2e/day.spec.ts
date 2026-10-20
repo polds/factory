@@ -67,7 +67,7 @@ async function signal(name: string, body: string): Promise<string> {
 
 async function signIn(page: Page, start = "/", shot = "dashboard"): Promise<void> {
   await page.goto(start);
-  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Factory", exact: true })).toBeVisible();
   await axe(page, `login-${shot}`);
   await saveDom(page, `login-${shot}`);
   await page.getByLabel("API key").fill(apiKey);

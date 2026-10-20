@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { Moon, Sun } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTheme } from "../lib/theme";
 import type { Factory } from "../api/types";
@@ -31,15 +32,18 @@ export function AppShell({
 }) {
   const { theme, toggle } = useTheme();
   const themeLabel = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
+  const ThemeIcon = theme === "dark" ? Sun : Moon;
   return (
     <div className="shell">
       <a className="skip-link" href="#content">
         Skip to content
       </a>
       <aside className="sidebar">
-        <h1>Factory</h1>
+        <h1 className="wordmark">
+          Factory <small>console</small>
+        </h1>
         <nav aria-label="Factories">
-          <h2>Factories</h2>
+          <h2 className="rail-label">Factories</h2>
           {factoriesState === "loading" ? <p>Loading factories</p> : null}
           {factoriesState === "error" ? <p>Factory list unavailable</p> : null}
           {factoriesState === "ready" && factories.length === 0 ? <p>No factories</p> : null}
@@ -54,7 +58,7 @@ export function AppShell({
                     onClick={() => onFactoryChange(factory.id)}
                   >
                     <span>{factory.name}</span>
-                    {factory.alias ? <span className="muted"> {factory.alias}</span> : null}
+                    {factory.alias ? <span className="factory-alias">{factory.alias}</span> : null}
                   </button>
                 </li>
               );
@@ -62,6 +66,7 @@ export function AppShell({
           </ul>
         </nav>
         <nav aria-label="Sections">
+          <h2 className="rail-label">Sections</h2>
           <ul>
             {sections.map((section) => (
               <li key={section.label}>
@@ -83,13 +88,14 @@ export function AppShell({
             ))}
           </ul>
         </nav>
+        <div className="rail-foot">
+          <button type="button" className="button" onClick={toggle} aria-label={themeLabel}>
+            <ThemeIcon aria-hidden="true" size={14} />
+            <span>{theme === "dark" ? "Light" : "Dark"}</span>
+          </button>
+        </div>
       </aside>
       <div className="workspace">
-        <header className="topbar">
-          <button type="button" onClick={toggle}>
-            {themeLabel}
-          </button>
-        </header>
         <main id="content">{children}</main>
       </div>
     </div>

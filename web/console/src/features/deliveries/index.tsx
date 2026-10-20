@@ -96,16 +96,18 @@ function DeliveriesScreen({ factoryId }: { factoryId: string }) {
 
   return (
     <div>
-      <header className="mb-4">
-        <h1 className="text-xl font-semibold">Deliveries</h1>
-        <p className="text-sm text-[var(--muted-foreground)]">
-          Factory <span className="font-mono">{factoryId}</span>
-        </p>
+      <header className="page-header mb-5">
+        <div>
+          <h1>Deliveries</h1>
+          <p className="muted">
+            Factory <span className="font-mono">{factoryId}</span>
+          </p>
+        </div>
       </header>
       <div
         role="tablist"
         aria-label="Delivery filter"
-        className="mb-3 flex gap-1 border-b border-[var(--border)]"
+        className="mb-3 flex gap-1 border-b border-border"
         onKeyDown={onTabKey}
       >
         <TabButton
@@ -146,11 +148,11 @@ function DeliveriesScreen({ factoryId }: { factoryId: string }) {
             />
           ) : null}
           {active.isSuccess && rows.length > 0 ? (
-            <div className="overflow-x-auto border border-[var(--border)] bg-[var(--card)]">
+            <div className="panel table-scroll">
               <table className="w-full border-collapse text-sm">
                 <caption className="sr-only">Deliveries</caption>
-                <thead className="bg-[var(--muted)] text-xs text-[var(--muted-foreground)]">
-                  <tr className="border-b border-[var(--border)] text-left">
+                <thead className="data-head">
+                  <tr>
                     {[
                       "Received",
                       "Provider",
@@ -160,11 +162,7 @@ function DeliveriesScreen({ factoryId }: { factoryId: string }) {
                       "Matched automations",
                       "Truncated",
                     ].map((heading) => (
-                      <th
-                        key={heading}
-                        scope="col"
-                        className="px-3 py-2 font-medium whitespace-nowrap"
-                      >
+                      <th key={heading} scope="col" className="px-3 py-2 whitespace-nowrap">
                         {heading}
                       </th>
                     ))}
@@ -191,7 +189,7 @@ function DeliveriesScreen({ factoryId }: { factoryId: string }) {
               </table>
             </div>
           ) : null}
-          <p className="mt-2 flex items-start gap-1.5 text-sm text-[var(--muted-foreground)]">
+          <p className="mt-2 flex items-start gap-1.5 text-sm text-muted-foreground">
             <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
             <span>
               Unmatched means no automation trigger matched; replay re-runs matching against current
@@ -200,7 +198,7 @@ function DeliveriesScreen({ factoryId }: { factoryId: string }) {
           </p>
         </div>
         {inline && selected ? (
-          <aside className="sticky top-4 border border-[var(--border)] bg-[var(--card)] p-3">
+          <aside className="sticky top-4 border border-border bg-card p-3">
             <DeliveryDetail
               delivery={selected}
               replayed={replayed.has(selected.id)}
@@ -270,8 +268,8 @@ function TabButton({
       tabIndex={selected ? 0 : -1}
       className={
         selected
-          ? "-mb-px border-b-2 border-[var(--foreground)] px-3 py-1.5 text-sm font-semibold"
-          : "-mb-px border-b-2 border-transparent px-3 py-1.5 text-sm text-[var(--muted-foreground)]"
+          ? "-mb-px border-b-2 border-foreground px-3 py-1.5 text-sm font-semibold"
+          : "-mb-px border-b-2 border-transparent px-3 py-1.5 text-sm text-muted-foreground"
       }
       onClick={onSelect}
     >
@@ -296,9 +294,7 @@ function DeliveryTableRow({
   return (
     <tr
       className={
-        selected
-          ? "border-b border-[var(--border)] bg-[var(--muted)]"
-          : "border-b border-[var(--border)] last:border-b-0"
+        selected ? "border-b border-border bg-muted" : "border-b border-border last:border-b-0"
       }
     >
       <td className="px-3 py-2 font-mono text-xs">
@@ -314,7 +310,7 @@ function DeliveryTableRow({
       <td className="px-3 py-2">
         <button
           type="button"
-          className="font-mono text-xs text-[var(--ring)] hover:underline"
+          className="font-mono text-xs text-link hover:underline"
           onClick={onSelect}
         >
           {row.delivery_id || row.id}
@@ -325,14 +321,11 @@ function DeliveryTableRow({
       </td>
       <td className="px-3 py-2">
         {row.matched_automations.length === 0 ? (
-          <span className="text-[var(--muted-foreground)]">—</span>
+          <span className="text-muted-foreground">—</span>
         ) : (
           <span className="flex flex-wrap gap-1">
             {row.matched_automations.map((name) => (
-              <span
-                key={name}
-                className="border border-[var(--border)] bg-[var(--muted)] px-1.5 font-mono text-xs"
-              >
+              <span key={name} className="border border-border bg-muted px-1.5 font-mono text-xs">
                 {name}
               </span>
             ))}
@@ -346,7 +339,7 @@ function DeliveryTableRow({
             Truncated
           </span>
         ) : (
-          <span className="text-[var(--muted-foreground)]">—</span>
+          <span className="text-muted-foreground">—</span>
         )}
       </td>
     </tr>

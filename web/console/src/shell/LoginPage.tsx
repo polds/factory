@@ -1,4 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
+import { Moon, Sun } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { client, UnauthorizedError } from "../api/client";
 import { setAPIKey } from "../api/session";
@@ -11,6 +12,7 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const themeLabel = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
+  const ThemeIcon = theme === "dark" ? Sun : Moon;
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -39,7 +41,7 @@ export function LoginPage() {
 
   return (
     <main className="login">
-      <h1>Sign in</h1>
+      <h1>Factory</h1>
       <p>Paste the factory API key. It stays in this tab and is cleared when the tab closes.</p>
       <form onSubmit={onSubmit}>
         <label htmlFor="api-key">API key</label>
@@ -51,13 +53,14 @@ export function LoginPage() {
           spellCheck={false}
           required
         />
-        <Button type="submit" disabled={pending}>
+        <Button type="submit" className="button-primary" disabled={pending}>
           {pending ? "Signing in" : "Sign in"}
         </Button>
         {error ? <p role="alert">{error}</p> : null}
       </form>
-      <button type="button" onClick={toggle}>
-        {themeLabel}
+      <button type="button" onClick={toggle} aria-label={themeLabel}>
+        <ThemeIcon aria-hidden="true" size={14} />
+        <span>{theme === "dark" ? "Light theme" : "Dark theme"}</span>
       </button>
     </main>
   );
