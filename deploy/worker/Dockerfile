@@ -31,7 +31,7 @@ RUN git clone https://github.com/warpdotdev/oz-agent-worker.git . \
 FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 
 RUN apk add --no-cache \
-    ca-certificates=20260909-r0 \
+    ca-certificates=20261020-r0 \
     openssl=3.5.9-r0
 
 COPY --from=build /oz-agent-worker /oz-agent-worker
