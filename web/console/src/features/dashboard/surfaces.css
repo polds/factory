@@ -84,6 +84,12 @@
   text-decoration: underline;
 }
 
+/* A breadcrumb link sits in a line of text, so colour alone does not set it
+ * apart (axe link-in-text-block). */
+.operator-page nav[aria-label="Breadcrumb"] a {
+  text-decoration: underline;
+}
+
 .live-status {
   display: inline-flex;
   align-items: center;
