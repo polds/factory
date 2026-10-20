@@ -233,7 +233,7 @@ func TestFailureClassBackfill(t *testing.T) {
 	if err := h.raw.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&files); err != nil {
 		t.Fatal(err)
 	}
-	if files != 8 {
+	if files != len(embeddedMigrations(t)) {
 		t.Fatalf("schema_migrations %d", files)
 	}
 }
@@ -1505,11 +1505,19 @@ func setRunWindow(t *testing.T, h *harness, id string, created, assigned time.Ti
 func factoryGIDs(t *testing.T, h *harness, factoryID string) []int64 {
 	t.Helper()
 	rows, err := h.raw.Query(context.Background(), `
-		SELECT run_events.gid
-		FROM run_events
-		JOIN runs ON runs.id = run_events.run_id
-		WHERE runs.factory_id = $1
-		ORDER BY run_events.gid`, factoryID)
+		SELECT gid
+		FROM (
+		    SELECT run_events.gid
+		    FROM run_events
+		    JOIN runs ON runs.id = run_events.run_id
+		    WHERE runs.factory_id = $1
+		    UNION ALL
+		    SELECT run_lifecycle_events.gid
+		    FROM run_lifecycle_events
+		    JOIN runs ON runs.id = run_lifecycle_events.run_id
+		    WHERE runs.factory_id = $1
+		) AS events
+		ORDER BY gid`, factoryID)
 	if err != nil {
 		t.Fatal(err)
 	}

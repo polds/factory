@@ -196,10 +196,12 @@ func usageCall(seq int64, payload []byte) (UsageCall, error) {
 // is invisible, so a higher gid that already committed keeps the lower
 // factory_seq. The late gid is assigned on a later read and is not skipped.
 //
-// The live tail is Listen(ctx, "run_events"). AppendEvents notifies that
-// channel with the run id after commit. Wake on the notification, then read
-// again from the last factory_seq applied. Read once before Listen and once
-// after it is registered so a commit between the two is not missed.
+// The live tail is Listen(ctx, "run_events"). AppendEvents and the run
+// lifecycle trigger notify that channel with the run id after commit. Wake
+// on the notification, then read again from the last factory_seq applied.
+// Read once before Listen and once after it is registered so a commit
+// between the two is not missed. Lifecycle rows share this cursor. They
+// are not run_events rows and they do not use a per-run seq.
 func (s *Store) FactoryEventsFrom(ctx context.Context, factoryID string, cursor int64, limit int) ([]FactoryEvent, error) {
 	if err := s.requireFactory(ctx, s.pool, factoryID); err != nil {
 		return nil, err
@@ -220,20 +222,44 @@ func (s *Store) FactoryEventsFrom(ctx context.Context, factoryID string, cursor 
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT
-		    run_events.factory_seq,
-		    run_events.gid,
-		    run_events.run_id,
-		    run_events.seq,
-		    run_events.execution_id,
-		    run_events.idx,
-		    run_events.ts,
-		    run_events.type,
-		    run_events.payload_json
-		FROM run_events
-		JOIN runs ON runs.id = run_events.run_id
+		    events.factory_seq,
+		    events.gid,
+		    events.run_id,
+		    events.seq,
+		    events.execution_id,
+		    events.idx,
+		    events.ts,
+		    events.type,
+		    events.payload_json
+		FROM (
+		    SELECT
+		        run_events.factory_seq,
+		        run_events.gid,
+		        run_events.run_id,
+		        run_events.seq,
+		        run_events.execution_id,
+		        run_events.idx,
+		        run_events.ts,
+		        run_events.type,
+		        run_events.payload_json
+		    FROM run_events
+		    UNION ALL
+		    SELECT
+		        run_lifecycle_events.factory_seq,
+		        run_lifecycle_events.gid,
+		        run_lifecycle_events.run_id,
+		        0,
+		        '',
+		        0,
+		        run_lifecycle_events.ts,
+		        run_lifecycle_events.type,
+		        run_lifecycle_events.payload_json
+		    FROM run_lifecycle_events
+		) AS events
+		JOIN runs ON runs.id = events.run_id
 		WHERE runs.factory_id = $1
-		  AND run_events.factory_seq > $2
-		ORDER BY run_events.factory_seq
+		  AND events.factory_seq > $2
+		ORDER BY events.factory_seq
 		LIMIT $3`, factoryID, cursor, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: factory events: %w", err)
