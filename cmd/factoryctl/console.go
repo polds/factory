@@ -22,6 +22,10 @@ func cmdRuns(args []string, stdout, stderr io.Writer, getenv func(string) string
 		return cmdRunsInterrupt(args[1:], stdout, stderr, getenv)
 	case "followup":
 		return cmdRunsFollowup(args[1:], stdout, stderr, getenv)
+	case "score":
+		return cmdRunsScore(args[1:], stdout, stderr, getenv)
+	case "capture-task":
+		return cmdRunsCapture(args[1:], stdout, stderr, getenv)
 	default:
 		runsUsage(stderr)
 		return 2
@@ -34,7 +38,9 @@ func runsUsage(w io.Writer) {
 Commands:
   show RUN_ID
   interrupt RUN_ID
-  followup RUN_ID --text TEXT`)
+  followup RUN_ID --text TEXT
+  score RUN_ID --scorer NAME
+  capture-task RUN_ID --suite SUITE --name NAME`)
 }
 
 func cmdRunsShow(args []string, stdout, stderr io.Writer, getenv func(string) string) int {

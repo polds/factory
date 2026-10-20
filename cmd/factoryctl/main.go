@@ -50,6 +50,14 @@ func execute(args []string, stdout, stderr io.Writer, getenv func(string) string
 		return cmdSecrets(args[1:], stdout, stderr, getenv)
 	case "definition":
 		return cmdDefinition(args[1:], stdout, stderr, getenv)
+	case "scorers":
+		return cmdScorers(args[1:], stdout, stderr, getenv)
+	case "benchmarks":
+		return cmdBenchmarks(args[1:], stdout, stderr, getenv)
+	case "improvement":
+		return cmdImprovement(args[1:], stdout, stderr, getenv)
+	case "metrics":
+		return cmdMetrics(args[1:], stdout, stderr, getenv)
 	default:
 		usage(stderr)
 		return 2
@@ -85,6 +93,16 @@ Commands:
   runs show RUN_ID
   runs interrupt RUN_ID
   runs followup RUN_ID --text TEXT
+  runs score RUN_ID --scorer NAME
+  runs capture-task RUN_ID --suite SUITE --name NAME
+  scorers list --factory NAME
+  scorers results --factory NAME SCORER [--from TIME] [--to TIME] [--passed true|false]
+  benchmarks list --factory NAME
+  benchmarks run --factory NAME SUITE [--repetitions N]
+  benchmarks trials --factory NAME SUITE [--benchmark-run-id ID]
+  improvement batches --factory NAME
+  improvement run-now --factory NAME
+  metrics --factory NAME [--from TIME] [--to TIME]
   inbox --factory NAME
   workers
   automations list --factory NAME
