@@ -201,10 +201,10 @@ func testE2EM5Steer(t *testing.T) {
 		_, _ = io.WriteString(rw, `{"choices":[{"message":{"role":"assistant","content":"done"}}]}`)
 	}))
 	t.Cleanup(model.Close)
-	// The steer route holds an empty poll for 25s, and the harness emits
-	// run.capabilities only after that first 200. Plant the capability the
-	// harness is about to send so the interrupt is accepted while the poller
-	// is already up, then let the harness emit the real events.
+	// The opening poll is wait=0 and returns before the model starts. Ingest
+	// can lag that local capability event, so plant one and the interrupt is
+	// accepted while the turn is still in flight. The harness emits the real
+	// event as well.
 	postEvents(t, asg.EnvVars["FACTORY_EVENTS_URL"], token, 100, []string{
 		`{"type":"run.capabilities","steer":true}`,
 	})
@@ -469,6 +469,71 @@ func moduleRoot(t *testing.T) string {
 		}
 		dir = parent
 	}
+}
+
+func TestSteerAbandonReclaims(t *testing.T) {
+	skipNoDB(t)
+	env := boot(t, bootOpts{})
+	w := dialWorker(t, env, "local-1")
+	defer w.close()
+	runID := env.startRun(t, "reclaim a follow-up")
+	asg := w.readAssignment(t)
+	token := asg.EnvVars["FACTORY_RUN_TOKEN"]
+	env.waitStatus(t, runID, "running")
+	postEvents(t, asg.EnvVars["FACTORY_EVENTS_URL"], token, 0, []string{
+		`{"type":"run.capabilities","steer":true}`,
+	})
+
+	start := time.Now()
+	code, raw := steerAsRun(t, env, token, "/api/v1/agent/runs/"+runID+"/steer?wait=0")
+	if code != http.StatusOK || strings.TrimSpace(string(raw)) != "[]" {
+		t.Fatalf("empty wait=0 %d %s", code, raw)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("wait=0 took %s", elapsed)
+	}
+	code, raw = steerAsRun(t, env, token, "/api/v1/agent/runs/"+runID+"/steer?wait=nope")
+	if code != http.StatusBadRequest {
+		t.Fatalf("malformed wait %d %s", code, raw)
+	}
+
+	code, raw = env.authed(t, http.MethodPost, "/api/v1/agent/runs/"+runID+"/followups", `{"text":"keep going"}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("followup %d %s", code, raw)
+	}
+	ctx := context.Background()
+	claimed, err := env.srv.NextSteers(ctx, token, runID, "", 0)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim %+v %v", claimed, err)
+	}
+	hidden, err := env.srv.NextSteers(ctx, token, runID, "", 0)
+	if err != nil || len(hidden) != 0 {
+		t.Fatalf("lease did not hide %+v %v", hidden, err)
+	}
+	code, raw = steerAsRun(t, env, token, "/api/v1/agent/runs/"+runID+"/steer?abandon=1")
+	if code != http.StatusOK || strings.TrimSpace(string(raw)) != "[]" {
+		t.Fatalf("abandon %d %s", code, raw)
+	}
+	again, err := env.srv.NextSteers(ctx, token, runID, "", 0)
+	if err != nil || len(again) != 1 || again[0].ID != claimed[0].ID || again[0].Text != "keep going" {
+		t.Fatalf("reclaim %+v %v", again, err)
+	}
+}
+
+func steerAsRun(t *testing.T, env *env, token, path string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, env.base+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	raw, _ := io.ReadAll(res.Body)
+	return res.StatusCode, raw
 }
 
 func TestM5PoolsNilP50(t *testing.T) {

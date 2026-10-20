@@ -155,11 +155,11 @@ A v1 worker loses live events and `task_steer`, keeps everything else.
 long-poll, described in [05](05-harness-contract.md#output-ndjson-events). The
 harness probes `GET /api/v1/agent/runs/{id}/steer?wait=0` at run start and emits
 `run.capabilities` with `"steer": true` once, before the first model call, when
-the steer channel is available. A 200 announces steering. A probe that is still
-open when a short budget elapses announces it too, and the model starts without
-waiting for that body: factoryd holds a live steer route for up to 25s. A 404 or
-501 inside the budget leaves the capability unannounced and stops polling. Later
-polls do not emit the event again. The `after` query parameter is the
+that probe returns 200. `wait=0` returns whatever is queued, and an empty list
+is a successful probe. A missing or positive `wait` long-polls, clamped to 25s.
+A malformed `wait` is 400. A 404 or 501 leaves the capability unannounced and
+stops polling. A 5xx or a network error leaves it unannounced; the harness backs
+off and polls again. Later polls do not emit the event again. The `after` query parameter is the
 acknowledgement of applied steer ids. `POST /agent/runs/{id}/interrupt` and
 `POST /agent/runs/{id}/followups` return `202` `{steer_id}` or `409` with the
 reason.

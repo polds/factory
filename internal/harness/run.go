@@ -267,6 +267,10 @@ func Run(ctx context.Context, opt Options) int {
 				return finish(code, status, summary)
 			}
 		}
+		// The final poll claimed what it returned. Ack those ids now that
+		// they have been taken. stopSteer already released the cursor from
+		// before that poll.
+		releaseSteerClaims(steerURL, steerToken, hub.ackCursor())
 	}
 	return finish(ExitOK, "succeeded", summary)
 }

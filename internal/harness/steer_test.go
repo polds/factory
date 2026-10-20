@@ -63,7 +63,11 @@ func TestSteerInterruptStopsTurnAndFollowupKeepsMessages(t *testing.T) {
 		writeAssistant(w, "parser fixed")
 	}
 
+	var openOnce sync.Once
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		if skipOpeningPoll(w, r, &openOnce) {
+			return
+		}
 		select {
 		case <-modelStarted:
 		case <-r.Context().Done():
@@ -137,7 +141,11 @@ func TestSteerFollowupDuringIdleResumes(t *testing.T) {
 		}
 		writeAssistant(w, "test added")
 	}
+	var openOnce sync.Once
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		if skipOpeningPoll(w, r, &openOnce) {
+			return
+		}
 		select {
 		case <-firstDone:
 		case <-r.Context().Done():
@@ -227,8 +235,12 @@ func TestSteerFollowupDuringFinalTurnKeepsConversation(t *testing.T) {
 				}
 				writeAssistant(w, "parser still fixed")
 			}
+			var openOnce sync.Once
 			var polls int
 			plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+				if skipOpeningPoll(w, r, &openOnce) {
+					return
+				}
 				mu.Lock()
 				polls++
 				n := polls
@@ -239,7 +251,8 @@ func TestSteerFollowupDuringFinalTurnKeepsConversation(t *testing.T) {
 					case <-r.Context().Done():
 						return
 					}
-					// Same response that confirms steering. The model stays
+					// The opening wait=0 already confirmed steering. This
+					// long-poll carries the follow-up. The model stays
 					// blocked until the poller has accepted this id.
 					writeSteers(w, []map[string]string{
 						{"id": "fu-live", "kind": "followup", "text": follow},
@@ -329,8 +342,12 @@ func TestSteerInterruptDuringWaitDoesNotCancelResume(t *testing.T) {
 		}
 		writeAssistant(w, "resumed")
 	}
+	var openOnce sync.Once
 	var polls int
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		if skipOpeningPoll(w, r, &openOnce) {
+			return
+		}
 		mu.Lock()
 		polls++
 		n := polls
@@ -527,7 +544,11 @@ func TestSteerInterruptAfterSuccessDoesNotCancelNextTurn(t *testing.T) {
 		}
 		writeAssistant(w, "parser still fixed")
 	}
+	var openOnce sync.Once
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		if skipOpeningPoll(w, r, &openOnce) {
+			return
+		}
 		select {
 		case <-committed:
 		case <-r.Context().Done():
@@ -721,7 +742,11 @@ func steerInFlightTrial(t *testing.T, idle string) string {
 		}
 		writeAssistant(w, "parser still fixed")
 	}
+	var openOnce sync.Once
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		if skipOpeningPoll(w, r, &openOnce) {
+			return
+		}
 		select {
 		case <-flushed:
 		case <-r.Context().Done():
@@ -790,8 +815,12 @@ func TestSteerFollowupOnLastTurnResumes(t *testing.T) {
 		}
 		writeAssistant(w, "parser still fixed")
 	}
+	var openOnce sync.Once
 	var polls int
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		if skipOpeningPoll(w, r, &openOnce) {
+			return
+		}
 		mu.Lock()
 		polls++
 		n := polls
@@ -953,10 +982,14 @@ func TestSteerIDAppliedOnceAcrossReconnect(t *testing.T) {
 		}
 		writeAssistant(w, "followed once")
 	}
+	var openOnce sync.Once
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		afters = append(afters, r.URL.Query().Get("after"))
 		mu.Unlock()
+		if skipOpeningPoll(w, r, &openOnce) {
+			return
+		}
 		select {
 		case <-firstDone:
 		default:
@@ -1036,9 +1069,13 @@ func TestSteerTokenAbsentFromLogs(t *testing.T) {
 		}
 		writeAssistant(w, "done")
 	}
+	var openOnce sync.Once
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.RawQuery != "" && strings.Contains(r.URL.String(), token) {
 			t.Errorf("token leaked into steer URL %s", r.URL.String())
+		}
+		if skipOpeningPoll(w, r, &openOnce) {
+			return
 		}
 		select {
 		case <-modelStarted:
@@ -1090,7 +1127,11 @@ func TestSteerInterruptKillsToolProcessGroup(t *testing.T) {
 		}
 		writeAssistant(w, "tool stopped")
 	}
+	var openOnce sync.Once
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		if skipOpeningPoll(w, r, &openOnce) {
+			return
+		}
 		deadline := time.NewTimer(2 * time.Second)
 		defer deadline.Stop()
 		for {
@@ -1217,9 +1258,9 @@ func TestSteerCapabilityBeforeFirstModelCall(t *testing.T) {
 	}
 }
 
-// factoryd's steer handler ignores wait=0 and holds every poll. The
-// capability event still has to be in the log before the model handler
-// runs, while that poll is outstanding.
+// The opening wait=0 is held longer than the old 200ms budget, then
+// returns 200. Capability is emitted from that 200, before the model
+// starts, and the later long-poll does not have to finish first.
 func TestSteerCapabilityBeforeFirstModelCallWhenServerHolds(t *testing.T) {
 	const token = "steer-held-before-model-token"
 	rt := t.TempDir()
@@ -1227,14 +1268,33 @@ func TestSteerCapabilityBeforeFirstModelCallWhenServerHolds(t *testing.T) {
 	longPoll := make(chan struct{})
 	var longOnce sync.Once
 	var mu sync.Mutex
+	var responded time.Time
+	var modelAt time.Time
 	var sawBefore bool
 	var orderOK bool
 
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("wait") == "0" {
+			timer := time.NewTimer(300 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-r.Context().Done():
+				return
+			}
+			mu.Lock()
+			responded = time.Now()
+			mu.Unlock()
+			writeSteers(w, nil)
+			return
+		}
 		longOnce.Do(func() { close(longPoll) })
 		<-r.Context().Done()
 	})
 	model := func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		modelAt = time.Now()
+		mu.Unlock()
 		raw, err := os.ReadFile(eventsPath)
 		mu.Lock()
 		if err == nil {
@@ -1260,9 +1320,13 @@ func TestSteerCapabilityBeforeFirstModelCallWhenServerHolds(t *testing.T) {
 	}
 	mu.Lock()
 	before, ordered := sawBefore, orderOK
+	started, answered := modelAt, responded
 	mu.Unlock()
 	if !before || !ordered {
 		t.Fatalf("run.capabilities was not before the first model call\nevents:\n%s", events)
+	}
+	if started.Before(answered) {
+		t.Fatalf("model started %s before the opening 200", answered.Sub(started))
 	}
 	if countType(decodeSteerEvents(t, events), "run.capabilities") != 1 {
 		t.Fatalf("capability count:\n%s", events)
@@ -1273,10 +1337,14 @@ func TestSteerPollDoesNotBlockAgentLoop(t *testing.T) {
 	const token = "steer-block-token"
 	var mu sync.Mutex
 	hits := 0
+	var openOnce sync.Once
 	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		hits++
 		mu.Unlock()
+		if skipOpeningPoll(w, r, &openOnce) {
+			return
+		}
 		select {
 		case <-r.Context().Done():
 		case <-time.After(5 * time.Second):
@@ -1413,6 +1481,253 @@ func TestSteerBackoffThenCapability(t *testing.T) {
 	}
 }
 
+func TestSteerOpening500EmitsNoCapabilityKeepsPolling(t *testing.T) {
+	const token = "steer-opening-500-token"
+	rt := t.TempDir()
+	eventsPath := filepath.Join(rt, "events.ndjson")
+	checked := make(chan struct{})
+	var checkOnce sync.Once
+	var mu sync.Mutex
+	hits := 0
+	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		n := hits
+		mu.Unlock()
+		if n == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		select {
+		case <-checked:
+		case <-r.Context().Done():
+			return
+		}
+		writeSteers(w, nil)
+	})
+	model := func(w http.ResponseWriter, r *http.Request) {
+		raw, err := os.ReadFile(eventsPath)
+		if err == nil && strings.Contains(string(raw), `"type":"run.capabilities"`) {
+			t.Errorf("opening 500 emitted capability\n%s", raw)
+		}
+		checkOnce.Do(func() { close(checked) })
+		writeAssistant(w, "kept going")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	code, events, stderr := runSteerAt(t, ctx, plane.eventsURL, token, "keep going", "0s", model, nil, t.TempDir(), rt)
+	if code != ExitOK {
+		t.Fatalf("exit %d, stderr %s", code, stderr)
+	}
+	mu.Lock()
+	n := hits
+	mu.Unlock()
+	if n < 2 {
+		t.Fatalf("polls %d, want a retry after 500", n)
+	}
+	if countType(decodeSteerEvents(t, events), "run.capabilities") != 1 {
+		t.Fatalf("events:\n%s", events)
+	}
+}
+
+func TestSteerBatchGapKeepsFollowupOnTheInterruptedTurn(t *testing.T) {
+	const (
+		token  = "steer-batch-gap-token"
+		prompt = "fix the flaky parser"
+		follow = "continue from the parser work"
+	)
+	entered := make(chan struct{})
+	var enterOnce sync.Once
+	steerBatchGapHook = func() {
+		enterOnce.Do(func() { close(entered) })
+		// Long enough that a turn canceled between the two deliveries
+		// would drain, return, and start a fresh conversation.
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Cleanup(func() { steerBatchGapHook = nil })
+
+	modelStarted := make(chan struct{})
+	var startOnce sync.Once
+	var mu sync.Mutex
+	var calls int
+	var followBody string
+	model := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			startOnce.Do(func() { close(modelStarted) })
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(3 * time.Second):
+				t.Errorf("model call was not canceled")
+				return
+			}
+		}
+		mu.Lock()
+		followBody = string(body)
+		mu.Unlock()
+		writeAssistant(w, "parser fixed")
+	}
+	var openOnce sync.Once
+	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		if skipOpeningPoll(w, r, &openOnce) {
+			return
+		}
+		select {
+		case <-modelStarted:
+		case <-r.Context().Done():
+			return
+		case <-time.After(2 * time.Second):
+			return
+		}
+		writeSteers(w, []map[string]string{
+			{"id": "int-gap", "kind": "interrupt", "text": "stop the turn"},
+			{"id": "fu-gap", "kind": "followup", "text": follow},
+		})
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	code, events, stderr := runSteer(t, ctx, plane.eventsURL, token, prompt, "0s", model, nil)
+	if code != ExitOK {
+		t.Fatalf("exit %d, stderr %s\nevents:\n%s", code, stderr, events)
+	}
+	select {
+	case <-entered:
+	default:
+		t.Fatal("batch was not delivered under the gap hook")
+	}
+	mu.Lock()
+	body := followBody
+	mu.Unlock()
+	if !strings.Contains(body, prompt) || !strings.Contains(body, follow) {
+		t.Fatalf("follow-up request lost earlier turns:\n%s", body)
+	}
+	got := decodeSteerEvents(t, events)
+	if !got.hasInterrupted("int-gap") || !got.hasFollowup("fu-gap", follow) {
+		t.Fatalf("events:\n%s", events)
+	}
+}
+
+func TestSteerFollowupDuringAskReachesNextExecution(t *testing.T) {
+	const (
+		token  = "steer-ask-follow-token"
+		prompt = "which env"
+		follow = "also update the docs"
+		id     = "fu-ask"
+	)
+	var mu sync.Mutex
+	type steerRow struct {
+		id   string
+		text string
+	}
+	pending := []steerRow{{id: id, text: follow}}
+	claimed := map[string]bool{}
+	steerAbandonHook = func(after string) {
+		mu.Lock()
+		defer mu.Unlock()
+		for key := range claimed {
+			if after == "" || key > after {
+				delete(claimed, key)
+			}
+		}
+		kept := pending[:0]
+		for _, item := range pending {
+			if after != "" && item.id <= after {
+				continue
+			}
+			kept = append(kept, item)
+		}
+		pending = kept
+	}
+	t.Cleanup(func() { steerAbandonHook = nil })
+
+	delivered := make(chan struct{})
+	var deliverOnce sync.Once
+	steerDeliveredHook = func() {
+		deliverOnce.Do(func() { close(delivered) })
+	}
+	t.Cleanup(func() { steerDeliveredHook = nil })
+
+	var openOnce sync.Once
+	plane := newSteerPlane(t, token, func(w http.ResponseWriter, r *http.Request) {
+		if skipOpeningPoll(w, r, &openOnce) {
+			return
+		}
+		mu.Lock()
+		var out []map[string]string
+		for _, item := range pending {
+			if claimed[item.id] {
+				continue
+			}
+			claimed[item.id] = true
+			out = append(out, map[string]string{"id": item.id, "kind": "followup", "text": item.text})
+		}
+		mu.Unlock()
+		if len(out) == 0 {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+			return
+		}
+		writeSteers(w, out)
+	})
+
+	askModel := func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-delivered:
+		case <-r.Context().Done():
+			return
+		case <-time.After(2 * time.Second):
+			t.Errorf("follow-up was not delivered during the ask turn")
+			return
+		}
+		writeTool(w, "ask_input", `{"text":"Which staging env?"}`)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	code, events, stderr := runSteerAt(t, ctx, plane.eventsURL, token, prompt, "0s", askModel, nil, t.TempDir(), t.TempDir())
+	if code != ExitOK {
+		t.Fatalf("parked exit %d, stderr %s\nevents:\n%s", code, stderr, events)
+	}
+	parked := decodeSteerEvents(t, events)
+	if countType(parked, "question") != 1 {
+		t.Fatalf("question events:\n%s", events)
+	}
+	if countType(parked, "followup.received") != 0 {
+		t.Fatalf("parked run applied the follow-up\nevents:\n%s", events)
+	}
+	steerDeliveredHook = nil
+
+	var body string
+	resume := func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		body = string(raw)
+		mu.Unlock()
+		writeAssistant(w, "docs updated")
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel2()
+	code, events2, stderr := runSteerAt(t, ctx2, plane.eventsURL, token, "staging", "0s", resume, nil, t.TempDir(), t.TempDir())
+	if code != ExitOK {
+		t.Fatalf("resume exit %d, stderr %s\nevents:\n%s", code, stderr, events2)
+	}
+	mu.Lock()
+	gotBody := body
+	mu.Unlock()
+	if !strings.Contains(gotBody, follow) {
+		t.Fatalf("resumed execution missed the follow-up:\n%s", gotBody)
+	}
+	if countSteer(decodeSteerEvents(t, events2), "followup.received", id) != 1 {
+		t.Fatalf("events:\n%s", events2)
+	}
+}
+
 type steerEvent struct {
 	Type    string `json:"type"`
 	Steer   *bool  `json:"steer"`
@@ -1524,11 +1839,41 @@ func newSteerPlane(t *testing.T, token string, steer http.HandlerFunc) *steerPla
 		if r.Header.Get("Authorization") != "Bearer "+token {
 			t.Errorf("steer auth %q", r.Header.Get("Authorization"))
 		}
+		if strings.Contains(r.URL.String(), token) {
+			t.Errorf("token leaked into steer URL %s", r.URL.String())
+		}
+		if r.URL.Query().Get("abandon") == "1" {
+			if steerAbandonHook != nil {
+				steerAbandonHook(r.URL.Query().Get("after"))
+			}
+			writeSteers(w, nil)
+			return
+		}
 		steer(w, r)
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &steerPlane{eventsURL: srv.URL + "/api/v1/agent/runs/run-1/events:ingest"}
+}
+
+// steerAbandonHook runs when the harness releases claims. The plane
+// answers abandon itself so a shutdown poll does not disturb a test's
+// steer script. Nil leaves the scripted claims untouched.
+var steerAbandonHook func(after string)
+
+// skipOpeningPoll answers the first wait=0 with an empty 200 so the model
+// can start. Later wait=0 polls, including the idle-0 final read, fall
+// through to the test handler.
+func skipOpeningPoll(w http.ResponseWriter, r *http.Request, once *sync.Once) bool {
+	if r.URL.Query().Get("wait") != "0" {
+		return false
+	}
+	opened := false
+	once.Do(func() {
+		opened = true
+		writeSteers(w, nil)
+	})
+	return opened
 }
 
 func writeSteers(w http.ResponseWriter, items []map[string]string) {

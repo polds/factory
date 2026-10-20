@@ -125,6 +125,26 @@ func (s *Store) NextSteers(ctx context.Context, runID, after string, now time.Ti
 	return out, nil
 }
 
+// ReleaseSteerClaims drops the lease on undelivered rows for runID.
+// The next NextSteers can claim them. Delivered rows stay delivered.
+// A parked harness calls this when it exits without taking a follow-up,
+// so the execution that resumes after ask_input can drain that follow-up.
+func (s *Store) ReleaseSteerClaims(ctx context.Context, runID string) error {
+	if runID == "" {
+		return fmt.Errorf("store: run is required")
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE steer_requests
+		SET claimed_by = '',
+		    claim_expires_at = NULL
+		WHERE run_id = $1
+		  AND delivered_at IS NULL`, runID)
+	if err != nil {
+		return fmt.Errorf("store: release steer claims: %w", err)
+	}
+	return nil
+}
+
 // MarkSteerDelivered records that the harness accepted id.
 // Any store can mark a steer, including one it did not claim.
 // Repeating it is a no-op. A missing id returns ErrNotFound.

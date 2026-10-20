@@ -244,6 +244,67 @@ func TestSteerRunTokenAndLongPoll(t *testing.T) {
 	}
 }
 
+func TestSteerWaitZeroReturnsImmediately(t *testing.T) {
+	f := newConsole(t)
+	f.steers = nil
+	h := NewHandler(f, testAPIKey, nil)
+	start := time.Now()
+	res := call(t, h, http.MethodGet, "/api/v1/agent/runs/run_1/steer?wait=0", "", consoleAuth(consoleRoute{runToken: true}))
+	elapsed := time.Since(start)
+	if res.status != http.StatusOK || strings.TrimSpace(string(res.body)) != "[]" {
+		t.Fatalf("status %d body %s", res.status, res.body)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("wait=0 took %s", elapsed)
+	}
+	if f.steerWait != 0 {
+		t.Fatalf("wait %s, want 0", f.steerWait)
+	}
+}
+
+func TestSteerWaitClamped(t *testing.T) {
+	f := newConsole(t)
+	h := NewHandler(f, testAPIKey, nil)
+	res := call(t, h, http.MethodGet, "/api/v1/agent/runs/run_1/steer?wait=999", "", consoleAuth(consoleRoute{runToken: true}))
+	if res.status != http.StatusOK {
+		t.Fatalf("status %d body %s", res.status, res.body)
+	}
+	if f.steerWait != maxSteerWait {
+		t.Fatalf("wait %s, want cap %s", f.steerWait, maxSteerWait)
+	}
+}
+
+func TestSteerWaitMalformed(t *testing.T) {
+	f := newConsole(t)
+	h := NewHandler(f, testAPIKey, nil)
+	for _, raw := range []string{"nope", "-1", "1s", "1.5", ""} {
+		res := call(t, h, http.MethodGet, "/api/v1/agent/runs/run_1/steer?wait="+raw, "", consoleAuth(consoleRoute{runToken: true}))
+		if res.status != http.StatusBadRequest {
+			t.Fatalf("wait %q status %d body %s", raw, res.status, res.body)
+		}
+	}
+	if f.steerRun != "" {
+		t.Fatal("malformed wait reached NextSteers")
+	}
+}
+
+func TestSteerAbandonReleasesWithoutWaiting(t *testing.T) {
+	f := newConsole(t)
+	f.blockSteer = true
+	h := NewHandler(f, testAPIKey, nil)
+	start := time.Now()
+	res := call(t, h, http.MethodGet, "/api/v1/agent/runs/run_1/steer?abandon=1&after=str_1", "", consoleAuth(consoleRoute{runToken: true}))
+	if res.status != http.StatusOK || strings.TrimSpace(string(res.body)) != "[]" {
+		t.Fatalf("status %d body %s", res.status, res.body)
+	}
+	if time.Since(start) > 100*time.Millisecond {
+		t.Fatalf("abandon blocked for %s", time.Since(start))
+	}
+	if !f.steerReleased || f.steerAfter != "str_1" || f.steerWait != 0 {
+		t.Fatalf("release %v after %q wait %s", f.steerReleased, f.steerAfter, f.steerWait)
+	}
+}
+
 func TestFactoryEventsResume(t *testing.T) {
 	f := newConsole(t)
 	f.events = []FactoryEvent{
@@ -647,6 +708,7 @@ type consoleFake struct {
 	steerAfter     string
 	steerRun       string
 	steerWait      time.Duration
+	steerReleased  bool
 	blockSteer     bool
 	events         []FactoryEvent
 	gate           chan struct{}
@@ -799,6 +861,11 @@ func (f *consoleFake) NextSteers(ctx context.Context, runToken, runID, after str
 	f.steerRun = runID
 	f.steerWait = wait
 	block := f.blockSteer
+	if SteerReleaseRequested(ctx) {
+		f.steerReleased = true
+		f.mu.Unlock()
+		return []Steer{}, nil
+	}
 	f.mu.Unlock()
 	if f.leakErr {
 		return nil, fmt.Errorf("backend: %s", f.planted)

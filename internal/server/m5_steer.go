@@ -171,6 +171,7 @@ func (s *Server) steerState(ctx context.Context, run store.Run) api.SteerState {
 // run with id <= after. A terminal run returns immediately and does not claim.
 // wait 0 returns the current batch. A claim that the client drops is
 // redelivered after store.SteerLease because the claim is a committed lease.
+// SteerReleaseRequested acks after, clears unacked leases, and does not claim.
 func (s *Server) NextSteers(ctx context.Context, runToken, runID, after string, wait time.Duration) ([]api.Steer, error) {
 	if _, ok, err := s.matchToken(ctx, runID, tokenHash(runToken)); err != nil {
 		return nil, err
@@ -186,6 +187,17 @@ func (s *Server) NextSteers(ctx context.Context, runToken, runID, after string, 
 			return nil, api.ErrNotFound
 		}
 		return nil, err
+	}
+	if api.SteerReleaseRequested(ctx) {
+		if after != "" {
+			if err := s.ackSteers(ctx, runID, after); err != nil {
+				return nil, err
+			}
+		}
+		if err := s.store.ReleaseSteerClaims(ctx, runID); err != nil {
+			return nil, err
+		}
+		return []api.Steer{}, nil
 	}
 	if isTerminalStatus(run.Status) {
 		return []api.Steer{}, nil
