@@ -1,0 +1,51 @@
+{
+  "total_runs": {
+    "by_agent": [{ "name": "reviewer", "count": 4 }],
+    "by_status": [{ "name": "succeeded", "count": 3 }],
+    "by_source": [{ "name": "issue", "count": 4 }],
+    "by_model": [{ "name": "judge", "count": 4 }],
+    "measurement": 1
+  },
+  "prs_opened": 2,
+  "prs_merged": 1,
+  "autonomy": {
+    "share": 0.5,
+    "n": 2,
+    "forge_connected_at": "2026-01-15T00:00:00Z"
+  },
+  "cycle_time": {
+    "p50_ms": 7200000,
+    "stages": [
+      { "name": "kickoff_to_pr", "p50_ms": 3600000 },
+      { "name": "pr_to_first_review", "p50_ms": 1800000 },
+      { "name": "first_review_to_merge", "p50_ms": 7200000 }
+    ]
+  },
+  "cost_per_pr": {
+    "median_cents": 40,
+    "by_size": { "S": 10, "M": 40, "L": 90, "XL": 200 }
+  },
+  "most_expensive_prs": [
+    {
+      "repo": "acme/payments",
+      "number": 42,
+      "cost_cents": 1200,
+      "changed_lines": 800,
+      "url": "https://github.com/acme/payments/pull/42"
+    }
+  ],
+  "scorer_cards": [
+    {
+      "name": "correctness",
+      "pass_rate_by_day": [{ "day": "2026-04-02", "pass_rate": 1, "n": 4 }]
+    }
+  ],
+  "improvement_prs": [
+    {
+      "batch_id": "ib_1",
+      "agent": "reviewer",
+      "url": "https://github.com/acme/factory/pull/42",
+      "created_at": "2026-04-02T18:00:00Z"
+    }
+  ]
+}

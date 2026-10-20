@@ -44,7 +44,8 @@ describe("console client", () => {
     const runs = await api.listRuns({ failure_class: "agent", work_item_id: "task_01" });
     expect(runsQuery).toContain("failure_class=agent");
     expect(runsQuery).toContain("work_item_id=task_01");
-    expect(runs[0]?.failure?.class).toBe("agent");
+    expect(runs[0]?.id).toBe("run_01");
+    expect(runs[0]?.status).toBe("failed");
 
     const detail = await api.getRun("run_01");
     expect(detail.failure?.code).toBe("agent_reported");

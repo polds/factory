@@ -110,6 +110,7 @@ func (h *handler) route() {
 	m.HandleFunc("POST /api/v1/webhooks/{webhookUID}", h.handleWebhook)
 
 	h.registerConsole(m)
+	h.registerMeasure(m)
 
 	var schemas http.Handler
 	if cat, ok := h.backend.(SchemaCatalog); ok {

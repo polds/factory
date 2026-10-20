@@ -1,6 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
-import { MessageCircleQuestion, ShieldCheck, XCircle, type LucideIcon } from "lucide-react";
+import {
+  GitPullRequest,
+  MessageCircleQuestion,
+  ShieldCheck,
+  XCircle,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import { client } from "../../api/client";
 import type { FailureClass, InboxItem, InboxKind } from "../../api/types";
@@ -194,6 +200,8 @@ function kindMeta(kind: InboxKind): { label: string; plural: string; icon: Lucid
       return { label: "Question", plural: "Questions", icon: MessageCircleQuestion };
     case "failed_run":
       return { label: "Failed run", plural: "Failed runs", icon: XCircle };
+    case "improvement_pr":
+      return { label: "Improvement", plural: "Improvements", icon: GitPullRequest };
     default:
       return unexpected(kind);
   }
@@ -287,6 +295,17 @@ function rowActions(
       return (
         <div className="actions">
           {failureClass ? <StatusBadge failureClass={failureClass} /> : null}
+          <p>{item.detail}</p>
+          {item.run_id ? (
+            <Link to="/runs/$runId" params={{ runId: item.run_id }}>
+              Open run
+            </Link>
+          ) : null}
+        </div>
+      );
+    case "improvement_pr":
+      return (
+        <div className="actions">
           <p>{item.detail}</p>
           {item.run_id ? (
             <Link to="/runs/$runId" params={{ runId: item.run_id }}>

@@ -1,0 +1,13 @@
+[
+  {
+    "id": "sr_1",
+    "run_id": "run_1",
+    "label": "missed_tests",
+    "score": 0.25,
+    "passed": false,
+    "reasoning": "The agent opened the PR without running tests.",
+    "status": "ok",
+    "created_at": "2026-04-02T16:00:00Z",
+    "reviewed_at": "2026-04-03T12:00:00Z"
+  }
+]

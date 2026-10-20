@@ -5,19 +5,31 @@ import type {
   Approval,
   ApprovalDecision,
   Automation,
+  BenchmarkAccepted,
+  BenchmarkSummary,
+  BenchmarkTrials,
+  CapturedBenchmarkTask,
   ConnectedWorkers,
   DefinitionView,
   Delivery,
   Factory,
+  FactoryMetrics,
   FactorySummary,
   HarnessUsage,
   Identity,
+  ImprovementBatch,
+  ImprovementRunNow,
   InboxItem,
   InputAnswer,
   Problem,
   Run,
   RunDetail,
   RunListQuery,
+  RunRow,
+  RunScore,
+  ScoreAccepted,
+  ScorerResult,
+  ScorerSummary,
   SecretPresence,
   SteerAccepted,
   SteerMessage,
@@ -110,7 +122,7 @@ export class ConsoleClient {
     return this.request(`/api/v1/factory/${segment(factoryId)}/agents`);
   }
 
-  listRuns(query: RunListQuery = {}): Promise<Run[]> {
+  listRuns(query: RunListQuery = {}): Promise<RunRow[]> {
     return this.request(
       withQuery("/api/v1/agent/runs", {
         factory_id: query.factory_id,
@@ -234,6 +246,86 @@ export class ConsoleClient {
 
   summary(factoryId: string, range: { from?: string; to?: string } = {}): Promise<FactorySummary> {
     return this.request(withQuery(`/api/v1/factory/${segment(factoryId)}/summary`, range));
+  }
+
+  scoreRun(runId: string, scorer: string): Promise<ScoreAccepted> {
+    return this.request(`/api/v1/agent/runs/${segment(runId)}/score`, {
+      method: "POST",
+      body: JSON.stringify({ scorer }),
+    });
+  }
+
+  scorerResults(
+    factoryId: string,
+    scorer: string,
+    query: { from?: string; to?: string; passed?: boolean } = {},
+  ): Promise<ScorerResult[]> {
+    return this.request(
+      withQuery(`/api/v1/factory/${segment(factoryId)}/scorers/${segment(scorer)}/results`, {
+        from: query.from,
+        to: query.to,
+        passed: query.passed === undefined ? undefined : String(query.passed),
+      }),
+    );
+  }
+
+  listScorers(factoryId: string): Promise<ScorerSummary[]> {
+    return this.request(`/api/v1/factory/${segment(factoryId)}/scorers`);
+  }
+
+  runScores(runId: string): Promise<RunScore[]> {
+    return this.request(`/api/v1/agent/runs/${segment(runId)}/scores`);
+  }
+
+  startBenchmark(
+    factoryId: string,
+    suite: string,
+    body: { repetitions?: number } = {},
+  ): Promise<BenchmarkAccepted> {
+    return this.request(`/api/v1/factory/${segment(factoryId)}/benchmarks/${segment(suite)}:run`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  benchmarkTrials(
+    factoryId: string,
+    suite: string,
+    query: { benchmark_run_id?: string } = {},
+  ): Promise<BenchmarkTrials> {
+    return this.request(
+      withQuery(`/api/v1/factory/${segment(factoryId)}/benchmarks/${segment(suite)}/trials`, {
+        benchmark_run_id: query.benchmark_run_id,
+      }),
+    );
+  }
+
+  listBenchmarks(factoryId: string): Promise<BenchmarkSummary[]> {
+    return this.request(`/api/v1/factory/${segment(factoryId)}/benchmarks`);
+  }
+
+  captureBenchmarkTask(
+    runId: string,
+    body: { suite: string; name: string },
+  ): Promise<CapturedBenchmarkTask> {
+    return this.request(`/api/v1/agent/runs/${segment(runId)}:capture-benchmark-task`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  improvementBatches(factoryId: string): Promise<ImprovementBatch[]> {
+    return this.request(`/api/v1/factory/${segment(factoryId)}/improvement-batches`);
+  }
+
+  runImprovementNow(factoryId: string): Promise<ImprovementRunNow> {
+    return this.request(`/api/v1/factory/${segment(factoryId)}/improvement:run-now`, {
+      method: "POST",
+    });
+  }
+
+  metrics(factoryId: string, range: { from?: string; to?: string } = {}): Promise<FactoryMetrics> {
+    return this.request(withQuery(`/api/v1/factory/${segment(factoryId)}/metrics`, range));
   }
 
   listTasks(
