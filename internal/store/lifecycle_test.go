@@ -380,10 +380,24 @@ func TestLifecycleNotify(t *testing.T) {
 	if _, err := h.raw.Exec(ctx, `UPDATE runs SET status = 'queued' WHERE id = $1`, run.ID); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case got := <-notes:
-		t.Fatalf("same status notified %s", got)
-	case <-time.After(300 * time.Millisecond):
+	// run_events is database-wide. Other tests NOTIFY their own run ids on
+	// this channel. A same-status update notifies nothing, so only this
+	// run's payload is a failure. The create notification was already taken.
+	quiet := time.NewTimer(300 * time.Millisecond)
+	defer quiet.Stop()
+quiet:
+	for {
+		select {
+		case got, ok := <-notes:
+			if !ok {
+				t.Fatalf("Listen closed while checking %s", run.ID)
+			}
+			if got == run.ID {
+				t.Fatalf("same status notified %s", got)
+			}
+		case <-quiet.C:
+			break quiet
+		}
 	}
 	if _, err := h.raw.Exec(ctx, `UPDATE runs SET status = 'idle' WHERE id = $1`, run.ID); err != nil {
 		t.Fatal(err)
