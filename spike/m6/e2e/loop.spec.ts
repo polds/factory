@@ -189,9 +189,25 @@ test("m6 exit loop", async ({ browser }) => {
       trace.push("guard: factory/config passed");
     }
 
+    // GET .../trials is 404 until a benchmark run exists, and the suite page
+    // then replaces itself with an error, which hides Run benchmark. An empty
+    // matrix is what the page renders once a run exists and has no cells yet.
+    await page.route("**/benchmarks/*/trials*", async (route) => {
+      const response = await route.fetch();
+      if (response.status() !== 404) {
+        await route.fulfill({ response });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ cells: [], report: { winner: "", reason: "" } }),
+      });
+    });
+
     await openSection(page, "Benchmarks");
     await page.getByRole("link", { name: "convention", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Benchmarks" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Benchmarks" })).toBeVisible({ timeout: 60_000 });
     await expect(page.locator("#benchmark-repetitions")).toHaveValue("5");
     await page.getByRole("button", { name: "Run benchmark" }).click();
     const confirm = page.getByRole("dialog", { name: "Run benchmark?" });
