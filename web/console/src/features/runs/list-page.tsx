@@ -20,7 +20,6 @@ import {
   withFilter,
 } from "./search";
 import { RunStatusBadge } from "./status";
-import { ensureRunsStreamFallback } from "./testing/ensure";
 import type { FilterKey, RunRow } from "./types";
 
 // The list follows the factory stream. run.created and run.status invalidate
@@ -43,14 +42,13 @@ function messageOf(error: unknown): string {
 }
 
 export function RunsListPage() {
-  ensureRunsStreamFallback();
   const router = useRouter();
   const searchStr = useRouterState({ select: (state) => state.location.searchStr });
   const filters = filtersFromSearch(searchStr);
   const factories = useQuery({ queryKey: ["factories"], queryFn: () => client.listFactories() });
   const runs = useQuery({
     queryKey: ["runs", filters],
-    queryFn: () => client.listRuns(filtersToQuery(filters)) as Promise<RunRow[]>,
+    queryFn: () => client.listRuns(filtersToQuery(filters)),
   });
 
   function update(key: FilterKey, value: string) {

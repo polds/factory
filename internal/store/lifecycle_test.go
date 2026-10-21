@@ -2,7 +2,6 @@ package store_test
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"io/fs"
 	"regexp"
@@ -14,9 +13,6 @@ import (
 	"github.com/polds/factory/internal/automation"
 	"github.com/polds/factory/internal/store"
 )
-
-//go:embed migrations/*.sql
-var testMigrationFS embed.FS
 
 const lifecycleSecret = "rt_SECRET_PLANT"
 
@@ -269,7 +265,7 @@ func TestLifecycleMigrationOnM5(t *testing.T) {
 		if name >= "0009" {
 			break
 		}
-		body, err := testMigrationFS.ReadFile("migrations/" + name)
+		body, err := store.MigrationFS.ReadFile("migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -298,7 +294,7 @@ func TestLifecycleMigrationOnM5(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body, err := testMigrationFS.ReadFile("migrations/0009_run_lifecycle_events.sql")
+	body, err := store.MigrationFS.ReadFile("migrations/0009_run_lifecycle_events.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +468,7 @@ func perRunSeqs(t *testing.T, h *harness, runID string) []string {
 
 func embeddedMigrations(t *testing.T) []string {
 	t.Helper()
-	entries, err := fs.ReadDir(testMigrationFS, "migrations")
+	entries, err := fs.ReadDir(store.MigrationFS, "migrations")
 	if err != nil {
 		t.Fatalf("read embedded migrations: %v", err)
 	}
@@ -496,7 +492,7 @@ func embeddedTables(t *testing.T) []string {
 	t.Helper()
 	seen := map[string]bool{"schema_migrations": true}
 	for _, name := range embeddedMigrations(t) {
-		body, err := testMigrationFS.ReadFile("migrations/" + name)
+		body, err := store.MigrationFS.ReadFile("migrations/" + name)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}

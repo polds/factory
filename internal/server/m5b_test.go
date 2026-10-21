@@ -656,6 +656,11 @@ func TestM5bNormalizedEvents(t *testing.T) {
 		t.Fatalf("replayed %+v", replayed)
 	}
 
+	// Rows below are inserted already received. The dispatch loop claims
+	// those rows and writes normalized_events; this test needs the null
+	// column to stay null and the empty list to stay empty.
+	silenceDispatch(env.srv)
+
 	ctx := context.Background()
 	factoryID, _ := env.factoryAgent(t)
 	reg, err := env.srv.store.UpsertWebhookRegistration(ctx, store.WebhookRegistration{

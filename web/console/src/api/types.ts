@@ -82,32 +82,14 @@ export type RunDetail = Run;
 
 // RunRow is one flat GET /agent/runs element. queue_wait_ms and exec_ms are
 // always present. failure_class, failure_code, and failure_summary sit on
-// the row. The nested failure object, steer, and pr_url belong to the detail.
-export type RunRow = {
-  id: string;
-  status: string;
-  factory_id?: string;
-  agent?: string;
-  title?: string;
-  priority?: string;
-  repo?: string;
-  work_item_id?: string;
-  parent_run_id?: string;
-  conversation_id?: string;
-  stage?: string;
-  model_id?: string;
-  failure_reason?: string;
-  created_at?: string;
-  started_at?: string;
-  worker?: string;
-  source?: string;
-  failure_class?: FailureClass;
-  failure_code?: string;
-  failure_summary?: string;
+// the row. The nested failure object, steer, pr_url, and kubernetes_snapshot
+// belong to the detail.
+export type RunRow = Omit<
+  Run,
+  "failure" | "steer" | "pr_url" | "kubernetes_snapshot" | "queue_wait_ms" | "exec_ms"
+> & {
   queue_wait_ms: number;
   exec_ms: number;
-  cost_cents?: number;
-  exit_code?: number;
 };
 
 export type RunListQuery = {

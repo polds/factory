@@ -8,7 +8,6 @@ import { StatusBadge } from "../../components/StatusBadge";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
 import { formatDuration } from "../../lib/format";
-import { ensureStreamFallback } from "./testing/ensure";
 import { liveLabel, useFactoryEvents, type StreamStatus } from "./live";
 import {
   FAILURE_CLASSES,
@@ -24,7 +23,6 @@ import {
 import { Caveat, PageHeader, Panel, RunStatusBadge, RunsTable } from "./ui";
 
 export default function DashboardPage() {
-  ensureStreamFallback();
   const queryClient = useQueryClient();
   const factories = useQuery({ queryKey: ["factories"], queryFn: () => client.listFactories() });
   const [rangeKey, setRangeKey] = useState<RangeKey>("24h");

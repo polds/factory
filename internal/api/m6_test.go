@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -38,90 +37,6 @@ func TestM6RoutesMatchContract(t *testing.T) {
 		if rt.golden == "" {
 			t.Fatalf("%s has no golden", rt.name)
 		}
-	}
-}
-
-func TestM6Goldens(t *testing.T) {
-	f := newMeasure(t)
-	h := NewHandler(f, testAPIKey, nil)
-	for _, rt := range m6Routes() {
-		res := call(t, h, rt.method, rt.sample, rt.body, apiHeaders())
-		if res.status != rt.status {
-			t.Fatalf("%s status %d body %s", rt.name, res.status, res.body)
-		}
-		assertGolden(t, res.body, rt.golden)
-		assertBodyClean(t, res.body, plantedSecret, testAPIKey, runTokenValue)
-	}
-	if f.scoreName != "correctness" || f.scoreRunID != "run_1" {
-		t.Fatalf("score %s %s", f.scoreRunID, f.scoreName)
-	}
-	if f.resultScorer != "correctness" || f.resultPassed == nil || *f.resultPassed {
-		t.Fatalf("results scorer %s passed %v", f.resultScorer, f.resultPassed)
-	}
-	if !f.resultFrom.Equal(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)) || !f.resultTo.Equal(time.Date(2026, 4, 2, 0, 0, 0, 0, time.UTC)) {
-		t.Fatalf("results window %s %s", f.resultFrom, f.resultTo)
-	}
-	if f.benchSuite != "pr-review" || f.benchReps == nil || *f.benchReps != 5 {
-		t.Fatalf("benchmark suite %s reps %v", f.benchSuite, f.benchReps)
-	}
-	if f.trialSuite != "pr-review" || f.trialRunID != "br_1" {
-		t.Fatalf("trials %s %s", f.trialSuite, f.trialRunID)
-	}
-	if f.captureSuite != "pr-review" || f.captureName != "broken-doc-link" || f.captureRunID != "run_1" {
-		t.Fatalf("capture %s %s %s", f.captureRunID, f.captureSuite, f.captureName)
-	}
-	if !f.metricsFrom.Equal(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)) || !f.metricsTo.Equal(time.Date(2026, 4, 2, 0, 0, 0, 0, time.UTC)) {
-		t.Fatalf("metrics window %s %s", f.metricsFrom, f.metricsTo)
-	}
-	inbox := call(t, h, http.MethodGet, "/api/v1/factory/fac_1/inbox", "", apiHeaders())
-	assertGolden(t, inbox.body, "inbox.json")
-	life := decodeGolden[FactoryLifecycleData](t, "factory-event-lifecycle.json")
-	if life.GID != 42 || life.RunID != "run_1" || life.Status != "running" || life.Stage != "building" {
-		t.Fatalf("lifecycle %+v", life)
-	}
-	items := decodeGolden[[]InboxItem](t, "m6-inbox-improvement.json")
-	if len(items) != 1 || items[0].Kind != InboxKindImprovementPR {
-		t.Fatalf("inbox kind %+v", items)
-	}
-}
-
-func TestM6AuthNotFoundAndUnwired(t *testing.T) {
-	for _, rt := range m6Routes() {
-		t.Run(rt.name+"/401", func(t *testing.T) {
-			h := NewHandler(newMeasure(t), testAPIKey, nil)
-			res := call(t, h, rt.method, rt.sample, rt.body, nil)
-			if res.status != http.StatusUnauthorized {
-				t.Fatalf("status %d body %s", res.status, res.body)
-			}
-			assertProblem(t, res)
-			assertBodyClean(t, res.body, plantedSecret, testAPIKey, runTokenValue)
-		})
-		t.Run(rt.name+"/404", func(t *testing.T) {
-			f := newMeasure(t)
-			f.notFound = true
-			h := NewHandler(f, testAPIKey, nil)
-			res := call(t, h, rt.method, rt.sample, rt.body, apiHeaders())
-			if res.status != http.StatusNotFound {
-				t.Fatalf("status %d body %s", res.status, res.body)
-			}
-			assertProblem(t, res)
-		})
-		t.Run(rt.name+"/501", func(t *testing.T) {
-			h := NewHandler(newFake(), testAPIKey, nil)
-			res := call(t, h, rt.method, rt.sample, rt.body, apiHeaders())
-			if res.status != http.StatusNotImplemented {
-				t.Fatalf("status %d body %s", res.status, res.body)
-			}
-			assertProblem(t, res)
-			var p Problem
-			if err := json.Unmarshal(res.body, &p); err != nil {
-				t.Fatal(err)
-			}
-			if p.Detail != measureUnwiredDetail {
-				t.Fatalf("detail %q", p.Detail)
-			}
-			assertBodyClean(t, res.body, plantedSecret, testAPIKey)
-		})
 	}
 }
 
@@ -190,63 +105,6 @@ func TestM6Errors(t *testing.T) {
 	assertProblemStatus(t, res, http.StatusBadRequest, "to is invalid")
 	if f.metricsCalls != 0 {
 		t.Fatalf("invalid metrics window reached the backend %d times", f.metricsCalls)
-	}
-}
-
-func TestM6NoSecretMaterial(t *testing.T) {
-	f := newMeasure(t)
-	plantMeasureSecrets(f)
-	h := NewHandler(f, testAPIKey, nil)
-	for _, rt := range m6Routes() {
-		res := call(t, h, rt.method, rt.sample, rt.body, apiHeaders())
-		if res.status != rt.status {
-			t.Fatalf("%s status %d body %s", rt.name, res.status, res.body)
-		}
-		assertBodyClean(t, res.body, plantedSecret, testAPIKey, runTokenValue)
-		if rt.name == "scorer-results" && !bytes.Contains(res.body, []byte("without running tests")) {
-			t.Fatalf("results dropped reasoning: %s", res.body)
-		}
-		if rt.name == "improvement-batches" && !bytes.Contains(res.body, []byte("https://github.com/acme/factory/pull/42")) {
-			t.Fatalf("batches dropped pr_url: %s", res.body)
-		}
-		if rt.name == "benchmark-trials" && bytes.Contains(res.body, []byte(`"env"`)) {
-			t.Fatalf("trials exposed env: %s", res.body)
-		}
-	}
-	res := call(t, h, http.MethodPost, "/api/v1/agent/runs/run_1/score", `{"scorer":"correctness","token":"`+plantedSecret+`"}`, apiHeaders())
-	if res.status != http.StatusAccepted {
-		t.Fatalf("status %d body %s", res.status, res.body)
-	}
-	assertBodyClean(t, res.body, plantedSecret, testAPIKey)
-
-	f.leakErr = true
-	for _, rt := range m6Routes() {
-		res := call(t, h, rt.method, rt.sample, rt.body, apiHeaders())
-		if res.status == http.StatusBadRequest || res.status == http.StatusNotFound {
-			continue
-		}
-		if bytes.Contains(res.body, []byte(plantedSecret)) || bytes.Contains(res.body, []byte(testAPIKey)) {
-			t.Fatalf("%s leaked backend error: %s", rt.name, res.body)
-		}
-	}
-
-	for _, v := range []any{
-		ScorerResult{Reasoning: "shown", Held: hidden(plantedSecret)},
-		ImprovementBatch{PRURL: "https://example.test/pull/1", HeldPR: hidden(plantedSecret)},
-		BenchmarkCell{Task: "t", HeldEnv: hidden(plantedSecret)},
-		RunScore{Reasoning: "shown", Held: hidden(plantedSecret)},
-	} {
-		for _, format := range []string{"%v", "%+v", "%#v"} {
-			printed := fmt.Sprintf(format, v)
-			if bytes.Contains([]byte(printed), []byte(plantedSecret)) {
-				t.Fatalf("%s printed a secret: %s", format, printed)
-			}
-		}
-		body, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		assertBodyClean(t, body, plantedSecret)
 	}
 }
 

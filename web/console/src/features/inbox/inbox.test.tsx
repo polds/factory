@@ -1,12 +1,12 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import axe from "axe-core";
 import { http, HttpResponse, type JsonBodyType } from "msw";
 import { describe, expect, it } from "vitest";
 import { setAPIKey } from "../../api/session";
 import type { InboxItem } from "../../api/types";
 import { demoAPIKey } from "../../mocks/demo-key";
 import { server } from "../../mocks/server";
+import { expectNoSeriousViolations } from "../../test/axe";
 import { renderApp } from "../../test/render";
 import goldenInbox from "./__fixtures__/inbox.json";
 import { byOldest } from "./index";
@@ -57,14 +57,6 @@ const shuffled: InboxItem[] = [
     action: "answer",
   }),
 ];
-
-async function expectClean(node: ParentNode) {
-  const results = await axe.run(node as Element);
-  const blocking = results.violations.filter(
-    (violation) => violation.impact === "serious" || violation.impact === "critical",
-  );
-  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
-}
 
 function install(
   rows: InboxItem[],
@@ -314,12 +306,12 @@ describe("inbox", () => {
     install([]);
     const empty = await renderApp(`/f/${factoryId}/inbox`);
     expect(await screen.findByText("Nothing needs you right now")).toBeInTheDocument();
-    await expectClean(document.body);
+    await expectNoSeriousViolations(document.body);
     empty.unmount();
     install(shuffled);
     await renderApp(`/f/${factoryId}/inbox`);
     expect(await screen.findByRole("button", { name: /Spec gate/ })).toBeInTheDocument();
-    await expectClean(document.body);
+    await expectNoSeriousViolations(document.body);
   });
 });
 

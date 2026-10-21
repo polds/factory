@@ -7,7 +7,6 @@ import type { Approval, Task } from "../../api/types";
 import { Button } from "../../components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { ErrorState } from "../../components/ErrorState";
-import { ensureStreamFallback } from "../dashboard/testing/ensure";
 import { useFactoryEvents } from "../dashboard/live";
 import {
   PIPELINE_STAGES,
@@ -21,7 +20,6 @@ import { GateBadge, PageHeader, Panel, RunsTable } from "../dashboard/ui";
 import { ApprovalActions, AnswerForm, submitAnswer } from "../inbox/actions";
 
 export function WorkItemDetail({ factoryId, id }: { factoryId: string; id: string }) {
-  ensureStreamFallback();
   const queryClient = useQueryClient();
   const task = useQuery({
     queryKey: ["task", factoryId, id],
