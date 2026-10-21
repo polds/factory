@@ -248,16 +248,20 @@ test("m6 exit loop", async ({ browser }) => {
     await axe(page, "benchmarks");
     await saveDom(page, "benchmarks");
     await saveShot(page, "benchmarks");
+    await fs.appendFile(path.join(evidence, "progress.txt"), "benchmarks saved\n");
 
     if (offline) {
       trialsLive = false;
-      await page.getByRole("link", { name: "All suites" }).click();
+      const factoryId = new URL(page.url()).pathname.split("/")[2] ?? "";
+      await page.goto(`/f/${factoryId}/benchmarks`);
+      await fs.appendFile(path.join(evidence, "progress.txt"), "suite list\n");
       await expect(page.getByRole("link", { name: "fault", exact: true })).toBeVisible();
       await page.getByRole("link", { name: "fault", exact: true }).click();
       await page.locator("#benchmark-repetitions").fill("1");
       await page.getByRole("button", { name: "Run benchmark" }).click();
       await page.getByRole("dialog", { name: "Run benchmark?" }).getByRole("button", { name: "Run benchmark" }).click();
       trialsLive = true;
+      await fs.appendFile(path.join(evidence, "progress.txt"), "fault started\n");
       await reloadUntil(
         page,
         async () => (await page.getByText("Infrastructure").count()) >= 1,
