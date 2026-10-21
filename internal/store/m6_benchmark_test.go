@@ -76,3 +76,48 @@ func TestBenchmarkTrialCells(t *testing.T) {
 		t.Fatalf("base %+v", got)
 	}
 }
+
+func TestBenchmarkTrialDefinitionSHA(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+	bench, err := h.st.CreateBenchmarkRun(ctx, factoryID, "suite", "pat", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := h.createRun(t, factoryID, agentID, "trial", store.PriorityBatch)
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	trial, err := h.st.RecordTrial(ctx, store.BenchmarkTrial{
+		BenchmarkRunID: bench.ID,
+		Configuration:  "Candidate",
+		Task:           "one",
+		Repetition:     1,
+		RunID:          run.ID,
+		Outcome:        api.TrialPending,
+		DefinitionSHA:  sha,
+	})
+	if err != nil || trial.DefinitionSHA != sha {
+		t.Fatalf("record %+v %v", trial, err)
+	}
+	byRun, err := h.st.BenchmarkTrialByRun(ctx, run.ID)
+	if err != nil || byRun.ID != trial.ID || byRun.DefinitionSHA != sha {
+		t.Fatalf("by run %+v %v", byRun, err)
+	}
+	rows, err := h.st.ListBenchmarkTrials(ctx, bench.ID)
+	if err != nil || len(rows) != 1 || rows[0].DefinitionSHA != sha {
+		t.Fatalf("list %+v %v", rows, err)
+	}
+	if _, err := h.st.GetBenchmarkRun(ctx, bench.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.SetTrialOutcome(ctx, run.ID, api.TrialPass, 4, 40, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.SetTrialOutcome(ctx, run.ID, api.TrialFail, 9, 90, ""); err != nil {
+		t.Fatal(err)
+	}
+	after, err := h.st.BenchmarkTrialByRun(ctx, run.ID)
+	if err != nil || after.Outcome != api.TrialPass || after.CostCents != 4 || after.DefinitionSHA != sha {
+		t.Fatalf("outcome %+v %v", after, err)
+	}
+}

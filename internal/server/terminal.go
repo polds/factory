@@ -121,6 +121,7 @@ func (s *Server) finish(ctx context.Context, runID, execID, state, reason, summa
 	s.advanceAfterTerminal(ctx, runID)
 	s.noteAfterTerminal(ctx, runID, before)
 	s.nudge()
+	s.noteMeasurement(ctx, runID)
 }
 
 // commitFinish applies one terminal transition and inserts run.terminal

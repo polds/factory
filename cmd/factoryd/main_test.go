@@ -347,3 +347,65 @@ func TestConfigExtraHeaders(t *testing.T) {
 		t.Fatal("malformed header error leaked the value")
 	}
 }
+
+func TestConfigReadsM6(t *testing.T) {
+	cfg, err := configFromEnv(func(k string) string {
+		switch k {
+		case "FACTORY_REVIEWERS_ADMINS":
+			return "ada, grace"
+		case "FACTORY_REVIEWERS_TEAM":
+			return "linus"
+		case "FACTORY_REVIEWER_LOGINS":
+			return "ada@example.com=ada,grace@example.com=grace"
+		case "FACTORY_SAMPLER_INTERVAL":
+			return "30s"
+		case "FACTORY_IMPROVEMENT_INTERVAL":
+			return "2m"
+		default:
+			return ""
+		}
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(cfg.server.ReviewerAdmins, ",") != "ada,grace" || strings.Join(cfg.server.ReviewerTeam, ",") != "linus" {
+		t.Fatalf("reviewers %#v %#v", cfg.server.ReviewerAdmins, cfg.server.ReviewerTeam)
+	}
+	if cfg.server.ReviewerLogins["ada@example.com"] != "ada" || cfg.server.ReviewerLogins["grace@example.com"] != "grace" {
+		t.Fatalf("logins %#v", cfg.server.ReviewerLogins)
+	}
+	if cfg.server.SamplerInterval != 30*time.Second || cfg.server.ImprovementInterval != 2*time.Minute {
+		t.Fatalf("intervals %s %s", cfg.server.SamplerInterval, cfg.server.ImprovementInterval)
+	}
+	empty, err := configFromEnv(func(string) string { return "" }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.server.SamplerInterval != time.Minute || empty.server.ImprovementInterval != time.Minute {
+		t.Fatalf("default intervals %s %s", empty.server.SamplerInterval, empty.server.ImprovementInterval)
+	}
+	if _, err := configFromEnv(func(k string) string {
+		if k == "FACTORY_SAMPLER_INTERVAL" {
+			return "nope"
+		}
+		return ""
+	}, nil); err == nil || !strings.Contains(err.Error(), "FACTORY_SAMPLER_INTERVAL") {
+		t.Fatalf("sampler error %v", err)
+	}
+	if _, err := configFromEnv(func(k string) string {
+		if k == "FACTORY_IMPROVEMENT_INTERVAL" {
+			return "0s"
+		}
+		return ""
+	}, nil); err == nil || !strings.Contains(err.Error(), "FACTORY_IMPROVEMENT_INTERVAL") {
+		t.Fatalf("improvement error %v", err)
+	}
+	if _, err := configFromEnv(func(k string) string {
+		if k == "FACTORY_REVIEWER_LOGINS" {
+			return "not-a-pair"
+		}
+		return ""
+	}, nil); err == nil || !strings.Contains(err.Error(), "FACTORY_REVIEWER_LOGINS") {
+		t.Fatalf("login error %v", err)
+	}
+}

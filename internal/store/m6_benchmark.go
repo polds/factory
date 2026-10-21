@@ -16,7 +16,8 @@ const benchmarkRunColumns = `
 
 const benchmarkTrialColumns = `
     id, benchmark_run_id, configuration, task, repetition, run_id,
-    outcome, cost_cents, duration_ms, COALESCE(correctness_result_id, '')`
+    outcome, cost_cents, duration_ms, COALESCE(correctness_result_id, ''),
+    definition_sha`
 
 func scanBenchmarkRun(row pgx.Row) (BenchmarkRun, error) {
 	var out BenchmarkRun
@@ -35,6 +36,7 @@ func scanBenchmarkTrial(row pgx.Row) (BenchmarkTrial, error) {
 	err := row.Scan(
 		&out.ID, &out.BenchmarkRunID, &out.Configuration, &out.Task, &out.Repetition,
 		&out.RunID, &out.Outcome, &out.CostCents, &out.DurationMS, &out.CorrectnessResultID,
+		&out.DefinitionSHA,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return BenchmarkTrial{}, ErrNotFound
@@ -152,13 +154,13 @@ func (s *Store) RecordTrial(ctx context.Context, in BenchmarkTrial) (BenchmarkTr
 	out, err := scanBenchmarkTrial(s.pool.QueryRow(ctx, `
 		INSERT INTO benchmark_trials (
 		    id, benchmark_run_id, configuration, task, repetition, run_id,
-		    outcome, cost_cents, duration_ms, correctness_result_id)
+		    outcome, cost_cents, duration_ms, correctness_result_id, definition_sha)
 		VALUES (
 		    $1, $2, $3, $4, $5, $6,
-		    $7, $8, $9, NULLIF($10, ''))
+		    $7, $8, $9, NULLIF($10, ''), $11)
 		RETURNING `+benchmarkTrialColumns,
 		id, in.BenchmarkRunID, in.Configuration, in.Task, in.Repetition, in.RunID,
-		in.Outcome, in.CostCents, in.DurationMS, in.CorrectnessResultID,
+		in.Outcome, in.CostCents, in.DurationMS, in.CorrectnessResultID, in.DefinitionSHA,
 	))
 	if err != nil {
 		return BenchmarkTrial{}, fmt.Errorf("store: record trial: %w", err)
@@ -244,4 +246,92 @@ func trialCells(trials []BenchmarkTrial) []TrialCell {
 		out = append(out, row.cell)
 	}
 	return out
+}
+
+// GetBenchmarkRun returns one suite run or ErrNotFound.
+func (s *Store) GetBenchmarkRun(ctx context.Context, id string) (BenchmarkRun, error) {
+	if id == "" {
+		return BenchmarkRun{}, fmt.Errorf("store: benchmark run is required")
+	}
+	out, err := scanBenchmarkRun(s.pool.QueryRow(ctx, `
+		SELECT `+benchmarkRunColumns+` FROM benchmark_runs WHERE id = $1`, id))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return BenchmarkRun{}, err
+		}
+		return BenchmarkRun{}, fmt.Errorf("store: get benchmark run: %w", err)
+	}
+	return out, nil
+}
+
+// BenchmarkTrialByRun returns the trial whose run is runID, or ErrNotFound.
+func (s *Store) BenchmarkTrialByRun(ctx context.Context, runID string) (BenchmarkTrial, error) {
+	if runID == "" {
+		return BenchmarkTrial{}, fmt.Errorf("store: run is required")
+	}
+	out, err := scanBenchmarkTrial(s.pool.QueryRow(ctx, `
+		SELECT `+benchmarkTrialColumns+`
+		FROM benchmark_trials
+		WHERE run_id = $1`, runID))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return BenchmarkTrial{}, err
+		}
+		return BenchmarkTrial{}, fmt.Errorf("store: trial by run: %w", err)
+	}
+	return out, nil
+}
+
+// ListBenchmarkTrials returns every trial of a benchmark run, in cell order.
+func (s *Store) ListBenchmarkTrials(ctx context.Context, benchmarkRunID string) ([]BenchmarkTrial, error) {
+	if benchmarkRunID == "" {
+		return nil, fmt.Errorf("store: benchmark run is required")
+	}
+	var one int
+	err := s.pool.QueryRow(ctx, `SELECT 1 FROM benchmark_runs WHERE id = $1`, benchmarkRunID).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: list trials: %w", err)
+	}
+	rows, qerr := s.pool.Query(ctx, `
+		SELECT `+benchmarkTrialColumns+`
+		FROM benchmark_trials
+		WHERE benchmark_run_id = $1
+		ORDER BY configuration ASC, task ASC, repetition ASC, id ASC`, benchmarkRunID)
+	return collect(rows, qerr, "store: list trials", scanBenchmarkTrial)
+}
+
+// SetTrialOutcome records a terminal outcome on the trial for runID.
+// A trial that is already past pending is left unchanged, so a second
+// finish after a restart does not overwrite the first verdict.
+func (s *Store) SetTrialOutcome(ctx context.Context, runID, outcome string, costCents, durationMS int64, correctnessResultID string) error {
+	if runID == "" {
+		return fmt.Errorf("store: run is required")
+	}
+	if err := validTrialOutcome(outcome); err != nil {
+		return err
+	}
+	if outcome == api.TrialPending {
+		return fmt.Errorf("store: trial outcome pending is not terminal")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE benchmark_trials
+		SET outcome = $2,
+		    cost_cents = $3,
+		    duration_ms = $4,
+		    correctness_result_id = COALESCE(NULLIF($5, ''), correctness_result_id)
+		WHERE run_id = $1 AND outcome = $6`,
+		runID, outcome, costCents, durationMS, correctnessResultID, api.TrialPending)
+	if err != nil {
+		return fmt.Errorf("store: set trial outcome: %w", err)
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	if _, err := s.BenchmarkTrialByRun(ctx, runID); err != nil {
+		return err
+	}
+	return nil
 }

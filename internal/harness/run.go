@@ -173,17 +173,18 @@ func Run(ctx context.Context, opt Options) int {
 		idle = 0
 	}
 	conv := conversation{
-		log:      log,
-		box:      box,
-		baseURL:  baseURL,
-		apiKey:   apiKey,
-		extra:    extra,
-		model:    model,
-		secrets:  secrets,
-		maxTurns: turns,
-		runtime:  opt.RuntimeDir,
-		hub:      hub,
-		idle:     idle,
+		log:       log,
+		box:       box,
+		baseURL:   baseURL,
+		apiKey:    apiKey,
+		extra:     extra,
+		model:     model,
+		secrets:   secrets,
+		maxTurns:  turns,
+		runtime:   opt.RuntimeDir,
+		hub:       hub,
+		idle:      idle,
+		skillText: lookupEnv(opt.Env, "FACTORY_SKILL_TEXT"),
 	}
 
 	summary := "skipped initial turn"
@@ -373,14 +374,22 @@ type conversation struct {
 	runtime  string
 	hub      *steerHub
 	idle     time.Duration
+	// skillText is FACTORY_SKILL_TEXT. It is appended to the system prompt
+	// when the assignment carried agent skills. An empty value leaves the
+	// system prompt unchanged.
+	skillText string
 	// parked is set when ask_input emits a question. The caller exits
 	// without the idle-on-complete wait.
 	parked bool
 }
 
 func (c *conversation) run(ctx context.Context, prompt string) (int, string, string) {
+	system := systemPrompt
+	if text := strings.TrimSpace(c.skillText); text != "" {
+		system += "\n\n" + text
+	}
 	messages := []chatMessage{
-		{Role: "system", Content: systemPrompt},
+		{Role: "system", Content: system},
 		{Role: "user", Content: prompt},
 	}
 	for turn := 1; turn <= c.maxTurns; turn++ {

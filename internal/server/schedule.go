@@ -63,7 +63,7 @@ func (s *Server) schedule(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		bound, ok := s.resolveBound(ctx, snap, run.AgentID)
+		bound, ok := s.scheduleBound(ctx, snap, run)
 		if !ok {
 			continue
 		}
@@ -124,7 +124,7 @@ func (s *Server) resolveBound(ctx context.Context, snap loaded, agentID string) 
 }
 
 func (s *Server) toPending(ctx context.Context, run store.Run, snap loaded) (scheduler.Pending, bool) {
-	bound, ok := s.resolveBound(ctx, snap, run.AgentID)
+	bound, ok := s.scheduleBound(ctx, snap, run)
 	if !ok {
 		return scheduler.Pending{}, false
 	}

@@ -142,6 +142,7 @@ func (s *Server) handleDelivery(ctx context.Context, d ingress.Delivery) (bool, 
 		s.recordOutcomes(ctx, res)
 		s.notePaused(ctx, res)
 		s.linkPullRequest(ctx, ev)
+		s.notePRFact(ctx, ev)
 		for _, outcome := range res.Outcomes {
 			if outcome.Automation == "" {
 				continue
