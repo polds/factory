@@ -232,6 +232,7 @@ case_live_targets() {
 
 case_offline_targets_ignore_operator() {
   (
+    # shellcheck disable=SC2030 # each case sets MODE in its own subshell
     MODE=offline
     M6_DEFINITION_GIT_URL="https://example.invalid/m6/factory.git"
     M6_GITHUB_API_BASE="https://api.example.invalid"
@@ -737,6 +738,100 @@ case_compose_config() {
   docker compose -f "$ROOT/deploy/docker-compose.yml" -f "$ROOT/spike/m6/compose.yml" --profile m6 config >/dev/null
 }
 
+case_remote() {
+  local name="$1"
+  local mode="${2:-}"
+  local work
+  work="$(mktemp -d "$ROOT/spike/m6/.work/case-remote.XXXXXX")"
+  if [[ -n "$mode" ]]; then
+    M6_CASE_WORK="$work" python3 "$ROOT/spike/m6/remote_cases.py" "$name" "$mode"
+  else
+    M6_CASE_WORK="$work" python3 "$ROOT/spike/m6/remote_cases.py" "$name"
+  fi
+  rm -rf "$work"
+}
+
+case_shell_offline_noop() {
+  local dir="$ROOT/spike/m6/.work/shell-off"
+  local stub="$dir/bin"
+  rm -rf "$dir"
+  mkdir -p "$stub"
+  cat >"$stub/git" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$M6_ARGV_LOG"
+exit 99
+EOF
+  cp "$stub/git" "$stub/curl"
+  chmod 755 "$stub/git" "$stub/curl"
+  (
+    export PATH="$stub:$PATH"
+    # shellcheck disable=SC2031 # this subshell sets its own MODE
+    export MODE=offline
+    export M6_ARGV_LOG="$dir/argv"
+    export M6_DEFINITION_REF=should-clear
+    export M6_RUN_BASE=should-clear
+    preflight_remote
+    seed_remote
+    cleanup_remote
+    [[ -z "${M6_DEFINITION_REF:-}" ]]
+    [[ -z "${M6_RUN_BASE:-}" ]]
+  )
+  if [[ -s "$dir/argv" ]]; then
+    printf 'offline shell called git or curl\n' >&2
+    return 1
+  fi
+  rm -rf "$dir"
+}
+
+case_cleanup_remote_offline() {
+  MODE=offline "$ROOT/spike/m6/run.sh" --cleanup-remote
+}
+
+case_compose_definition_ref() {
+  local current base_file base_render unset_render set_render
+  current="$(mktemp)"
+  base_file="$(mktemp)"
+  base_render="$(mktemp)"
+  unset_render="$(mktemp)"
+  set_render="$(mktemp)"
+  cp "$ROOT/deploy/docker-compose.yml" "$current"
+  # shellcheck disable=SC2329 # invoked by the RETURN trap
+  restore_compose() {
+    cp "$current" "$ROOT/deploy/docker-compose.yml"
+  }
+  trap restore_compose RETURN
+  git -C "$ROOT" show 317157cb7be4e6b5020002cdd1796979a303c585:deploy/docker-compose.yml \
+    >"$base_file"
+  cp "$base_file" "$ROOT/deploy/docker-compose.yml"
+  env -u M6_DEFINITION_REF docker compose \
+    -f "$ROOT/deploy/docker-compose.yml" \
+    -f "$ROOT/spike/m6/compose.yml" \
+    --profile m6 config >"$base_render"
+  cp "$current" "$ROOT/deploy/docker-compose.yml"
+  env -u M6_DEFINITION_REF docker compose \
+    -f "$ROOT/deploy/docker-compose.yml" \
+    -f "$ROOT/spike/m6/compose.yml" \
+    --profile m6 config >"$unset_render"
+  M6_DEFINITION_REF="m6-run/local-ab/main" docker compose \
+    -f "$ROOT/deploy/docker-compose.yml" \
+    -f "$ROOT/spike/m6/compose.yml" \
+    --profile m6 config >"$set_render"
+  if ! cmp -s "$base_render" "$unset_render"; then
+    printf 'unset M6_DEFINITION_REF render differs from base\n' >&2
+    return 1
+  fi
+  if ! grep -F 'FACTORY_DEFINITION_GIT_REF: m6-run/local-ab/main' "$set_render" >/dev/null; then
+    printf 'set ref did not render the run base\n' >&2
+    return 1
+  fi
+  if ! grep -F 'FACTORY_DEFINITION_GIT_PRODUCTION_REF: m6-run/local-ab/main' "$set_render" >/dev/null; then
+    printf 'set ref did not render the production ref\n' >&2
+    return 1
+  fi
+  trap - RETURN
+  rm -f "$current" "$base_file" "$base_render" "$unset_render" "$set_render"
+}
+
 expect_fail missing-live-url "missing FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL" case_missing_live_url
 expect_fail missing-live-model "missing M6_LIVE_MODEL" case_missing_live_model
 expect_fail missing-live-definition "missing M6_DEFINITION_GIT_URL" case_missing_live_definition
@@ -768,6 +863,23 @@ run_case evidence-clean case_evidence_clean
 run_case token-probe case_token_probe_shape
 run_case probe-401 case_probe_redacts_401
 run_case compose-config case_compose_config
+run_case shell-offline-noop case_shell_offline_noop
+expect_fail cleanup-remote-offline "cleanup-remote is for live" case_cleanup_remote_offline
+run_case compose-definition-ref case_compose_definition_ref
+for remote_mode in live live-ci; do
+  run_case "url-shape-${remote_mode}" case_remote url-shape "$remote_mode"
+  run_case "ls-remote-${remote_mode}" case_remote ls-remote "$remote_mode"
+  run_case "mint-ok-${remote_mode}" case_remote mint-ok "$remote_mode"
+  run_case "mint-deny-${remote_mode}" case_remote mint-deny "$remote_mode"
+  run_case "collaborators-${remote_mode}" case_remote collaborators "$remote_mode"
+  run_case "seed-move-${remote_mode}" case_remote seed-move "$remote_mode"
+  run_case "watch-stale-${remote_mode}" case_remote watch-stale "$remote_mode"
+  run_case "cleanup-${remote_mode}" case_remote cleanup "$remote_mode"
+  run_case "allow-${remote_mode}" case_remote allow "$remote_mode"
+  run_case "token-argv-${remote_mode}" case_remote token-argv "$remote_mode"
+done
+run_case offline-remote case_remote offline
+run_case forge-lookup case_remote forge-lookup
 
 if [[ "$fails" -ne 0 ]]; then
   printf '%s failed\n' "$fails" >&2

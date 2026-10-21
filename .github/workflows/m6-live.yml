@@ -4,17 +4,14 @@
 # check. Dispatch it from the orchestrator only. Do not run it on
 # pull_request or push, and do not dispatch it from an agent.
 #
-# A dispatch is expected to fail after preflight. Two spike gaps are
-# still open:
-#   watch_candidate only updates the local bare repo, so a live
-#   candidate ref never becomes ready and loop.spec waits up to 12
-#   minutes (spike/m6/run.sh watch_candidate).
-#   cleanup stops local processes and the compose stack only. The run
-#   leaves the improve branch, the pull request, the requested
-#   reviewer, and the labels on the definition repo.
-# factoryd-m6 does receive FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS
-# (deploy/docker-compose.yml, m6 profile). That does not unblock the
-# candidate wait.
+# A dispatch runs MODE=live-ci against the definition repo and the App.
+# The driver preflights the installation, pushes a run-scoped base
+# (m6-run/<run-id>/main), watches this run's improvement pull request,
+# and on the way out deletes only that run's remote resources.
+# It still needs the public definition repo and the App secrets below.
+# Do not dispatch it from an agent.
+# factoryd-m6 receives FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS
+# (deploy/docker-compose.yml, m6 profile).
 #
 # permissions is contents:read only. GITHUB_TOKEN cannot push or open
 # PRs. There is no job-level permissions block.

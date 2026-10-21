@@ -18,6 +18,11 @@
 # ignores those two variables and uses the seeded git daemon and the
 # local forge. The seeded repo is not the live definition.
 #
+# Live and live-ci also preflight the App, push a run-scoped base, watch
+# this run's improvement pull request, and delete only that run's remote
+# resources. Offline skips that layer. ./spike/m6/run.sh --cleanup-remote
+# repeats the remote cleanup from the saved ledger.
+#
 # The offline improver pushes the branch and does not open a pull
 # request, so factoryd's create is the 201 that carries improve.PRBody.
 # M6_IMPROVER_OPENS_PR=1 is the live-only branch: the improver opens
@@ -381,7 +386,7 @@ start_router() {
   fi
 }
 
-watch_candidate() {
+watch_candidate_offline() {
   local bare="$WORK/git/m6/factory.git" ref="" sha="" id="" cmd=""
   while [[ ! -f "$SIGNAL/stop" ]]; do
     # improve/<batch id> is refs/heads/improve/<id>, not refs/heads/improve.
@@ -415,6 +420,101 @@ watch_candidate() {
   done
 }
 
+watch_candidate_live() {
+  local id="" cmd=""
+  while [[ ! -f "$SIGNAL/stop" ]]; do
+    if ! remote_cmd watch-once; then
+      printf 'watch\n' >>"$WORK/watch.err" || true
+    fi
+    if [[ -n "${PINNED_SHA:-}" && ! -f "$EVIDENCE/head-override.txt" ]]; then
+      while read -r id; do
+        [[ -n "$id" ]] || continue
+        cmd="$(docker inspect --format '{{json .Config.Cmd}}' "$id" 2>/dev/null || true)"
+        if [[ "$cmd" == *"$PINNED_SHA"* ]]; then
+          mkdir -p "$EVIDENCE"
+          printf 'task argv contains %s\n' "$PINNED_SHA" >"$EVIDENCE/head-override.txt"
+          break
+        fi
+      done < <(docker ps -q --filter ancestor=factory-m1-task:dev 2>/dev/null || true)
+    fi
+    sleep 0.2
+  done
+}
+
+watch_candidate() {
+  if [[ "${MODE:-}" == offline ]]; then
+    watch_candidate_offline
+    return
+  fi
+  watch_candidate_live
+}
+
+remote_cmd() {
+  MODE="$MODE" \
+    M6_WORK="$WORK" \
+    M6_EVIDENCE="${EVIDENCE:-}" \
+    M6_SIGNAL="${SIGNAL:-}" \
+    M6_DEFINITION="$WORK/definition" \
+    python3 "$ROOT/spike/m6/remote.py" "$@"
+}
+
+preflight_remote() {
+  if [[ "${MODE:-}" == offline ]]; then
+    return 0
+  fi
+  remote_cmd preflight
+}
+
+seed_remote() {
+  if [[ "${MODE:-}" == offline ]]; then
+    unset M6_DEFINITION_REF
+    unset M6_RUN_BASE
+    return 0
+  fi
+  if ! remote_cmd seed; then
+    local reason="remote seed failed"
+    if [[ -f "$WORK/remote-fail" ]]; then
+      IFS= read -r reason <"$WORK/remote-fail" || true
+    fi
+    die "$reason"
+  fi
+  M6_DEFINITION_REF="$(tr -d '[:space:]' <"$WORK/m6-definition-ref")"
+  M6_RUN_BASE="$M6_DEFINITION_REF"
+  export M6_DEFINITION_REF M6_RUN_BASE
+}
+
+keep_remote_state() {
+  [[ "${KEEP_UP:-}" == 1 || "${M6_KEEP_REMOTE:-}" == 1 || "${MANUAL:-}" == 1 ]]
+}
+
+note_remote_kept() {
+  if [[ "${MODE:-}" == offline || ! -f "$WORK/remote-ledger.json" ]]; then
+    return 0
+  fi
+  printf 'remote ledger: %s\n' "$WORK/remote-ledger.json"
+  printf 'cleanup: ./spike/m6/run.sh --cleanup-remote\n'
+}
+
+copy_remote_ledger() {
+  if [[ -f "$WORK/remote-ledger.json" ]]; then
+    mkdir -p "$EVIDENCE"
+    cp "$WORK/remote-ledger.json" "$EVIDENCE/remote-ledger.json"
+  fi
+}
+
+cleanup_remote() {
+  if [[ "${MODE:-}" == offline ]]; then
+    return 0
+  fi
+  if keep_remote_state; then
+    note_remote_kept
+    copy_remote_ledger
+    return 0
+  fi
+  remote_cmd cleanup || true
+  copy_remote_ledger
+}
+
 copy_shots() {
   local name="" dest="/opt/cursor/artifacts"
   # GitHub-hosted runners cannot create /opt/cursor (root-owned /opt).
@@ -444,6 +544,7 @@ cleanup() {
       wait "$pid" 2>/dev/null || true
     fi
   done
+  cleanup_remote
   if [[ "${COMPOSE_STARTED:-}" == 1 && "${KEEP_UP:-}" != 1 ]]; then
     # -v drops postgres and minio so a later offline run cannot see a
     # previous improvement batch and skip the improver.
@@ -456,9 +557,11 @@ if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
 fi
 
+CLEANUP_ONLY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --manual) MANUAL=1 ;;
+    --cleanup-remote) CLEANUP_ONLY=1 ;;
     *) die "unknown argument $1" ;;
   esac
   shift
@@ -466,6 +569,25 @@ done
 
 if [[ "$MANUAL" == 1 ]]; then
   KEEP_UP=1
+fi
+
+if [[ "$CLEANUP_ONLY" == 1 ]]; then
+  if [[ "$MODE" == offline ]]; then
+    die "--cleanup-remote is for live and live-ci"
+  fi
+  command -v python3 >/dev/null || die "python3 not found"
+  command -v go >/dev/null || die "go not found"
+  command -v git >/dev/null || die "git not found"
+  command -v curl >/dev/null || die "curl not found"
+  mkdir -p "$WORK"
+  if ! remote_cmd cleanup; then
+    reason="remote cleanup failed"
+    if [[ -f "$WORK/remote-fail" ]]; then
+      IFS= read -r reason <"$WORK/remote-fail" || true
+    fi
+    die "$reason"
+  fi
+  exit 0
 fi
 
 phase_start="$SECONDS"
@@ -539,6 +661,15 @@ if [[ "$MODE" != offline ]]; then
   fi
 fi
 
+export FACTORY_REVIEWERS_ADMINS="${FACTORY_REVIEWERS_ADMINS:-m6-reviewer}"
+if ! preflight_remote; then
+  reason="remote preflight failed"
+  if [[ -f "$WORK/remote-fail" ]]; then
+    IFS= read -r reason <"$WORK/remote-fail" || true
+  fi
+  die "$reason"
+fi
+
 CONSOLE_PORT="$(pick_port M6_CONSOLE_PORT "${M6_CONSOLE_PORT:-}")"
 export M6_CONSOLE_PORT="$CONSOLE_PORT"
 GIT_PORT="$(pick_port M6_GIT_PORT "${M6_GIT_PORT:-}")"
@@ -567,6 +698,7 @@ trap cleanup EXIT INT TERM
 
 prepare_definition
 seed_git
+seed_remote
 start_git
 start_forge
 if [[ "$MODE" == offline ]]; then
@@ -591,9 +723,18 @@ if ! wait_factory_name "http://127.0.0.1:${CONSOLE_PORT}/api/v1/factory" "m6"; t
 fi
 phase_report "stack up" "$stack_start"
 
+export M6_FACTORY_URL="http://127.0.0.1:${CONSOLE_PORT}"
+if [[ -z "${PLAYWRIGHT_EXTRA_ENV:-}" ]]; then
+  PLAYWRIGHT_EXTRA_ENV="M6_IMPROVER_OPENS_PR M6_RUN_BASE"
+else
+  PLAYWRIGHT_EXTRA_ENV="${PLAYWRIGHT_EXTRA_ENV} M6_IMPROVER_OPENS_PR M6_RUN_BASE"
+fi
+export PLAYWRIGHT_EXTRA_ENV
+
 if [[ "$MANUAL" == 1 ]]; then
   printf 'console: http://127.0.0.1:%s\n' "$CONSOLE_PORT"
   printf 'api key file: %s\n' "$WORK/api-key"
+  note_remote_kept
   trap - EXIT INT TERM
   exit 0
 fi
@@ -620,7 +761,12 @@ if [[ -f "$WORK/install-token" ]]; then
   INSTALL_TOKEN="$(tr -d '[:space:]' <"$WORK/install-token")"
   export INSTALL_TOKEN
 fi
-export EVIDENCE_EXTRA_SECRETS="FACTORY_SECRET_M6_PLANTED FACTORY_GITHUB_WEBHOOK_SECRET M6_TASK_GIT_URL M6_TASK_GITHUB_API INSTALL_TOKEN"
+if [[ -f "$WORK/github-app-token" ]]; then
+  M6_APP_TOKEN="$(tr -d '[:space:]' <"$WORK/github-app-token")"
+  export M6_APP_TOKEN
+fi
+copy_remote_ledger
+export EVIDENCE_EXTRA_SECRETS="FACTORY_SECRET_M6_PLANTED FACTORY_GITHUB_WEBHOOK_SECRET M6_TASK_GIT_URL M6_TASK_GITHUB_API INSTALL_TOKEN M6_APP_TOKEN"
 export EVIDENCE_HAR EVIDENCE_TRACE EVIDENCE_HOSTS
 evidence_start="$SECONDS"
 if ! grep -F "$PINNED_SHA" "$EVIDENCE/compose.log" >/dev/null 2>&1 &&
@@ -643,6 +789,7 @@ fi
 if [[ "${KEEP_UP:-}" == 1 ]]; then
   printf 'console: http://127.0.0.1:%s\n' "$CONSOLE_PORT"
   printf 'api key file: %s\n' "$WORK/api-key"
+  note_remote_kept
   trap - EXIT INT TERM
 fi
 mode_name="$(printf '%s' "$MODE" | tr '[:lower:]' '[:upper:]')"
