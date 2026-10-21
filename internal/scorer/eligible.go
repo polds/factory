@@ -34,8 +34,8 @@ func Eligible(s definition.Scorer, r RunFacts) (bool, string) {
 	if !runTerminal(r) {
 		return false, "run is not terminal"
 	}
-	if !eligibleFailureClass(r.FailureClass) {
-		return false, fmt.Sprintf("failure class %q is not eligible", r.FailureClass)
+	if ok, why := eligibleFailureClass(r.Status, r.FailureClass); !ok {
+		return false, why
 	}
 	if r.Purpose != api.PurposeWork {
 		return false, fmt.Sprintf("purpose %q is not %s", r.Purpose, api.PurposeWork)
@@ -44,10 +44,25 @@ func Eligible(s definition.Scorer, r RunFacts) (bool, string) {
 }
 
 // eligibleFailureClass is the D2 predicate. A run is eligible when its
-// failure class is empty or agent. Infrastructure, configuration, and
-// cancelled runs are not. Change this function to switch readings.
-func eligibleFailureClass(class string) bool {
-	return class == "" || class == string(failure.ClassAgent)
+// failure class is agent, or empty on a run that succeeded (or that the
+// caller already marked terminal). Infrastructure, configuration, and
+// class cancelled are not. An empty class on status cancelled or failed
+// is the unswept NULL that sweepFailureClasses later fills; both are
+// rejected. Change this function to switch readings.
+func eligibleFailureClass(status, class string) (bool, string) {
+	switch class {
+	case string(failure.ClassAgent):
+		return true, ""
+	case "":
+		switch status {
+		case failure.StatusCancelled, failure.StatusFailed:
+			return false, fmt.Sprintf("status %q with an empty failure class is not eligible", status)
+		default:
+			return true, ""
+		}
+	default:
+		return false, fmt.Sprintf("failure class %q is not eligible", class)
+	}
 }
 
 func runTerminal(r RunFacts) bool {
