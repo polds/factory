@@ -22,6 +22,9 @@ const WebhooksPage = lazyRouteComponent(() => import("./features/webhooks"));
 const DeliveriesPage = lazyRouteComponent(() => import("./features/deliveries"));
 const WorkersPage = lazyRouteComponent(() => import("./features/workers"));
 const SecretsPage = lazyRouteComponent(() => import("./features/secrets"));
+const ScorersPage = lazyRouteComponent(() => import("./features/scorers"));
+const BenchmarksPage = lazyRouteComponent(() => import("./features/benchmarks"));
+const ImprovementPage = lazyRouteComponent(() => import("./features/improvement"));
 
 function RootLayout() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -113,6 +116,36 @@ const secretsRoute = createRoute({
   component: SecretsPage,
 });
 
+const scorersRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/f/$factory/scorers",
+  component: ScorersPage,
+});
+
+const scorerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/f/$factory/scorers/$name",
+  component: ScorersPage,
+});
+
+const benchmarksRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/f/$factory/benchmarks",
+  component: BenchmarksPage,
+});
+
+const benchmarkRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/f/$factory/benchmarks/$suite",
+  component: BenchmarksPage,
+});
+
+const improvementRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/f/$factory/improvement",
+  component: ImprovementPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
@@ -127,6 +160,11 @@ const routeTree = rootRoute.addChildren([
   deliveriesRoute,
   workersRoute,
   secretsRoute,
+  scorersRoute,
+  scorerRoute,
+  benchmarksRoute,
+  benchmarkRoute,
+  improvementRoute,
 ]);
 
 export function createAppRouter(history?: RouterHistory) {
