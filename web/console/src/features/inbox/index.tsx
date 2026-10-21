@@ -13,7 +13,6 @@ import type { FailureClass, InboxItem, InboxKind } from "../../api/types";
 import { StatusBadge } from "../../components/StatusBadge";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
-import { ensureStreamFallback } from "../dashboard/testing/ensure";
 import { useFactoryEvents, liveLabel, type StreamStatus } from "../dashboard/live";
 import {
   failureClassOf,
@@ -35,7 +34,6 @@ const filters = [
 ] as const satisfies readonly InboxFilter[];
 
 export default function InboxPage() {
-  ensureStreamFallback();
   const params = useParams({ strict: false });
   const factoryId = typeof params.factory === "string" ? params.factory : "";
   const queryClient = useQueryClient();

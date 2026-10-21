@@ -2,13 +2,13 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/polds/factory/internal/api"
 )
 
 // DeliveryFilter selects deliveries. Unmatched sets status=unmatched.
@@ -22,34 +22,10 @@ type DeliveryFilter struct {
 
 // Delivery is one persisted ingress payload.
 // Body is present only when IncludeBody was set.
-type Delivery struct {
-	ID                 string            `json:"id"`
-	FactoryID          string            `json:"factory_id,omitempty"`
-	Provider           string            `json:"provider"`
-	WebhookUID         string            `json:"webhook_uid,omitempty"`
-	DeliveryID         string            `json:"delivery_id"`
-	ReceivedAt         time.Time         `json:"received_at"`
-	Headers            map[string]string `json:"headers,omitempty"`
-	Body               json.RawMessage   `json:"body,omitempty"`
-	Truncated          bool              `json:"truncated"`
-	Status             string            `json:"status"`
-	MatchedAutomations []string          `json:"matched_automations"`
-	// NormalizedEvents uses omitzero so a stored [] survives a remarshal.
-	// A nil slice (SQL NULL) is omitted.
-	NormalizedEvents []json.RawMessage `json:"normalized_events,omitzero"`
-}
+type Delivery = api.Delivery
 
 // Schedule is one cron schedule.
-type Schedule struct {
-	ID          string     `json:"id"`
-	FactoryID   string     `json:"factory_id"`
-	Automation  string     `json:"automation"`
-	Name        string     `json:"name,omitempty"`
-	Cron        string     `json:"cron"`
-	LastFiredAt *time.Time `json:"last_fired_at,omitempty"`
-	NextFireAt  time.Time  `json:"next_fire_at,omitempty"`
-	Paused      bool       `json:"paused"`
-}
+type Schedule = api.Schedule
 
 // ExternalRun is the binding returned by run-by-external-reference.
 type ExternalRun struct {
@@ -61,12 +37,7 @@ type ExternalRun struct {
 }
 
 // InputAnswer is the recorded answer for a work item.
-type InputAnswer struct {
-	ID         string `json:"id"`
-	WorkItemID string `json:"work_item_id"`
-	Answer     string `json:"answer"`
-	AnsweredBy string `json:"answered_by"`
-}
+type InputAnswer = api.InputAnswer
 
 type answerBody struct {
 	Text string `json:"text"`

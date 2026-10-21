@@ -10,6 +10,7 @@ import type {
   BenchmarkTrials,
   CapturedBenchmarkTask,
   ConnectedWorkers,
+  DefinitionFile,
   DefinitionView,
   Delivery,
   Factory,
@@ -66,6 +67,10 @@ export class UnauthorizedError extends APIError {
 
 type Auth = "session" | { bearer: string };
 
+// "value" is the historical empty-body result (undefined). "error" throws
+// APIError(status, null), which apply used before it shared request().
+type EmptyBody = "value" | "error";
+
 function segment(value: string): string {
   return encodeURIComponent(value);
 }
@@ -116,6 +121,20 @@ export class ConsoleClient {
     return this.request(`/api/v1/factory/${segment(factoryId)}/definition:apply`, {
       method: "POST",
     });
+  }
+
+  applyDefinitionTree(factoryId: string, files: readonly DefinitionFile[]): Promise<ApplyResponse> {
+    return this.request(
+      `/api/v1/factory/${segment(factoryId)}/definition:apply`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          files: files.map((file) => ({ path: file.path, content: file.content })),
+        }),
+      },
+      "session",
+      "error",
+    );
   }
 
   listAgents(factoryId: string): Promise<Agent[]> {
@@ -374,6 +393,21 @@ export class ConsoleClient {
     return this.request(withQuery(`/api/v1/factory/${segment(factoryId)}/deliveries`, query));
   }
 
+  async listDeliveriesDetailed(
+    factoryId: string,
+    query: { status?: string; limit?: number } = {},
+  ): Promise<Delivery[]> {
+    const rows = await this.request<Delivery[] | null>(
+      withQuery(`/api/v1/factory/${segment(factoryId)}/deliveries`, {
+        status: query.status,
+        limit: query.limit,
+        include: "body",
+      }),
+    );
+    if (rows === undefined) return [];
+    return rows as Delivery[];
+  }
+
   replayDelivery(id: string): Promise<Delivery> {
     return this.request(`/api/v1/deliveries/${segment(id)}:replay`, { method: "POST" });
   }
@@ -389,6 +423,7 @@ export class ConsoleClient {
     path: string,
     init: RequestInit = {},
     auth: Auth = "session",
+    emptyBody: EmptyBody = "value",
   ): Promise<T> {
     const headers = new Headers(init.headers);
     const bearer = auth === "session" ? getAPIKey() : auth.bearer;
@@ -407,7 +442,18 @@ export class ConsoleClient {
     if (!response.ok) {
       throw new APIError(response.status, await readProblem(text));
     }
-    if (!text) return undefined as T;
+    if (!text) {
+      switch (emptyBody) {
+        case "value":
+          return undefined as T;
+        case "error":
+          throw new APIError(response.status, null);
+        default: {
+          const unexpected: never = emptyBody;
+          return unexpected;
+        }
+      }
+    }
     try {
       return JSON.parse(text) as T;
     } catch {

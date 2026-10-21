@@ -52,9 +52,10 @@ func TestRunListConsoleFilters(t *testing.T) {
 }
 
 func TestConsoleGoldens(t *testing.T) {
-	f := newConsole(t)
+	f := newMeasure(t)
 	h := NewHandler(f, testAPIKey, nil)
-	for _, rt := range consoleRoutes() {
+	routes, measure := consoleAndMeasureRoutes(t)
+	for _, rt := range routes {
 		if rt.name == "events" {
 			continue
 		}
@@ -64,6 +65,9 @@ func TestConsoleGoldens(t *testing.T) {
 		}
 		if rt.golden != "" {
 			assertGolden(t, res.body, rt.golden)
+		}
+		if measure[rt.name] {
+			assertBodyClean(t, res.body, plantedSecret, testAPIKey, runTokenValue)
 		}
 		if rt.status == http.StatusNoContent && len(bytes.TrimSpace(res.body)) != 0 {
 			t.Fatalf("%s body %s", rt.name, res.body)
@@ -120,12 +124,44 @@ func TestConsoleGoldens(t *testing.T) {
 	if f.lastFilter.FactoryID != "fac_1" {
 		t.Fatalf("factory list filter %+v", f.lastFilter)
 	}
+	if f.scoreName != "correctness" || f.scoreRunID != "run_1" {
+		t.Fatalf("score %s %s", f.scoreRunID, f.scoreName)
+	}
+	if f.resultScorer != "correctness" || f.resultPassed == nil || *f.resultPassed {
+		t.Fatalf("results scorer %s passed %v", f.resultScorer, f.resultPassed)
+	}
+	if !f.resultFrom.Equal(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)) || !f.resultTo.Equal(time.Date(2026, 4, 2, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("results window %s %s", f.resultFrom, f.resultTo)
+	}
+	if f.benchSuite != "pr-review" || f.benchReps == nil || *f.benchReps != 5 {
+		t.Fatalf("benchmark suite %s reps %v", f.benchSuite, f.benchReps)
+	}
+	if f.trialSuite != "pr-review" || f.trialRunID != "br_1" {
+		t.Fatalf("trials %s %s", f.trialSuite, f.trialRunID)
+	}
+	if f.captureSuite != "pr-review" || f.captureName != "broken-doc-link" || f.captureRunID != "run_1" {
+		t.Fatalf("capture %s %s %s", f.captureRunID, f.captureSuite, f.captureName)
+	}
+	if !f.metricsFrom.Equal(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)) || !f.metricsTo.Equal(time.Date(2026, 4, 2, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("metrics window %s %s", f.metricsFrom, f.metricsTo)
+	}
+	inbox := call(t, h, http.MethodGet, "/api/v1/factory/fac_1/inbox", "", apiHeaders())
+	assertGolden(t, inbox.body, "inbox.json")
+	life := decodeGolden[FactoryLifecycleData](t, "factory-event-lifecycle.json")
+	if life.GID != 42 || life.RunID != "run_1" || life.Status != "running" || life.Stage != "building" {
+		t.Fatalf("lifecycle %+v", life)
+	}
+	items := decodeGolden[[]InboxItem](t, "m6-inbox-improvement.json")
+	if len(items) != 1 || items[0].Kind != InboxKindImprovementPR {
+		t.Fatalf("inbox kind %+v", items)
+	}
 }
 
 func TestConsoleAuthNotFoundAndUnwired(t *testing.T) {
-	for _, rt := range consoleRoutes() {
+	routes, measure := consoleAndMeasureRoutes(t)
+	for _, rt := range routes {
 		t.Run(rt.name+"/401", func(t *testing.T) {
-			h := NewHandler(newConsole(t), testAPIKey, nil)
+			h := NewHandler(newMeasure(t), testAPIKey, nil)
 			res := call(t, h, rt.method, rt.sample, rt.body, nil)
 			if res.status != http.StatusUnauthorized {
 				t.Fatalf("status %d body %s", res.status, res.body)
@@ -134,7 +170,7 @@ func TestConsoleAuthNotFoundAndUnwired(t *testing.T) {
 			assertBodyClean(t, res.body, plantedSecret, testAPIKey, runTokenValue)
 		})
 		t.Run(rt.name+"/404", func(t *testing.T) {
-			f := newConsole(t)
+			f := newMeasure(t)
 			f.notFound = true
 			h := NewHandler(f, testAPIKey, nil)
 			res := call(t, h, rt.method, rt.sample, rt.body, consoleAuth(rt))
@@ -161,8 +197,15 @@ func TestConsoleAuthNotFoundAndUnwired(t *testing.T) {
 			if err := json.Unmarshal(res.body, &p); err != nil {
 				t.Fatal(err)
 			}
-			if p.Detail != consoleUnwiredDetail {
+			detail := consoleUnwiredDetail
+			if measure[rt.name] {
+				detail = measureUnwiredDetail
+			}
+			if p.Detail != detail {
 				t.Fatalf("detail %q", p.Detail)
+			}
+			if measure[rt.name] {
+				assertBodyClean(t, res.body, plantedSecret, testAPIKey)
 			}
 		})
 	}
@@ -422,10 +465,12 @@ func TestSummaryTimeValidation(t *testing.T) {
 func TestConsoleNoSecretMaterial(t *testing.T) {
 	assertNoValueField(t, reflect.TypeOf(Secret{}), reflect.TypeOf(SecretUse{}), reflect.TypeOf(Identity{}), reflect.TypeOf(Webhook{}))
 
-	f := newConsole(t)
-	plantResponseSecrets(f)
+	f := newMeasure(t)
+	plantResponseSecrets(f.consoleFake)
+	plantMeasureSecrets(f)
 	h := NewHandler(f, testAPIKey, nil)
-	for _, rt := range consoleRoutes() {
+	routes, measure := consoleAndMeasureRoutes(t)
+	for _, rt := range routes {
 		res := call(t, h, rt.method, rt.sample, rt.body, consoleAuth(rt))
 		if res.status != rt.status {
 			t.Fatalf("%s status %d body %s", rt.name, res.status, res.body)
@@ -437,6 +482,15 @@ func TestConsoleNoSecretMaterial(t *testing.T) {
 		assertBodyClean(t, res.body, plantedSecret, testAPIKey, runTokenValue)
 		if rt.name == "definition" && !bytes.Contains(res.body, []byte(echoDefinition)) {
 			t.Fatalf("definition walk missed file content: %s", res.body)
+		}
+		if rt.name == "scorer-results" && !bytes.Contains(res.body, []byte("without running tests")) {
+			t.Fatalf("results dropped reasoning: %s", res.body)
+		}
+		if rt.name == "improvement-batches" && !bytes.Contains(res.body, []byte("https://github.com/acme/factory/pull/42")) {
+			t.Fatalf("batches dropped pr_url: %s", res.body)
+		}
+		if rt.name == "benchmark-trials" && bytes.Contains(res.body, []byte(`"env"`)) {
+			t.Fatalf("trials exposed env: %s", res.body)
 		}
 	}
 	res := call(t, h, http.MethodGet, "/api/v1/agent/runs/run_1", "", apiHeaders())
@@ -462,10 +516,16 @@ func TestConsoleNoSecretMaterial(t *testing.T) {
 	}
 	assertBodyClean(t, res.body, plantedSecret)
 
+	res = call(t, h, http.MethodPost, "/api/v1/agent/runs/run_1/score", `{"scorer":"correctness","token":"`+plantedSecret+`"}`, apiHeaders())
+	if res.status != http.StatusAccepted {
+		t.Fatalf("status %d body %s", res.status, res.body)
+	}
+	assertBodyClean(t, res.body, plantedSecret, testAPIKey)
+
 	f.leakErr = true
-	for _, rt := range consoleRoutes() {
+	for _, rt := range routes {
 		res := call(t, h, rt.method, rt.sample, rt.body, consoleAuth(rt))
-		if res.status == http.StatusBadRequest {
+		if res.status == http.StatusBadRequest || (measure[rt.name] && res.status == http.StatusNotFound) {
 			continue
 		}
 		if bytes.Contains(res.body, []byte(plantedSecret)) || bytes.Contains(res.body, []byte(testAPIKey)) {
@@ -476,6 +536,50 @@ func TestConsoleNoSecretMaterial(t *testing.T) {
 	if bytes.Contains(res.body, []byte(plantedSecret)) {
 		t.Fatalf("list leaked backend error: %s", res.body)
 	}
+
+	for _, v := range []any{
+		ScorerResult{Reasoning: "shown", Held: hidden(plantedSecret)},
+		ImprovementBatch{PRURL: "https://example.test/pull/1", HeldPR: hidden(plantedSecret)},
+		BenchmarkCell{Task: "t", HeldEnv: hidden(plantedSecret)},
+		RunScore{Reasoning: "shown", Held: hidden(plantedSecret)},
+	} {
+		for _, format := range []string{"%v", "%+v", "%#v"} {
+			printed := fmt.Sprintf(format, v)
+			if bytes.Contains([]byte(printed), []byte(plantedSecret)) {
+				t.Fatalf("%s printed a secret: %s", format, printed)
+			}
+		}
+		body, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertBodyClean(t, body, plantedSecret)
+	}
+}
+
+func consoleAndMeasureRoutes(t *testing.T) ([]consoleRoute, map[string]bool) {
+	t.Helper()
+	console := consoleRoutes()
+	measure := m6Routes()
+	routes := make([]consoleRoute, 0, len(console)+len(measure))
+	routes = append(routes, console...)
+	routes = append(routes, measure...)
+	if len(console) != 18 || len(measure) != 11 || len(routes) != 29 {
+		t.Fatalf("routes console %d measure %d total %d, want 18+11=29", len(console), len(measure), len(routes))
+	}
+	t.Logf("console+measure routes %d", len(routes))
+	names := make(map[string]bool, len(measure))
+	seen := make(map[string]bool, len(routes))
+	for _, rt := range measure {
+		names[rt.name] = true
+	}
+	for _, rt := range routes {
+		if seen[rt.name] {
+			t.Fatalf("duplicate route name %s", rt.name)
+		}
+		seen[rt.name] = true
+	}
+	return routes, names
 }
 
 func TestHiddenRedacts(t *testing.T) {

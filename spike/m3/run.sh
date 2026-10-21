@@ -23,6 +23,8 @@
 # exactly approve. Any other set value is refused. When the variable is
 # unset, the script prints the approval id and waits for an operator.
 set -euo pipefail
+# shellcheck source=spike/lib/common.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -94,150 +96,10 @@ on_err() {
   fail "command failed at line ${line} (exit ${code})"
 }
 
-run_capture() {
-  local __var="$1"
-  shift
-  local __errexit=0
-  case $- in
-    *e*) __errexit=1 ;;
-  esac
-  trap - ERR
-  set +e
-  "$@"
-  local __code=$?
-  if [[ "$__errexit" -eq 1 ]]; then
-    set -e
-  fi
-  trap 'on_err $? $LINENO' ERR
-  printf -v "$__var" '%s' "$__code"
-}
-
-harness_contract_exit() {
-  case "$1" in
-    0 | 10 | 20 | 21 | 30) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-normalize_docker_platform() {
-  case "$1" in
-    linux/aarch64 | linux/arm64) printf '%s\n' linux/arm64 ;;
-    linux/x86_64 | linux/amd64) printf '%s\n' linux/amd64 ;;
-    *) return 1 ;;
-  esac
-}
-
-goarch_for_platform() {
-  case "$1" in
-    linux/arm64) printf '%s\n' arm64 ;;
-    linux/amd64) printf '%s\n' amd64 ;;
-    *) return 1 ;;
-  esac
-}
-
-uname_for_platform() {
-  case "$1" in
-    linux/arm64) printf '%s\n' aarch64 ;;
-    linux/amd64) printf '%s\n' x86_64 ;;
-    *) return 1 ;;
-  esac
-}
-
-# load_env_file reads KEY=VALUE lines. It does not expand or execute values.
-# Empty values are ignored. A variable that is already non-empty is kept.
-load_env_file() {
-  local file="$1" line="" n=0 key="" val=""
-  local -a keys=() vals=()
-  [[ -f "$file" ]] || return 1
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    n=$((n + 1))
-    line="${line%$'\r'}"
-    line="${line#"${line%%[![:space:]]*}"}"
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    if [[ "$line" == export\ * ]]; then
-      line="${line#export }"
-      line="${line#"${line%%[![:space:]]*}"}"
-    fi
-    if [[ ! "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-      echo "deploy/.env:${n}: invalid line" >&2
-      return 1
-    fi
-    key="${BASH_REMATCH[1]}"
-    val="${BASH_REMATCH[2]}"
-    if [[ ${#val} -ge 2 && "$val" == \"*\" && "$val" == *\" ]]; then
-      val="${val:1:${#val}-2}"
-    elif [[ ${#val} -ge 2 && "$val" == \'*\' && "$val" == *\' ]]; then
-      val="${val:1:${#val}-2}"
-    fi
-    if [[ -z "$val" || -n "${!key:-}" ]]; then
-      continue
-    fi
-    keys+=("$key")
-    vals+=("$val")
-  done <"$file"
-  local i
-  for i in "${!keys[@]}"; do
-    printf -v "${keys[$i]}" '%s' "${vals[$i]}"
-    export "${keys[$i]}"
-  done
-}
-
-copy_if_empty() {
-  local dest="$1" src="$2"
-  if [[ -z "${!dest:-}" && -n "${!src:-}" ]]; then
-    printf -v "$dest" '%s' "${!src}"
-    export "${dest?}"
-  fi
-}
-
 apply_live_env_aliases() {
   copy_if_empty OPENAI_BASE_URL FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL
   copy_if_empty OPENAI_API_KEY FACTORY_INFERENCE_OPENAI_API_KEY
   copy_if_empty GH_TOKEN FACTORY_SECRET_GH_TOKEN
-}
-
-# Hostname and port only. Userinfo in the URL is a secret and is not printed.
-url_log_host() {
-  RAW="$1" python3 - <<'PY'
-import os
-from urllib.parse import urlparse
-parts = urlparse(os.environ.get("RAW", ""))
-host = parts.hostname or ""
-if parts.port:
-    host = f"{host}:{parts.port}"
-print(host)
-PY
-}
-
-assert_linux_elf() {
-  local bin="$1" arch="$2"
-  python3 - "$bin" "$arch" <<'PY'
-import struct
-import sys
-
-path, arch = sys.argv[1], sys.argv[2]
-want = {"amd64": 62, "arm64": 183}
-data = open(path, "rb").read(20)
-if len(data) < 20 or data[:4] != b"\x7fELF":
-    sys.stderr.write("%s: not a linux ELF binary\n" % path)
-    sys.exit(1)
-if data[4] != 2 or data[5] != 1:
-    sys.stderr.write("%s: want a 64-bit little-endian ELF\n" % path)
-    sys.exit(1)
-machine = struct.unpack_from("<H", data, 18)[0]
-if arch not in want or machine != want[arch]:
-    sys.stderr.write("%s: ELF machine %s, want %s for %s\n" % (path, machine, want.get(arch), arch))
-    sys.exit(1)
-PY
-}
-
-assert_image_platform() {
-  local image="$1" want="$2" got=""
-  got="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image" 2>/dev/null || true)"
-  if [[ "$got" != "$want" ]]; then
-    echo "image ${image} platform is ${got:-unknown}, want ${want}" >&2
-    return 1
-  fi
 }
 
 compose() {
@@ -339,14 +201,6 @@ prove_scanner() {
   echo "secret scanner rejects a planted dummy"
 }
 
-save_compose_logs() {
-  if [[ "${COMPOSE_STARTED}" -ne 1 ]]; then
-    return 0
-  fi
-  mkdir -p "$WORK"
-  compose logs --no-color >"$WORK/compose.log" 2>&1 || true
-}
-
 dump_failure() {
   set +e
   echo
@@ -401,15 +255,6 @@ fail() {
   exit 1
 }
 
-bridge_gateway() {
-  local gw
-  gw="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
-  if [[ ! "$gw" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    die "could not determine an IPv4 gateway for the docker bridge (got ${gw:-empty})"
-  fi
-  printf '%s\n' "$gw"
-}
-
 # live_approval_action is decide only for the exact value approve.
 # Unset waits. Any other value is refused and must not approve the gate.
 live_approval_action() {
@@ -447,17 +292,6 @@ distinct_models() {
   done
 }
 
-read_model() {
-  awk '/^model: / { print $2; exit }' "$1"
-}
-
-redact_if_live() {
-  local value="$1" replacement="$2"
-  if [[ -n "$value" && "$value" != "$replacement" ]]; then
-    SECRETS+=("$value")
-  fi
-}
-
 apply_offline_secrets() {
   local gw="$1"
   local live_gh="${FACTORY_SECRET_GH_TOKEN:-}"
@@ -478,14 +312,6 @@ apply_offline_secrets() {
   SECRETS+=("$OFFLINE_DUMMY_KEY" "$OFFLINE_GH")
 }
 
-require_id() {
-  local value="$1" prefix="$2"
-  if [[ ! "$value" =~ ^${prefix}[0-9A-Z]{26}$ ]]; then
-    echo "bad ${prefix} id" >&2
-    return 1
-  fi
-}
-
 psql_at() {
   compose exec -T postgres \
     psql -U factory -d factory -v ON_ERROR_STOP=1 -At -F '|' -c "$1"
@@ -495,19 +321,6 @@ api_get() {
   local path="$1" dest="$2"
   curl -fsS -H "Authorization: Bearer ${FACTORY_API_KEY}" \
     "http://127.0.0.1:8080${path}" >"$dest"
-}
-
-write_final_script() {
-  local dest="$1" text="$2"
-  python3 - "$dest" "$text" <<'PY'
-import json
-import sys
-
-path, text = sys.argv[1], sys.argv[2]
-with open(path, "w", encoding="utf-8") as fh:
-    json.dump([{"final": text}], fh)
-    fh.write("\n")
-PY
 }
 
 start_stub() {

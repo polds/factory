@@ -1,10 +1,10 @@
 import { screen } from "@testing-library/react";
-import axe from "axe-core";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 import { setAPIKey } from "../../api/session";
 import { demoAPIKey } from "../../mocks/demo-key";
 import { server } from "../../mocks/server";
+import { expectNoSeriousViolations } from "../../test/axe";
 import { renderApp } from "../../test/render";
 import identities from "./__fixtures__/identities.json";
 import secrets from "./__fixtures__/secrets.json";
@@ -12,14 +12,6 @@ import secrets from "./__fixtures__/secrets.json";
 async function renderSecrets() {
   setAPIKey(demoAPIKey);
   return await renderApp("/f/fac_1/secrets");
-}
-
-async function expectClean() {
-  const results = await axe.run(document.body);
-  const blocking = results.violations.filter(
-    (violation) => violation.impact === "serious" || violation.impact === "critical",
-  );
-  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
 }
 
 describe("secrets", () => {
@@ -58,6 +50,6 @@ describe("secrets", () => {
     expect(
       urls.map((url) => new URL(url).pathname).every((path) => path.startsWith("/api/v1")),
     ).toBe(true);
-    await expectClean();
+    await expectNoSeriousViolations();
   });
 });

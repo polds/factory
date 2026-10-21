@@ -8,7 +8,6 @@ import type { Task } from "../../api/types";
 import { Button } from "../../components/Button";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
-import { ensureStreamFallback } from "../dashboard/testing/ensure";
 import { liveLabel, useFactoryEvents, type StreamStatus } from "../dashboard/live";
 import {
   PIPELINE_STAGES,
@@ -35,7 +34,6 @@ const filterSources = [
 const createSources = ["manual", "issue", "api"] as const;
 
 export function WorkItemBoard({ factoryId }: { factoryId: string }) {
-  ensureStreamFallback();
   const tasks = useQuery({
     queryKey: ["tasks", factoryId],
     queryFn: () => client.listTasks(factoryId),
