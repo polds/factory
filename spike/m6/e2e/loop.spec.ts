@@ -190,23 +190,14 @@ test("m6 exit loop", async ({ browser }) => {
     }
 
     // GET .../trials is 404 until a benchmark run exists, and the suite page
-    // then replaces itself with an error, which hides Run benchmark. An empty
-    // matrix is what the page renders once a run exists and has no cells yet.
-    // The stand-in is no-store so a later reload can read the real matrix.
-    // Copy the body: fulfilling the fetch response object drops it.
+    // then replaces itself with an error, which hides Run benchmark. Serve an
+    // empty matrix until the run is clicked. route.fetch() during reload
+    // never returns, so later requests are continued instead. no-store keeps
+    // the stand-in out of the cache.
+    let trialsLive = false;
     await page.route("**/benchmarks/*/trials*", async (route) => {
-      const response = await route.fetch();
-      if (response.status() !== 404) {
-        // body() is already decoded, so those two headers must not be forwarded.
-        const headers = { ...response.headers() };
-        delete headers["content-encoding"];
-        delete headers["content-length"];
-        headers["cache-control"] = "no-store";
-        await route.fulfill({
-          status: response.status(),
-          headers,
-          body: await response.body(),
-        });
+      if (trialsLive) {
+        await route.continue();
         return;
       }
       await route.fulfill({
@@ -227,6 +218,7 @@ test("m6 exit loop", async ({ browser }) => {
     await expect(page.getByText(/Benchmark run .+ started/)).toBeVisible();
     const started = (await page.getByText(/Benchmark run .+ started/).textContent()) ?? "";
     trace.push("benchmark run: " + started.replace("Benchmark run ", "").replace(" started.", ""));
+    trialsLive = true;
     await reloadUntil(
       page,
       async () => {
@@ -256,11 +248,13 @@ test("m6 exit loop", async ({ browser }) => {
     await saveShot(page, "benchmarks");
 
     if (offline) {
+      trialsLive = false;
       await openSection(page, "Benchmarks");
       await page.getByRole("link", { name: "fault", exact: true }).click();
       await page.locator("#benchmark-repetitions").fill("1");
       await page.getByRole("button", { name: "Run benchmark" }).click();
       await page.getByRole("dialog", { name: "Run benchmark?" }).getByRole("button", { name: "Run benchmark" }).click();
+      trialsLive = true;
       await reloadUntil(
         page,
         async () => (await page.getByText("Infrastructure").count()) >= 1,
