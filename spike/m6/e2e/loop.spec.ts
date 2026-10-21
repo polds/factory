@@ -28,7 +28,11 @@ async function axe(page: Page, name: string): Promise<void> {
   const results = await new AxeBuilder({ page }).analyze();
   const bad = results.violations.filter((row) => row.impact === "serious" || row.impact === "critical");
   for (const row of bad) {
-    axeFindings.push(`${name}: ${row.id} ${row.impact}`);
+    const targets = row.nodes
+      .slice(0, 3)
+      .map((node) => node.target.join(" "))
+      .join("; ");
+    axeFindings.push(`${name}: ${row.id} ${row.impact} (${targets})`);
   }
 }
 

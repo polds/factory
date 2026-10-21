@@ -90,6 +90,11 @@
   text-decoration: underline;
 }
 
+/* Scorer-card names are the same kind of link: a single anchor in a paragraph. */
+.operator-page .panel p > a {
+  text-decoration: underline;
+}
+
 .live-status {
   display: inline-flex;
   align-items: center;
