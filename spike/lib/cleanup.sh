@@ -308,6 +308,11 @@ spike_stop_processes() {
       if ! spike_pid_identity_ok "$dir"; then
         continue
       fi
+      # The group signal is skipped when the pgid is the shell's. The
+      # recorded pid is still this run's child, so stop that pid too.
+      if [[ "$pid" != "$$" ]]; then
+        kill -TERM "$pid" 2>/dev/null || true
+      fi
     fi
     printf '%s\n' "$pgid" >>"$list"
     spike_signal_group TERM "$pgid"
@@ -346,6 +351,9 @@ spike_stop_processes() {
       pid="$(spike_read_field "$dir/pid")"
       if kill -0 "$pid" 2>/dev/null && ! spike_pid_identity_ok "$dir"; then
         continue
+      fi
+      if [[ -n "$pid" && "$pid" != "$$" ]]; then
+        kill -KILL "$pid" 2>/dev/null || true
       fi
       disown "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true

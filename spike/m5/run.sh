@@ -840,7 +840,7 @@ m5_health_once() {
 # router from the recorded argv so their scripts start fresh.
 m5_restart_stack_processes() {
   local i=1 n=0 class="" name="" argv_q="" out="" err="" append=""
-  local spawned_stub=0 spawned_router=0
+  local spawned_stub=0 spawned_router=0 router_pid=""
   local -a argv=()
   n="${SPIKE_CHILD_COUNT:-0}"
   if [[ "$n" -eq 0 ]]; then
@@ -878,7 +878,10 @@ m5_restart_stack_processes() {
     fi
     case "$name" in
       stub-*) spawned_stub=1 ;;
-      router) spawned_router=1 ;;
+      router)
+        spawned_router=1
+        router_pid="$SPIKE_LAST_PID"
+        ;;
       *) ;;
     esac
     i=$((i + 1))
@@ -895,10 +898,44 @@ m5_restart_stack_processes() {
   if [[ "$spawned_router" -eq 1 ]]; then
     ROUTER_PORT="${STACK_ROUTER_PORT:-}"
     if [[ -n "$ROUTER_PORT" ]]; then
-      if ! wait_http "http://127.0.0.1:${ROUTER_PORT}/healthz"; then
-        echo "M5 FAIL — model router did not become reachable" >&2
-        return 1
-      fi
+      # The previous listener can still own the port for a moment after
+      # SIGKILL. Respawn only after that process has exited.
+      local try=0
+      while [[ "$try" -lt 20 ]]; do
+        if curl -fsS --connect-timeout 1 -m 2 "http://127.0.0.1:${ROUTER_PORT}/healthz" >/dev/null 2>&1; then
+          return 0
+        fi
+        if [[ -n "$router_pid" ]] && kill -0 "$router_pid" 2>/dev/null; then
+          sleep 0.2
+          try=$((try + 1))
+          continue
+        fi
+        i=1
+        while [[ "$i" -le "$n" ]]; do
+          eval "name=\${SPIKE_CHILD_${i}_NAME}"
+          if [[ "$name" == router ]]; then
+            eval "argv_q=\${SPIKE_CHILD_${i}_ARGV}"
+            eval "out=\${SPIKE_CHILD_${i}_OUT}"
+            eval "err=\${SPIKE_CHILD_${i}_ERR}"
+            eval "append=\${SPIKE_CHILD_${i}_APPEND}"
+            argv=()
+            # shellcheck disable=SC2294
+            eval "argv=( ${argv_q} )"
+            if [[ -n "$out" && -n "$err" ]]; then
+              spike_spawn --class stack --out "$out" --err "$err" router "${argv[@]}"
+            else
+              spike_spawn --class stack router "${argv[@]}"
+            fi
+            router_pid="$SPIKE_LAST_PID"
+            break
+          fi
+          i=$((i + 1))
+        done
+        sleep 0.3
+        try=$((try + 1))
+      done
+      echo "M5 FAIL — model router did not become reachable" >&2
+      return 1
     fi
   fi
 }
@@ -907,6 +944,12 @@ m5_prepare_playwright_watch() {
   export PLAYWRIGHT_WATCH_IN_PARENT=1
   PLAYWRIGHT_DOCKER_ARGS="--init --label spike-run=${SPIKE_RUN_LABEL} --name spike-pw-${SPIKE_RUN_LABEL}"
   export PLAYWRIGHT_DOCKER_ARGS
+  # cleanup touches signal/done so the previous watcher exits. A specs
+  # rerun has to remove that file before the new watcher starts, or the
+  # loop sees done and never handles kill/deliver/idle.
+  mkdir -p "$SIGNAL"
+  rm -f "$SIGNAL/done" "$SIGNAL/kill" "$SIGNAL/kill.ack" \
+    "$SIGNAL/deliver" "$SIGNAL/deliver.ack" "$SIGNAL/idle" "$SIGNAL/idle.ack"
   if declare -F watch_signals >/dev/null; then
     spike_spawn --class transient watch watch_signals
     WATCH_PID=$SPIKE_LAST_PID
