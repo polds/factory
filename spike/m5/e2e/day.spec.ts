@@ -11,7 +11,6 @@ const mode = process.env.M5_MODE ?? "offline";
 // Offline is m5-reviewing. Live and live-ci are the reviewing model
 // run.sh wrote into the definition (M5_LIVE_MODEL_REVIEWING or M5_LIVE_MODEL).
 const reviewingModel = process.env.M5_REVIEWING_MODEL ?? "";
-const prURL = "https://github.com/polds/m5/pull/7";
 // Empty on a default run, so titles stay the ones the offline router and
 // the evidence checks already use. specs sets a hex nonce so a second
 // run does not match the previous run's rows. hasText is a substring,
@@ -20,6 +19,10 @@ const runNonce = process.env.M5_RUN_NONCE ?? "";
 if (runNonce !== "" && !/^[0-9a-f]+$/.test(runNonce)) {
   throw new Error("M5_RUN_NONCE must be hex");
 }
+const prURL =
+  runNonce === ""
+    ? "https://github.com/polds/m5/pull/7"
+    : `https://github.com/polds/m5/pull/${100000 + (Number.parseInt(runNonce.slice(0, 4), 16) % 50000)}`;
 
 function scoped(title: string): string {
   if (runNonce === "") return title;

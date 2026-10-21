@@ -553,6 +553,16 @@ day_title = "m5-day" if nonce == "" else f"m5-day {nonce}"
 # to the work item the previous run already finished.
 issue_number = 42 if nonce == "" else 100000 + int(nonce[:4], 16) % 50000
 issue_id = 4200 if nonce == "" else 500000 + int(nonce[:4], 16)
+# The pull request shares the issue's owner/repo#N thread. A second
+# specs run needs its own number or the link lands on the previous item.
+# The default URL stays pull/7, which is what the spec asserts.
+pr_number = 42 if nonce == "" else issue_number
+pr_id = 4201 if nonce == "" else issue_id + 1
+pr_url = (
+    "https://github.com/polds/m5/pull/7"
+    if nonce == ""
+    else f"https://github.com/polds/m5/pull/{pr_number}"
+)
 repo = {
     "id": 50,
     "name": "m5",
@@ -580,13 +590,13 @@ if kind == "issue":
 elif kind == "pr":
     body = {
         "action": "opened",
-        "number": 42,
+        "number": pr_number,
         "pull_request": {
-            "id": 4201,
-            "number": 42,
-            "title": "m5-day",
+            "id": pr_id,
+            "number": pr_number,
+            "title": day_title,
             "body": "Day of factory.",
-            "html_url": "https://github.com/polds/m5/pull/7",
+            "html_url": pr_url,
             "merged": False,
             "updated_at": "2026-10-17T00:10:00Z",
             "labels": [],
