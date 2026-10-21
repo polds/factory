@@ -97,6 +97,15 @@ type Config struct {
 	ScheduleGate <-chan struct{}
 	// Console is "on" or "off". Empty means on. Anything else is a startup error.
 	Console string
+
+	// Reviewer pools for improve.Route. Logins map a reviewer email to a
+	// GitHub login. Intervals of zero leave the sampler and the improvement
+	// scheduler stopped. factoryd sets one minute when the env value is empty.
+	ReviewerAdmins      []string
+	ReviewerTeam        []string
+	ReviewerLogins      map[string]string
+	SamplerInterval     time.Duration
+	ImprovementInterval time.Duration
 }
 
 // Server is one factoryd process: REST, SSE, the worker gateway, and the
@@ -167,6 +176,16 @@ type Server struct {
 
 	// integ is the M4 ingress, automation, and outbound runtime.
 	integ m4State
+
+	// m6SkipSetBatchPR, when it returns true, drops the pull request
+	// number after a successful create. The next settle looks the open
+	// pull request up. Tests use it for the restart window.
+	m6SkipSetBatchPR func() bool
+
+	m6CloneMu    sync.Mutex
+	m6Clones     map[string]m6Clone
+	m6SampledAt  time.Time
+	m6ImprovedAt time.Time
 }
 
 var (
@@ -281,8 +300,16 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		return nil, err
 	}
 	// Scheduler loops, the session watch, the dispatcher, and the cron ticker.
+	// Sampler and improvement loops start only when their interval is positive
+	// so existing tests that leave the field zero do not grow a goroutine.
 	loops := 6
 	if cfg.DefinitionGitURL != "" {
+		loops++
+	}
+	if cfg.SamplerInterval > 0 {
+		loops++
+	}
+	if cfg.ImprovementInterval > 0 {
 		loops++
 	}
 	s.wg.Add(loops)
@@ -294,6 +321,12 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 	go s.cronLoop()
 	if cfg.DefinitionGitURL != "" {
 		go s.defsyncLoop()
+	}
+	if cfg.SamplerInterval > 0 {
+		go s.sampleLoop()
+	}
+	if cfg.ImprovementInterval > 0 {
+		go s.improveLoop()
 	}
 	return s, nil
 }
@@ -408,6 +441,7 @@ func (s *Server) Close() error {
 		}
 		s.closeOutbound()
 		s.wg.Wait()
+		s.clearClones()
 		s.mu.Lock()
 		for id, timer := range s.grace {
 			timer.Stop()

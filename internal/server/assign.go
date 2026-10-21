@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/inference"
 	"github.com/polds/factory/internal/protocol"
 	"github.com/polds/factory/internal/store"
@@ -25,6 +26,11 @@ const (
 )
 
 func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (map[string]string, error) {
+	prepared, prepErr := s.prepareMeasure(ctx, run, bound)
+	if prepErr != nil {
+		return nil, prepErr
+	}
+	bound = prepared.bound
 	factorySecrets := []string(nil)
 	if tree := s.snapshot().tree; tree != nil {
 		factorySecrets = tree.Factory.Secrets
@@ -32,6 +38,10 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 	agentSecrets := bound.agent.Secrets
 	if auto, ok := s.intakeAutomation(ctx, run.ID); ok {
 		agentSecrets = auto.Secrets
+	}
+	if run.Purpose == api.PurposeScorer {
+		factorySecrets = nil
+		agentSecrets = nil
 	}
 	allow := secretNames(factorySecrets, agentSecrets)
 	env := make(map[string]string, len(allow)+12)
@@ -42,7 +52,7 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 			return nil, fmt.Errorf("server: secret %s is not configured", name)
 		}
 		if name == "GH_TOKEN" && s.cfg.GitHubTokenMode == tokenModeApp {
-			minted, err := s.mintGitHubToken(ctx, run)
+			minted, err := s.mintRunToken(ctx, run)
 			if err != nil {
 				return nil, err
 			}
@@ -97,7 +107,28 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 	setEnvDefault(env, "GIT_AUTHOR_EMAIL", defaultGitEmail)
 	setEnvDefault(env, "GIT_COMMITTER_NAME", defaultGitName)
 	setEnvDefault(env, "GIT_COMMITTER_EMAIL", defaultGitEmail)
+	if prepared.skillText != "" {
+		env["FACTORY_SKILL_TEXT"] = prepared.skillText
+	}
+	if run.Purpose == api.PurposeImprovement && s.cfg.GitHubTokenMode == tokenModeApp && env["GH_TOKEN"] == "" {
+		minted, err := s.mintImprovementTaskToken(ctx, run)
+		if err != nil {
+			return nil, err
+		}
+		env["GH_TOKEN"] = minted
+		env["FACTORY_SECRET_VALUES"] = appendSecret(env["FACTORY_SECRET_VALUES"], minted)
+	}
 	return env, nil
+}
+
+func appendSecret(list, value string) string {
+	if value == "" {
+		return list
+	}
+	if list == "" {
+		return value
+	}
+	return list + "\n" + value
 }
 
 func setEnvDefault(env map[string]string, key, value string) {
@@ -112,6 +143,10 @@ func setEnvDefault(env map[string]string, key, value string) {
 // argv. A zero timeout leaves the field unset, and the worker's bare flag
 // means the container exits when the conversation ends.
 func (s *Server) assignment(ctx context.Context, run store.Run, exec store.Execution, bound boundAgent, env map[string]string) protocol.TaskAssignment {
+	prepared, prepErr := s.prepareMeasure(ctx, run, bound)
+	if prepErr == nil {
+		bound = prepared.bound
+	}
 	now := run.CreatedAt
 	if now.IsZero() {
 		now = s.now()
@@ -161,6 +196,13 @@ func (s *Server) assignment(ctx context.Context, run store.Run, exec store.Execu
 	}
 	if bound.runner.VCPUs > 0 || bound.runner.MemoryGB > 0 {
 		asg.InstanceShape = &protocol.InstanceShape{Vcpus: bound.runner.VCPUs, MemoryGb: bound.runner.MemoryGB}
+	}
+	if prepErr == nil && prepared.skillSpec != "" {
+		spec := prepared.skillSpec
+		asg.Task.AgentConfigSnapshot.SkillSpec = &spec
+	}
+	if prepErr == nil && len(prepared.overrides) > 0 {
+		asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides = prepared.overrides
 	}
 	return asg
 }

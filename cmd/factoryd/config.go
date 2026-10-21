@@ -83,6 +83,18 @@ func configFromEnv(getenv func(string) string, environ []string) (processConfig,
 		hide(value)
 	}
 	hide(getenv(inference.ExtraHeadersEnv))
+	samplerEvery, err := parseM6Interval("FACTORY_SAMPLER_INTERVAL", getenv("FACTORY_SAMPLER_INTERVAL"))
+	if err != nil {
+		return processConfig{}, err
+	}
+	improveEvery, err := parseM6Interval("FACTORY_IMPROVEMENT_INTERVAL", getenv("FACTORY_IMPROVEMENT_INTERVAL"))
+	if err != nil {
+		return processConfig{}, err
+	}
+	reviewerLogins, err := parseReviewerLogins("FACTORY_REVIEWER_LOGINS", getenv("FACTORY_REVIEWER_LOGINS"))
+	if err != nil {
+		return processConfig{}, err
+	}
 	return processConfig{
 		server: server.Config{
 			DatabaseURL:           strings.TrimSpace(getenv("FACTORY_DATABASE_URL")),
@@ -128,6 +140,11 @@ func configFromEnv(getenv func(string) string, environ []string) (processConfig,
 			DeliveryRetention:          retention,
 			ScheduleCatchUp:            catchup,
 			Console:                    console,
+			ReviewerAdmins:             splitCSV(getenv("FACTORY_REVIEWERS_ADMINS")),
+			ReviewerTeam:               splitCSV(getenv("FACTORY_REVIEWERS_TEAM")),
+			ReviewerLogins:             reviewerLogins,
+			SamplerInterval:            samplerEvery,
+			ImprovementInterval:        improveEvery,
 		},
 		addr:    httpAddr(getenv),
 		level:   logLevel(getenv("FACTORY_LOG_LEVEL")),
@@ -256,6 +273,60 @@ func parseSetDuration(name, raw string) (time.Duration, error) {
 		return 0, fmt.Errorf("%s is invalid", name)
 	}
 	return d, nil
+}
+
+// parseM6Interval is the sampler and improvement interval parser.
+// An empty value is one minute. An invalid or non-positive value fails
+// startup and names the variable. parseDuration is not used here: it
+// swallows the error and returns zero.
+func parseM6Interval(name, raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Minute, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s is invalid", name)
+	}
+	return d, nil
+}
+
+func parseReviewerLogins(name, raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	out := map[string]string{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		email, login, ok := strings.Cut(part, "=")
+		email = strings.TrimSpace(email)
+		login = strings.TrimSpace(login)
+		if !ok || email == "" || login == "" {
+			return nil, fmt.Errorf("%s is invalid", name)
+		}
+		out[email] = login
+	}
+	return out, nil
+}
+
+func splitCSV(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
 }
 
 func parseDuration(raw string) time.Duration {

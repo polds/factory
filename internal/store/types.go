@@ -645,6 +645,9 @@ type BenchmarkTrial struct {
 	CostCents           int64
 	DurationMS          int64
 	CorrectnessResultID string
+	// DefinitionSHA is the 40-hex definition commit resolved for this trial's
+	// configuration. Empty when the row predates the column.
+	DefinitionSHA string
 }
 
 // TrialCell is one configuration and task.
