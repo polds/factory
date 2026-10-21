@@ -788,37 +788,79 @@ case_cleanup_remote_offline() {
 }
 
 case_compose_definition_ref() {
-  local current base_file base_render unset_render set_render
-  current="$(mktemp)"
-  base_file="$(mktemp)"
+  local literal base_render unset_render set_render sha_render
+  mkdir -p "$ROOT/spike/m6/.work"
+  # The no-network CI job is a shallow checkout, so the base commit is
+  # not available there. A copy with the two interpolations written back
+  # to literal main is the offline render. A full clone also compares
+  # that render to the base commit when the object exists.
+  M6_COMPOSE_BACKUP="$ROOT/spike/m6/.work/compose.backup.yml"
+  literal="$(mktemp)"
   base_render="$(mktemp)"
   unset_render="$(mktemp)"
   set_render="$(mktemp)"
-  cp "$ROOT/deploy/docker-compose.yml" "$current"
+  sha_render="$(mktemp)"
+  cp "$ROOT/deploy/docker-compose.yml" "$M6_COMPOSE_BACKUP"
   # shellcheck disable=SC2329 # invoked by the RETURN trap
   restore_compose() {
-    cp "$current" "$ROOT/deploy/docker-compose.yml"
+    if [[ -f "${M6_COMPOSE_BACKUP:-}" ]]; then
+      cp "$M6_COMPOSE_BACKUP" "$ROOT/deploy/docker-compose.yml"
+    fi
   }
   trap restore_compose RETURN
-  git -C "$ROOT" show 317157cb7be4e6b5020002cdd1796979a303c585:deploy/docker-compose.yml \
-    >"$base_file"
-  cp "$base_file" "$ROOT/deploy/docker-compose.yml"
-  env -u M6_DEFINITION_REF docker compose \
+  python3 - "$M6_COMPOSE_BACKUP" "$literal" <<'PY'
+import sys
+
+src, dest = sys.argv[1:]
+text = open(src, encoding="utf-8").read()
+needle = "${M6_DEFINITION_REF:-main}"
+if text.count(needle) != 2:
+    raise SystemExit("expected two m6 ref interpolations")
+open(dest, "w", encoding="utf-8").write(text.replace(needle, "main"))
+PY
+  cp "$literal" "$ROOT/deploy/docker-compose.yml"
+  if ! env -u M6_DEFINITION_REF docker compose \
     -f "$ROOT/deploy/docker-compose.yml" \
     -f "$ROOT/spike/m6/compose.yml" \
-    --profile m6 config >"$base_render"
-  cp "$current" "$ROOT/deploy/docker-compose.yml"
-  env -u M6_DEFINITION_REF docker compose \
-    -f "$ROOT/deploy/docker-compose.yml" \
-    -f "$ROOT/spike/m6/compose.yml" \
-    --profile m6 config >"$unset_render"
-  M6_DEFINITION_REF="m6-run/local-ab/main" docker compose \
-    -f "$ROOT/deploy/docker-compose.yml" \
-    -f "$ROOT/spike/m6/compose.yml" \
-    --profile m6 config >"$set_render"
-  if ! cmp -s "$base_render" "$unset_render"; then
-    printf 'unset M6_DEFINITION_REF render differs from base\n' >&2
+    --profile m6 config >"$base_render"; then
+    printf 'literal main render failed\n' >&2
     return 1
+  fi
+  cp "$M6_COMPOSE_BACKUP" "$ROOT/deploy/docker-compose.yml"
+  if ! env -u M6_DEFINITION_REF docker compose \
+    -f "$ROOT/deploy/docker-compose.yml" \
+    -f "$ROOT/spike/m6/compose.yml" \
+    --profile m6 config >"$unset_render"; then
+    printf 'unset M6_DEFINITION_REF render failed\n' >&2
+    return 1
+  fi
+  if ! M6_DEFINITION_REF="m6-run/local-ab/main" docker compose \
+    -f "$ROOT/deploy/docker-compose.yml" \
+    -f "$ROOT/spike/m6/compose.yml" \
+    --profile m6 config >"$set_render"; then
+    printf 'set M6_DEFINITION_REF render failed\n' >&2
+    return 1
+  fi
+  if ! cmp -s "$base_render" "$unset_render"; then
+    printf 'unset M6_DEFINITION_REF render differs from literal main\n' >&2
+    return 1
+  fi
+  if git -C "$ROOT" cat-file -e 317157cb7be4e6b5020002cdd1796979a303c585:deploy/docker-compose.yml 2>/dev/null; then
+    cp "$literal" "$ROOT/deploy/docker-compose.yml"
+    git -C "$ROOT" show 317157cb7be4e6b5020002cdd1796979a303c585:deploy/docker-compose.yml \
+      >"$ROOT/deploy/docker-compose.yml"
+    if ! env -u M6_DEFINITION_REF docker compose \
+      -f "$ROOT/deploy/docker-compose.yml" \
+      -f "$ROOT/spike/m6/compose.yml" \
+      --profile m6 config >"$sha_render"; then
+      printf 'base commit render failed\n' >&2
+      return 1
+    fi
+    cp "$M6_COMPOSE_BACKUP" "$ROOT/deploy/docker-compose.yml"
+    if ! cmp -s "$unset_render" "$sha_render"; then
+      printf 'unset render differs from the base commit\n' >&2
+      return 1
+    fi
   fi
   if ! grep -F 'FACTORY_DEFINITION_GIT_REF: m6-run/local-ab/main' "$set_render" >/dev/null; then
     printf 'set ref did not render the run base\n' >&2
@@ -829,7 +871,9 @@ case_compose_definition_ref() {
     return 1
   fi
   trap - RETURN
-  rm -f "$current" "$base_file" "$base_render" "$unset_render" "$set_render"
+  restore_compose
+  rm -f "$literal" "$base_render" "$unset_render" "$set_render" "$sha_render" "$M6_COMPOSE_BACKUP"
+  unset M6_COMPOSE_BACKUP
 }
 
 expect_fail missing-live-url "missing FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL" case_missing_live_url
