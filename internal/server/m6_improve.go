@@ -48,10 +48,10 @@ func (s *Server) improvePass(ctx context.Context) error {
 		return nil
 	}
 	if err := s.sweepImprovementBatches(ctx, snap.factory.ID); err != nil {
-		s.log.Error("improvement sweep", "err", err)
+		s.log.Error("improvement sweep", "err", s.redact(err.Error()))
 	}
 	if _, err := s.scheduleImprovements(ctx, snap.factory.ID, false); err != nil {
-		s.log.Error("improvement schedule", "err", err)
+		s.log.Error("improvement schedule", "err", s.redact(err.Error()))
 	}
 	return nil
 }
@@ -69,7 +69,7 @@ func (s *Server) sweepImprovementBatches(ctx context.Context, factoryID string) 
 		case api.BatchQueued:
 			if batch.ImprovementRunID == "" {
 				if err := s.startImprovementRun(ctx, batch); err != nil {
-					s.log.Error("improvement run", "batch", batch.ID, "err", err)
+					s.log.Error("improvement run", "batch", batch.ID, "err", s.redact(err.Error()))
 				}
 			}
 		case api.BatchRunning:
@@ -78,14 +78,14 @@ func (s *Server) sweepImprovementBatches(ctx context.Context, factoryID string) 
 			}
 			run, err := s.store.GetRun(ctx, batch.ImprovementRunID)
 			if err != nil {
-				s.log.Error("improvement run", "batch", batch.ID, "err", err)
+				s.log.Error("improvement run", "batch", batch.ID, "err", s.redact(err.Error()))
 				continue
 			}
 			if !terminalStatus(run.Status) {
 				continue
 			}
 			if err := s.openImprovementPR(ctx, batch, run); err != nil {
-				s.log.Error("improvement pr", "batch", batch.ID, "err", err)
+				s.log.Error("improvement pr", "batch", batch.ID, "err", s.redact(err.Error()))
 			}
 		}
 	}
@@ -122,6 +122,14 @@ func (s *Server) scheduleImprovements(ctx context.Context, factoryID string, run
 	var pending []improve.Failure
 	for _, row := range failures {
 		if !allowed[row.Scorer] {
+			continue
+		}
+		run, err := s.store.GetRun(ctx, row.RunID)
+		if err != nil {
+			return api.ImprovementRunNow{}, err
+		}
+		// Measurement runs feed benchmarks and judges, not this loop.
+		if purposeOrWork(run.Purpose) != api.PurposeWork {
 			continue
 		}
 		pending = append(pending, improve.Failure{
@@ -334,7 +342,7 @@ func (s *Server) openImprovementPR(ctx context.Context, batch store.ImprovementB
 		if err != nil {
 			return err
 		}
-		body := s.improvementPRBody(current, warnings)
+		body := s.improvementPRBody(current, warnings, baseDir, headDir)
 		number, prURL, err := client.CreatePullRequest(ctx, tok, repo, branch, s.productionRef(), "Improve "+current.Agent, body)
 		if err != nil {
 			var status *ghclient.StatusError
@@ -380,10 +388,10 @@ func guardFindings(baseDir, headDir string) ([]string, []definition.Diagnostic) 
 	return problems, warnings
 }
 
-func (s *Server) improvementPRBody(batch store.ImprovementBatch, warnings []definition.Diagnostic) string {
+func (s *Server) improvementPRBody(batch store.ImprovementBatch, warnings []definition.Diagnostic, baseDir, headDir string) string {
 	body := improve.PRBody(improve.Batch{
 		Agent:   batch.Agent,
-		Layer:   "definition",
+		Layer:   improvementLayer(baseDir, headDir),
 		Secrets: s.secretMaterial(),
 	}, batchFailures(batch), s.improvementLinks())
 	if len(warnings) > 0 {
@@ -413,7 +421,7 @@ func (s *Server) improvementLinks() improve.Links {
 func (s *Server) requestImprovementReview(ctx context.Context, client *ghclient.Client, tok ghclient.Token, repo string, number int, headSHA string, batch store.ImprovementBatch, warnings []definition.Diagnostic, headDir, baseDir string) {
 	changed, err := changedDefinitionFiles(baseDir, headDir)
 	if err != nil {
-		s.log.Error("blast radius", "batch", batch.ID, "err", err)
+		s.log.Error("blast radius", "batch", batch.ID, "err", s.redact(err.Error()))
 		changed = 0
 	}
 	cfg := definition.SelfImprovement{}
@@ -436,12 +444,12 @@ func (s *Server) requestImprovementReview(ctx context.Context, client *ghclient.
 			logins = logins[:3]
 		}
 		if err := client.RequestReviewers(ctx, tok, repo, number, logins); err != nil {
-			s.log.Error("reviewers", "batch", batch.ID, "err", err)
+			s.log.Error("reviewers", "batch", batch.ID, "err", s.redact(err.Error()))
 		}
 	}
 	if len(labels) > 0 {
 		if err := client.AddLabels(ctx, tok, repo, number, labels); err != nil {
-			s.log.Error("labels", "batch", batch.ID, "err", err)
+			s.log.Error("labels", "batch", batch.ID, "err", s.redact(err.Error()))
 		}
 	}
 	if headSHA == "" {
@@ -454,7 +462,7 @@ func (s *Server) requestImprovementReview(ctx context.Context, client *ghclient.
 		Conclusion: "success",
 		Summary:    "factory/config passed",
 	}); err != nil {
-		s.log.Error("check run", "batch", batch.ID, "err", err)
+		s.log.Error("check run", "batch", batch.ID, "err", s.redact(err.Error()))
 	}
 }
 

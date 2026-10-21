@@ -2,10 +2,17 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/polds/factory/internal/leader"
 )
+
+// errLeaseLost stops a sampler sweep when this process no longer holds the
+// lease. The sweep renews before each run so a pass longer than the TTL
+// cannot overlap a second holder.
+var errLeaseLost = errors.New("lost measure lease")
 
 const (
 	samplerLeaseName     = "m6-sampler"
@@ -83,6 +90,23 @@ func (s *Server) gatedImprove(ctx context.Context, now time.Time) error {
 // measureDue reports whether a leader tick should do work. A zero interval
 // always runs, which is how tests call TickOnce without starting the loop.
 // A positive interval keeps the lease while spacing the work.
+// renewMeasureLease extends the sampler lease to now+TTL. An empty holder
+// or a server with no store is a no-op, which is how unit tests run a pass
+// without electing. A lost lease returns errLeaseLost so the sweep stops.
+func (s *Server) renewMeasureLease(ctx context.Context, name string) error {
+	if s.store == nil || s.integ.holder == "" {
+		return nil
+	}
+	ok, err := s.store.AcquireLease(ctx, name, s.integ.holder, leader.LeaseTTL, s.now())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("server: lost lease %s: %w", name, errLeaseLost)
+	}
+	return nil
+}
+
 func (s *Server) measureDue(last *time.Time, every time.Duration, now time.Time) bool {
 	if every <= 0 {
 		return true

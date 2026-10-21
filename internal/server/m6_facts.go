@@ -76,7 +76,7 @@ func (s *Server) notePRFact(ctx context.Context, ev event.Event) {
 		fact.WorkItemID = itemID
 	}
 	if _, err := s.store.UpsertPRFact(ctx, fact); err != nil {
-		s.log.Error("pr fact", "err", err)
+		s.log.Error("pr fact", "err", s.redact(err.Error()))
 	}
 	if !matched {
 		return
@@ -84,7 +84,7 @@ func (s *Server) notePRFact(ctx context.Context, ev event.Event) {
 	switch ev.Event {
 	case "pull_request_merged":
 		if err := s.store.MarkBatchReviewed(ctx, batch.ID, api.BatchMerged, ""); err != nil {
-			s.log.Error("batch merged", "batch", batch.ID, "err", err)
+			s.log.Error("batch merged", "batch", batch.ID, "err", s.redact(err.Error()))
 		}
 	case "pull_request_closed":
 		note := strings.TrimSpace(ev.Subject.Text)
@@ -92,7 +92,7 @@ func (s *Server) notePRFact(ctx context.Context, ev event.Event) {
 			note = "closed without merge"
 		}
 		if err := s.store.MarkBatchReviewed(ctx, batch.ID, api.BatchClosed, note); err != nil {
-			s.log.Error("batch closed", "batch", batch.ID, "err", err)
+			s.log.Error("batch closed", "batch", batch.ID, "err", s.redact(err.Error()))
 		}
 	}
 }
@@ -105,7 +105,7 @@ func humanActor(handle string) bool {
 func (s *Server) batchForEvent(ctx context.Context, factoryID string, number int, prURL, branch string) (store.ImprovementBatch, bool) {
 	batches, err := s.store.ImprovementBatches(ctx, factoryID)
 	if err != nil {
-		s.log.Error("pr batches", "err", err)
+		s.log.Error("pr batches", "err", s.redact(err.Error()))
 		return store.ImprovementBatch{}, false
 	}
 	for _, batch := range batches {

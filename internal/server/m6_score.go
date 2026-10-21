@@ -134,11 +134,20 @@ func (s *Server) parentAgentNames(ctx context.Context, run store.Run) []string {
 // benchmark trials whose runs are already terminal. Upsert replaces a row, so
 // a scorer that already has an ok or scorer_invalid result is left alone.
 func (s *Server) samplePass(ctx context.Context) error {
+	if err := s.renewMeasureLease(ctx, samplerLeaseName); err != nil {
+		return err
+	}
 	if err := s.sampleWork(ctx); err != nil {
-		s.log.Error("sampler", "err", err)
+		if errors.Is(err, errLeaseLost) {
+			return err
+		}
+		s.log.Error("sampler", "err", s.redact(err.Error()))
 	}
 	if err := s.repairBenchmarkTrials(ctx); err != nil {
-		s.log.Error("benchmark repair", "err", err)
+		if errors.Is(err, errLeaseLost) {
+			return err
+		}
+		s.log.Error("benchmark repair", "err", s.redact(err.Error()))
 	}
 	return nil
 }
@@ -156,9 +165,12 @@ func (s *Server) sampleWork(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if err := s.renewMeasureLease(ctx, samplerLeaseName); err != nil {
+			return err
+		}
 		for _, sc := range s.samplerScorers(snap.tree) {
 			if _, _, err := s.ensureJudge(ctx, run, sc, judgeSample, ""); err != nil {
-				s.log.Error("sample", "run_id", run.ID, "scorer", sc.Name, "err", err)
+				s.log.Error("sample", "run_id", run.ID, "scorer", sc.Name, "err", s.redact(err.Error()))
 			}
 		}
 	}
@@ -341,7 +353,7 @@ func (s *Server) childJudge(ctx context.Context, parentID, title string) (store.
 		LIMIT 1`, parentID, api.PurposeScorer, title).Scan(&id)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
-			s.log.Error("judge lookup", "parent", parentID, "err", err)
+			s.log.Error("judge lookup", "parent", parentID, "err", s.redact(err.Error()))
 		}
 		return store.Run{}, false
 	}
@@ -529,21 +541,21 @@ func (s *Server) recordJudgeVerdict(ctx context.Context, judge store.Run) error 
 func (s *Server) noteMeasurement(ctx context.Context, runID string) {
 	run, err := s.store.GetRun(ctx, runID)
 	if err != nil {
-		s.log.Error("measurement", "run_id", runID, "err", err)
+		s.log.Error("measurement", "run_id", runID, "err", s.redact(err.Error()))
 		return
 	}
 	switch run.Purpose {
 	case api.PurposeScorer:
 		if err := s.recordJudgeVerdict(ctx, run); err != nil {
-			s.log.Error("judge verdict", "run_id", runID, "err", err)
+			s.log.Error("judge verdict", "run_id", runID, "err", s.redact(err.Error()))
 		}
 	case api.PurposeBenchmark:
 		if err := s.scoreBenchmarkTrial(ctx, run); err != nil {
-			s.log.Error("benchmark trial", "run_id", runID, "err", err)
+			s.log.Error("benchmark trial", "run_id", runID, "err", s.redact(err.Error()))
 		}
 	case api.PurposeImprovement:
 		if err := s.settleImprovementRun(ctx, run); err != nil {
-			s.log.Error("improvement settle", "run_id", runID, "err", err)
+			s.log.Error("improvement settle", "run_id", runID, "err", s.redact(err.Error()))
 		}
 	}
 }

@@ -245,16 +245,15 @@ func (s *Server) scoreBenchmarkTrial(ctx context.Context, run store.Run) error {
 		if sc.Name == correct.Name {
 			continue
 		}
+		// Eligible sees the trial's stored purpose and status. Benchmark
+		// purpose is not work, so tree scorers do not judge it. Cancelled
+		// trials return above as errored and never reach this loop.
 		facts := s.workFacts(ctx, run)
-		facts.Purpose = api.PurposeWork
-		facts.Status = failure.StatusSucceeded
-		facts.FailureClass = ""
-		facts.Terminal = true
 		if ok, _ := scorer.Eligible(sc, facts); !ok {
 			continue
 		}
 		if _, _, err := s.ensureJudge(ctx, run, sc, judgeForce, criteria); err != nil {
-			s.log.Error("benchmark scorer", "run_id", run.ID, "scorer", sc.Name, "err", err)
+			s.log.Error("benchmark scorer", "run_id", run.ID, "scorer", sc.Name, "err", s.redact(err.Error()))
 		}
 	}
 	return nil
@@ -373,17 +372,20 @@ func (s *Server) repairBenchmarkTrials(ctx context.Context) error {
 		return fmt.Errorf("server: repair trials: %w", err)
 	}
 	for _, id := range ids {
+		if err := s.renewMeasureLease(ctx, samplerLeaseName); err != nil {
+			return err
+		}
 		run, err := s.store.GetRun(ctx, id)
 		if err != nil {
-			s.log.Error("repair trial", "run_id", id, "err", err)
+			s.log.Error("repair trial", "run_id", id, "err", s.redact(err.Error()))
 			continue
 		}
 		if err := s.scoreBenchmarkTrial(ctx, run); err != nil {
-			s.log.Error("repair trial", "run_id", id, "err", err)
+			s.log.Error("repair trial", "run_id", id, "err", s.redact(err.Error()))
 		}
 		if judge, ok := s.childJudge(ctx, id, judgeTitle(scorer.Correctness(s.snapshot().tree).Name)); ok && terminalStatus(judge.Status) {
 			if err := s.recordJudgeVerdict(ctx, judge); err != nil {
-				s.log.Error("repair verdict", "run_id", id, "err", err)
+				s.log.Error("repair verdict", "run_id", id, "err", s.redact(err.Error()))
 			}
 		}
 	}

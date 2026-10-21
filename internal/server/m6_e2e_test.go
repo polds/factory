@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/polds/factory/internal/api"
+	"github.com/polds/factory/internal/defsync"
 	"github.com/polds/factory/internal/event"
 	"github.com/polds/factory/internal/protocol"
 	"github.com/polds/factory/internal/store"
@@ -83,7 +84,7 @@ const (
 
 type m6Boot struct {
 	threshold int
-	cloner    *m6Cloner
+	cloner    defsync.Cloner
 	gh        *m6GitHub
 	git       bool
 	slots     int
@@ -107,7 +108,9 @@ func bootM6(t *testing.T, opt m6Boot) *env {
 		if opt.cloner == nil {
 			opt.cloner = &m6Cloner{threshold: opt.threshold, kindFor: func(int) m6TreeKind { return m6TreeSkillHead }}
 		}
-		opt.cloner.threshold = opt.threshold
+		if row, ok := opt.cloner.(*m6Cloner); ok {
+			row.threshold = opt.threshold
+		}
 	}
 	return boot(t, bootOpts{
 		definition: func(t *testing.T) string {
@@ -315,10 +318,19 @@ func (c *m6Cloner) Clone(_ context.Context, _, ref, dest string) (string, error)
 		kind, sha = m6TreeCandidate, shaN('b')
 	case strings.HasPrefix(ref, "improve/"):
 		c.improve++
-		sha = shaN('c')
 		kind = m6TreeSkillHead
 		if c.kindFor != nil {
 			kind = c.kindFor(c.improve)
+		}
+		// The server caches a clone by the commit it returns. Two tree
+		// kinds are different commits, so a later branch is not served
+		// the first branch's files.
+		sha = shaN('c')
+		switch kind {
+		case m6TreeWeaken:
+			sha = shaN('8')
+		case m6TreeEscalate:
+			sha = shaN('9')
 		}
 		c.lastImprove = dest
 	default:

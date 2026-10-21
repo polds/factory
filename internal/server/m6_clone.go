@@ -36,9 +36,9 @@ func (s *Server) productionRef() string {
 	return "main"
 }
 
-// cloneRef fetches one definition ref and caches the directory until Close.
-// The cache key is the git URL plus the ref. A repeated assign during one
-// process reuses the tree.
+// cloneRef fetches one definition ref. A 40-hex SHA is reused until Close.
+// A ref name is fetched every time, because a later push must be visible
+// to the next benchmark run without a process restart.
 func (s *Server) cloneRef(ctx context.Context, ref string) (string, string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -47,16 +47,11 @@ func (s *Server) cloneRef(ctx context.Context, ref string) (string, string, erro
 	if strings.TrimSpace(s.cfg.DefinitionGitURL) == "" {
 		return "", "", errors.New("server: definition git url is empty")
 	}
-	key := s.cfg.DefinitionGitURL + "\n" + ref
-	s.m6CloneMu.Lock()
-	if s.m6Clones != nil {
-		if hit, ok := s.m6Clones[key]; ok {
-			s.m6CloneMu.Unlock()
+	if sha, ok := gitSHA(ref); ok {
+		if hit, ok := s.cachedClone(sha); ok {
 			return hit.sha, hit.dir, nil
 		}
 	}
-	s.m6CloneMu.Unlock()
-
 	dir, err := os.MkdirTemp("", "factory-m6-")
 	if err != nil {
 		return "", "", fmt.Errorf("server: clone: %w", err)
@@ -64,21 +59,54 @@ func (s *Server) cloneRef(ctx context.Context, ref string) (string, string, erro
 	sha, err := s.cloner().Clone(ctx, s.cfg.DefinitionGitURL, ref, dir)
 	if err != nil {
 		_ = os.RemoveAll(dir)
-		return "", "", fmt.Errorf("server: clone %s: %w", ref, err)
+		redacted := s.redact(err.Error())
+		if s.log != nil {
+			s.log.Error("clone", "err", redacted)
+		}
+		return "", "", fmt.Errorf("server: clone %s: %s", ref, redacted)
 	}
 	sha = strings.TrimSpace(sha)
+	if canonical, ok := gitSHA(sha); ok {
+		sha = canonical
+	}
 	s.m6CloneMu.Lock()
 	if s.m6Clones == nil {
 		s.m6Clones = map[string]m6Clone{}
 	}
-	if prev, ok := s.m6Clones[key]; ok {
+	if prev, ok := s.m6Clones[sha]; ok {
 		s.m6CloneMu.Unlock()
 		_ = os.RemoveAll(dir)
 		return prev.sha, prev.dir, nil
 	}
-	s.m6Clones[key] = m6Clone{sha: sha, dir: dir}
+	s.m6Clones[sha] = m6Clone{sha: sha, dir: dir}
 	s.m6CloneMu.Unlock()
 	return sha, dir, nil
+}
+
+func (s *Server) cachedClone(sha string) (m6Clone, bool) {
+	s.m6CloneMu.Lock()
+	defer s.m6CloneMu.Unlock()
+	if s.m6Clones == nil {
+		return m6Clone{}, false
+	}
+	hit, ok := s.m6Clones[sha]
+	return hit, ok
+}
+
+// gitSHA reports whether ref is a 40-hex commit. The returned form is lower
+// case so cache lookups do not depend on the remote's hex case.
+func gitSHA(ref string) (string, bool) {
+	if len(ref) != 40 {
+		return "", false
+	}
+	for _, c := range ref {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+		default:
+			return "", false
+		}
+	}
+	return strings.ToLower(ref), true
 }
 
 func (s *Server) clearClones() {
@@ -132,28 +160,60 @@ func headRef(r definition.RepoRef) api.HeadRef {
 // changedDefinitionFiles counts files whose contents differ between base and
 // head. .git is skipped. The count is the blast-radius input to improve.Route.
 func changedDefinitionFiles(baseDir, headDir string) (int, error) {
+	paths, err := changedDefinitionPaths(baseDir, headDir)
+	return len(paths), err
+}
+
+// changedDefinitionPaths lists files whose contents differ between base and
+// head. .git is skipped. The layer and the blast radius share this walk.
+func changedDefinitionPaths(baseDir, headDir string) ([]string, error) {
 	base, err := fileBodies(baseDir)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	head, err := fileBodies(headDir)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n := 0
+	var paths []string
 	seen := map[string]bool{}
 	for path, body := range head {
 		seen[path] = true
 		if base[path] != body {
-			n++
+			paths = append(paths, path)
 		}
 	}
 	for path := range base {
 		if !seen[path] {
-			n++
+			paths = append(paths, path)
 		}
 	}
-	return n, nil
+	return paths, nil
+}
+
+// improvementLayer is skill when every changed path has a skills segment,
+// including agents/<name>/skills/.... Any other path, or an empty diff, stays
+// definition.
+func improvementLayer(baseDir, headDir string) string {
+	paths, err := changedDefinitionPaths(baseDir, headDir)
+	if err != nil || len(paths) == 0 {
+		return "definition"
+	}
+	for _, path := range paths {
+		if !skillPath(path) {
+			return "definition"
+		}
+	}
+	return "skill"
+}
+
+func skillPath(path string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(path), "/") {
+		if seg == "skills" {
+			return true
+		}
+	}
+	return false
 }
 
 func fileBodies(root string) (map[string]string, error) {
