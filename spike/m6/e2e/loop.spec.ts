@@ -197,8 +197,7 @@ test("m6 exit loop", async ({ browser }) => {
     await page.route("**/benchmarks/*/trials*", async (route) => {
       const response = await route.fetch();
       if (response.status() !== 404) {
-        // body() is decoded. Leaving content-encoding set makes the browser
-        // gunzip the JSON and the suite page stays on the error state.
+        // body() is already decoded, so those two headers must not be forwarded.
         const headers = { ...response.headers() };
         delete headers["content-encoding"];
         delete headers["content-length"];
