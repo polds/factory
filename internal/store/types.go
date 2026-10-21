@@ -141,6 +141,9 @@ type Run struct {
 	// List queries fill it from the join. Single-run reads fill it with
 	// one extra query when WorkItemID is set.
 	Source string
+	// Purpose is work, scorer, benchmark, or improvement. It is set on
+	// insert and cannot change. Reads return the stored value.
+	Purpose string
 }
 
 // NewRun is the input to CreateRun. The store enqueues it in the same transaction.
@@ -157,6 +160,8 @@ type NewRun struct {
 	ConversationID string
 	Stage          string
 	ModelID        string
+	// Purpose empty means work. Any other value must be a known purpose.
+	Purpose string
 }
 
 // RunFilter narrows ListRuns. Zero values are unconstrained. Limit <= 0 uses 100.
@@ -554,4 +559,121 @@ type FactorySummary struct {
 	WaitingOnHuman      int
 	PRsOpened           int
 	DeliveriesUnmatched int
+}
+
+// ScorerResult is one scorer's label for a run. The id is assigned on the
+// first upsert and kept when an on-demand score replaces the row.
+type ScorerResult struct {
+	ID                string
+	FactoryID         string
+	RunID             string
+	ScorerName        string
+	JudgeRunID        string
+	Label             string
+	Score             float64
+	Passed            bool
+	Reasoning         string
+	Status            string
+	CreatedAt         time.Time
+	ReviewedAt        *time.Time
+	ReviewedByBatchID string
+}
+
+// UnreviewedFailure is a failing ok result that no batch has reviewed.
+// Agent is the scored run's agent name.
+type UnreviewedFailure struct {
+	ResultID  string
+	RunID     string
+	Agent     string
+	Scorer    string
+	Label     string
+	Reasoning string
+	At        time.Time
+}
+
+// NewImprovementBatch opens one queued batch for an agent.
+// FailureIDs are scorer result ids in that factory.
+type NewImprovementBatch struct {
+	FactoryID  string
+	Agent      string
+	FailureIDs []string
+}
+
+// ImprovementFailure is one scored run linked to a batch.
+type ImprovementFailure struct {
+	RunID    string
+	ResultID string
+	Scorer   string
+	Label    string
+}
+
+// ImprovementBatch is one self-improvement batch and its failures.
+type ImprovementBatch struct {
+	ID               string
+	FactoryID        string
+	Agent            string
+	Status           string
+	Failures         []ImprovementFailure
+	PRURL            string
+	PRNumber         int
+	DefinitionRepo   string
+	RejectionNote    string
+	ImprovementRunID string
+	CreatedAt        time.Time
+	ClosedAt         *time.Time
+}
+
+// BenchmarkRun is one :run of a suite.
+type BenchmarkRun struct {
+	ID          string
+	FactoryID   string
+	Suite       string
+	RequestedBy string
+	Repetitions int
+	CreatedAt   time.Time
+}
+
+// BenchmarkTrial is one configuration, task, and repetition.
+type BenchmarkTrial struct {
+	ID                  string
+	BenchmarkRunID      string
+	Configuration       string
+	Task                string
+	Repetition          int
+	RunID               string
+	Outcome             string
+	CostCents           int64
+	DurationMS          int64
+	CorrectnessResultID string
+}
+
+// TrialCell is one configuration and task.
+// N counts pass and fail. Errored and pending stay outside N.
+// The medians use the pass and fail rows only.
+type TrialCell struct {
+	Configuration    string
+	Task             string
+	N                int
+	Pass             int
+	Errored          int
+	MedianCostCents  int64
+	MedianDurationMS int64
+}
+
+// PRFact is one pull request. A nil timestamp, a nil bool, or a nil
+// ChangedLines means this event does not mention the field. Upsert fills
+// a blank and does not clear a stored value. A true human-push or
+// improvement flag stays true.
+type PRFact struct {
+	FactoryID     string
+	Repo          string
+	Number        int
+	WorkItemID    string
+	OpenedAt      *time.Time
+	MergedAt      *time.Time
+	ClosedAt      *time.Time
+	FirstReviewAt *time.Time
+	HumanPushSeen *bool
+	IsImprovement *bool
+	ChangedLines  *int
 }

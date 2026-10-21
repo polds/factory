@@ -815,15 +815,20 @@ func insertAutoRun(ctx context.Context, tx pgx.Tx, r automation.NewRun) (automat
 			return automation.Run{}, false, fmt.Errorf("store: agent: %w", err)
 		}
 	}
+	// automation.NewRun has no purpose field. Intake and follow-up runs are work.
+	purpose, err := normalizePurpose("")
+	if err != nil {
+		return automation.Run{}, false, err
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO runs (
 		    id, factory_id, agent_id, status, priority, pool, prompt, title, repo,
-		    work_item_id, parent_run_id, conversation_id, stage, model_id)
+		    work_item_id, parent_run_id, conversation_id, stage, model_id, purpose)
 		VALUES (
 		    $1, $2, $3, $4, $5, $6, $7, $8, '',
-		    NULLIF($9, ''), NULLIF($10, ''), $11, $12, $13)`,
+		    NULLIF($9, ''), NULLIF($10, ''), $11, $12, $13, $14)`,
 		id, r.FactoryID, agentID, StatusQueued, r.Priority, r.Pool, r.Prompt, r.Title,
-		r.WorkItemID, r.ParentRunID, r.ConversationID, r.Stage, r.ModelID,
+		r.WorkItemID, r.ParentRunID, r.ConversationID, r.Stage, r.ModelID, purpose,
 	); err != nil {
 		return automation.Run{}, false, fmt.Errorf("store: create run: %w", err)
 	}
