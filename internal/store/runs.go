@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/polds/factory/internal/api"
 )
 
 const runColumns = `
@@ -16,7 +18,7 @@ const runColumns = `
     created_at, started_at, ended_at,
     COALESCE(work_item_id, ''), COALESCE(parent_run_id, ''), COALESCE(conversation_id, ''),
     COALESCE(stage, ''), COALESCE(model_id, ''),
-    COALESCE(failure_class, ''), COALESCE(failure_code, ''), assigned_at`
+    COALESCE(failure_class, ''), COALESCE(failure_code, ''), assigned_at, purpose`
 
 func scanRun(row pgx.Row) (Run, error) {
 	var run Run
@@ -26,7 +28,7 @@ func scanRun(row pgx.Row) (Run, error) {
 		&run.Prompt, &run.Title, &run.Repo, &run.WorkerID, &run.FailureReason,
 		&run.ExitCode, &run.CancelRequested, &run.CreatedAt, &run.StartedAt, &run.EndedAt,
 		&run.WorkItemID, &run.ParentRunID, &run.ConversationID, &run.Stage, &run.ModelID,
-		&run.FailureClass, &run.FailureCode, &run.AssignedAt,
+		&run.FailureClass, &run.FailureCode, &run.AssignedAt, &run.Purpose,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Run{}, ErrNotFound
@@ -135,11 +137,30 @@ func validateNewRun(r NewRun) error {
 	default:
 		return fmt.Errorf("store: priority %d is not valid", r.Priority)
 	}
+	if _, err := normalizePurpose(r.Purpose); err != nil {
+		return err
+	}
 	return validStage(r.Stage, true)
+}
+
+func normalizePurpose(purpose string) (string, error) {
+	if purpose == "" {
+		return api.PurposeWork, nil
+	}
+	switch purpose {
+	case api.PurposeWork, api.PurposeScorer, api.PurposeBenchmark, api.PurposeImprovement:
+		return purpose, nil
+	default:
+		return "", fmt.Errorf("store: purpose %q is not valid", purpose)
+	}
 }
 
 func insertRunTx(ctx context.Context, tx pgx.Tx, id string, r NewRun) error {
 	if err := bindRunLinkage(ctx, tx, r); err != nil {
+		return err
+	}
+	purpose, err := normalizePurpose(r.Purpose)
+	if err != nil {
 		return err
 	}
 	var agentID any
@@ -149,12 +170,12 @@ func insertRunTx(ctx context.Context, tx pgx.Tx, id string, r NewRun) error {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO runs (
 		    id, factory_id, agent_id, status, priority, pool, prompt, title, repo,
-		    work_item_id, parent_run_id, conversation_id, stage, model_id)
+		    work_item_id, parent_run_id, conversation_id, stage, model_id, purpose)
 		VALUES (
 		    $1, $2, $3, $4, $5, $6, $7, $8, $9,
-		    NULLIF($10, ''), NULLIF($11, ''), $12, $13, $14)`,
+		    NULLIF($10, ''), NULLIF($11, ''), $12, $13, $14, $15)`,
 		id, r.FactoryID, agentID, StatusQueued, int(r.Priority), r.Pool, r.Prompt, r.Title, r.Repo,
-		r.WorkItemID, r.ParentRunID, r.ConversationID, r.Stage, r.ModelID,
+		r.WorkItemID, r.ParentRunID, r.ConversationID, r.Stage, r.ModelID, purpose,
 	); err != nil {
 		return fmt.Errorf("store: create run: %w", err)
 	}

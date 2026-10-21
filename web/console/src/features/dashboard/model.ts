@@ -1,14 +1,17 @@
 import { APIError } from "../../api/client";
-import type { FailureClass, Run } from "../../api/types";
+import type { FailureClass, RunRow } from "../../api/types";
+import { unexpected } from "../../lib/unexpected";
 
-// The run list row is flat on the wire. T39's TypeScript `Run` still nests
-// `failure`. Goldens in internal/api/testdata/console/runs.json win.
-export type RunRow = Run & {
-  failure_class?: FailureClass;
-  failure_summary?: string;
-  cost_cents?: number;
-  created_at?: string;
-};
+export type { RunRow } from "../../api/types";
+export {
+  failureClassOf,
+  isFailureClass,
+  isPipelineStage,
+  PIPELINE_STAGES,
+  stageLabel,
+} from "../../lib/run-labels";
+export type { PipelineStage } from "../../lib/run-labels";
+export { unexpected };
 
 export const FAILURE_CLASSES = [
   "agent",
@@ -28,58 +31,14 @@ export const RUN_STATUSES = [
 
 export type KnownRunStatus = (typeof RUN_STATUSES)[number];
 
-export const PIPELINE_STAGES = [
-  "triage",
-  "planning",
-  "building",
-  "reviewing",
-  "human_handoff",
-] as const;
-
-export type PipelineStage = (typeof PIPELINE_STAGES)[number];
-
 export type RangeKey = "24h" | "7d";
-
-const STAGE_LABELS = {
-  triage: "Triage",
-  planning: "Planning",
-  building: "Building",
-  reviewing: "Reviewing",
-  human_handoff: "Handoff",
-} as const satisfies Record<PipelineStage, string>;
-
-export function isFailureClass(value: unknown): value is FailureClass {
-  return (
-    value === "agent" ||
-    value === "infrastructure" ||
-    value === "configuration" ||
-    value === "cancelled"
-  );
-}
 
 export function isKnownRunStatus(value: string): value is KnownRunStatus {
   return (RUN_STATUSES as readonly string[]).includes(value);
 }
 
-export function isPipelineStage(value: string): value is PipelineStage {
-  return (PIPELINE_STAGES as readonly string[]).includes(value);
-}
-
-export function stageLabel(stage: string): string {
-  return isPipelineStage(stage) ? STAGE_LABELS[stage] : stage;
-}
-
 export function isDoneStatus(status: string): boolean {
   return status === "complete" || status === "cancelled";
-}
-
-export function failureClassOf(run: RunRow | undefined): FailureClass | undefined {
-  if (!run) return undefined;
-  if (isFailureClass(run.failure_class)) return run.failure_class;
-  // Some responses still nest the class under `failure`. Read that field
-  // directly; do not derive a class from failure_reason.
-  if (isFailureClass(run.failure?.class)) return run.failure.class;
-  return undefined;
 }
 
 // ListRuns is newest first: created_at DESC, id DESC. Compare those fields so
@@ -156,8 +115,4 @@ export function problemDetail(err: unknown): string {
     return err.problem?.detail || err.problem?.title || err.message;
   }
   return "The request failed";
-}
-
-export function unexpected(value: never): never {
-  throw new Error(`Unexpected value: ${String(value)}`);
 }
