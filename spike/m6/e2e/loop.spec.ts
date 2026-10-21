@@ -251,7 +251,8 @@ test("m6 exit loop", async ({ browser }) => {
 
     if (offline) {
       trialsLive = false;
-      await openSection(page, "Benchmarks");
+      await page.getByRole("link", { name: "All suites" }).click();
+      await expect(page.getByRole("link", { name: "fault", exact: true })).toBeVisible();
       await page.getByRole("link", { name: "fault", exact: true }).click();
       await page.locator("#benchmark-repetitions").fill("1");
       await page.getByRole("button", { name: "Run benchmark" }).click();
