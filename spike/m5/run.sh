@@ -73,6 +73,8 @@
 set -euo pipefail
 # shellcheck source=spike/lib/common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
+# shellcheck source=spike/lib/driver.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/driver.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$ROOT/spike/m5/.work"
@@ -99,10 +101,6 @@ say() {
 
 # phase_report prints the seconds since start, which is a bash SECONDS
 # value taken at the say marker for that phase.
-phase_report() {
-  local name="$1" start="$2"
-  printf 'm5 phase %s %ss\n' "$name" "$((SECONDS - start))"
-}
 
 require_mode_secrets() {
   case "${MODE:-}" in
@@ -154,21 +152,6 @@ require_headed_node() {
   fi
 }
 
-detect_platform() {
-  local arch=""
-  arch="$(docker info --format '{{.Architecture}}')"
-  case "$arch" in
-    aarch64 | arm64) OCI_PLATFORM="linux/arm64" ;;
-    x86_64 | amd64) OCI_PLATFORM="linux/amd64" ;;
-    *)
-      echo "unsupported docker architecture ${arch}" >&2
-      return 1
-      ;;
-  esac
-  GOARCH_TARGET="$(goarch_for_platform "$OCI_PLATFORM")"
-  export OCI_PLATFORM GOARCH_TARGET
-}
-
 bridge_gateway() {
   local gw=""
   gw="$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')"
@@ -181,189 +164,22 @@ bridge_gateway() {
 
 # host_for_tasks is the host a bridge container uses for published ports.
 # Args: docker operating system, gateway, kernel, server host.
-host_for_tasks() {
-  local os="$1" gw="$2" kernel="${3:-}" server_host="${4:-}"
-  if [[ -z "$kernel" ]]; then
-    kernel="$(uname -s)"
-  fi
-  if [[ -n "${M5_TASK_HOST:-}" ]]; then
-    printf '%s\n' "$M5_TASK_HOST"
-    return 0
-  fi
-  if [[ -n "$server_host" ]]; then
-    printf '%s\n' "$server_host"
-    return 0
-  fi
-  case "$os" in
-    *Docker\ Desktop* | *OrbStack*)
-      printf '%s\n' "host.docker.internal"
-      return 0
-      ;;
-  esac
-  if [[ "$kernel" == "Darwin" ]]; then
-    printf '%s\n' "host.docker.internal"
-    return 0
-  fi
-  printf '%s\n' "$gw"
-}
-
-url_hostname() {
-  python3 - "$1" <<'PY'
-import sys
-from urllib.parse import urlparse
-print(urlparse(sys.argv[1]).hostname or "")
-PY
-}
 
 # host_catalog_probe_url rewrites host.docker.internal to 127.0.0.1.
 # Scheme, port, and path stay. Every other host is unchanged.
-host_catalog_probe_url() {
-  local raw="$1" task_host="${2:-}"
-  python3 - "$raw" "$task_host" <<'PY'
-import sys
-from urllib.parse import urlparse, urlunparse
-raw, task_host = sys.argv[1], sys.argv[2]
-parts = urlparse(raw)
-host = parts.hostname or ""
-if host != "host.docker.internal" and not (task_host and host == task_host):
-    print(raw)
-    raise SystemExit(0)
-netloc = "127.0.0.1"
-if parts.port is not None:
-    netloc = "127.0.0.1:%d" % parts.port
-print(urlunparse((parts.scheme, netloc, parts.path, parts.params, parts.query, "")))
-PY
-}
 
 # apply_live_inference_env copies the live-ci secrets onto the factory
 # inference variables. M1_OPENAI_EXTRA_HEADERS is optional. Unset leaves
 # the extra-headers variable unset. MODE=live keeps the caller's values.
-apply_live_inference_env() {
-  if [[ "${MODE:-}" != live-ci ]]; then
-    return 0
-  fi
-  export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$M1_OPENAI_BASE_URL"
-  export FACTORY_INFERENCE_OPENAI_API_KEY="$M1_OPENAI_API_KEY"
-  if [[ -n "${M1_OPENAI_EXTRA_HEADERS:-}" ]]; then
-    export FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS="$M1_OPENAI_EXTRA_HEADERS"
-  else
-    unset FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS
-  fi
-}
 
 # write_catalog_headers writes the curl -H lines for the catalog probe.
 # A non-empty API key becomes Authorization: Bearer. Extra headers then
 # replace a default of the same name, case-insensitively. The file is
 # the only copy of the values. Errors name the variable and the line
 # number and do not include the line text.
-write_catalog_headers() {
-  local dest="$1" code=0
-  python3 - "$dest" <<'PY' || code=$?
-import os, re, sys, unicodedata
-
-dest = sys.argv[1]
-env_name = "FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS"
-name_re = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
-
-def fail(msg):
-    sys.stderr.write(msg + "\n")
-    raise SystemExit(1)
-
-def bad_value(value):
-    for ch in value:
-        if ord(ch) < 32 or ord(ch) == 127 or unicodedata.category(ch) == "Cc":
-            return True
-    return False
-
-key = os.environ.get("FACTORY_INFERENCE_OPENAI_API_KEY", "")
-raw = os.environ.get(env_name, "")
-headers = []
-index = {}
-
-def put(name, value):
-    key_name = name.lower()
-    if key_name in index:
-        headers[index[key_name]] = (name, value)
-        return
-    index[key_name] = len(headers)
-    headers.append((name, value))
-
-if key:
-    if "\r" in key or "\n" in key:
-        fail("FACTORY_INFERENCE_OPENAI_API_KEY: CR or LF inside a header value")
-    put("Authorization", "Bearer " + key)
-
-if "\r" in raw:
-    fail(env_name + ": CR or LF inside a header value")
-text = raw.strip()
-if text:
-    for n, line in enumerate(text.split("\n"), 1):
-        if line.strip() == "" or ":" not in line:
-            fail("%s: line %d is malformed" % (env_name, n))
-        name, value = line.split(":", 1)
-        name = name.strip()
-        value = value.strip()
-        if not name_re.fullmatch(name) or not value or bad_value(value):
-            fail("%s: line %d is malformed" % (env_name, n))
-        put(name, value)
-
-body = "\n".join("%s: %s" % (name, value) for name, value in headers)
-fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-with os.fdopen(fd, "w", encoding="utf-8") as fh:
-    if body:
-        fh.write(body)
-PY
-  if [[ "$code" != 0 ]]; then
-    return "$code"
-  fi
-  chmod 600 "$dest"
-}
 
 # catalog_probe GETs $base/models. Header values are passed to curl as
 # -H arguments and are not written to stdout or stderr.
-catalog_probe() {
-  local base="$1" dest="$2" hdr="" line=""
-  local -a args=(-fsS --connect-timeout 2 -m 5 -o "$dest")
-  hdr="$(mktemp)"
-  if ! write_catalog_headers "$hdr"; then
-    rm -f "$hdr"
-    return 1
-  fi
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ -n "$line" ]]; then
-      args+=(-H "$line")
-    fi
-  done <"$hdr"
-  rm -f "$hdr"
-  args+=("${base%/}/models")
-  # CATALOG_CURL is the test seam. Production leaves it unset.
-  "${CATALOG_CURL:-curl}" "${args[@]}"
-}
-
-catalog_contains_id() {
-  local file="$1" id="$2"
-  python3 - "$file" "$id" <<'PY'
-import json, sys
-path, want = sys.argv[1], sys.argv[2]
-with open(path, encoding="utf-8") as fh:
-    data = json.load(fh)
-ids = []
-if isinstance(data, dict):
-    for row in data.get("data") or []:
-        if isinstance(row, dict) and row.get("id"):
-            ids.append(row["id"])
-raise SystemExit(0 if want in ids else 1)
-PY
-}
-
-reject_unlisted_model() {
-  local file="$1" id="$2"
-  if catalog_contains_id "$file" "$id"; then
-    return 0
-  fi
-  echo "model id ${id} is not in the catalog" >&2
-  return 1
-}
 
 # rewrite_offline_idle edits a copy. deploy/m5-factory stays at 5 minutes
 # so live and live-ci keep the longer idle. Offline review starts after
@@ -444,18 +260,6 @@ EOF
   printf '%s\n' '[{"final":"reviewing: no findings"}]' >"$dir/reviewing.json"
 }
 
-random_hex() {
-  openssl rand -hex 24
-}
-
-compose() {
-  docker compose -p factory-m5 \
-    -f "$ROOT/deploy/docker-compose.yml" \
-    -f "$ROOT/spike/m5/compose.yml" \
-    --profile m5 \
-    "$@"
-}
-
 prepare_definition() {
   # factoryd (uid 65532) replaces this tree with mode 700. A later run
   # cannot rm it as the host user. wipe_dir falls back to a root container
@@ -491,17 +295,6 @@ prepare_git_repo() {
   git -C "$wt" -c protocol.file.allow=always push origin HEAD:main
   chmod -R a+rX "$WORK/git"
   export M5_GIT_HOST="$WORK/git"
-}
-
-wait_http() {
-  local url="$1" i
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
-    if curl -fsS --connect-timeout 2 -m 5 "$url" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
 }
 
 # wait_factory_name polls the public factory list until name is present.
@@ -878,325 +671,18 @@ watch_signals() {
 # resolve_wipe_path prints the physical path of one argument.
 # It refuses an empty path, /, spike/m5/.work itself, and anything that
 # realpath follows outside that directory, including a symlink.
-resolve_wipe_path() {
-  python3 - "$WORK" "${1-}" <<'PY'
-import os, sys
-
-work = os.path.realpath(sys.argv[1])
-raw = sys.argv[2]
-if raw == "":
-    sys.stderr.write("wipe_dir: empty path\n")
-    raise SystemExit(1)
-if work in ("", "/"):
-    sys.stderr.write("wipe_dir: refusing work root %s\n" % work)
-    raise SystemExit(1)
-resolved = os.path.realpath(raw)
-try:
-    inside = os.path.commonpath([work, resolved]) == work
-except ValueError:
-    inside = False
-if resolved in ("", "/") or resolved == work or not inside:
-    sys.stderr.write("wipe_dir: refusing %s\n" % resolved)
-    raise SystemExit(1)
-print(resolved)
-PY
-}
-
-wipe_dir() {
-  local path="${1-}" resolved=""
-  if ! resolved="$(resolve_wipe_path "$path")"; then
-    return 1
-  fi
-  if [[ ! -e "$resolved" ]]; then
-    return 0
-  fi
-  if rm -rf "$resolved" 2>/dev/null; then
-    return 0
-  fi
-  # Bind the resolved directory itself. A parent mount would let the
-  # root find walk sideways out of the tree we agreed to delete.
-  docker run --rm --user 0 -v "$resolved:/wipe" golang:1.26-alpine \
-    sh -c 'find /wipe -mindepth 1 -depth -exec rm -rf {} +'
-}
-
-copy_e2e() {
-  wipe_dir "$WORK/e2e"
-  wipe_dir "$SIGNAL"
-  wipe_dir "$EVIDENCE"
-  mkdir -p "$WORK/e2e" "$EVIDENCE" "$SIGNAL"
-  chmod 777 "$EVIDENCE" "$SIGNAL"
-  cp "$ROOT/spike/m5/e2e/package.json" \
-    "$ROOT/spike/m5/e2e/package-lock.json" \
-    "$ROOT/spike/m5/e2e/playwright.config.ts" \
-    "$ROOT/spike/m5/e2e/day.spec.ts" \
-    "$WORK/e2e/"
-}
-
-run_playwright() {
-  copy_e2e
-  local reviewing=""
-  reviewing="$(reviewing_model_id)"
-  if [[ -z "$reviewing" ]]; then
-    echo "M5_REVIEWING_MODEL is empty" >&2
-    return 1
-  fi
-  export M5_REVIEWING_MODEL="$reviewing"
-  : >"$EVIDENCE/driver.log"
-  watch_signals &
-  WATCH_PID=$!
-  if [[ "${HEADED:-}" == 1 ]]; then
-    (cd "$WORK/e2e" && npm ci &&
-      M5_API_KEY="$FACTORY_API_KEY" \
-        M5_MODE="$MODE" \
-        M5_REVIEWING_MODEL="$M5_REVIEWING_MODEL" \
-        M5_SIGNAL="$SIGNAL" \
-        M5_EVIDENCE="$EVIDENCE" \
-        FACTORY_URL="http://127.0.0.1:8080" \
-        FACTORY_GIT_URL="http://127.0.0.1:8081" \
-        npx playwright test --reporter=list)
-    return $?
-  fi
-  docker run --rm \
-    --network factory-m5_default \
-    -v "$WORK/e2e:/work" \
-    -v "$EVIDENCE:/evidence" \
-    -v "$SIGNAL:/signal" \
-    -e "M5_API_KEY=${FACTORY_API_KEY}" \
-    -e "M5_MODE=${MODE}" \
-    -e "M5_REVIEWING_MODEL=${M5_REVIEWING_MODEL}" \
-    -e M5_SIGNAL=/signal \
-    -e M5_EVIDENCE=/evidence \
-    -e FACTORY_URL=http://factoryd:8080 \
-    -e FACTORY_GIT_URL=http://factoryd-git:8080 \
-    -w /work \
-    "$PLAYWRIGHT_IMAGE" \
-    bash -lc 'npm ci && npx playwright test --reporter=list'
-}
-
-save_logs() {
-  mkdir -p "$EVIDENCE"
-  compose logs --no-color >"$EVIDENCE/compose.log" 2>&1 || true
-  if [[ -f "$WORK/router.log" ]]; then
-    cp "$WORK/router.log" "$EVIDENCE/router.log"
-  fi
-}
-
-assert_evidence() {
-  python3 - "$EVIDENCE" <<'PY'
-import json, os, sys, zipfile
-from pathlib import Path
-from urllib.parse import urlparse
-
-root = Path(sys.argv[1])
-planted = []
-for name in (
-    "FACTORY_SECRET_M5_WEBHOOK",
-    "FACTORY_WORKER_API_KEY",
-    "S3_SECRET_KEY",
-    "FACTORY_SECRET_M5_PLANTED",
-    "FACTORY_INFERENCE_OPENAI_API_KEY",
-):
-    value = os.environ.get(name, "")
-    if len(value) >= 8:
-        planted.append(value.encode())
-
-def add_planted(value):
-    if len(value) >= 8:
-        planted.append(value.encode())
-
-for raw_name in (
-    "FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS",
-    "M1_OPENAI_EXTRA_HEADERS",
-):
-    raw = os.environ.get(raw_name, "")
-    if "\r" in raw:
-        continue
-    for line in raw.split("\n"):
-        if ":" not in line:
-            continue
-        value = line.split(":", 1)[1].strip()
-        add_planted(value)
-        if value.lower().startswith("bearer "):
-            add_planted(value[7:].strip())
-api_key = os.environ.get("FACTORY_API_KEY", "").encode()
-
-def har_mime(entry):
-    content = (entry.get("response") or {}).get("content") or {}
-    return str(content.get("mimeType") or "").split(";", 1)[0].strip().lower()
-
-def har_static_asset(path):
-    if path.startswith("/assets/"):
-        return True
-    name = path.rsplit("/", 1)[-1].lower()
-    if name in {"favicon.ico", "favicon.png", "favicon.svg"}:
-        return True
-    return path.lower().endswith((".woff", ".woff2", ".ttf", ".otf", ".eot"))
-
-# har_allowed_without_type classifies a HAR entry whose _resourceType
-# is missing or empty. /api/v1 is any method. Static console assets and
-# HTML documents are GET only.
-def har_allowed_without_type(method, path, entry):
-    if path.startswith("/api/v1/"):
-        return True
-    if method == "GET" and har_static_asset(path):
-        return True
-    if method == "GET" and har_mime(entry) == "text/html":
-        return True
-    return False
-
-def walk_files():
-    for path in root.rglob("*"):
-        if path.is_file():
-            yield path
-
-for path in walk_files():
-    data = path.read_bytes()
-    for secret in planted:
-        if secret in data:
-            sys.stderr.write("planted secret in %s\n" % path.name)
-            raise SystemExit(1)
-
-for path in walk_files():
-    if path.suffix not in {".html", ".log", ".txt"}:
-        continue
-    if api_key and api_key in path.read_bytes():
-        sys.stderr.write("api key in %s\n" % path.name)
-        raise SystemExit(1)
-
-har_path = root / "day.har"
-if har_path.is_file():
-    har = json.loads(har_path.read_text(encoding="utf-8"))
-    allowed_hosts = {"factoryd", "factoryd-git", "127.0.0.1", "localhost"}
-    for entry in har.get("log", {}).get("entries", []):
-        req = entry.get("request") or {}
-        url = req.get("url") or ""
-        host = urlparse(url).hostname or ""
-        if host not in allowed_hosts:
-            sys.stderr.write("off-origin %s\n" % url)
-            raise SystemExit(1)
-        rtype = str(entry.get("_resourceType") or "").strip()
-        path = urlparse(url).path or ""
-        method = str(req.get("method") or "").upper()
-        if rtype:
-            if rtype in {"xhr", "fetch", "eventsource", "websocket"} and not path.startswith("/api/v1/"):
-                sys.stderr.write("non-api %s %s\n" % (rtype, path))
-                raise SystemExit(1)
-        elif not har_allowed_without_type(method, path, entry):
-            sys.stderr.write("non-api %s %s\n" % (method, path))
-            raise SystemExit(1)
-        content = ((entry.get("response") or {}).get("content") or {}).get("text") or ""
-        if api_key and api_key.decode() in content:
-            sys.stderr.write("api key in a response body\n")
-            raise SystemExit(1)
-        for header in req.get("headers") or []:
-            if str(header.get("name", "")).lower() == "authorization":
-                header["value"] = "REDACTED"
-        raw = json.dumps(entry)
-        if api_key and api_key.decode() in raw:
-            pass
-    text = json.dumps(har)
-    if api_key:
-        text = text.replace(api_key.decode(), "REDACTED")
-    rewritten = har_path.with_name(har_path.name + ".next")
-    rewritten.write_text(text, encoding="utf-8")
-    os.replace(rewritten, har_path)
-
-trace = root / "day-trace.zip"
-if trace.is_file() and api_key:
-    blob = trace.read_bytes()
-    for secret in planted:
-        if secret in blob:
-            sys.stderr.write("planted secret in day-trace.zip\n")
-            raise SystemExit(1)
-    out = trace.with_suffix(".zip.next")
-    with zipfile.ZipFile(trace) as zin, zipfile.ZipFile(out, "w") as zout:
-        for info in zin.infolist():
-            data = zin.read(info.filename)
-            for secret in planted:
-                if secret in data:
-                    sys.stderr.write("planted secret in trace entry\n")
-                    raise SystemExit(1)
-            data = data.replace(api_key, b"REDACTED")
-            zout.writestr(info, data)
-    out.replace(trace)
-PY
-}
 
 # fetch_origin_quiet updates origin and gives up after 15 seconds.
 # The status is 0 only when fetch itself succeeds. python3 is already
 # required, and its timeout is not the GNU timeout command.
-fetch_origin_quiet() {
-  local root="$1"
-  python3 - "$root" <<'PY'
-import os, subprocess, sys
-root = sys.argv[1]
-env = os.environ.copy()
-env["GIT_TERMINAL_PROMPT"] = "0"
-try:
-    subprocess.run(
-        ["git", "-C", root, "fetch", "--quiet", "origin"],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=15,
-        check=True,
-    )
-except (subprocess.SubprocessError, OSError):
-    raise SystemExit(1)
-PY
-}
 
 # warn_stale_checkout prints a warning when HEAD is behind origin/main.
 # It does not fail the run. live-ci and GitHub Actions skip the fetch.
 # root defaults to this repo. Tests pass a temporary checkout.
-warn_stale_checkout() {
-  local root="${1:-$ROOT}" behind=""
-  if [[ "${MODE:-}" == "live-ci" || -n "${GITHUB_ACTIONS:-}" ]]; then
-    return 0
-  fi
-  if ! command -v git >/dev/null 2>&1; then
-    return 0
-  fi
-  if ! git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    return 0
-  fi
-  if ! git -C "$root" remote get-url origin >/dev/null 2>&1; then
-    return 0
-  fi
-  if ! fetch_origin_quiet "$root"; then
-    return 0
-  fi
-  if ! git -C "$root" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null 2>&1; then
-    return 0
-  fi
-  behind="$(git -C "$root" rev-list --count HEAD..origin/main 2>/dev/null || true)"
-  if [[ "$behind" == "1" ]]; then
-    printf 'WARNING: HEAD is 1 commit behind origin/main. Run git pull to update this checkout.\n' >&2
-    return 0
-  fi
-  if [[ "$behind" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'WARNING: HEAD is %s commits behind origin/main. Run git pull to update this checkout.\n' "$behind" >&2
-  fi
-  return 0
-}
 
 # print_playwright_failures repeats the list reporter's failure block.
 # That block is where soft expects show up together. A passing log
 # prints nothing.
-print_playwright_failures() {
-  local log="${1:-}"
-  if [[ ! -f "$log" ]]; then
-    return 0
-  fi
-  if ! grep -E '^[[:space:]]+[0-9]+\) ' "$log" >/dev/null 2>&1; then
-    return 0
-  fi
-  printf '\n== Playwright failures\n' >&2
-  awk '
-    /^[[:space:]]+[0-9]+\) / { show = 1 }
-    show { print }
-  ' "$log" >&2
-}
 
 print_checklist() {
   cat <<'EOF'

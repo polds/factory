@@ -1,0 +1,10 @@
+name: Infrastructure fault
+description: One trial errors so the errored count stays off the D5 matrix.
+agent: implementer
+configurations:
+  - name: Baseline
+    agents:
+      - agent: implementer
+        model: factory-default
+tasks:
+  - break
