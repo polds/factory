@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
@@ -155,5 +155,29 @@ describe("improvement", () => {
     } finally {
       server.events.removeListener("request:start", onStart);
     }
+  });
+
+  it("returns focus to Run now after escape and confirm", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post("/api/v1/factory/:uid/improvement:run-now", () => {
+        return HttpResponse.json({ checked_agents: ["reviewer"], batches: [] }, { status: 202 });
+      }),
+    );
+    setAPIKey(demoAPIKey);
+    await renderApp(`${factory}/improvement`);
+    const opener = await screen.findByRole("button", { name: "Run now" });
+    await tabTo(user, opener);
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("dialog", { name: "Run now?" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(opener).toHaveFocus());
+
+    await user.keyboard("{Enter}");
+    const dialog = await screen.findByRole("dialog", { name: "Run now?" });
+    await tabTo(user, within(dialog).getByRole("button", { name: "Run now" }));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(opener).toHaveFocus());
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

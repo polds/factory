@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -71,6 +71,45 @@ describe("shared components", () => {
     expect(screen.getByRole("heading", { name: "Cancel run" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Cancel run" }));
     expect(onConfirm).toHaveBeenCalledOnce();
+  });
+
+  it("returns focus to the opener after escape, cancel, and confirm", async () => {
+    const user = userEvent.setup();
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Open confirm
+          </button>
+          <ConfirmDialog
+            open={open}
+            title="Delete secret"
+            description="Remove this secret?"
+            confirmLabel="Delete"
+            onConfirm={() => setOpen(false)}
+            onOpenChange={setOpen}
+          />
+        </>
+      );
+    }
+    renderWithTheme(<Harness />);
+    const opener = screen.getByRole("button", { name: "Open confirm" });
+
+    await user.click(opener);
+    expect(await screen.findByRole("dialog", { name: "Delete secret" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(opener).toHaveFocus());
+
+    await user.keyboard("{Enter}");
+    const cancelDialog = await screen.findByRole("dialog", { name: "Delete secret" });
+    await user.click(within(cancelDialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(opener).toHaveFocus());
+
+    await user.keyboard("{Enter}");
+    const confirmDialog = await screen.findByRole("dialog", { name: "Delete secret" });
+    await user.click(within(confirmDialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(opener).toHaveFocus());
   });
 
   it("renders empty and error states", async () => {

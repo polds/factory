@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
@@ -181,5 +181,29 @@ describe("benchmarks", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Benchmark run br_9 started.");
     expect(posts).toBe(1);
     expect(body).toBe(JSON.stringify({ repetitions: 5 }));
+  });
+
+  it("returns focus to Run benchmark after escape and confirm", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post("/api/v1/factory/:uid/benchmarks/:suite", () => {
+        return HttpResponse.json({ benchmark_run_id: "br_9" }, { status: 202 });
+      }),
+    );
+    setAPIKey(demoAPIKey);
+    await renderApp(`${factory}/benchmarks/pr-review`);
+    const opener = await screen.findByRole("button", { name: "Run benchmark" });
+    await tabTo(user, opener);
+    await user.keyboard("{Enter}");
+    expect(await screen.findByRole("dialog", { name: "Run benchmark?" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(opener).toHaveFocus());
+
+    await user.keyboard("{Enter}");
+    const dialog = await screen.findByRole("dialog", { name: "Run benchmark?" });
+    await tabTo(user, within(dialog).getByRole("button", { name: "Run benchmark" }));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(opener).toHaveFocus());
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
