@@ -1,14 +1,7 @@
 import { APIError } from "../../api/client";
-import type { FailureClass, Run } from "../../api/types";
+import type { FailureClass, RunRow } from "../../api/types";
 
-// The run list row is flat on the wire. T39's TypeScript `Run` still nests
-// `failure`. Goldens in internal/api/testdata/console/runs.json win.
-export type RunRow = Run & {
-  failure_class?: FailureClass;
-  failure_summary?: string;
-  cost_cents?: number;
-  created_at?: string;
-};
+export type { RunRow } from "../../api/types";
 
 export const FAILURE_CLASSES = [
   "agent",
@@ -73,7 +66,9 @@ export function isDoneStatus(status: string): boolean {
   return status === "complete" || status === "cancelled";
 }
 
-export function failureClassOf(run: RunRow | undefined): FailureClass | undefined {
+export function failureClassOf(
+  run: (RunRow & { failure?: { class?: unknown } }) | undefined,
+): FailureClass | undefined {
   if (!run) return undefined;
   if (isFailureClass(run.failure_class)) return run.failure_class;
   // Some responses still nest the class under `failure`. Read that field

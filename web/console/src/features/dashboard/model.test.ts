@@ -5,6 +5,8 @@ function run(partial: Pick<RunRow, "id" | "created_at"> & Partial<RunRow>): RunR
   return {
     status: "succeeded",
     work_item_id: "task_04",
+    queue_wait_ms: 0,
+    exec_ms: 0,
     ...partial,
   };
 }

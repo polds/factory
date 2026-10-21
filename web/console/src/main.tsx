@@ -6,8 +6,8 @@ import { createAppRouter } from "./routes";
 import { ThemeProvider } from "./lib/theme";
 import "./index.css";
 // Shared operator-surface vocabulary (.panel, .page-header, .table-scroll, .data-head).
-// Imported here so a direct load of any route gets it, not only the dashboard chunk.
-import "./features/dashboard/surfaces.css";
+// Imported here so a direct load of any route gets it, not only one feature chunk.
+import "./surfaces.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {
