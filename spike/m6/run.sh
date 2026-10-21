@@ -416,11 +416,16 @@ watch_candidate() {
 }
 
 copy_shots() {
-  local name=""
-  mkdir -p /opt/cursor/artifacts
+  local name="" dest="/opt/cursor/artifacts"
+  # GitHub-hosted runners cannot create /opt/cursor (root-owned /opt).
+  # Skip the copy instead of failing the run after Playwright passed.
+  if ! mkdir -p "$dest"; then
+    printf 'copy_shots: cannot create %s; skipping\n' "$dest"
+    return 0
+  fi
   for name in scorers inbox improvement benchmarks; do
     if [[ -f "$EVIDENCE/${name}.png" ]]; then
-      cp "$EVIDENCE/${name}.png" "/opt/cursor/artifacts/${name}.png"
+      cp "$EVIDENCE/${name}.png" "$dest/${name}.png"
     fi
   done
 }

@@ -1,0 +1,182 @@
+# Manual M6 CI live run.
+#
+# workflow_dispatch only. This workflow is not part of the required CI
+# check. Dispatch it from the orchestrator only. Do not run it on
+# pull_request or push, and do not dispatch it from an agent.
+#
+# A dispatch is expected to fail after preflight. Two spike gaps are
+# still open:
+#   watch_candidate only updates the local bare repo, so a live
+#   candidate ref never becomes ready and loop.spec waits up to 12
+#   minutes (spike/m6/run.sh watch_candidate).
+#   cleanup stops local processes and the compose stack only. The run
+#   leaves the improve branch, the pull request, the requested
+#   reviewer, and the labels on the definition repo.
+# factoryd-m6 does receive FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS
+# (deploy/docker-compose.yml, m6 profile). That does not unblock the
+# candidate wait.
+#
+# permissions is contents:read only. GITHUB_TOKEN cannot push or open
+# PRs. There is no job-level permissions block.
+#
+# The first step names each missing required secret or input and exits
+# before the key file is written. Values are never printed. There is
+# no skip path. MODE=live-ci then prints "missing <NAME>" (the run.sh
+# variable) if one is still unset, before any container starts. The
+# driver's preflight (catalog probe and one max_tokens:1 request per
+# distinct model) is not reimplemented here.
+#
+# Repository secrets (values are masked; never printed):
+#   M1_OPENAI_BASE_URL          OpenAI-compatible endpoint (reused)
+#   M1_OPENAI_API_KEY           key for that endpoint (reused)
+#   M1_OPENAI_EXTRA_HEADERS     optional newline-separated Name: value
+#                               lines, same meaning as m5-live (reused)
+#   M6_GITHUB_APP_ID            GitHub App id (Peter creates)
+#   M6_GITHUB_APP_PRIVATE_KEY   unencrypted PEM text (Peter creates)
+#
+# The App must be installed on the definition repo with
+# contents:write, pull_requests:write, issues:write, checks:write,
+# and metadata:read. The workflow writes the PEM to
+# ${RUNNER_TEMP}/m6-github-app.pem at mode 644 and points
+# FACTORY_GITHUB_APP_PRIVATE_KEY_FILE at that path. The file is not
+# under spike/m6/.work/evidence and is not uploaded.
+#
+# Dispatch inputs (not secrets):
+#   model               M6_LIVE_MODEL (default claude-sonnet-5-5)
+#   judge_model         M6_LIVE_MODEL_JUDGE (optional; empty uses model)
+#   definition_git_url  M6_DEFINITION_GIT_URL (required, no default)
+#   github_api_base     M6_GITHUB_API_BASE
+#                       (default https://api.github.com)
+#   reviewer            FACTORY_REVIEWERS_ADMINS (required collaborator
+#                       on the definition repo)
+name: m6-live
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model id (M6_LIVE_MODEL). Default is the M1 live model.
+        required: false
+        default: claude-sonnet-5-5
+        type: string
+      judge_model:
+        description: Optional judge model (M6_LIVE_MODEL_JUDGE). Empty uses model.
+        required: false
+        default: ""
+        type: string
+      definition_git_url:
+        description: Definition repo git URL (M6_DEFINITION_GIT_URL). Required.
+        required: true
+        type: string
+      github_api_base:
+        description: GitHub API base (M6_GITHUB_API_BASE).
+        required: false
+        default: https://api.github.com
+        type: string
+      reviewer:
+        description: Collaborator login (FACTORY_REVIEWERS_ADMINS). Required.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m6-live
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  live:
+    name: m6 live
+    runs-on: ubuntu-latest
+    # Image builds plus the offline scenario against a real model.
+    # The candidate wait inside the spec is 12 minutes and the
+    # Playwright test timeout is 25 minutes.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check required secrets and inputs
+        env:
+          M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
+          M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
+          M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          DEFINITION_GIT_URL: ${{ inputs.definition_git_url }}
+          REVIEWER: ${{ inputs.reviewer }}
+        run: |
+          set -euo pipefail
+          missing=0
+          check_secret() {
+            local name="$1"
+            if [[ -z "${!name:-}" ]]; then
+              printf 'missing secret %s\n' "${name}"
+              missing=1
+            fi
+          }
+          check_input() {
+            local name="$1"
+            local label="$2"
+            if [[ -z "${!name:-}" ]]; then
+              printf 'missing input %s\n' "${label}"
+              missing=1
+            fi
+          }
+          check_secret M6_GITHUB_APP_ID
+          check_secret M6_GITHUB_APP_PRIVATE_KEY
+          check_secret M1_OPENAI_BASE_URL
+          check_secret M1_OPENAI_API_KEY
+          check_input DEFINITION_GIT_URL definition_git_url
+          check_input REVIEWER reviewer
+          if [[ "${missing}" -ne 0 ]]; then
+            exit 1
+          fi
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Mask optional inference headers
+        env:
+          M1_OPENAI_EXTRA_HEADERS: ${{ secrets.M1_OPENAI_EXTRA_HEADERS }}
+        run: python3 scripts/ci/mask-extra-headers.py
+      - name: Write the GitHub App private key
+        env:
+          M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          key="${RUNNER_TEMP}/m6-github-app.pem"
+          if [[ -z "${M6_GITHUB_APP_PRIVATE_KEY:-}" ]]; then
+            echo "missing secret M6_GITHUB_APP_PRIVATE_KEY" >&2
+            exit 1
+          fi
+          printf '%s\n' "${M6_GITHUB_APP_PRIVATE_KEY}" > "${key}"
+          chmod 644 "${key}"
+      - name: Run the CI live M6 driver
+        env:
+          M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          M1_OPENAI_EXTRA_HEADERS: ${{ secrets.M1_OPENAI_EXTRA_HEADERS }}
+          M6_LIVE_MODEL: ${{ inputs.model }}
+          M6_LIVE_MODEL_JUDGE: ${{ inputs.judge_model }}
+          M6_DEFINITION_GIT_URL: ${{ inputs.definition_git_url }}
+          M6_GITHUB_API_BASE: ${{ inputs.github_api_base }}
+          FACTORY_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
+          FACTORY_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/m6-github-app.pem
+          FACTORY_REVIEWERS_ADMINS: ${{ inputs.reviewer }}
+        run: MODE=live-ci ./spike/m6/run.sh
+      # .work is a hidden directory, so the upload must opt in.
+      # A preflight failure leaves no evidence directory.
+      - name: Upload M6 evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: m6-evidence
+          path: spike/m6/.work/evidence/
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: warn
