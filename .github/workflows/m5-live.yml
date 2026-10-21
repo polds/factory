@@ -55,28 +55,7 @@ jobs:
       - name: Mask optional inference headers
         env:
           M1_OPENAI_EXTRA_HEADERS: ${{ secrets.M1_OPENAI_EXTRA_HEADERS }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os
-          import sys
-
-          def mask(value):
-              if value == "" or "\r" in value or "\n" in value:
-                  return
-              escaped = value.replace("%", "%25")
-              sys.stdout.write("::add-mask::" + escaped + "\n")
-
-          raw = os.environ.get("M1_OPENAI_EXTRA_HEADERS", "")
-          for line in raw.splitlines():
-              mask(line)
-              if ":" not in line:
-                  continue
-              value = line.split(":", 1)[1].strip()
-              mask(value)
-              if value.lower().startswith("bearer "):
-                  mask(value[7:].strip())
-          PY
+        run: python3 scripts/ci/mask-extra-headers.py
       - name: Run the CI live M5 driver
         env:
           M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}

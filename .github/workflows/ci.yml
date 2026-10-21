@@ -27,6 +27,7 @@
 #   m3 offline e2e         MODE=offline ./spike/m3/run.sh
 #   m4 offline e2e         MODE=offline ./spike/m4/run.sh
 #   m5 offline e2e         MODE=offline ./spike/m5/run.sh
+#   m6 offline e2e         MODE=offline ./spike/m6/run.sh
 #   task image platform    task and harness images built for linux/arm64
 #   upcoming languages     TypeScript, Python, SQL, Helm, JSON Schema
 #   console                web/console lint, typecheck, test, build, audit,
@@ -47,6 +48,7 @@
 #   m3 live                .github/workflows/m3-live.yml (workflow_dispatch)
 #   m4 live                .github/workflows/m4-live.yml (workflow_dispatch)
 #   m5 live                .github/workflows/m5-live.yml (workflow_dispatch)
+#   m6 live                .github/workflows/m6-live.yml (workflow_dispatch)
 name: ci
 
 on:
@@ -485,6 +487,72 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
 
+  m6-offline:
+    name: m6 offline e2e
+    runs-on: ubuntu-latest
+    # No needs: this job runs in parallel with the other required jobs.
+    # Playwright's test timeout is 25 minutes and waitForFile waits up
+    # to 12 minutes (spike/m6/e2e). 30 minutes covers a cold image build
+    # and the Playwright image pull on top of that.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run m6 no-network tests
+        run: |
+          set -euo pipefail
+          start="${SECONDS}"
+          set +e
+          bash spike/m6/run_test.sh
+          code=$?
+          set -e
+          printf 'spike/m6/run_test.sh %ss\n' "$((SECONDS - start))" | tee -a "${GITHUB_STEP_SUMMARY}"
+          exit "${code}"
+      # defaults.run.shell is bash -eo pipefail, so the driver's status
+      # is the pipeline status. Playwright runs in the pinned image, so
+      # this job has no setup-node and no npm or browser cache.
+      - name: Run the offline M6 driver
+        run: MODE=offline ./spike/m6/run.sh 2>&1 | tee "${RUNNER_TEMP}/m6-offline.log"
+      - name: Record m6 phase times
+        if: always()
+        run: |
+          set -euo pipefail
+          log="${RUNNER_TEMP}/m6-offline.log"
+          {
+            echo "## m6 phase times"
+            echo
+            echo "| Phase | Seconds |"
+            echo "| --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          found=0
+          if [[ -f "${log}" ]]; then
+            while IFS= read -r line || [[ -n "${line}" ]]; do
+              if [[ "${line}" =~ ^m6\ phase\ (.+)\ ([0-9]+)s$ ]]; then
+                printf '| %s | %s |\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" >> "${GITHUB_STEP_SUMMARY}"
+                found=1
+              fi
+            done < "${log}"
+          fi
+          if [[ "${found}" -eq 0 ]]; then
+            echo "no phase lines" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+      # .work is a hidden directory, so the upload must opt in.
+      # The Playwright trace lives under this evidence directory.
+      - name: Upload M6 evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: m6-offline-evidence
+          path: spike/m6/.work/evidence/
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: warn
+
   task-image-arch:
     name: task image platform
     runs-on: ubuntu-latest
@@ -694,6 +762,7 @@ jobs:
       - m3-offline
       - m4-offline
       - m5-offline
+      - m6-offline
       - task-image-arch
       - upcoming-languages
       - console
@@ -721,6 +790,7 @@ jobs:
           M3_OFFLINE: ${{ needs.m3-offline.result }}
           M4_OFFLINE: ${{ needs.m4-offline.result }}
           M5_OFFLINE: ${{ needs.m5-offline.result }}
+          M6_OFFLINE: ${{ needs.m6-offline.result }}
           TASK_IMAGE_ARCH: ${{ needs.task-image-arch.result }}
           UPCOMING: ${{ needs.upcoming-languages.result }}
           CONSOLE: ${{ needs.console.result }}
@@ -758,6 +828,7 @@ jobs:
           report "m3 offline e2e" "${M3_OFFLINE}"
           report "m4 offline e2e" "${M4_OFFLINE}"
           report "m5 offline e2e" "${M5_OFFLINE}"
+          report "m6 offline e2e" "${M6_OFFLINE}"
           report "task image platform" "${TASK_IMAGE_ARCH}"
           report "upcoming languages" "${UPCOMING}"
           report "console" "${CONSOLE}"
