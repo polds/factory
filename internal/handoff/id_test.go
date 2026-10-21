@@ -64,7 +64,7 @@ func TestNewConversationIDShapeAndUniqueness(t *testing.T) {
 			t.Fatalf("id %q body length %d", id, len(body))
 		}
 		for _, r := range body {
-			if !strings.ContainsRune(crockfordAlphabet, r) {
+			if !strings.ContainsRune("0123456789ABCDEFGHJKMNPQRSTVWXYZ", r) {
 				t.Fatalf("id %q has non-crockford rune %q", id, r)
 			}
 		}
@@ -72,5 +72,36 @@ func TestNewConversationIDShapeAndUniqueness(t *testing.T) {
 			t.Fatalf("duplicate id %s", id)
 		}
 		seen[id] = true
+	}
+}
+
+func TestFormatIDGolden(t *testing.T) {
+	t.Parallel()
+	zero := make([]byte, 10)
+	maxEnt := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	got, err := formatID(PrefixConversation, 0, zero)
+	if err != nil || got != "conv_00000000000000000000000000" {
+		t.Fatalf("zero %q %v", got, err)
+	}
+	got, err = formatID(PrefixConversation, (1<<48)-1, maxEnt)
+	if err != nil || got != "conv_7ZZZZZZZZZZZZZZZZZZZZZZZZZ" {
+		t.Fatalf("max %q %v", got, err)
+	}
+}
+
+func TestFormatIDErrorText(t *testing.T) {
+	t.Parallel()
+	entropy := make([]byte, 10)
+	_, err := formatID(PrefixConversation, 1<<48, entropy)
+	if err == nil || err.Error() != "handoff: timestamp does not fit in 48 bits" {
+		t.Fatalf("timestamp %v", err)
+	}
+	_, err = formatID(PrefixConversation, 1, entropy[:9])
+	if err == nil || err.Error() != "handoff: entropy must be 10 bytes" {
+		t.Fatalf("entropy %v", err)
+	}
+	_, err = formatID("run_", 1, entropy)
+	if err == nil || err.Error() != `handoff: unknown id prefix "run_"` {
+		t.Fatalf("prefix %v", err)
 	}
 }

@@ -194,25 +194,16 @@ func (s *Store) ListFactories(ctx context.Context) ([]Factory, error) {
 		       COALESCE(current_definition_id, '')
 		FROM factories
 		ORDER BY name`)
-	if err != nil {
-		return nil, fmt.Errorf("store: list factories: %w", err)
-	}
-	defer rows.Close()
-	out := []Factory{}
-	for rows.Next() {
+	return collect(rows, err, "store: list factories", func(row pgx.Row) (Factory, error) {
 		var fac Factory
-		if err := rows.Scan(
+		if err := row.Scan(
 			&fac.ID, &fac.Name, &fac.Alias, &fac.SchemaVersion, &fac.DefinitionSource,
 			&fac.ProductionRef, &fac.CurrentDefinitionID,
 		); err != nil {
-			return nil, fmt.Errorf("store: list factories: %w", err)
+			return Factory{}, err
 		}
-		out = append(out, fac)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list factories: %w", err)
-	}
-	return out, nil
+		return fac, nil
+	})
 }
 
 // ListAgents returns agents of the factory's current definition.
@@ -223,22 +214,13 @@ func (s *Store) ListAgents(ctx context.Context, factoryID string) ([]Agent, erro
 		JOIN factories f ON f.id = a.factory_id AND f.current_definition_id = a.definition_id
 		WHERE f.id = $1
 		ORDER BY a.name`, factoryID)
-	if err != nil {
-		return nil, fmt.Errorf("store: list agents: %w", err)
-	}
-	defer rows.Close()
-	out := []Agent{}
-	for rows.Next() {
+	return collect(rows, err, "store: list agents", func(row pgx.Row) (Agent, error) {
 		var agent Agent
 		var spec []byte
-		if err := rows.Scan(&agent.ID, &agent.FactoryID, &agent.DefinitionID, &agent.Name, &agent.AgentType, &agent.Runner, &spec); err != nil {
-			return nil, fmt.Errorf("store: list agents: %w", err)
+		if err := row.Scan(&agent.ID, &agent.FactoryID, &agent.DefinitionID, &agent.Name, &agent.AgentType, &agent.Runner, &spec); err != nil {
+			return Agent{}, err
 		}
 		agent.SpecJSON = json.RawMessage(spec)
-		out = append(out, agent)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list agents: %w", err)
-	}
-	return out, nil
+		return agent, nil
+	})
 }

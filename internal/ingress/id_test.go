@@ -43,8 +43,39 @@ func TestNewDeliveryIDShape(t *testing.T) {
 		t.Fatalf("id %q", id)
 	}
 	for _, c := range body {
-		if !strings.ContainsRune(crockfordAlphabet, c) {
+		if !strings.ContainsRune("0123456789ABCDEFGHJKMNPQRSTVWXYZ", c) {
 			t.Fatalf("id %q char %q", id, c)
 		}
+	}
+}
+
+func TestFormatDeliveryIDGolden(t *testing.T) {
+	t.Parallel()
+	zero := make([]byte, 10)
+	maxEnt := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	got, err := formatDeliveryID(time.UnixMilli(0), zero)
+	if err != nil || got != PrefixDelivery+"00000000000000000000000000" {
+		t.Fatalf("zero %q %v", got, err)
+	}
+	got, err = formatDeliveryID(time.UnixMilli((1<<48)-1), maxEnt)
+	if err != nil || got != PrefixDelivery+"7ZZZZZZZZZZZZZZZZZZZZZZZZZ" {
+		t.Fatalf("max %q %v", got, err)
+	}
+}
+
+func TestFormatDeliveryIDErrorText(t *testing.T) {
+	t.Parallel()
+	entropy := make([]byte, 10)
+	_, err := formatDeliveryID(time.UnixMilli((1<<48)-1).Add(time.Millisecond), entropy)
+	if err == nil || err.Error() != "ingress: timestamp does not fit in 48 bits" {
+		t.Fatalf("timestamp %v", err)
+	}
+	_, err = formatDeliveryID(time.UnixMilli(-1), entropy)
+	if err == nil || err.Error() != "ingress: timestamp does not fit in 48 bits" {
+		t.Fatalf("negative %v", err)
+	}
+	_, err = formatDeliveryID(time.UnixMilli(0), entropy[:9])
+	if err == nil || err.Error() != "ingress: entropy must be 10 bytes" {
+		t.Fatalf("entropy %v", err)
 	}
 }

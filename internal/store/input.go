@@ -185,20 +185,11 @@ func (s *Store) ListSuspendedRunIDs(ctx context.Context) ([]string, error) {
 		FROM work_items
 		WHERE suspended_run_id <> ''
 		ORDER BY suspended_run_id ASC`)
-	if err != nil {
-		return nil, fmt.Errorf("store: list suspended runs: %w", err)
-	}
-	defer rows.Close()
-	out := []string{}
-	for rows.Next() {
+	return collect(rows, err, "store: list suspended runs", func(row pgx.Row) (string, error) {
 		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: list suspended runs: %w", err)
+		if err := row.Scan(&id); err != nil {
+			return "", err
 		}
-		out = append(out, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list suspended runs: %w", err)
-	}
-	return out, nil
+		return id, nil
+	})
 }

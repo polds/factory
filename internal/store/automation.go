@@ -340,22 +340,13 @@ func (a *Automation) Owners(ctx context.Context, workItemID string) ([]string, e
 		SELECT automation FROM intake_slots
 		WHERE work_item_id = $1
 		ORDER BY automation`, workItemID)
-	if err != nil {
-		return nil, fmt.Errorf("store: owners: %w", err)
-	}
-	defer rows.Close()
-	names := []string{}
-	for rows.Next() {
+	return collect(rows, err, "store: owners", func(row pgx.Row) (string, error) {
 		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, fmt.Errorf("store: owners: %w", err)
+		if err := row.Scan(&name); err != nil {
+			return "", err
 		}
-		names = append(names, name)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: owners: %w", err)
-	}
-	return names, nil
+		return name, nil
+	})
 }
 
 // GetWorkItem returns the work item or automation.ErrNotFound.
@@ -718,22 +709,13 @@ func listSlots(ctx context.Context, tx pgx.Tx, workItemID string) ([]slotRow, er
 		SELECT automation, delivery_id, run_id
 		FROM intake_slots
 		WHERE work_item_id = $1`, workItemID)
-	if err != nil {
-		return nil, fmt.Errorf("store: ensure intake: %w", err)
-	}
-	defer rows.Close()
-	var out []slotRow
-	for rows.Next() {
+	return collect(rows, err, "store: ensure intake", func(row pgx.Row) (slotRow, error) {
 		var slot slotRow
-		if err := rows.Scan(&slot.automation, &slot.deliveryID, &slot.runID); err != nil {
-			return nil, fmt.Errorf("store: ensure intake: %w", err)
+		if err := row.Scan(&slot.automation, &slot.deliveryID, &slot.runID); err != nil {
+			return slotRow{}, err
 		}
-		out = append(out, slot)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: ensure intake: %w", err)
-	}
-	return out, nil
+		return slot, nil
+	})
 }
 
 func readSlot(ctx context.Context, q rowQuery, workItemID, name string) (slotRow, error) {

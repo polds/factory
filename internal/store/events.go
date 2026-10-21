@@ -130,24 +130,15 @@ func (s *Store) EventsFrom(ctx context.Context, runID string, fromSeq int64, lim
 		WHERE run_id = $1 AND seq > $2
 		ORDER BY seq
 		LIMIT $3`, runID, fromSeq, limit)
-	if err != nil {
-		return nil, fmt.Errorf("store: events from: %w", err)
-	}
-	defer rows.Close()
-	out := []Event{}
-	for rows.Next() {
+	return collect(rows, err, "store: events from", func(row pgx.Row) (Event, error) {
 		var ev Event
 		var payload []byte
-		if err := rows.Scan(&ev.RunID, &ev.Seq, &ev.ExecutionID, &ev.Idx, &ev.TS, &ev.Type, &payload); err != nil {
-			return nil, fmt.Errorf("store: events from: %w", err)
+		if err := row.Scan(&ev.RunID, &ev.Seq, &ev.ExecutionID, &ev.Idx, &ev.TS, &ev.Type, &payload); err != nil {
+			return Event{}, err
 		}
 		ev.Payload = json.RawMessage(payload)
-		out = append(out, ev)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: events from: %w", err)
-	}
-	return out, nil
+		return ev, nil
+	})
 }
 
 // Listen subscribes to channel until ctx is cancelled. Payload strings are
