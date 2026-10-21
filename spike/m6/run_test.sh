@@ -537,6 +537,27 @@ try:
     status, _ = call("POST", "/repos/m6/factory/pulls", {"title": "x", "head": "other", "base": "main"}, auth=False)
     if status != 401:
         raise SystemExit("unauthenticated create was accepted")
+    forge.kill()
+    forge.wait(timeout=5)
+    forge_port = free_port()
+    forge = subprocess.Popen(
+        [sys.executable, os.path.join(root, "spike", "m6", "forge.py"), "--addr", "127.0.0.1:%d" % forge_port],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    wait_up("http://127.0.0.1:%d/_spike/m6" % forge_port)
+    with urllib.request.urlopen("http://127.0.0.1:%d/_spike/m6" % forge_port, timeout=5) as res:
+        fresh = json.load(res)
+    if fresh["pulls"]:
+        raise SystemExit("restarted forge kept pull state")
+    status, restarted = call(
+        "POST",
+        "/repos/m6/factory/pulls",
+        {"title": "again", "head": "improve/b", "base": "main", "body": "fresh"},
+    )
+    if status != 201 or restarted.get("number") != 1:
+        raise SystemExit("restarted forge rejected the saved installation token")
 finally:
     forge.kill()
     fake.kill()
@@ -930,6 +951,9 @@ for remote_mode in live live-ci; do
 done
 run_case offline-remote case_remote offline
 run_case forge-lookup case_remote forge-lookup
+
+# shellcheck source=spike/m6/run_test_t76b.sh
+. "$ROOT/spike/m6/run_test_t76b.sh"
 
 if [[ "$fails" -ne 0 ]]; then
   printf '%s failed\n' "$fails" >&2

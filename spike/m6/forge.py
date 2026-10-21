@@ -61,6 +61,24 @@ def capture(payload: bytes) -> None:
         fh.write("\n")
 
 
+def load_saved_token() -> None:
+    # specs restarts this process so pull state starts empty. factoryd still
+    # presents the bearer captured into M6_TOKEN_FILE and does not mint again.
+    global _token
+    path = os.environ.get("M6_TOKEN_FILE", "")
+    if path == "":
+        return
+    try:
+        with open(path, encoding="utf-8") as fh:
+            token = fh.read().strip()
+    except OSError:
+        return
+    if token == "":
+        return
+    with _lock:
+        _token = token
+
+
 def authorized(header: str) -> bool:
     if not header.startswith("Bearer "):
         return False
@@ -452,6 +470,7 @@ def main() -> None:
         sys.stderr.write("missing M6_UPSTREAM_GITHUB\n")
         raise SystemExit(1)
     host, _, port_text = args.addr.rpartition(":")
+    load_saved_token()
     server = ThreadingHTTPServer((host or "127.0.0.1", int(port_text)), Forge)
     server.serve_forever()
 
