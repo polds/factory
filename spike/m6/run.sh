@@ -395,7 +395,9 @@ cleanup() {
     fi
   done
   if [[ "${COMPOSE_STARTED:-}" == 1 && "${KEEP_UP:-}" != 1 ]]; then
-    compose down --remove-orphans >/dev/null 2>&1 || true
+    # -v drops postgres and minio so a later offline run cannot see a
+    # previous improvement batch and skip the improver.
+    compose down -v --remove-orphans >/dev/null 2>&1 || true
   fi
   exit "$code"
 }
@@ -528,6 +530,7 @@ fi
 
 build_images
 stack_start="$SECONDS"
+compose down -v --remove-orphans >/dev/null 2>&1 || true
 COMPOSE_STARTED=1
 if ! compose up -d --wait --remove-orphans; then
   phase_report "stack up" "$stack_start"
