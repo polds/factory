@@ -10,6 +10,18 @@
 # offline plays the agent, the judge, and the improver. live and live-ci
 # use the same spec with structural assertions. A missing live variable
 # prints "missing <NAME>" and exits before any container starts.
+#
+# Live and live-ci give M6_DEFINITION_GIT_URL to factoryd and to the
+# task secret DEFINITION_GIT_URL, and M6_GITHUB_API_BASE to
+# FACTORY_GITHUB_API_BASE and the task secret GITHUB_API_BASE. The
+# same value is used for both processes and is not rewritten. Offline
+# ignores those two variables and uses the seeded git daemon and the
+# local forge. The seeded repo is not the live definition.
+#
+# The offline improver pushes the branch and does not open a pull
+# request, so factoryd's create is the 201 that carries improve.PRBody.
+# M6_IMPROVER_OPENS_PR=1 is the live-only branch: the improver opens
+# the request first and factoryd's create is 422, then a lookup.
 
 set -euo pipefail
 # shellcheck source=spike/lib/common.sh
@@ -67,10 +79,8 @@ require_mode_secrets() {
     live)
       require_var FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL || return 1
       require_var M6_LIVE_MODEL || return 1
-      if [[ -z "${M6_DEFINITION_GIT_URL:-}" ]]; then
-        echo "missing M6_DEFINITION_GIT_URL" >&2
-        return 1
-      fi
+      require_var M6_DEFINITION_GIT_URL || return 1
+      require_var M6_GITHUB_API_BASE || return 1
       require_var FACTORY_GITHUB_APP_ID || return 1
       require_key_file || return 1
       ;;
@@ -78,10 +88,8 @@ require_mode_secrets() {
       require_var M1_OPENAI_BASE_URL || return 1
       require_var M1_OPENAI_API_KEY || return 1
       require_var M6_LIVE_MODEL || return 1
-      if [[ -z "${M6_DEFINITION_GIT_URL:-}" ]]; then
-        echo "missing M6_DEFINITION_GIT_URL" >&2
-        return 1
-      fi
+      require_var M6_DEFINITION_GIT_URL || return 1
+      require_var M6_GITHUB_API_BASE || return 1
       require_var FACTORY_GITHUB_APP_ID || return 1
       require_key_file || return 1
       ;;
@@ -90,6 +98,44 @@ require_mode_secrets() {
       return 1
       ;;
   esac
+}
+
+# assign_app_key is the host path compose mounts into factoryd.
+# Offline uses the generated .work/app.pem. Live and live-ci use the
+# file require_key_file already checked.
+assign_app_key() {
+  case "${MODE:-}" in
+    offline)
+      M6_APP_KEY_FILE="$WORK/app.pem"
+      ;;
+    live | live-ci)
+      M6_APP_KEY_FILE="$FACTORY_GITHUB_APP_PRIVATE_KEY_FILE"
+      ;;
+    *)
+      echo "MODE must be offline, live, or live-ci" >&2
+      return 1
+      ;;
+  esac
+  export M6_APP_KEY_FILE
+}
+
+# apply_definition_targets sets the URLs factoryd clones and the URLs
+# task containers clone. Offline uses the seeded daemon and the local
+# forge. Live and live-ci use M6_DEFINITION_GIT_URL and
+# M6_GITHUB_API_BASE unchanged for both sides.
+apply_definition_targets() {
+  if [[ "${MODE:-}" == offline ]]; then
+    M6_FACTORYD_GIT_URL="git://host.docker.internal:${GIT_PORT}/m6/factory.git"
+    M6_TASK_GIT_URL="git://${TASK_HOST}:${GIT_PORT}/m6/factory.git"
+    M6_FACTORYD_GITHUB_API="http://host.docker.internal:${FORGE_PORT}"
+    M6_TASK_GITHUB_API="http://${TASK_HOST}:${FORGE_PORT}"
+  else
+    M6_FACTORYD_GIT_URL="$M6_DEFINITION_GIT_URL"
+    M6_TASK_GIT_URL="$M6_DEFINITION_GIT_URL"
+    M6_FACTORYD_GITHUB_API="${M6_GITHUB_API_BASE%/}"
+    M6_TASK_GITHUB_API="${M6_GITHUB_API_BASE%/}"
+  fi
+  export M6_FACTORYD_GIT_URL M6_TASK_GIT_URL M6_FACTORYD_GITHUB_API M6_TASK_GITHUB_API
 }
 
 reject_loopback() {
@@ -220,7 +266,8 @@ distinct_models() {
 }
 
 token_probe() {
-  local base="$1" model="$2" dest="" hdr="" line="" code=""
+  local base="$1" model="$2" dest="" hdr="" line="" name="" code="" status=0
+  local -a names=()
   dest="$(mktemp)"
   hdr="$(mktemp)"
   if ! write_catalog_headers "$hdr"; then
@@ -231,26 +278,25 @@ token_probe() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ -n "$line" ]]; then
       args+=(-H "$line")
+      name="${line%%:*}"
+      name="${name#"${name%%[![:space:]]*}"}"
+      names+=("$name")
     fi
   done <"$hdr"
   rm -f "$hdr"
   args+=(-H "Content-Type: application/json")
+  names+=("Content-Type")
   args+=(-d "{\"model\":\"${model}\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
   args+=("${base%/}/chat/completions")
-  code="$("${TOKEN_CURL:-curl}" "${args[@]}" || true)"
-  python3 - "$dest" "$code" "$model" <<'PY'
-import os
-import sys
-
-dest, code, model = sys.argv[1:]
-key = os.environ.get("FACTORY_INFERENCE_OPENAI_API_KEY", "")
-body = open(dest, encoding="utf-8", errors="replace").read(200)
-if key:
-    body = body.replace(key, "[REDACTED]")
-sys.stdout.write("token probe %s status %s body %s\n" % (model, code, body.replace("\n", " ")))
-raise SystemExit(0 if code.startswith("2") else 1)
-PY
+  code="$("${TOKEN_CURL:-curl}" "${args[@]}")" || status=$?
+  code="${code//$'\n'/}"
+  code="${code//$'\r'/}"
+  if [[ -z "$code" ]]; then
+    code="curl-${status}"
+  fi
+  probe_report "token probe" "$code" "$dest" "$model" "${names[@]}"
   rm -f "$dest"
+  [[ "$status" -eq 0 && "$code" == 2* ]]
 }
 
 preflight_live() {
@@ -260,7 +306,6 @@ preflight_live() {
   catalog="$WORK/catalog.json"
   mkdir -p "$WORK"
   if ! catalog_probe "$probe" "$catalog"; then
-    echo "catalog probe failed" >&2
     return 1
   fi
   while IFS= read -r id; do
@@ -474,9 +519,8 @@ if [[ "$MODE" == offline ]]; then
   export FACTORY_GITHUB_APP_ID
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORK/app.pem" >/dev/null 2>&1
   chmod 644 "$WORK/app.pem"
-  M6_APP_KEY_FILE="$WORK/app.pem"
-  export M6_APP_KEY_FILE
 fi
+assign_app_key
 
 OS_NAME="$(docker info --format '{{.OperatingSystem}}')"
 GW="$(bridge_gateway)"
@@ -502,11 +546,7 @@ if [[ "$MODE" == offline ]]; then
 fi
 printf 'console %s git %s forge %s\n' "$CONSOLE_PORT" "$GIT_PORT" "$FORGE_PORT"
 
-M6_FACTORYD_GIT_URL="git://host.docker.internal:${GIT_PORT}/m6/factory.git"
-M6_TASK_GIT_URL="git://${TASK_HOST}:${GIT_PORT}/m6/factory.git"
-M6_FACTORYD_GITHUB_API="http://host.docker.internal:${FORGE_PORT}"
-M6_TASK_GITHUB_API="http://${TASK_HOST}:${FORGE_PORT}"
-export M6_FACTORYD_GIT_URL M6_TASK_GIT_URL M6_FACTORYD_GITHUB_API M6_TASK_GITHUB_API
+apply_definition_targets
 export FACTORY_EXTERNAL_URL="http://127.0.0.1:${CONSOLE_PORT}"
 export FACTORY_TASK_SERVER_URL="http://${TASK_HOST}:${CONSOLE_PORT}"
 export FACTORY_REVIEWERS_ADMINS="${FACTORY_REVIEWERS_ADMINS:-m6-reviewer}"

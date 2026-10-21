@@ -5,6 +5,10 @@ Each request is answered from its own messages. A process-wide counter
 is the only memory, and it only changes judge reasoning so a rescore
 does not repeat the previous text. The router does not log prompts or
 tokens.
+
+The improver pushes the branch and stops. Factoryd opens the pull
+request. Set M6_IMPROVER_OPENS_PR=1 to force the live-only branch
+where the improver opens the request first.
 """
 
 from __future__ import annotations
@@ -123,6 +127,8 @@ def improve(body: dict) -> dict:
     if branch == "" or git_url == "" or api == "":
         return completion("missing improve target", None)
     if "M6_PUSHED" in text:
+        if os.environ.get("M6_IMPROVER_OPENS_PR") != "1":
+            return completion("Improvement branch is pushed.", None)
         payload = json.dumps(
             {
                 "title": "m6 improver",

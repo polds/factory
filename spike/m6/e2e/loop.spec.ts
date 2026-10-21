@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const evidence = process.env.M6_EVIDENCE ?? "/evidence";
 const signalDir = process.env.M6_SIGNAL ?? "/signal";
@@ -86,6 +86,38 @@ async function waitForFile(name: string): Promise<void> {
   }
 }
 
+async function metricText(row: Locator, label: string): Promise<string> {
+  const dd = row
+    .locator("dt")
+    .filter({ hasText: new RegExp("^" + label + "$") })
+    .locator("xpath=following-sibling::dd[1]");
+  if ((await dd.count()) === 0) return "";
+  return ((await dd.first().innerText()) ?? "").replace(/\s+/g, " ").trim();
+}
+
+function matrixRow(page: Page, configuration: string): Locator {
+  return page.getByRole("table", { name: "Trial matrix" }).getByRole("row").filter({
+    has: page.getByRole("rowheader", { name: new RegExp(configuration, "i") }),
+  });
+}
+
+async function conventionReady(page: Page): Promise<boolean> {
+  const table = page.getByRole("table", { name: "Trial matrix" });
+  if ((await table.count()) === 0) return false;
+  const candidate = matrixRow(page, "Candidate");
+  const baseline = matrixRow(page, "Baseline");
+  if ((await candidate.count()) !== 1 || (await baseline.count()) !== 1) return false;
+  const candidateHeader = ((await candidate.getByRole("rowheader").innerText()) ?? "").toLowerCase();
+  const baselineHeader = ((await baseline.getByRole("rowheader").innerText()) ?? "").toLowerCase();
+  if (!candidateHeader.includes("winner") || baselineHeader.includes("winner")) return false;
+  if ((await metricText(candidate, "n")) !== "5" || (await metricText(baseline, "n")) !== "5") return false;
+  if ((await metricText(candidate, "Errored")) !== "0" || (await metricText(baseline, "Errored")) !== "0") return false;
+  const candidateRate = await metricText(candidate, "Pass rate");
+  const baselineRate = await metricText(baseline, "Pass rate");
+  if (offline) return candidateRate === "100%" && baselineRate === "0%";
+  return /^\d+(?:\.\d+)?%$/.test(candidateRate) && /^\d+(?:\.\d+)?%$/.test(baselineRate);
+}
+
 async function reloadUntil(page: Page, ready: () => Promise<boolean>, timeoutMs: number): Promise<void> {
   const started = Date.now();
   for (;;) {
@@ -116,6 +148,7 @@ test("m6 exit loop", async ({ browser }) => {
     if (offline) {
       await createItem(page, "m6-bad-label", "m6-bad-label");
     }
+    await axe(page, "work-items");
 
     await openSection(page, "Scorers");
     await page.getByRole("link", { name: "Results for cite-sources" }).click();
@@ -127,8 +160,13 @@ test("m6 exit loop", async ({ browser }) => {
     );
     const missed = page.getByRole("row").filter({ hasText: "missed" });
     trace.push("scorer: cite-sources");
-    const missedIds = await missed.locator("td").first().allTextContents();
-    trace.push("failing results: " + missedIds.join(" "));
+    const failingIds: string[] = [];
+    for (let i = 0; i < (await missed.count()); i += 1) {
+      const id = ((await missed.nth(i).getByRole("link").first().innerText()) ?? "").trim();
+      expect(id.startsWith("run_")).toBe(true);
+      failingIds.push(id);
+    }
+    trace.push("failing results: " + failingIds.join(" "));
     if (offline) {
       await expect(page.getByText("Scorer invalid").first()).toBeVisible({ timeout: 180_000 });
       trace.push("invalid label: not-a-label");
@@ -165,6 +203,16 @@ test("m6 exit loop", async ({ browser }) => {
     await expect(page.getByText("PR open").first()).toBeVisible();
     const batchId = (await page.locator("td.mono").first().textContent()) ?? "";
     trace.push("batch: " + batchId.trim());
+    const regressions = page.getByRole("table", { name: /Regressions for/ });
+    await expect(regressions).toBeVisible();
+    const regressionRows = regressions.locator("tbody").getByRole("row");
+    await expect(regressionRows).toHaveCount(failingIds.length);
+    for (const id of failingIds) {
+      const row = regressionRows.filter({ has: page.getByRole("link", { name: id, exact: true }) });
+      await expect(row).toHaveCount(1);
+      await expect(row.getByRole("cell", { name: "cite-sources", exact: true })).toBeVisible();
+      await expect(row.getByRole("cell", { name: "missed", exact: true })).toBeVisible();
+    }
     await axe(page, "improvement");
     await saveDom(page, "improvement");
     await saveShot(page, "improvement");
@@ -183,10 +231,18 @@ test("m6 exit loop", async ({ browser }) => {
         pulls?: { reviewers?: string[]; creates?: { body?: string; status?: number }[] }[];
         checks?: { summary?: string }[];
       };
-      const bodies = (forge.pulls ?? []).flatMap((pull) => pull.creates ?? []).map((row) => row.body ?? "");
-      const product = bodies.find((body) => body.includes("## Regressions addressed"));
-      expect(product ?? "").toContain("Layer changed: skill");
-      expect((product ?? "").split("\n").filter((line) => line.startsWith("- run ")).length).toBeGreaterThanOrEqual(3);
+      const creates = (forge.pulls ?? []).flatMap((pull) => pull.creates ?? []);
+      const product = creates.find(
+        (row) => row.status === 201 && (row.body ?? "").includes("## Regressions addressed"),
+      );
+      const body = product?.body ?? "";
+      expect(product?.status).toBe(201);
+      expect(body).toContain("Layer changed: skill");
+      expect(body.split("\n").filter((line) => line.startsWith("- run ")).length).toBe(failingIds.length);
+      for (const id of failingIds) {
+        expect(body).toContain("- run " + id + " ");
+      }
+      expect(creates.some((row) => (row.body ?? "").includes("Opened by the offline improver."))).toBe(false);
       expect((forge.pulls ?? [])[0]?.reviewers ?? []).toContain("m6-reviewer");
       const guard = (forge.checks ?? []).some((row) => (row.summary ?? "").includes("factory/config"));
       expect(guard).toBe(true);
@@ -223,32 +279,33 @@ test("m6 exit loop", async ({ browser }) => {
     const started = (await page.getByText(/Benchmark run .+ started/).textContent()) ?? "";
     trace.push("benchmark run: " + started.replace("Benchmark run ", "").replace(" started.", ""));
     trialsLive = true;
-    await reloadUntil(
-      page,
-      async () => {
-        const matrix = page.getByRole("table", { name: "Trial matrix" });
-        if ((await matrix.count()) === 0) return false;
-        const text = await matrix.innerText();
-        // Row headers are uppercased in CSS, so innerText says WINNER.
-        const folded = text.toLowerCase();
-        if (offline) {
-          return folded.includes("winner") && text.includes("100%") && text.includes("0%");
-        }
-        return folded.includes("winner");
-      },
-      15 * 60 * 1000,
-    );
-    const matrixText = await page.getByRole("table", { name: "Trial matrix" }).innerText();
-    trace.push("matrix: " + matrixText.replace(/\s+/g, " "));
+    await reloadUntil(page, async () => conventionReady(page), 15 * 60 * 1000);
+    const candidate = matrixRow(page, "Candidate");
+    const baseline = matrixRow(page, "Baseline");
+    await expect(candidate.getByRole("rowheader")).toContainText("Winner");
+    await expect(baseline.getByRole("rowheader")).not.toContainText("Winner");
+    await expect.poll(async () => metricText(candidate, "n")).toBe("5");
+    await expect.poll(async () => metricText(baseline, "n")).toBe("5");
+    await expect.poll(async () => metricText(candidate, "Errored")).toBe("0");
+    await expect.poll(async () => metricText(baseline, "Errored")).toBe("0");
+    const candidateRate = await metricText(candidate, "Pass rate");
+    const baselineRate = await metricText(baseline, "Pass rate");
     if (offline) {
+      expect(candidateRate).toBe("100%");
+      expect(baselineRate).toBe("0%");
       await expect(page.locator(".callout")).toHaveCount(0);
-      expect(matrixText).toContain("100%");
-      expect(matrixText).toContain("0%");
-      trace.push("d5: Candidate");
     } else {
-      await expect(page.getByText("Winner").first()).toBeVisible();
-      trace.push("d5: winner present");
+      expect(candidateRate).toMatch(/^\d+(?:\.\d+)?%$/);
+      expect(baselineRate).toMatch(/^\d+(?:\.\d+)?%$/);
     }
+    trace.push(
+      "matrix: candidate " +
+        candidateRate +
+        " n 5 errored 0 baseline " +
+        baselineRate +
+        " n 5 errored 0",
+    );
+    trace.push("d5: Candidate");
     await axe(page, "benchmarks");
     await saveDom(page, "benchmarks");
     await saveShot(page, "benchmarks");
@@ -258,6 +315,7 @@ test("m6 exit loop", async ({ browser }) => {
       const factoryId = new URL(page.url()).pathname.split("/")[2] ?? "";
       await page.goto(`/f/${factoryId}/benchmarks`);
       await expect(page.getByRole("link", { name: "fault", exact: true })).toBeVisible();
+      await axe(page, "benchmark-list");
       await page.getByRole("link", { name: "fault", exact: true }).click();
       await page.locator("#benchmark-repetitions").fill("1");
       await page.getByRole("button", { name: "Run benchmark" }).click();
@@ -273,6 +331,7 @@ test("m6 exit loop", async ({ browser }) => {
         8 * 60 * 1000,
       );
       trace.push("fault errored: infrastructure");
+      await axe(page, "fault");
     }
 
     await openSection(page, "Scorers");
@@ -304,6 +363,7 @@ test("m6 exit loop", async ({ browser }) => {
       8 * 60 * 1000,
     );
     await expect(page.getByRole("log", { name: "Run transcript" })).toBeVisible();
+    await axe(page, "run-detail");
     trace.push("score now: left pending");
 
     await page.goto("/");

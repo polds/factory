@@ -179,9 +179,74 @@ PY
   chmod 600 "$dest"
 }
 
+# probe_report prints a failed model-endpoint response. The arguments
+# after the model id are header names. Values are not printed. The body
+# is the first 200 characters after every configured inference secret
+# is replaced: the API key, the LiteLLM key, and every extra-header value.
+probe_report() {
+  local kind="$1" status="$2" body_file="$3" model="$4"
+  shift 4
+  local joined="" name=""
+  for name in "$@"; do
+    if [[ -n "$joined" ]]; then
+      joined+=","
+    fi
+    joined+="$name"
+  done
+  PROBE_KIND="$kind" PROBE_STATUS="$status" PROBE_BODY_FILE="$body_file" \
+    PROBE_MODEL="$model" PROBE_HEADERS="$joined" python3 - <<'PY'
+import os
+import sys
+
+kind = os.environ.get("PROBE_KIND", "probe")
+status = os.environ.get("PROBE_STATUS", "")
+model = os.environ.get("PROBE_MODEL", "")
+headers = os.environ.get("PROBE_HEADERS", "")
+path = os.environ.get("PROBE_BODY_FILE", "")
+try:
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        body = fh.read(8192)
+except OSError:
+    body = ""
+
+def add(secrets, value):
+    text = value.strip()
+    if len(text) >= 4:
+        secrets.append(text)
+    if text.lower().startswith("bearer "):
+        token = text[7:].strip()
+        if len(token) >= 4:
+            secrets.append(token)
+
+secrets = []
+for env_name in ("FACTORY_INFERENCE_OPENAI_API_KEY", "M1_OPENAI_API_KEY"):
+    add(secrets, os.environ.get(env_name, ""))
+for env_name in (
+    "FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS",
+    "M1_OPENAI_EXTRA_HEADERS",
+):
+    raw = os.environ.get(env_name, "")
+    for line in raw.split("\n"):
+        if ":" not in line:
+            continue
+        add(secrets, line.split(":", 1)[1])
+for secret in sorted(set(secrets), key=len, reverse=True):
+    body = body.replace(secret, "[REDACTED]")
+body = body[:200].replace("\n", " ").replace("\r", " ")
+label = kind if model == "" else "%s %s" % (kind, model)
+sys.stderr.write("%s status %s headers %s body %s\n" % (label, status, headers, body))
+PY
+}
+
+# catalog_probe GETs $base/models. A 2xx leaves the body in dest and
+# prints nothing. Any other result prints the HTTP status, the header
+# names, and a redacted body, then returns 1. CATALOG_CURL is the test
+# seam. A stub that exits 0 and prints no status is success, so older
+# stubs keep working. curl itself always prints the status because of -w.
 catalog_probe() {
-  local base="$1" dest="$2" hdr="" line=""
-  local -a args=(-fsS --connect-timeout 2 -m 5 -o "$dest")
+  local base="$1" dest="$2" hdr="" line="" name="" code="" status=0
+  local -a args=(-sS --connect-timeout 2 -m 5 -o "$dest" -w '%{http_code}')
+  local -a names=()
   hdr="$(mktemp)"
   if ! write_catalog_headers "$hdr"; then
     rm -f "$hdr"
@@ -190,12 +255,28 @@ catalog_probe() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ -n "$line" ]]; then
       args+=(-H "$line")
+      name="${line%%:*}"
+      name="${name#"${name%%[![:space:]]*}"}"
+      names+=("$name")
     fi
   done <"$hdr"
   rm -f "$hdr"
   args+=("${base%/}/models")
-  # CATALOG_CURL is the test seam. Production leaves it unset.
-  "${CATALOG_CURL:-curl}" "${args[@]}"
+  code="$("${CATALOG_CURL:-curl}" "${args[@]}")" || status=$?
+  code="${code//$'\n'/}"
+  code="${code//$'\r'/}"
+  if [[ "$status" -eq 0 && -z "$code" ]]; then
+    return 0
+  fi
+  if [[ "$status" -eq 0 && "$code" == 2* ]]; then
+    return 0
+  fi
+  if [[ -z "$code" ]]; then
+    code="curl-${status}"
+  fi
+  probe_report "catalog probe" "$code" "$dest" "" "${names[@]}"
+  : >"$dest"
+  return 1
 }
 
 catalog_contains_id() {
