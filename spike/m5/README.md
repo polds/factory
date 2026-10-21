@@ -31,7 +31,7 @@ KEEP_UP=1 ./spike/m5/run.sh
 
 `./spike/m5/run.sh --manual` records the same stack and prints the console URLs. It does not run Playwright.
 
-`specs` keeps the compose project and the database. Offline restarts the model stubs and the router from the recorded commands so their scripts start fresh. It then runs Playwright and the evidence check. It does not run `go build`, `docker build`, or `compose up`. `HEADED=1 ./spike/m5/run.sh specs` uses the host Playwright path. Live and live-ci read inference settings again from the environment and `deploy/.env`. They are not stored in the stack record.
+`specs` keeps the compose project and the database. Offline restarts the model stubs and the router from the recorded commands so their scripts start fresh. It then runs Playwright and the evidence check. It does not run `go build`, `docker build`, or `compose up`. `HEADED=1 ./spike/m5/run.sh specs` uses the host Playwright path. Live and live-ci read inference settings again from the environment and `deploy/.env`. They are not stored in the stack record. Each `specs` invocation sets `M5_RUN_NONCE` so work-item titles do not match the previous run. A default run leaves that variable unset and keeps today's titles.
 
 With no recorded stack, `specs` prints this and starts nothing:
 

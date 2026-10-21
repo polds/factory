@@ -543,8 +543,16 @@ handle_idle() {
 write_github_body() {
   local kind="$1" dest="$2"
   python3 - "$kind" "$dest" <<'PY'
-import json, sys
+import json, os, sys
 kind, dest = sys.argv[1], sys.argv[2]
+nonce = os.environ.get("M5_RUN_NONCE", "").strip()
+if nonce and any(c not in "0123456789abcdef" for c in nonce):
+    raise SystemExit("M5_RUN_NONCE must be hex")
+day_title = "m5-day" if nonce == "" else f"m5-day {nonce}"
+# A specs rerun must not reuse issue 42, or intake attaches the event
+# to the work item the previous run already finished.
+issue_number = 42 if nonce == "" else 100000 + int(nonce[:4], 16) % 50000
+issue_id = 4200 if nonce == "" else 500000 + int(nonce[:4], 16)
 repo = {
     "id": 50,
     "name": "m5",
@@ -556,9 +564,9 @@ if kind == "issue":
     body = {
         "action": "opened",
         "issue": {
-            "id": 4200,
-            "number": 42,
-            "title": "m5-day",
+            "id": issue_id,
+            "number": issue_number,
+            "title": day_title,
             "body": "Day of factory. Finish with a short summary and no tool calls.",
             "html_url": "https://github.com/polds/m5/issues/42",
             "user": sender,
@@ -1055,6 +1063,19 @@ m5_specs() {
       exit 1
     fi
   fi
+  # A new nonce per specs invocation. Unset on the default path, so that
+  # run's titles stay exactly as they are today.
+  M5_RUN_NONCE="$(openssl rand -hex 4)"
+  if [[ ! "$M5_RUN_NONCE" =~ ^[0-9a-f]{8}$ ]]; then
+    echo "M5 FAIL — could not mint a spec nonce" >&2
+    exit 1
+  fi
+  export M5_RUN_NONCE
+  case " ${PLAYWRIGHT_EXTRA_ENV:-} " in
+    *" M5_RUN_NONCE "*) ;;
+    *) PLAYWRIGHT_EXTRA_ENV="${PLAYWRIGHT_EXTRA_ENV:+$PLAYWRIGHT_EXTRA_ENV }M5_RUN_NONCE" ;;
+  esac
+  export PLAYWRIGHT_EXTRA_ENV
   m5_playwright_and_evidence
   exit 0
 }
