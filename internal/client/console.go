@@ -9,36 +9,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/polds/factory/internal/api"
 )
 
 // RunFilter selects GET /api/v1/agent/runs. Empty fields are omitted.
-type RunFilter struct {
-	FactoryID    string
-	Agent        string
-	Status       string
-	Worker       string
-	Model        string
-	FailureClass string
-	Source       string
-	ParentRunID  string
-	WorkItemID   string
-}
+type RunFilter = api.RunFilter
 
 // Failure is the agent-vs-infrastructure classification on a run.
-type Failure struct {
-	Class     string   `json:"class"`
-	Code      string   `json:"code"`
-	Summary   string   `json:"summary"`
-	Retryable bool     `json:"retryable"`
-	Evidence  []string `json:"evidence"`
-}
+type Failure = api.Failure
 
 // SteerState says whether interrupt and follow-up are available.
-type SteerState struct {
-	Enabled   bool       `json:"enabled"`
-	Reason    string     `json:"reason"`
-	IdleUntil *time.Time `json:"idle_until,omitempty"`
-}
+type SteerState = api.SteerState
 
 // RunDetail is GET /api/v1/agent/runs/{id} with the console fields.
 type RunDetail struct {
@@ -64,79 +46,31 @@ type RunDetail struct {
 }
 
 // Phase is one timeline row.
-type Phase struct {
-	Phase       string    `json:"phase"`
-	At          time.Time `json:"at"`
-	DurationMS  int64     `json:"duration_ms"`
-	ExecutionID string    `json:"execution_id"`
-}
+type Phase = api.Phase
 
 // Usage is the harness token and cost report.
-type Usage struct {
-	Total   UsageTotal   `json:"total"`
-	ByModel []ModelUsage `json:"by_model"`
-	Calls   []UsageCall  `json:"calls"`
-}
+type Usage = api.Usage
 
 // UsageTotal is the summed token line.
-type UsageTotal struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
-	CostCents    int64 `json:"cost_cents"`
-}
+type UsageTotal = api.UsageTotal
 
 // ModelUsage is one model's totals.
-type ModelUsage struct {
-	ModelID      string `json:"model_id"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
-	CostCents    int64  `json:"cost_cents"`
-}
+type ModelUsage = api.ModelUsage
 
 // UsageCall is one model call.
-type UsageCall struct {
-	Seq          int64  `json:"seq"`
-	Turn         int    `json:"turn"`
-	ModelID      string `json:"model_id"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
-	CostCents    int64  `json:"cost_cents"`
-}
+type UsageCall = api.UsageCall
 
 // SteerAck is the 202 body for interrupt and followup.
-type SteerAck struct {
-	SteerID string `json:"steer_id"`
-}
+type SteerAck = api.SteerAck
 
 // Steer is one queued steer.
-type Steer struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"`
-	Text string `json:"text"`
-}
+type Steer = api.Steer
 
 // InboxItem is one inbox row.
-type InboxItem struct {
-	Kind       string    `json:"kind"`
-	ID         string    `json:"id"`
-	WorkItemID string    `json:"work_item_id"`
-	RunID      string    `json:"run_id"`
-	CreatedAt  time.Time `json:"created_at"`
-	Title      string    `json:"title"`
-	Detail     string    `json:"detail"`
-	Action     string    `json:"action"`
-}
+type InboxItem = api.InboxItem
 
 // Automation is one automation and its runtime pause.
-type Automation struct {
-	Name          string     `json:"name"`
-	Enabled       bool       `json:"enabled"`
-	RuntimePaused bool       `json:"runtime_paused"`
-	Triggers      []string   `json:"triggers"`
-	LastFiredAt   *time.Time `json:"last_fired_at,omitempty"`
-	MatchCount    int        `json:"match_count"`
-	RunsStarted   int        `json:"runs_started"`
-}
+type Automation = api.Automation
 
 // Webhook is a registration. It has no token or signing secret.
 type Webhook struct {
@@ -150,66 +84,25 @@ type Webhook struct {
 }
 
 // WorkersView is the connected workers report.
-type WorkersView struct {
-	Workers []Worker   `json:"workers"`
-	Pools   []PoolStat `json:"pools"`
-}
+type WorkersView = api.WorkersView
 
 // Worker is one connected worker.
-type Worker struct {
-	ID             string `json:"id"`
-	Pool           string `json:"pool"`
-	Platform       string `json:"platform"`
-	Backend        string `json:"backend"`
-	Version        string `json:"version"`
-	InFlight       int    `json:"in_flight"`
-	Capacity       int    `json:"capacity"`
-	HeartbeatAgeMS int64  `json:"heartbeat_age_ms"`
-	Reconnects     int    `json:"reconnects"`
-	Rejected1h     int    `json:"rejected_1h"`
-}
+type Worker = api.Worker
 
 // PoolStat is one pool's queue line.
-type PoolStat struct {
-	Pool            string `json:"pool"`
-	QueueDepth      int    `json:"queue_depth"`
-	P50TimeToAssign int64  `json:"p50_time_to_assign_ms"`
-	Rejected1h      int    `json:"rejected_1h"`
-}
+type PoolStat = api.PoolStat
 
 // Secret is a name and whether it is present. It has no value field.
-type Secret struct {
-	Name          string      `json:"name"`
-	Provider      string      `json:"provider"`
-	Present       bool        `json:"present"`
-	UsedBy        []SecretUse `json:"used_by"`
-	LastUsedRunID string      `json:"last_used_run_id,omitempty"`
-}
+type Secret = api.Secret
 
 // SecretUse is one consumer of a secret name.
-type SecretUse struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
-}
+type SecretUse = api.SecretUse
 
 // Identity is a read-only credential name. It has no value field.
-type Identity struct {
-	Subject    string     `json:"subject"`
-	Kind       string     `json:"kind"`
-	Scope      string     `json:"scope"`
-	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
-}
+type Identity = api.Identity
 
 // Summary is the operational dashboard.
-type Summary struct {
-	RunsByStatus        map[string]int `json:"runs_by_status"`
-	RunsByFailureClass  map[string]int `json:"runs_by_failure_class"`
-	QueueWaitP50MS      int64          `json:"queue_wait_p50_ms"`
-	ActiveRuns          int            `json:"active_runs"`
-	WaitingOnHuman      int            `json:"waiting_on_human"`
-	PRsOpened           int            `json:"prs_opened"`
-	DeliveriesUnmatched int            `json:"deliveries_unmatched"`
-}
+type Summary = api.Summary
 
 // Definition is GET /factory/{uid}/definition.
 type Definition struct {
@@ -224,10 +117,7 @@ type Definition struct {
 // DefinitionFile is one definition file.
 // Content is the source text. definition show prints it. This type has no
 // value field, so a JSON "value" on the response is not printed.
-type DefinitionFile struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-}
+type DefinitionFile = api.DefinitionFile
 
 type followupBody struct {
 	Text string `json:"text"`
@@ -262,14 +152,7 @@ type RunRow struct {
 }
 
 // SteerRecord is one row of GET /agent/runs/{id}/steers.
-type SteerRecord struct {
-	ID          string     `json:"id"`
-	Kind        string     `json:"kind"`
-	Text        string     `json:"text"`
-	Actor       string     `json:"actor"`
-	CreatedAt   time.Time  `json:"created_at"`
-	DeliveredAt *time.Time `json:"delivered_at,omitempty"`
-}
+type SteerRecord = api.SteerRecord
 
 // ListRuns lists runs with the console filters.
 func (c *Client) ListRuns(ctx context.Context, f RunFilter) ([]RunRow, error) {

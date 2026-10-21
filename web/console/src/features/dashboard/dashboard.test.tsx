@@ -1,23 +1,16 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import axe from "axe-core";
 import { http, HttpResponse } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setAPIKey } from "../../api/session";
 import type { FactorySummary } from "../../api/types";
 import { demoAPIKey } from "../../mocks/demo-key";
 import { server } from "../../mocks/server";
+import { expectNoSeriousViolations } from "../../test/axe";
+import { emit, installFactoryStream } from "../../test/factory-stream";
 import { renderApp } from "../../test/render";
 import goldenRuns from "./__fixtures__/runs.json";
 import { STREAM_REFRESH_MS } from "./live";
-
-async function expectClean(node: Element) {
-  const results = await axe.run(node);
-  const blocking = results.violations.filter(
-    (violation) => violation.impact === "serious" || violation.impact === "critical",
-  );
-  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
-}
 
 function summary(partial: Partial<FactorySummary>): FactorySummary {
   return {
@@ -107,30 +100,18 @@ describe("dashboard", () => {
     const agentRun = screen.getByRole("link", { name: "run_01M53XJ9A6NZ62RF26AK9ZDNQK" });
     expect(agentRun).toHaveAttribute("href", "/runs/run_01M53XJ9A6NZ62RF26AK9ZDNQK");
     expect(screen.getByRole("link", { name: "All runs" })).toHaveAttribute("href", "/runs");
-    await expectClean(container);
+    await expectNoSeriousViolations(container);
   });
 
   it("refetches one factory summary once inside the debounce window", async () => {
     setAPIKey(demoAPIKey);
     const counts = new Map<string, number>();
-    const streams = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
-    const encoder = new TextEncoder();
+    const streams = installFactoryStream();
     server.use(
       http.get("/api/v1/factory/:factoryId/summary", ({ params }) => {
         const id = String(params.factoryId);
         counts.set(id, (counts.get(id) ?? 0) + 1);
         return HttpResponse.json(id === "fac_platform" ? platform : payments);
-      }),
-      http.get("/api/v1/factory/:factoryId/events", ({ params }) => {
-        const id = String(params.factoryId);
-        const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            streams.set(id, controller);
-          },
-        });
-        return new HttpResponse(stream, {
-          headers: { "Content-Type": "text/event-stream" },
-        });
       }),
     );
     await renderApp("/");
@@ -140,12 +121,8 @@ describe("dashboard", () => {
     const other = counts.get("fac_platform") ?? 0;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const payload = JSON.stringify({ SECRET_PLANT: "SECRET_PLANT", run_id: "run_1" });
-    streams
-      .get("fac_payments")
-      ?.enqueue(encoder.encode(`id: 1\nevent: run.terminal\ndata: ${payload}\n\n`));
-    streams
-      .get("fac_payments")
-      ?.enqueue(encoder.encode(`id: 2\nevent: run.terminal\ndata: ${payload}\n\n`));
+    emit("fac_payments", `id: 1\nevent: run.terminal\ndata: ${payload}\n\n`);
+    emit("fac_payments", `id: 2\nevent: run.terminal\ndata: ${payload}\n\n`);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
@@ -163,28 +140,17 @@ describe("dashboard", () => {
 
   it("changes the live indicator when the stream drops", async () => {
     setAPIKey(demoAPIKey);
-    const streams = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
-    const encoder = new TextEncoder();
+    const streams = installFactoryStream();
     server.use(
       http.get("/api/v1/factory/:factoryId/summary", ({ params }) =>
         HttpResponse.json(String(params.factoryId) === "fac_platform" ? platform : payments),
       ),
-      http.get("/api/v1/factory/:factoryId/events", ({ params }) => {
-        const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            streams.set(String(params.factoryId), controller);
-          },
-        });
-        return new HttpResponse(stream, {
-          headers: { "Content-Type": "text/event-stream" },
-        });
-      }),
     );
     await renderApp("/");
     await screen.findByText("10");
     await waitFor(() => expect(streams.size).toBe(2));
-    for (const [id, controller] of streams) {
-      controller.enqueue(encoder.encode(`id: ${id}\nevent: run.terminal\ndata: {}\n\n`));
+    for (const id of streams.keys()) {
+      emit(id, `id: ${id}\nevent: run.terminal\ndata: {}\n\n`);
     }
     expect(await screen.findByRole("status", { name: "Live" })).toBeInTheDocument();
     streams.get("fac_payments")?.error(new Error("dropped"));
@@ -196,8 +162,8 @@ describe("dashboard", () => {
     const user = userEvent.setup();
     const { container } = await renderApp("/");
     expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
-    await expectClean(container);
+    await expectNoSeriousViolations(container);
     await user.click(screen.getByRole("button", { name: "Switch to dark theme" }));
-    await expectClean(document.body);
+    await expectNoSeriousViolations(document.body);
   });
 });

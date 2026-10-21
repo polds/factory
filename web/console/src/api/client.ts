@@ -10,6 +10,7 @@ import type {
   BenchmarkTrials,
   CapturedBenchmarkTask,
   ConnectedWorkers,
+  DefinitionFile,
   DefinitionView,
   Delivery,
   Factory,
@@ -115,6 +116,15 @@ export class ConsoleClient {
   applyDefinition(factoryId: string): Promise<ApplyResponse> {
     return this.request(`/api/v1/factory/${segment(factoryId)}/definition:apply`, {
       method: "POST",
+    });
+  }
+
+  applyDefinitionTree(factoryId: string, files: readonly DefinitionFile[]): Promise<ApplyResponse> {
+    return this.request(`/api/v1/factory/${segment(factoryId)}/definition:apply`, {
+      method: "POST",
+      body: JSON.stringify({
+        files: files.map((file) => ({ path: file.path, content: file.content })),
+      }),
     });
   }
 
@@ -372,6 +382,21 @@ export class ConsoleClient {
     query: { status?: string; limit?: number } = {},
   ): Promise<Delivery[]> {
     return this.request(withQuery(`/api/v1/factory/${segment(factoryId)}/deliveries`, query));
+  }
+
+  async listDeliveriesDetailed(
+    factoryId: string,
+    query: { status?: string; limit?: number } = {},
+  ): Promise<Delivery[]> {
+    const rows = await this.request<Delivery[] | null>(
+      withQuery(`/api/v1/factory/${segment(factoryId)}/deliveries`, {
+        status: query.status,
+        limit: query.limit,
+        include: "body",
+      }),
+    );
+    if (rows === undefined) return [];
+    return rows as Delivery[];
   }
 
   replayDelivery(id: string): Promise<Delivery> {

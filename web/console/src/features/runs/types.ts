@@ -1,11 +1,6 @@
-import type { FailureClass, Run, RunDetail, TimelinePhase } from "../../api/types";
+import type { RunDetail, TimelinePhase } from "../../api/types";
 
-// The list golden is flat: failure_class, failure_summary, and cost_cents.
-// api.Run has a nested failure object and no cost. T49 reconciles that.
-export type RunRow = Run & {
-  failure_class?: FailureClass | "";
-  failure_summary?: string;
-};
+export type { RunRow } from "../../api/types";
 
 export type RunDetailWire = RunDetail;
 

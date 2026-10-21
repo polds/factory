@@ -1,11 +1,11 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import axe from "axe-core";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 import { setAPIKey } from "../../api/session";
 import { demoAPIKey } from "../../mocks/demo-key";
 import { server } from "../../mocks/server";
+import { expectNoSeriousViolations } from "../../test/axe";
 import { renderApp } from "../../test/render";
 import gitDefinition from "./__fixtures__/definition.json";
 import localDefinition from "./__fixtures__/definition-local.json";
@@ -16,14 +16,6 @@ const localFiles = localDefinition.files as DefinitionFile[];
 async function renderDefinition(path = "/f/fac_1/definition") {
   setAPIKey(demoAPIKey);
   return await renderApp(path);
-}
-
-async function expectClean() {
-  const results = await axe.run(document.body);
-  const blocking = results.violations.filter(
-    (violation) => violation.impact === "serious" || violation.impact === "critical",
-  );
-  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
 }
 
 function pathsOf(requests: string[]): string[] {
@@ -52,7 +44,7 @@ describe("definition", () => {
       expect(box).toHaveProperty("readOnly", true);
     }
     expect(pathsOf(urls).every((path) => path.startsWith("/api/v1"))).toBe(true);
-    await expectClean();
+    await expectNoSeriousViolations();
   });
 
   it("validates the edited tree and keeps apply disabled while errors remain", async () => {
@@ -106,7 +98,7 @@ describe("definition", () => {
       "href",
       "/api/v1/factory-files/schemas/v1alpha1",
     );
-    await expectClean();
+    await expectNoSeriousViolations();
   });
 
   it("moves through the file tree with the arrow keys", async () => {
@@ -172,7 +164,7 @@ describe("definition", () => {
     expect(within(dialog).getByText("factory.yaml")).toBeInTheDocument();
     expect(within(dialog).getByRole("heading", { name: "Deleted (1)" })).toBeInTheDocument();
     expect(within(dialog).getByText("agents/reviewer.yaml")).toBeInTheDocument();
-    await expectClean();
+    await expectNoSeriousViolations();
     const confirm = within(dialog).getByRole("button", { name: "Confirm apply" });
     await user.dblClick(confirm);
     await waitFor(() => expect(applied).toHaveLength(1));

@@ -1,12 +1,12 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import axe from "axe-core";
 import { describe, expect, it } from "vitest";
 import { FailureClassFilter } from "../components/FailureClassFilter";
 import { StatusBadge } from "../components/StatusBadge";
 import type { FailureClass } from "../api/types";
 import { setAPIKey } from "../api/session";
 import { demoAPIKey } from "../mocks/demo-key";
+import { expectNoSeriousViolations } from "./axe";
 import { renderApp, renderWithTheme } from "./render";
 
 const classes = [
@@ -15,14 +15,6 @@ const classes = [
   "configuration",
   "cancelled",
 ] as const satisfies readonly FailureClass[];
-
-async function expectClean(node: Element) {
-  const results = await axe.run(node);
-  const blocking = results.violations.filter(
-    (violation) => violation.impact === "serious" || violation.impact === "critical",
-  );
-  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
-}
 
 describe("accessibility", () => {
   it("gives each failure class an icon, a colour, and a label", async () => {
@@ -43,7 +35,7 @@ describe("accessibility", () => {
       return badge?.getAttribute("style");
     });
     expect(new Set(colors).size).toBe(classes.length);
-    await expectClean(container);
+    await expectNoSeriousViolations(container);
   });
 
   it("keeps the shell clean in light and dark themes", async () => {
@@ -51,10 +43,10 @@ describe("accessibility", () => {
     setAPIKey(demoAPIKey);
     const { container } = await renderApp("/");
     expect(await screen.findByRole("navigation", { name: "Sections" })).toBeInTheDocument();
-    await expectClean(container);
+    await expectNoSeriousViolations(container);
     await user.click(screen.getByRole("button", { name: "Switch to dark theme" }));
     expect(document.documentElement.dataset.theme).toBe("dark");
-    await expectClean(container);
+    await expectNoSeriousViolations(container);
   });
 
   it("renders badge colours for the dark theme", async () => {
@@ -66,6 +58,6 @@ describe("accessibility", () => {
         ))}
       </div>,
     );
-    await expectClean(container);
+    await expectNoSeriousViolations(container);
   });
 });

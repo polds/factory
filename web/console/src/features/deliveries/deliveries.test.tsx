@@ -1,11 +1,11 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import axe from "axe-core";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 import { setAPIKey } from "../../api/session";
 import { demoAPIKey } from "../../mocks/demo-key";
 import { server } from "../../mocks/server";
+import { expectNoSeriousViolations } from "../../test/axe";
 import { renderApp } from "../../test/render";
 
 const unmatched = {
@@ -52,14 +52,6 @@ async function renderDeliveries() {
   return await renderApp("/f/fac_1/deliveries");
 }
 
-async function expectClean() {
-  const results = await axe.run(document.body);
-  const blocking = results.violations.filter(
-    (violation) => violation.impact === "serious" || violation.impact === "critical",
-  );
-  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
-}
-
 describe("deliveries", () => {
   it("opens unmatched deliveries and replays once with redacted signatures", async () => {
     const user = userEvent.setup();
@@ -102,7 +94,7 @@ describe("deliveries", () => {
     expect(document.body.innerHTML).not.toContain("PLANTED-SIGNATURE");
     expect(document.body.innerHTML).not.toContain("PLANTED-RAW");
     expect(document.body.innerHTML).not.toContain("PLANTED-ACTOR");
-    await expectClean();
+    await expectNoSeriousViolations();
     await user.click(screen.getByRole("button", { name: "Replay delivery" }));
     await user.dblClick(await screen.findByRole("button", { name: "Replay" }));
     expect((await screen.findAllByText("Replayed just now")).length).toBeGreaterThan(0);
