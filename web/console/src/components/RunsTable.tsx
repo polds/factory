@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import type { FailureClass, RunRow } from "../api/types";
-import { failureClassOf, stageLabel } from "../features/dashboard/model";
+import { failureClassOf, stageLabel } from "../lib/run-labels";
 import { DurationPair } from "./DurationPair";
 import { RunStatusBadge } from "./RunStatusBadge";
 import { StatusBadge } from "./StatusBadge";

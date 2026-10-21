@@ -1,5 +1,6 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
+import { unexpected } from "../lib/unexpected";
 import { client } from "./client";
 import { useSSE } from "./useSSE";
 
@@ -56,10 +57,8 @@ function statusRank(status: StreamStatus): number {
       return 2;
     case "open":
       return 1;
-    default: {
-      const unreachable: never = status;
-      throw new Error(`Unexpected value: ${String(unreachable)}`);
-    }
+    default:
+      return unexpected(status);
   }
 }
 
