@@ -90,8 +90,10 @@
   text-decoration: underline;
 }
 
-/* Scorer-card names are the same kind of link: a single anchor in a paragraph. */
-.operator-page .panel p > a {
+/* Scorer-card names and external links sit in a line of text. Colour alone
+ * does not set them apart (axe link-in-text-block). */
+.operator-page .panel p > a,
+.operator-page a[target="_blank"] {
   text-decoration: underline;
 }
 
