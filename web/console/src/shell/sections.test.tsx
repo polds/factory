@@ -1,13 +1,13 @@
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient } from "@tanstack/react-query";
-import axe from "axe-core";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { invalidateFactory } from "../api/live";
 import { setAPIKey } from "../api/session";
 import { demoAPIKey } from "../mocks/demo-key";
 import { server } from "../mocks/server";
+import { expectNoSeriousViolations } from "../test/axe";
 import { renderApp } from "../test/render";
 
 const measurePaths = [
@@ -40,14 +40,6 @@ async function settleMeasurePage(path: string) {
     return;
   }
   expect(await screen.findByRole("heading", { name: "Regressions addressed" })).toBeInTheDocument();
-}
-
-async function expectNoSeriousViolations(node: Element) {
-  const results = await axe.run(node);
-  const blocking = results.violations.filter(
-    (violation) => violation.impact === "serious" || violation.impact === "critical",
-  );
-  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
 }
 
 describe("sections", () => {
