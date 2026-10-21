@@ -11,7 +11,9 @@
 #
 # Callers:
 #   spike_run_init <milestone>
-#   spike_spawn [--class stack|transient] [--out path] [--err path] [--append] <name> <cmd...>
+#   spike_spawn [--class stack|transient] [--out path] [--err path] [--append] <name> [--out path] [--err path] [--append] <cmd...>
+# Redirect flags may sit before the name or between the name and the
+# command. The command's own flags are not scanned.
 #   spike_fg <cmd...>
 #   spike_teardown_begin <EXIT|INT|TERM>   # hook, containers, process groups
 #   spike_teardown_finish <status>
@@ -126,12 +128,48 @@ spike_spawn() {
   fi
   name="${1:-}"
   shift || true
-  if [[ -z "$name" || $# -eq 0 ]]; then
+  if [[ -z "$name" ]]; then
     echo "spike_spawn: name and command are required" >&2
     return 1
   fi
   if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "spike_spawn: bad name" >&2
+    return 1
+  fi
+  # Drivers write: spike_spawn --class stack <name> --out <path> --err <path> <cmd...>
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --out)
+        if [[ $# -lt 2 ]]; then
+          echo "spike_spawn: --out needs a path" >&2
+          return 1
+        fi
+        out="$2"
+        shift 2
+        ;;
+      --err)
+        if [[ $# -lt 2 ]]; then
+          echo "spike_spawn: --err needs a path" >&2
+          return 1
+        fi
+        err="$2"
+        shift 2
+        ;;
+      --append)
+        append=1
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  if [[ $# -eq 0 ]]; then
+    echo "spike_spawn: name and command are required" >&2
     return 1
   fi
   spike_ensure_reg

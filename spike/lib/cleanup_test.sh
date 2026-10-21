@@ -468,6 +468,47 @@ EOF
   rm -rf "$dir"
 }
 
+case_spawn_redirects() {
+  local dir
+  dir="$(mktemp -d)"
+  bash -c '
+    set -euo pipefail
+    # shellcheck source=spike/lib/cleanup.sh
+    . "$1"
+    SPIKE_STOP_GRACE=1
+    SPIKE_REG="$2/reg"
+    WORK="$2/work"
+    spike_run_init t76
+    spike_install_trap
+    spike_spawn --class transient --out "$2/before.out" --err "$2/before.err" before \
+      bash -c "echo OUT; echo ERR >&2"
+    wait "$SPIKE_LAST_PID"
+    spike_spawn --class transient after-name --out "$2/after.out" --err "$2/after.err" \
+      bash -c "echo OUT; echo ERR >&2"
+    wait "$SPIKE_LAST_PID"
+    spike_spawn --class transient joined --out "$2/both.log" --err "$2/both.log" \
+      bash -c "echo OUT; echo ERR >&2"
+    wait "$SPIKE_LAST_PID"
+    spike_spawn --class transient flags --out "$2/flags.out" --err "$2/flags.err" \
+      bash -c "printf \"%s\n\" \"\$@\"" _ --reuseaddr --port=9418
+    wait "$SPIKE_LAST_PID"
+  ' _ "$LIB" "$dir"
+  grep -qx OUT "$dir/before.out"
+  grep -qx ERR "$dir/before.err"
+  grep -qx OUT "$dir/after.out"
+  grep -qx ERR "$dir/after.err"
+  grep -qx OUT "$dir/both.log"
+  grep -qx ERR "$dir/both.log"
+  grep -qx -- --reuseaddr "$dir/flags.out"
+  grep -qx -- --port=9418 "$dir/flags.out"
+  if [[ -s "$dir/flags.err" ]]; then
+    echo "command flags were not left on the command" >&2
+    return 1
+  fi
+  rm -rf "$dir"
+}
+
+run_case spawn-redirects case_spawn_redirects
 run_case term-ignoring case_term_ignoring
 run_case int-ignored case_int_ignored
 run_case term-during-fg case_term_during_fg
