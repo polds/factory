@@ -1,4 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog";
+import { useLayoutEffect, useRef } from "react";
 import { Button } from "./Button";
 
 export function ConfirmDialog({
@@ -20,11 +21,33 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onOpenChange: (open: boolean) => void;
 }) {
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  // Modal Dialog.Content preventDefaults close-auto-focus and then focuses
+  // triggerRef. This dialog has no Dialog.Trigger, so that ref stays empty
+  // and focus falls on body. Snapshot the opener before Radix moves focus in.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body) {
+      openerRef.current = active;
+    }
+  }, [open]);
+
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
-        <Dialog.Content className="dialog-content">
+        <Dialog.Content
+          className="dialog-content"
+          onCloseAutoFocus={(event) => {
+            const opener = openerRef.current;
+            openerRef.current = null;
+            if (!opener?.isConnected) return;
+            event.preventDefault();
+            opener.focus();
+          }}
+        >
           <Dialog.Title>{title}</Dialog.Title>
           <Dialog.Description>{description}</Dialog.Description>
           <div className="dialog-actions">
