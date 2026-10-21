@@ -22,11 +22,16 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PULLS = re.compile(r"^/repos/([^/]+)/([^/]+)/pulls$")
+PULL_ONE = re.compile(r"^/repos/([^/]+)/([^/]+)/pulls/(\d+)$")
 REVIEWERS = re.compile(r"^/repos/([^/]+)/([^/]+)/pulls/(\d+)/requested_reviewers$")
 LABELS = re.compile(r"^/repos/([^/]+)/([^/]+)/issues/(\d+)/labels$")
+LABEL_ONE = re.compile(r"^/repos/([^/]+)/([^/]+)/issues/(\d+)/labels/([^/]+)$")
+COLLABORATOR = re.compile(r"^/repos/([^/]+)/([^/]+)/collaborators/([^/]+)$")
 
 _lock = threading.Lock()
 _pulls: list[dict] = []
+_lookups: list[dict] = []
+_mutations: list[str] = []
 _token = ""
 
 
@@ -70,6 +75,8 @@ def authorized(header: str) -> bool:
 def snapshot() -> dict:
     with _lock:
         pulls = json.loads(json.dumps(_pulls))
+        lookups = json.loads(json.dumps(_lookups))
+        mutations = json.loads(json.dumps(_mutations))
     checks: list = []
     upstream = os.environ.get("M6_UPSTREAM_GITHUB", "").rstrip("/")
     if upstream:
@@ -80,7 +87,12 @@ def snapshot() -> dict:
                 checks = doc["checks"]
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
             checks = []
-    return {"pulls": pulls, "checks": checks}
+    return {
+        "pulls": pulls,
+        "checks": checks,
+        "lookups": lookups,
+        "mutations": mutations,
+    }
 
 
 class Forge(BaseHTTPRequestHandler):
@@ -99,6 +111,9 @@ class Forge(BaseHTTPRequestHandler):
     def do_PATCH(self) -> None:
         self._route()
 
+    def do_DELETE(self) -> None:
+        self._route()
+
     def _route(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or "0")
         if length > 1 << 20:
@@ -109,15 +124,59 @@ class Forge(BaseHTTPRequestHandler):
         if self.command == "GET" and path == "/_spike/m6":
             self._send(200, json.dumps(snapshot()).encode())
             return
+        if self.command == "POST" and "/access_tokens" in path:
+            denied = os.environ.get("M6_FORGE_DENY_PERMISSION", "")
+            if denied:
+                self._send(
+                    422,
+                    json.dumps(
+                        {
+                            "message": (
+                                "There is at least one permission requested that "
+                                f"the installation does not have: {denied}"
+                            ),
+                            "documentation_url": (
+                                "https://docs.github.com/rest/apps/apps"
+                                "#create-an-installation-access-token-for-an-app"
+                            ),
+                            "status": "422",
+                        }
+                    ).encode(),
+                )
+                return
+        collaborator = COLLABORATOR.match(path)
+        if (
+            self.command == "GET"
+            and collaborator
+            and "M6_FORGE_COLLABORATORS" in os.environ
+        ):
+            self._collaborator(collaborator.group(3))
+            return
         if self.command == "POST" and PULLS.match(path):
             self._create(body)
             return
         if self.command == "GET" and PULLS.match(path):
             self._lookup()
             return
+        one = PULL_ONE.match(path)
+        if one and self.command == "GET":
+            self._pull(int(one.group(3)))
+            return
+        if one and self.command == "PATCH":
+            self._close(int(one.group(3)), body)
+            return
         reviewers = REVIEWERS.match(path)
-        if self.command == "POST" and reviewers:
+        if reviewers and self.command == "POST":
             self._reviewers(int(reviewers.group(3)), body)
+            return
+        if reviewers and self.command == "DELETE":
+            self._unrequest(int(reviewers.group(3)), body)
+            return
+        label_one = LABEL_ONE.match(path)
+        if label_one and self.command == "DELETE":
+            self._unlabel(
+                int(label_one.group(3)), urllib.parse.unquote(label_one.group(4))
+            )
             return
         labels = LABELS.match(path)
         if self.command == "POST" and labels:
@@ -181,6 +240,7 @@ class Forge(BaseHTTPRequestHandler):
         branch = head.split(":", 1)[-1]
         state = (query.get("state") or ["open"])[0]
         with _lock:
+            _lookups.append({"head": head, "state": state})
             rows = [
                 {"number": pull["number"], "html_url": pull["html_url"]}
                 for pull in _pulls
@@ -215,6 +275,104 @@ class Forge(BaseHTTPRequestHandler):
                 if isinstance(login, str) and login not in pull["reviewers"]:
                     pull["reviewers"].append(login)
         self._send(200, b"{}")
+
+    def _collaborator(self, login: str) -> None:
+        allowed = {
+            part.strip()
+            for part in os.environ.get("M6_FORGE_COLLABORATORS", "").split(",")
+            if part.strip()
+        }
+        if login in allowed:
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._send(404, message(f"{login} is not a collaborator"))
+
+    def _pull_doc(self, pull: dict) -> dict:
+        return {
+            "number": pull["number"],
+            "html_url": pull["html_url"],
+            "state": pull["state"],
+            "head": {"ref": pull["head"]},
+            "base": {"ref": pull["base"]},
+            "requested_reviewers": [{"login": login} for login in pull["reviewers"]],
+            "labels": [{"name": label} for label in pull["labels"]],
+        }
+
+    def _pull(self, number: int) -> None:
+        if not self._require():
+            return
+        with _lock:
+            pull = self._find(number)
+            if pull is None:
+                self._send(404, message("not found"))
+                return
+            doc = self._pull_doc(pull)
+        self._send(200, json.dumps(doc).encode())
+
+    def _close(self, number: int, body: bytes) -> None:
+        if not self._require():
+            return
+        try:
+            doc = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            self._send(400, message("bad request"))
+            return
+        if not isinstance(doc, dict) or doc.get("state") != "closed":
+            self._send(422, message("state must be closed"))
+            return
+        with _lock:
+            pull = self._find(number)
+            if pull is None:
+                self._send(404, message("not found"))
+                return
+            if pull["state"] != "closed":
+                pull["state"] = "closed"
+                _mutations.append(f"close {number}")
+            payload = self._pull_doc(pull)
+        self._send(200, json.dumps(payload).encode())
+
+    def _unrequest(self, number: int, body: bytes) -> None:
+        if not self._require():
+            return
+        try:
+            doc = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            self._send(400, message("bad request"))
+            return
+        logins = doc.get("reviewers") if isinstance(doc, dict) else None
+        if not isinstance(logins, list):
+            self._send(400, message("bad request"))
+            return
+        with _lock:
+            pull = self._find(number)
+            if pull is None:
+                self._send(404, message("not found"))
+                return
+            removed = False
+            for login in logins:
+                if isinstance(login, str) and login in pull["reviewers"]:
+                    pull["reviewers"].remove(login)
+                    removed = True
+            if removed:
+                _mutations.append(f"unrequest {number}")
+            else:
+                self._send(422, message("review request not found"))
+                return
+        self._send(200, b"{}")
+
+    def _unlabel(self, number: int, label: str) -> None:
+        if not self._require():
+            return
+        with _lock:
+            pull = self._find(number)
+            if pull is None or label not in pull["labels"]:
+                self._send(404, message("not found"))
+                return
+            pull["labels"].remove(label)
+            _mutations.append(f"unlabel {number} {label}")
+        self._send(200, b"[]")
 
     def _labels(self, number: int, body: bytes) -> None:
         if not self._require():

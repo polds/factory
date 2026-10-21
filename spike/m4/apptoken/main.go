@@ -37,7 +37,9 @@ func main() {
 	}
 	token, err := mint(context.Background(), cfg.AppID, cfg.Key, cfg.BaseURL, strings.TrimSpace(*repo))
 	if err != nil {
-		sayErr("apptoken: installation token request failed")
+		// The forge client already redacts the JWT and the installation token.
+		// PermissionError names the scope; StatusError carries the HTTP status.
+		sayErr(redactedMintError(err))
 		os.Exit(1)
 	}
 	if _, err := fmt.Fprintln(os.Stdout, token); err != nil {
@@ -49,6 +51,16 @@ func sayErr(text string) {
 	if _, err := fmt.Fprintln(os.Stderr, text); err != nil {
 		os.Exit(1)
 	}
+}
+
+// redactedMintError is the stderr line for a failed mint. It is the
+// client error, which is already scrubbed, so a JWT or token in the
+// message does not reach the log.
+func redactedMintError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func mint(ctx context.Context, appID int64, key *rsa.PrivateKey, baseURL, repo string) (string, error) {

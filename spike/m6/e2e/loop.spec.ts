@@ -228,25 +228,66 @@ test("m6 exit loop", async ({ browser }) => {
     if (offline) {
       expect(diff).toContain("CONVENTION: cite-sources");
       const forge = JSON.parse(await fs.readFile(path.join(evidence, "forge.json"), "utf8")) as {
-        pulls?: { reviewers?: string[]; creates?: { body?: string; status?: number }[] }[];
+        pulls?: { head?: string; reviewers?: string[]; creates?: { body?: string; status?: number }[] }[];
         checks?: { summary?: string }[];
+        lookups?: { head?: string }[];
       };
-      const creates = (forge.pulls ?? []).flatMap((pull) => pull.creates ?? []);
-      const product = creates.find(
-        (row) => row.status === 201 && (row.body ?? "").includes("## Regressions addressed"),
-      );
-      const body = product?.body ?? "";
-      expect(product?.status).toBe(201);
-      expect(body).toContain("Layer changed: skill");
-      expect(body.split("\n").filter((line) => line.startsWith("- run ")).length).toBe(failingIds.length);
-      for (const id of failingIds) {
-        expect(body).toContain("- run " + id + " ");
-      }
-      expect(creates.some((row) => (row.body ?? "").includes("Opened by the offline improver."))).toBe(false);
-      expect((forge.pulls ?? [])[0]?.reviewers ?? []).toContain("m6-reviewer");
+      const pulls = forge.pulls ?? [];
+      const creates = pulls.flatMap((pull) => pull.creates ?? []);
+      const productBody = (row: { body?: string; status?: number } | undefined): string => row?.body ?? "";
+      const linesFor = (body: string): number =>
+        body.split("\n").filter((line) => line.startsWith("- run ")).length;
       const guard = (forge.checks ?? []).some((row) => (row.summary ?? "").includes("factory/config"));
-      expect(guard).toBe(true);
+      if (process.env.M6_IMPROVER_OPENS_PR === "1") {
+        const improver = creates.find(
+          (row) => row.status === 201 && (row.body ?? "").includes("Opened by the offline improver."),
+        );
+        const product = creates.find(
+          (row) => row.status === 422 && (row.body ?? "").includes("## Regressions addressed"),
+        );
+        const body = productBody(product);
+        expect(improver?.status).toBe(201);
+        expect(product?.status).toBe(422);
+        expect(body).toContain("Layer changed: skill");
+        expect(linesFor(body)).toBe(failingIds.length);
+        for (const id of failingIds) {
+          expect(body).toContain("- run " + id + " ");
+        }
+        const head = "m6:improve/" + batchId.trim();
+        expect((forge.lookups ?? []).some((row) => row.head === head)).toBe(true);
+        const forHead = pulls.filter((pull) => pull.head === "improve/" + batchId.trim());
+        expect(forHead).toHaveLength(1);
+        expect(forHead[0]?.reviewers ?? []).toContain("m6-reviewer");
+        expect(guard).toBe(true);
+      } else {
+        const product = creates.find(
+          (row) => row.status === 201 && (row.body ?? "").includes("## Regressions addressed"),
+        );
+        const body = productBody(product);
+        expect(product?.status).toBe(201);
+        expect(body).toContain("Layer changed: skill");
+        expect(linesFor(body)).toBe(failingIds.length);
+        for (const id of failingIds) {
+          expect(body).toContain("- run " + id + " ");
+        }
+        expect(creates.some((row) => (row.body ?? "").includes("Opened by the offline improver."))).toBe(false);
+        expect(pulls[0]?.reviewers ?? []).toContain("m6-reviewer");
+        expect(guard).toBe(true);
+      }
       trace.push("guard: factory/config passed");
+    } else {
+      const remote = JSON.parse(await fs.readFile(path.join(evidence, "remote-pr.json"), "utf8")) as {
+        html_url?: string;
+        head?: string;
+        base?: string;
+        state?: string;
+      };
+      expect(remote.state).toBe("open");
+      expect(remote.head).toBe("improve/" + batchId.trim());
+      const runBase = process.env.M6_RUN_BASE ?? "";
+      expect(runBase.startsWith("m6-run/")).toBe(true);
+      expect(remote.base).toBe(runBase);
+      expect(remote.html_url ?? "").toMatch(/^https:/);
     }
 
     // GET .../trials is 404 until a benchmark run exists, and the suite page
