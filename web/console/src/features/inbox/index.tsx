@@ -9,11 +9,14 @@ import {
 } from "lucide-react";
 import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import { client } from "../../api/client";
+import { liveLabel, useFactoryEvents, type StreamStatus } from "../../api/live";
 import type { FailureClass, InboxItem, InboxKind } from "../../api/types";
-import { StatusBadge } from "../../components/StatusBadge";
+import { Caveat } from "../../components/Caveat";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
-import { useFactoryEvents, liveLabel, type StreamStatus } from "../dashboard/live";
+import { PageHeader } from "../../components/PageHeader";
+import { StatusBadge } from "../../components/StatusBadge";
+import { HttpsText } from "../dashboard/https-link";
 import {
   failureClassOf,
   formatAge,
@@ -21,7 +24,6 @@ import {
   unexpected,
   type RunRow,
 } from "../dashboard/model";
-import { Caveat, PageHeader } from "../dashboard/ui";
 import { AnswerForm, ApprovalActions, submitAnswer } from "./actions";
 
 type InboxFilter = "all" | InboxKind;
@@ -31,6 +33,7 @@ const filters = [
   "approval",
   "question",
   "failed_run",
+  "improvement_pr",
 ] as const satisfies readonly InboxFilter[];
 
 export default function InboxPage() {
@@ -119,7 +122,7 @@ export default function InboxPage() {
       {shown.length === 0 ? (
         <EmptyState
           title="Nothing needs you right now"
-          message="New approvals, questions and failed runs show up here."
+          message="New approvals, questions, improvement PRs and failed runs show up here."
         />
       ) : (
         <ul className="inbox-list">
@@ -254,12 +257,14 @@ function InboxRow({
         </div>
       ) : null}
       <p className="inbox-meta">
-        <Link
-          to="/f/$factory/work-items/$id"
-          params={{ factory: factoryId, id: item.work_item_id }}
-        >
-          <span className="mono">{item.work_item_id}</span>
-        </Link>
+        {item.work_item_id ? (
+          <Link
+            to="/f/$factory/work-items/$id"
+            params={{ factory: factoryId, id: item.work_item_id }}
+          >
+            <span className="mono">{item.work_item_id}</span>
+          </Link>
+        ) : null}
         {item.run_id ? (
           <Link to="/runs/$runId" params={{ runId: item.run_id }}>
             <span className="mono">{item.run_id}</span>
@@ -304,7 +309,7 @@ function rowActions(
     case "improvement_pr":
       return (
         <div className="actions">
-          <p>{item.detail}</p>
+          <HttpsText url={item.detail} label="Review PR" />
           {item.run_id ? (
             <Link to="/runs/$runId" params={{ runId: item.run_id }}>
               Open run

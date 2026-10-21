@@ -2,8 +2,9 @@ import { CheckCircle2, Copy, XCircle } from "lucide-react";
 import { useState } from "react";
 import { StatusBadge } from "../../components/StatusBadge";
 import { Button } from "../../components/Button";
+import { isFailureClass } from "../../lib/run-labels";
 import { Caveat } from "./caveat";
-import { INFRA_CAVEAT, isFailureClass, snapshotRows } from "./format";
+import { INFRA_CAVEAT, snapshotRows } from "./format";
 import type { RunDetailWire } from "./types";
 
 function copyBlock(
