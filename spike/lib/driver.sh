@@ -13,6 +13,23 @@ phase_report() {
   printf '%s phase %s %ss\n' "$prefix" "$name" "$((SECONDS - start))"
 }
 
+# detect_platform sets OCI_PLATFORM and GOARCH_TARGET from `docker info`.
+# Callers export nothing else. goarch_for_platform comes from spike/lib/common.sh.
+detect_platform() {
+  local arch=""
+  arch="$(docker info --format '{{.Architecture}}')"
+  case "$arch" in
+    aarch64 | arm64) OCI_PLATFORM="linux/arm64" ;;
+    x86_64 | amd64) OCI_PLATFORM="linux/amd64" ;;
+    *)
+      echo "unsupported docker architecture ${arch}" >&2
+      return 1
+      ;;
+  esac
+  GOARCH_TARGET="$(goarch_for_platform "$OCI_PLATFORM")"
+  export OCI_PLATFORM GOARCH_TARGET
+}
+
 random_hex() {
   openssl rand -hex 24
 }
