@@ -14,7 +14,9 @@ import (
 )
 
 var (
-	errTooLarge          = errors.New("ingress: body exceeds 1MiB")
+	// ErrTooLarge is returned when a request body is larger than MaxBody.
+	// Callers answer 413. The text is not written to the response or a log.
+	ErrTooLarge          = errors.New("ingress: body exceeds 1MiB")
 	errMissingDeliveryID = errors.New("ingress: missing delivery id")
 	errUnknownProvider   = errors.New("ingress: unknown provider")
 )
@@ -113,8 +115,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := readBody(r)
-	if errors.Is(err, errTooLarge) {
+	body, err := ReadBody(r)
+	if errors.Is(err, ErrTooLarge) {
 		h.metrics.addTooLarge()
 		writeJSON(w, http.StatusRequestEntityTooLarge, errorBody{Error: "payload too large"})
 		return
@@ -163,7 +165,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
 		return
 	}
-	stored, truncated := clipBody(body)
+	stored, truncated := ClipBody(body)
 	dup, err := h.sink.Enqueue(r.Context(), Delivery{
 		ID:         id,
 		Provider:   h.provider,
@@ -221,12 +223,14 @@ func oneHeader(h http.Header, name string) (string, error) {
 	return v, nil
 }
 
-func readBody(r *http.Request) ([]byte, error) {
+// ReadBody reads at most MaxBody bytes. A larger body or Content-Length
+// returns ErrTooLarge. A nil body is an empty payload. The body is closed.
+func ReadBody(r *http.Request) ([]byte, error) {
 	if r.ContentLength > MaxBody {
 		if r.Body != nil {
 			_ = r.Body.Close()
 		}
-		return nil, errTooLarge
+		return nil, ErrTooLarge
 	}
 	if r.Body == nil {
 		return []byte{}, nil
@@ -237,12 +241,13 @@ func readBody(r *http.Request) ([]byte, error) {
 		return nil, err
 	}
 	if len(body) > MaxBody {
-		return nil, errTooLarge
+		return nil, ErrTooLarge
 	}
 	return body, nil
 }
 
-func clipBody(body []byte) ([]byte, bool) {
+// ClipBody returns at most MaxStoredBody bytes and reports whether body was longer.
+func ClipBody(body []byte) ([]byte, bool) {
 	if len(body) > MaxStoredBody {
 		out := make([]byte, MaxStoredBody)
 		copy(out, body)

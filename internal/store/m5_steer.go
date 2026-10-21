@@ -107,22 +107,7 @@ func (s *Store) NextSteers(ctx context.Context, runID, after string, now time.Ti
 		SELECT id, run_id, kind, text, created_at, delivered_at, actor
 		FROM claimed
 		ORDER BY id`, runID, after, s.steerOwner, now.Add(SteerLease), now)
-	if err != nil {
-		return nil, fmt.Errorf("store: next steers: %w", err)
-	}
-	defer rows.Close()
-	out := []Steer{}
-	for rows.Next() {
-		st, err := scanSteer(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: next steers: %w", err)
-		}
-		out = append(out, st)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: next steers: %w", err)
-	}
-	return out, nil
+	return collect(rows, err, "store: next steers", scanSteer)
 }
 
 // ReleaseSteerClaims drops the lease on undelivered rows for runID.
@@ -184,22 +169,7 @@ func (s *Store) ListSteers(ctx context.Context, runID string) ([]Steer, error) {
 		FROM steer_requests
 		WHERE run_id = $1
 		ORDER BY created_at ASC, id ASC`, runID)
-	if err != nil {
-		return nil, fmt.Errorf("store: list steers: %w", err)
-	}
-	defer rows.Close()
-	out := []Steer{}
-	for rows.Next() {
-		st, err := scanSteer(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: list steers: %w", err)
-		}
-		out = append(out, st)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list steers: %w", err)
-	}
-	return out, nil
+	return collect(rows, err, "store: list steers", scanSteer)
 }
 
 func isForeignKey(err error) bool {

@@ -412,6 +412,27 @@ func TestTooLargeDoesNotPersist(t *testing.T) {
 	if rr.Code != http.StatusRequestEntityTooLarge || sink.count() != 0 || metrics.TooLarge() != 1 {
 		t.Fatalf("status %d rows %d tooLarge %d", rr.Code, sink.count(), metrics.TooLarge())
 	}
+	if rr.Body.String() != `{"error":"payload too large"}` {
+		t.Fatalf("body %s", rr.Body.Bytes())
+	}
+}
+
+func TestExactMaxBodyIsAccepted(t *testing.T) {
+	t.Parallel()
+	sink := &memSink{}
+	metrics := &Metrics{}
+	h := handlerWith(t, &memLookup{byUID: map[string]store.WebhookRegistration{
+		testUID: tokenReg(true, ""),
+	}}, sink, metrics, nil)
+	body := bytes.Repeat([]byte("c"), ingress.MaxBody)
+	rr := post(h, "/api/v1/webhooks/"+testUID, bearer(), body)
+	if rr.Code != http.StatusOK || metrics.TooLarge() != 0 || sink.count() != 1 {
+		t.Fatalf("status %d tooLarge %d rows %d body %s", rr.Code, metrics.TooLarge(), sink.count(), rr.Body.Bytes())
+	}
+	got := sink.one(t)
+	if !got.d.Truncated || len(got.d.Body) != ingress.MaxStoredBody {
+		t.Fatalf("truncated %v len %d", got.d.Truncated, len(got.d.Body))
+	}
 }
 
 func TestStoredBodyIsCapped(t *testing.T) {

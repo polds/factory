@@ -52,20 +52,15 @@ func (s *Store) RunTimeline(ctx context.Context, runID string) ([]Phase, error) 
 		FROM executions
 		WHERE run_id = $1
 		ORDER BY attempt, id`, runID)
-	if err != nil {
-		return nil, fmt.Errorf("store: timeline: %w", err)
-	}
-	defer rows.Close()
-	execs := []executionStamp{}
-	for rows.Next() {
+	execs, err := collect(rows, err, "store: timeline", func(row pgx.Row) (executionStamp, error) {
 		var ex executionStamp
-		if err := rows.Scan(&ex.ID, &ex.Started, &ex.Ended); err != nil {
-			return nil, fmt.Errorf("store: timeline: %w", err)
+		if err := row.Scan(&ex.ID, &ex.Started, &ex.Ended); err != nil {
+			return executionStamp{}, err
 		}
-		execs = append(execs, ex)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: timeline: %w", err)
+		return ex, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return timelinePhases(run, execs), nil
 }
@@ -261,26 +256,20 @@ func (s *Store) FactoryEventsFrom(ctx context.Context, factoryID string, cursor 
 		  AND events.factory_seq > $2
 		ORDER BY events.factory_seq
 		LIMIT $3`, factoryID, cursor, limit)
-	if err != nil {
-		return nil, fmt.Errorf("store: factory events: %w", err)
-	}
-	defer rows.Close()
-	out := []FactoryEvent{}
-	for rows.Next() {
+	out, err := collect(rows, err, "store: factory events", func(row pgx.Row) (FactoryEvent, error) {
 		var ev FactoryEvent
 		var payload []byte
-		if err := rows.Scan(
+		if err := row.Scan(
 			&ev.FactorySeq, &ev.GID, &ev.RunID, &ev.Seq, &ev.ExecutionID, &ev.Idx, &ev.TS, &ev.Type, &payload,
 		); err != nil {
-			return nil, fmt.Errorf("store: factory events: %w", err)
+			return FactoryEvent{}, err
 		}
 		ev.Payload = json.RawMessage(payload)
-		out = append(out, ev)
+		return ev, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: factory events: %w", err)
-	}
-	rows.Close()
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("store: factory events: %w", err)
 	}
@@ -351,25 +340,16 @@ func (s *Store) Inbox(ctx context.Context, factoryID string) ([]InboxItem, error
 		      )
 		) AS inbox
 		ORDER BY created_at ASC, kind ASC, id ASC`, factoryID)
-	if err != nil {
-		return nil, fmt.Errorf("store: inbox: %w", err)
-	}
-	defer rows.Close()
-	out := []InboxItem{}
-	for rows.Next() {
+	return collect(rows, err, "store: inbox", func(row pgx.Row) (InboxItem, error) {
 		var item InboxItem
-		if err := rows.Scan(
+		if err := row.Scan(
 			&item.Kind, &item.ID, &item.WorkItemID, &item.RunID,
 			&item.CreatedAt, &item.Title, &item.Detail, &item.Action,
 		); err != nil {
-			return nil, fmt.Errorf("store: inbox: %w", err)
+			return InboxItem{}, err
 		}
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: inbox: %w", err)
-	}
-	return out, nil
+		return item, nil
+	})
 }
 
 // AutomationStats lists automations on the factory's current definition.
@@ -426,27 +406,18 @@ func (s *Store) AutomationStats(ctx context.Context, factoryID string) ([]Automa
 		   AND automation_overrides.name = automations.name
 		WHERE factories.id = $1
 		ORDER BY automations.name`, factoryID)
-	if err != nil {
-		return nil, fmt.Errorf("store: automation stats: %w", err)
-	}
-	defer rows.Close()
-	out := []AutomationStat{}
-	for rows.Next() {
+	return collect(rows, err, "store: automation stats", func(row pgx.Row) (AutomationStat, error) {
 		var stat AutomationStat
 		var triggers []byte
-		if err := rows.Scan(
+		if err := row.Scan(
 			&stat.Name, &stat.Enabled, &stat.RuntimePaused, &triggers,
 			&stat.LastFiredAt, &stat.MatchCount, &stat.RunsStarted,
 		); err != nil {
-			return nil, fmt.Errorf("store: automation stats: %w", err)
+			return AutomationStat{}, err
 		}
 		stat.Triggers = json.RawMessage(triggers)
-		out = append(out, stat)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: automation stats: %w", err)
-	}
-	return out, nil
+		return stat, nil
+	})
 }
 
 // SetAutomationPaused stores a runtime pause keyed by factory and name.

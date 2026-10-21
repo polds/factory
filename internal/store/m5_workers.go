@@ -53,28 +53,19 @@ func (s *Store) ListWorkers(ctx context.Context, now time.Time) ([]WorkerInfo, e
 		    )
 		FROM workers
 		ORDER BY workers.pool, workers.id`, now)
-	if err != nil {
-		return nil, fmt.Errorf("store: list workers: %w", err)
-	}
-	defer rows.Close()
-	out := []WorkerInfo{}
-	for rows.Next() {
+	return collect(rows, err, "store: list workers", func(row pgx.Row) (WorkerInfo, error) {
 		var info WorkerInfo
 		var labels []byte
-		if err := rows.Scan(
+		if err := row.Scan(
 			&info.ID, &info.Pool, &info.Platform, &info.Backend, &info.Version, &labels,
 			&info.LastHeartbeatAt, &info.ConnectedAt, &info.MaxConcurrent, &info.InFlight,
 			&info.Reconnects, &info.Status, &info.HeartbeatAgeMS, &info.Rejected1h,
 		); err != nil {
-			return nil, fmt.Errorf("store: list workers: %w", err)
+			return WorkerInfo{}, err
 		}
 		info.LabelsJSON = labels
-		out = append(out, info)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list workers: %w", err)
-	}
-	return out, nil
+		return info, nil
+	})
 }
 
 // PoolStats returns one row per pool that has a worker, a queued run, or an
@@ -131,27 +122,18 @@ func (s *Store) PoolStats(ctx context.Context, now time.Time) ([]PoolStat, error
 		LEFT JOIN assign ON assign.pool = pools.pool
 		LEFT JOIN rej ON rej.pool = pools.pool
 		ORDER BY pools.pool`, now)
-	if err != nil {
-		return nil, fmt.Errorf("store: pool stats: %w", err)
-	}
-	defer rows.Close()
-	out := []PoolStat{}
-	for rows.Next() {
+	return collect(rows, err, "store: pool stats", func(row pgx.Row) (PoolStat, error) {
 		var stat PoolStat
 		var p50 *float64
-		if err := rows.Scan(&stat.Pool, &stat.QueueDepth, &p50, &stat.Rejected1h); err != nil {
-			return nil, fmt.Errorf("store: pool stats: %w", err)
+		if err := row.Scan(&stat.Pool, &stat.QueueDepth, &p50, &stat.Rejected1h); err != nil {
+			return PoolStat{}, err
 		}
 		if p50 != nil {
 			ms := int64(math.Round(*p50))
 			stat.P50TimeToAssignMS = &ms
 		}
-		out = append(out, stat)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: pool stats: %w", err)
-	}
-	return out, nil
+		return stat, nil
+	})
 }
 
 // RecordRejection stores one task_rejected. Rows older than seven days are
