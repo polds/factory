@@ -921,6 +921,12 @@ for remote_mode in live live-ci; do
   run_case "cleanup-${remote_mode}" case_remote cleanup "$remote_mode"
   run_case "allow-${remote_mode}" case_remote allow "$remote_mode"
   run_case "token-argv-${remote_mode}" case_remote token-argv "$remote_mode"
+  run_case "close-guard-${remote_mode}" case_remote close-guard "$remote_mode"
+  run_case "watch-mismatch-${remote_mode}" case_remote watch-mismatch "$remote_mode"
+  run_case "ledger-run-${remote_mode}" case_remote ledger-run "$remote_mode"
+  run_case "ledger-corrupt-${remote_mode}" case_remote ledger-corrupt "$remote_mode"
+  run_case "cleanup-bound-git-${remote_mode}" case_remote cleanup-bound-git "$remote_mode"
+  run_case "cleanup-bound-mint-${remote_mode}" case_remote cleanup-bound-mint "$remote_mode"
 done
 run_case offline-remote case_remote offline
 run_case forge-lookup case_remote forge-lookup

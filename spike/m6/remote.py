@@ -4,8 +4,8 @@
 One function per step: preflight, seed, watch, cleanup, and the ledger.
 Python holds the JSON ledger and the URL parser. MODE=offline returns
 before any git or curl call. The GitHub token stays in a mode-600 file
-and is handed to git through GIT_CONFIG_* and to curl through a config
-file, never through argv.
+and is handed to git through GIT_CONFIG_* and to curl on stdin
+(`curl -K -`), never through argv or a config file.
 """
 
 from __future__ import annotations
@@ -161,6 +161,10 @@ def new_run_id() -> str:
 
 
 def ref_allowed(ref: str, run_id: str, batch_id: str) -> bool:
+    try:
+        validate_run_id(run_id)
+    except RemoteError:
+        return False
     if ref in {"", "main", "master", "HEAD"} or ".." in ref.split("/"):
         return False
     prefix = f"m6-run/{run_id}/"
@@ -171,6 +175,29 @@ def ref_allowed(ref: str, run_id: str, batch_id: str) -> bool:
     return bool(
         batch_id and BATCH_RE.fullmatch(batch_id) and ref == f"improve/{batch_id}"
     )
+
+
+def shown_id(value: str) -> str:
+    return value if value else "(empty)"
+
+
+def refuse_id(value: str) -> None:
+    shown = shown_id(value)
+    refuse(shown)
+    raise RemoteError(f"remote ref refused: {shown}: allow-list")
+
+
+def accepted_run_id(run_id: str) -> str:
+    try:
+        return validate_run_id(run_id)
+    except RemoteError:
+        refuse_id(run_id)
+        raise
+
+
+def accepted_batch_id(batch_id: str) -> None:
+    if batch_id and not BATCH_RE.fullmatch(batch_id):
+        refuse_id(batch_id)
 
 
 def refuse(ref: str) -> None:
@@ -190,8 +217,16 @@ def load_ledger() -> dict | None:
     path = ledger_path()
     if not path.is_file():
         return None
-    doc = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RemoteError("remote ledger is invalid") from exc
     if not isinstance(doc, dict):
+        raise RemoteError("remote ledger is invalid")
+    entries = doc.get("entries")
+    if not isinstance(entries, list) or any(
+        not isinstance(entry, dict) for entry in entries
+    ):
         raise RemoteError("remote ledger is invalid")
     return doc
 
@@ -317,18 +352,36 @@ def run_git(
     token: str,
     origin: str,
     cwd: Path | None = None,
+    *,
+    timeout: float | None = None,
+    http_bound: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     cmd = ["git", "-c", "protocol.file.allow=always"]
+    if http_bound:
+        cmd.extend(
+            [
+                "-c",
+                "http.connectTimeout=2",
+                "-c",
+                "http.lowSpeedLimit=1",
+                "-c",
+                "http.lowSpeedTime=5",
+            ]
+        )
     if cwd is not None:
         cmd.extend(["-C", str(cwd)])
     cmd.extend(args)
-    return subprocess.run(
-        cmd,
-        env=git_env(token, origin),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            cmd,
+            env=git_env(token, origin),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RemoteError("delete timed out") from None
 
 
 def git_ok(proc: subprocess.CompletedProcess[str], what: str) -> None:
@@ -372,21 +425,22 @@ def request(
     if not SECRET_RE.fullmatch(secret):
         raise RemoteError("token file is invalid")
     work_dir().mkdir(parents=True, exist_ok=True)
-    cfg = work_dir() / f".curl-{secrets.token_hex(4)}.cfg"
     body_file = work_dir() / f".curl-{secrets.token_hex(4)}.body"
     data_file: Path | None = None
-    lines = [
-        f'header = "Authorization: Bearer {secret}"',
-        'header = "Accept: application/vnd.github+json"',
-        'header = "Content-Type: application/json"',
-    ]
-    cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.chmod(cfg, 0o600)
+    # The bearer header stays in memory and is passed on stdin. It is not
+    # written to a config file.
+    config = "\n".join(
+        [
+            f'header = "Authorization: Bearer {secret}"',
+            'header = "Accept: application/vnd.github+json"',
+            'header = "Content-Type: application/json"',
+        ]
+    )
     cmd = [
         "curl",
         "-q",
-        "--config",
-        str(cfg),
+        "-K",
+        "-",
         "-sS",
         "--connect-timeout",
         "2",
@@ -407,11 +461,12 @@ def request(
             data_file.write_text(json.dumps(payload), encoding="utf-8")
             os.chmod(data_file, 0o600)
             cmd.extend(["--data-binary", f"@{data_file}"])
-        proc = subprocess.run(cmd, capture_output=True, check=False)
+        proc = subprocess.run(
+            cmd, input=config.encode(), capture_output=True, check=False
+        )
         code = proc.stdout.decode("utf-8", "replace").strip()
         body = body_file.read_bytes() if body_file.is_file() else b""
     finally:
-        cfg.unlink(missing_ok=True)
         body_file.unlink(missing_ok=True)
         if data_file is not None:
             data_file.unlink(missing_ok=True)
@@ -522,16 +577,22 @@ def status_from_text(text: str) -> str:
     return "mint"
 
 
-def mint_token(owner: str, repo: str, dest: Path) -> None:
+def mint_token(
+    owner: str, repo: str, dest: Path, *, timeout: float | None = None
+) -> None:
     binary = build_apptoken()
     env = os.environ.copy()
     env["FACTORY_GITHUB_API_BASE"] = api_base()
-    proc = subprocess.run(
-        [str(binary), "-repo", f"{owner}/{repo}"],
-        env=env,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            [str(binary), "-repo", f"{owner}/{repo}"],
+            env=env,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RemoteError("mint timed out") from None
     stderr = proc.stderr.decode("utf-8", "replace")
     if proc.returncode != 0:
         raise RemoteError(
@@ -822,8 +883,27 @@ def watch_once() -> None:
         return
     batch_id = str(batch["id"])
     number = pr_number(str(batch["pr_url"]))
-    observe_batch(ledger, batch_id, number, ledger["base_ref"])
+    improve = f"improve/{batch_id}"
     token = read_secret(token_path())
+    status, body = request(
+        "GET",
+        f"{ledger['api_base']}/repos/{ledger['owner']}/{ledger['repo']}/pulls/{number}",
+        token,
+    )
+    if status != 200:
+        raise http_error("pull request lookup failed", status, body)
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RemoteError("pull request lookup failed") from exc
+    view = pull_view(parsed)
+    if (
+        view["head"] != improve
+        or view["base"] != ledger["base_ref"]
+        or view["state"] != "open"
+    ):
+        raise RemoteError("pull request does not match this run")
+    observe_batch(ledger, batch_id, number, ledger["base_ref"])
     url = str(ledger["git_url"])
     scratch = work_dir() / "fetch"
     if scratch.exists():
@@ -832,7 +912,6 @@ def watch_once() -> None:
     git_ok(
         run_git(["init", "-b", "main"], token, url, cwd=scratch), "fetch init failed"
     )
-    improve = f"improve/{batch_id}"
     fetch = run_git(
         [
             "fetch",
@@ -851,20 +930,6 @@ def watch_once() -> None:
     git_ok(sha_proc, "rev-parse failed")
     sha = sha_proc.stdout.strip()
     push_ref(scratch, url, token, sha, ledger["candidate_ref"], ledger)
-    status, body = request(
-        "GET",
-        f"{ledger['api_base']}/repos/{ledger['owner']}/{ledger['repo']}/pulls/{number}",
-        token,
-    )
-    if status != 200:
-        raise http_error("pull request lookup failed", status, body)
-    view = pull_view(json.loads(body.decode("utf-8")))
-    if (
-        view["head"] != improve
-        or view["base"] != ledger["base_ref"]
-        or view["state"] != "open"
-    ):
-        raise RemoteError("pull request does not match this run")
     state = {"diff": diff.stdout, "sha": sha, "pr": view}
     saved.write_text(json.dumps(state), encoding="utf-8")
     os.chmod(saved, 0o600)
@@ -882,16 +947,60 @@ def delete_missing(stderr: str) -> bool:
 
 
 def delete_ref(ledger: dict, name: str) -> None:
+    run_id = accepted_run_id(str(ledger.get("run_id") or ""))
     batch_id = str(ledger.get("batch_id") or "")
-    if not ref_allowed(name, str(ledger["run_id"]), batch_id):
+    accepted_batch_id(batch_id)
+    if not ref_allowed(name, run_id, batch_id):
         refuse(name)
         raise RemoteError(f"remote ref refused: {name}: allow-list")
     token = read_secret(token_path())
     url = str(ledger["git_url"])
-    proc = run_git(["push", url, f":refs/heads/{name}"], token, url)
+    spec = f":refs/heads/{name}"
+    proc = run_git(["push", url, spec], token, url, timeout=5, http_bound=True)
     if proc.returncode == 0 or delete_missing(proc.stderr or ""):
         return
     git_ok(proc, f"delete {name} failed")
+
+
+def pull_document(body: bytes) -> dict:
+    try:
+        doc = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RemoteError("pull request read failed") from exc
+    if not isinstance(doc, dict):
+        raise RemoteError("pull request read failed")
+    return doc
+
+
+def live_identity(doc: dict, owner: str) -> str:
+    # head.ref is the branch. head.label is owner:branch when the forge sends it.
+    head = doc.get("head")
+    if not isinstance(head, dict):
+        return ""
+    label = head.get("label")
+    if isinstance(label, str) and label:
+        return label
+    ref = head.get("ref")
+    if not isinstance(ref, str) or ref == "":
+        return ""
+    prefix = f"{owner}:"
+    if ref.startswith(prefix):
+        return ref
+    return prefix + ref
+
+
+def head_matches(doc: dict, owner: str, batch_id: str) -> bool:
+    expected = f"{owner}:improve/{batch_id}"
+    branch = f"improve/{batch_id}"
+    head = doc.get("head")
+    if not isinstance(head, dict):
+        return False
+    label = head.get("label")
+    ref = head.get("ref")
+    ref_s = ref if isinstance(ref, str) else ""
+    if isinstance(label, str) and label:
+        return label == expected and ref_s in {"", branch, expected}
+    return ref_s in {branch, expected}
 
 
 def accept_status(status: int, ok: set[int], what: str, body: bytes) -> None:
@@ -900,16 +1009,27 @@ def accept_status(status: int, ok: set[int], what: str, body: bytes) -> None:
 
 
 def close_pr(ledger: dict, entry: dict) -> None:
+    run_id = str(ledger.get("run_id") or "")
+    batch_id = str(ledger.get("batch_id") or "")
+    owner = str(ledger.get("owner") or "")
+    if not RUN_ID_RE.fullmatch(run_id) or not BATCH_RE.fullmatch(batch_id):
+        shown = run_id if not RUN_ID_RE.fullmatch(run_id) else batch_id
+        refuse(shown_id(shown))
+        return
     token = read_secret(token_path())
     number = int(entry["number"])
-    base = f"{ledger['api_base']}/repos/{ledger['owner']}/{ledger['repo']}"
+    base = f"{ledger['api_base']}/repos/{owner}/{ledger['repo']}"
     status, body = request("GET", f"{base}/pulls/{number}", token)
     if status == 404:
         return
     if status != 200:
         raise http_error("pull request read failed", status, body)
-    doc = json.loads(body.decode("utf-8"))
-    state = doc.get("state") if isinstance(doc, dict) else ""
+    doc = pull_document(body)
+    if doc.get("state") != "open":
+        return
+    if not head_matches(doc, owner, batch_id):
+        refuse(live_identity(doc, owner) or f"{owner}:improve/{batch_id}")
+        return
     logins = reviewer_logins()
     status, body = request(
         "DELETE",
@@ -925,8 +1045,6 @@ def close_pr(ledger: dict, entry: dict) -> None:
             token,
         )
         accept_status(status, {200, 404, 422}, "label removal failed", body)
-    if state == "closed":
-        return
     status, body = request(
         "PATCH", f"{base}/pulls/{number}", token, {"state": "closed"}
     )
@@ -946,7 +1064,7 @@ def remint(ledger: dict) -> None:
     if os.environ.get("M6_REUSE_TOKEN") == "1" and token_path().is_file():
         read_secret(token_path())
         return
-    mint_token(str(ledger["owner"]), str(ledger["repo"]), token_path())
+    mint_token(str(ledger["owner"]), str(ledger["repo"]), token_path(), timeout=5)
 
 
 def cleanup() -> None:
@@ -958,6 +1076,8 @@ def cleanup() -> None:
     pending = [entry for entry in ledger["entries"] if entry.get("phase") != "cleaned"]
     if not pending:
         return
+    accepted_run_id(str(ledger.get("run_id") or ""))
+    accepted_batch_id(str(ledger.get("batch_id") or ""))
     remint(ledger)
     for entry in sorted(pending, key=cleanup_key):
         if entry.get("kind") == "pr":

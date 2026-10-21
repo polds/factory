@@ -842,6 +842,32 @@ def case_cleanup(mode: str) -> None:
             {"labels": ["skill"]},
             token,
         )
+        forge_call(
+            base,
+            "POST",
+            "/repos/acme/widgets/pulls",
+            {
+                "title": "base-main",
+                "head": f"improve/{BATCH}",
+                "base": "main",
+                "body": "c",
+            },
+            token,
+        )
+        forge_call(
+            base,
+            "POST",
+            "/repos/acme/widgets/pulls/3/requested_reviewers",
+            {"reviewers": ["m6-reviewer"]},
+            token,
+        )
+        forge_call(
+            base,
+            "POST",
+            "/repos/acme/widgets/issues/3/labels",
+            {"labels": ["privilege-escalation", "needs-human-design", "skill"]},
+            token,
+        )
         ledger_path = work / "remote-ledger.json"
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
         ledger["api_base"] = base
@@ -858,8 +884,24 @@ def case_cleanup(mode: str) -> None:
                 "phase": "observed",
             }
         )
+        ledger["entries"].append(
+            {
+                "kind": "pr",
+                "number": 3,
+                "head": f"improve/{BATCH}",
+                "base": "main",
+                "phase": "observed",
+            }
+        )
         ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
         env["M6_GITHUB_API_BASE"] = base
+        stub = work / "bin"
+        stub.mkdir(exist_ok=True)
+        argv_log = work / "argv"
+        env["M6_ARGV_LOG"] = str(argv_log)
+        env["PATH"] = f"{stub}:{env['PATH']}"
+        write_stub(stub, "git", real_binary("git"))
+        write_stub(stub, "curl", real_binary("curl"))
         apply_env(env)
         if remote.main(["remote.py", "cleanup"]) != 0:
             reason = (
@@ -879,8 +921,24 @@ def case_cleanup(mode: str) -> None:
             fail("this run's pull request was left open, requested, or labeled")
         if "needs-human-design" in pulls[1]["labels"]:
             fail("needs-human-design remained")
+        if "skill" not in pulls[1]["labels"]:
+            fail("skill label was removed")
         if pulls[2]["state"] != "open" or "skill" not in pulls[2]["labels"]:
             fail("the other run's pull request was changed")
+        if (
+            pulls[3]["state"] != "closed"
+            or pulls[3]["reviewers"]
+            or "privilege-escalation" in pulls[3]["labels"]
+            or "needs-human-design" in pulls[3]["labels"]
+            or "skill" not in pulls[3]["labels"]
+        ):
+            fail("matching head on main was not closed cleanly")
+        argv = argv_log.read_text(encoding="utf-8") if argv_log.is_file() else ""
+        secret_absent(argv, token)
+        if "--config" in argv or ".cfg" in argv:
+            fail("curl config was a file")
+        if "-K" not in argv:
+            fail("curl did not read config from stdin")
         bare = work / "acme" / "widgets.git"
 
         def has(ref: str) -> bool:
@@ -944,6 +1002,9 @@ def case_allow(mode: str) -> None:
     ):
         if remote.ref_allowed(ref, run, BATCH):
             fail(f"allow-list accepted {ref}")
+    for bad_run in ("a/b", "*", "?", " ", "", "..", "/", "a*"):
+        if remote.ref_allowed(f"m6-run/{bad_run}/main", bad_run, BATCH):
+            fail(f"allow-list accepted run id {bad_run!r}")
     work = Path(os.environ["M6_CASE_WORK"])
     env = base_env(mode, work)
     env["M6_REUSE_TOKEN"] = "1"
@@ -1111,6 +1172,575 @@ def case_forge_lookup() -> None:
         stop_proc(fake)
 
 
+def spike_state(base: str) -> dict:
+    with urllib.request.urlopen(base + "/_spike/m6", timeout=5) as res:
+        return json.load(res)
+
+
+def install_tools(work: Path, env: dict[str, str], *, forward_curl: bool) -> Path:
+    stub = work / "bin"
+    stub.mkdir(exist_ok=True)
+    log = work / "argv"
+    log.write_text("", encoding="utf-8")
+    env["M6_ARGV_LOG"] = str(log)
+    base_path = env.get("PATH", "")
+    if not base_path.startswith(f"{stub}:"):
+        env["PATH"] = f"{stub}:{base_path}"
+    git = stub / "git"
+    git.write_text(
+        '#!/bin/bash\nprintf \'git %s\\n\' "$*" >> "$M6_ARGV_LOG"\nexit 99\n',
+        encoding="utf-8",
+    )
+    git.chmod(0o755)
+    curl = stub / "curl"
+    if forward_curl:
+        real = real_binary("curl")
+        curl.write_text(
+            "#!/bin/bash\n"
+            'printf \'curl %s\\n\' "$*" >> "$M6_ARGV_LOG"\n'
+            f'exec {real} "$@"\n',
+            encoding="utf-8",
+        )
+    else:
+        curl.write_text(
+            '#!/bin/bash\nprintf \'curl %s\\n\' "$*" >> "$M6_ARGV_LOG"\nexit 99\n',
+            encoding="utf-8",
+        )
+    curl.chmod(0o755)
+    return log
+
+
+def argv_text(log: Path) -> str:
+    return log.read_text(encoding="utf-8") if log.is_file() else ""
+
+
+def assert_no_calls(log: Path) -> None:
+    if argv_text(log).strip():
+        fail("cleanup invoked git or curl")
+
+
+def open_labeled(base: str, token: str, head: str, base_ref: str) -> None:
+    forge_call(
+        base,
+        "POST",
+        "/repos/acme/widgets/pulls",
+        {"title": head, "head": head, "base": base_ref, "body": "body"},
+        token,
+    )
+
+
+def decorate(base: str, token: str, number: int) -> None:
+    forge_call(
+        base,
+        "POST",
+        f"/repos/acme/widgets/pulls/{number}/requested_reviewers",
+        {"reviewers": ["m6-reviewer"]},
+        token,
+    )
+    forge_call(
+        base,
+        "POST",
+        f"/repos/acme/widgets/issues/{number}/labels",
+        {"labels": ["privilege-escalation", "needs-human-design", "skill"]},
+        token,
+    )
+
+
+def assert_untouched(pull: dict, number: int) -> None:
+    if pull["state"] != "open" or pull["reviewers"] != ["m6-reviewer"]:
+        fail(f"pull {number} was mutated")
+    for label in ("privilege-escalation", "needs-human-design", "skill"):
+        if label not in pull["labels"]:
+            fail(f"pull {number} lost {label}")
+
+
+def pr_ledger(
+    work: Path,
+    *,
+    run_id: str,
+    batch_id: str,
+    number: int,
+    api: str,
+    recorded_head: str,
+) -> None:
+    ledger = {
+        "version": 1,
+        "run_id": run_id,
+        "owner": "acme",
+        "repo": "widgets",
+        "git_url": "file:///tmp/acme/widgets.git",
+        "api_base": api,
+        "base_ref": "m6-run/local-s1/main",
+        "candidate_ref": "m6-run/local-s1/candidate",
+        "batch_id": batch_id,
+        "entries": [
+            {
+                "kind": "pr",
+                "number": number,
+                "head": recorded_head,
+                "base": "m6-run/local-s1/main",
+                "phase": "observed",
+            }
+        ],
+    }
+    path = work / "remote-ledger.json"
+    path.write_text(json.dumps(ledger), encoding="utf-8")
+    path.chmod(0o600)
+
+
+def assert_get_only(text: str, name: str) -> None:
+    if "\ngit " in f"\n{text}" or text.startswith("git "):
+        fail(f"{name} invoked git")
+    if (
+        "DELETE" in text
+        or "PATCH" in text
+        or "requested_reviewers" in text
+        or "/labels/" in text
+    ):
+        fail(f"{name} mutated the pull request")
+    if "--config" in text or ".cfg" in text:
+        fail(f"{name} passed a curl config file")
+    if "-K" not in text:
+        fail(f"{name} did not pass the curl config on stdin")
+
+
+def case_close_guard(mode: str) -> None:
+    require_mode(mode)
+    work = Path(os.environ["M6_CASE_WORK"])
+    env = base_env(mode, work)
+    fake, forge, base = start_forge(work, env)
+    try:
+        token = capture_token(base, work)
+        specs = [
+            (f"improve/{OLD_BATCH}", "main"),
+            ("feature/unrelated", "main"),
+            (f"improve/{BATCH}", "m6-run/local-s1/main"),
+            (f"improve/{BATCH}", "release"),
+            (f"improve/{BATCH}", "legacy"),
+        ]
+        for head, base_ref in specs:
+            open_labeled(base, token, head, base_ref)
+        for number in range(1, 6):
+            decorate(base, token, number)
+        forge_call(
+            base,
+            "PATCH",
+            "/repos/acme/widgets/pulls/5",
+            {"state": "closed"},
+            token,
+        )
+        env["M6_REUSE_TOKEN"] = "1"
+        env["M6_GITHUB_API_BASE"] = base
+        env["M6_DEFINITION_GIT_URL"] = "file:///tmp/acme/widgets.git"
+        log = install_tools(work, env, forward_curl=True)
+        apply_env(env)
+        recorded = f"improve/{BATCH}"
+
+        def run_cleanup(
+            name: str, run_id: str, batch_id: str, number: int, *, code_ok: int
+        ) -> str:
+            log.write_text("", encoding="utf-8")
+            pr_ledger(
+                work,
+                run_id=run_id,
+                batch_id=batch_id,
+                number=number,
+                api=base,
+                recorded_head=recorded,
+            )
+            fail_path = work / "remote-fail"
+            if fail_path.exists():
+                fail_path.unlink()
+            before = list(spike_state(base)["mutations"])
+            code = call_captured(work, lambda: remote.main(["remote.py", "cleanup"]))
+            err = (work / "captured.err").read_text(encoding="utf-8")
+            secret_absent(err, token)
+            if "Traceback" in err:
+                fail(f"{name} traceback")
+            if code != code_ok:
+                reason = (
+                    fail_path.read_text(encoding="utf-8") if fail_path.exists() else ""
+                )
+                fail(f"{name} exited {code}: {reason.strip()}")
+            text = argv_text(log)
+            secret_absent(text, token)
+            after = spike_state(base)
+            if after["mutations"] != before:
+                fail(f"{name} made a mutating call")
+            return err
+
+        err = run_cleanup("old-head", "local-s1", BATCH, 1, code_ok=0)
+        if "allow-list" not in err:
+            fail("old-head did not log the allow-list")
+        assert_get_only(argv_text(log), "old-head")
+        err = run_cleanup("unrelated", "local-s1", BATCH, 2, code_ok=0)
+        if "allow-list" not in err:
+            fail("unrelated did not log the allow-list")
+        assert_get_only(argv_text(log), "unrelated")
+        err = run_cleanup("empty-batch", "local-s1", "", 3, code_ok=0)
+        if "allow-list" not in err:
+            fail("empty-batch did not log the allow-list")
+        assert_no_calls(log)
+        err = run_cleanup("empty-run", "", BATCH, 4, code_ok=1)
+        if "allow-list" not in err:
+            fail("empty-run did not log the allow-list")
+        assert_no_calls(log)
+        run_cleanup("missing-pr", "local-s1", BATCH, 99, code_ok=0)
+        assert_get_only(argv_text(log), "missing-pr")
+        run_cleanup("already-closed", "local-s1", BATCH, 5, code_ok=0)
+        assert_get_only(argv_text(log), "already-closed")
+        state = spike_state(base)
+        pulls = {pull["number"]: pull for pull in state["pulls"]}
+        assert_untouched(pulls[1], 1)
+        assert_untouched(pulls[2], 2)
+        assert_untouched(pulls[3], 3)
+        assert_untouched(pulls[4], 4)
+        if pulls[5]["state"] != "closed" or pulls[5]["reviewers"] != ["m6-reviewer"]:
+            fail("already-closed pull request was mutated")
+        if "skill" not in pulls[5]["labels"]:
+            fail("already-closed pull request lost skill")
+    finally:
+        stop_proc(forge)
+        stop_proc(fake)
+
+
+def case_watch_mismatch(mode: str) -> None:
+    require_mode(mode)
+    work = Path(os.environ["M6_CASE_WORK"])
+    env = seed_env(mode, work, "http://127.0.0.1:9")
+    apply_env(env)
+    if remote.main(["remote.py", "seed"]) != 0:
+        reason = ""
+        fail_path = work / "remote-fail"
+        if fail_path.exists():
+            reason = fail_path.read_text(encoding="utf-8").strip()
+        fail(f"seed failed: {reason}")
+    fake, forge, base = start_forge(work, env)
+    Factory.batch_id = BATCH
+    Factory.pr_url = "https://pr.invalid/acme/widgets/pull/1"
+    factory, factory_port = serve_factory()
+    try:
+        token = capture_token(base, work)
+        open_labeled(base, token, "feature/unrelated", "main")
+        decorate(base, token, 1)
+        open_labeled(base, token, f"improve/{OLD_BATCH}", "main")
+        decorate(base, token, 2)
+        ledger_path = work / "remote-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["api_base"] = base
+        ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+        env["M6_GITHUB_API_BASE"] = base
+        env["M6_FACTORY_URL"] = f"http://127.0.0.1:{factory_port}"
+        apply_env(env)
+        code = call_captured(work, lambda: remote.main(["remote.py", "watch-once"]))
+        err = (work / "captured.err").read_text(encoding="utf-8")
+        secret_absent(err, token)
+        if code != 0:
+            fail("watch-mismatch exited")
+        watch_log = work / "watch.log"
+        logged = watch_log.read_text(encoding="utf-8") if watch_log.is_file() else ""
+        if "pull request does not match this run" not in logged:
+            fail("watch did not log the mismatch")
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        for entry in ledger["entries"]:
+            if entry.get("kind") == "pr" or "number" in entry:
+                fail("watch recorded a pull request that does not match")
+            if str(entry.get("name") or "").startswith("improve/"):
+                fail("watch recorded an improve ref")
+        before = list(spike_state(base)["mutations"])
+        if remote.main(["remote.py", "cleanup"]) != 0:
+            reason = ""
+            fail_path = work / "remote-fail"
+            if fail_path.exists():
+                reason = fail_path.read_text(encoding="utf-8").strip()
+            fail(f"cleanup after mismatch failed: {reason}")
+        after = spike_state(base)
+        if after["mutations"] != before:
+            fail("cleanup closed a pull request the watch rejected")
+        pulls = {pull["number"]: pull for pull in after["pulls"]}
+        assert_untouched(pulls[1], 1)
+        assert_untouched(pulls[2], 2)
+    finally:
+        factory.shutdown()
+        stop_proc(forge)
+        stop_proc(fake)
+
+
+def commit_ref(work: Path, bare: Path, ref: str) -> str:
+    git = real_binary("git")
+    src = work / "src"
+    if src.exists():
+        shutil.rmtree(src)
+    src.mkdir()
+    (src / "file").write_text("one\n", encoding="utf-8")
+    subprocess.run(
+        [git, "-C", str(src), "init", "-b", "main"], check=True, capture_output=True
+    )
+    git_identity(src)
+    subprocess.run([git, "-C", str(src), "add", "file"], check=True)
+    subprocess.run(
+        [git, "-C", str(src), "-c", "commit.gpgsign=false", "commit", "-m", "one"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [git, "-C", str(src), "push", str(bare), f"HEAD:refs/heads/{ref}"],
+        check=True,
+        capture_output=True,
+    )
+    return git
+
+
+def case_ledger_run(mode: str) -> None:
+    require_mode(mode)
+    work = Path(os.environ["M6_CASE_WORK"])
+    bare = bare_repo(work)
+    git = commit_ref(work, bare, "m6-run/a/b/main")
+    env = base_env(mode, work)
+    env["M6_GITHUB_API_BASE"] = "http://127.0.0.1:9"
+    log = install_tools(work, env, forward_curl=False)
+    apply_env(env)
+
+    def once(run_id: str, batch_id: str, name: str) -> None:
+        ledger = {
+            "version": 1,
+            "run_id": run_id,
+            "owner": "acme",
+            "repo": "widgets",
+            "git_url": bare.as_uri(),
+            "api_base": "http://127.0.0.1:9",
+            "base_ref": "m6-run/local-s1/main",
+            "candidate_ref": "m6-run/local-s1/candidate",
+            "batch_id": batch_id,
+            "entries": [{"kind": "ref", "name": name, "phase": "created"}],
+        }
+        (work / "remote-ledger.json").write_text(json.dumps(ledger), encoding="utf-8")
+        log.write_text("", encoding="utf-8")
+        fail_path = work / "remote-fail"
+        if fail_path.exists():
+            fail_path.unlink()
+        try:
+            code = call_captured(work, lambda: remote.main(["remote.py", "cleanup"]))
+        except (json.JSONDecodeError, TypeError) as exc:
+            fail(f"ledger id {run_id!r} {batch_id!r} raised {type(exc).__name__}")
+        err = (work / "captured.err").read_text(encoding="utf-8")
+        if "Traceback" in err or "JSONDecodeError" in err or "TypeError" in err:
+            fail(f"ledger id {run_id!r} {batch_id!r} traceback")
+        if code == 0:
+            fail(f"ledger id {run_id!r} {batch_id!r} was accepted")
+        reason = fail_path.read_text(encoding="utf-8") if fail_path.exists() else ""
+        if "allow-list" not in reason:
+            fail(f"ledger id {run_id!r} {batch_id!r} did not name the allow-list")
+        assert_no_calls(log)
+        secret_absent(err + reason, TOKEN)
+
+    for run_id in ("a/b", "*", "?", " ", "", "..", "/", "a*"):
+        once(run_id, BATCH, f"m6-run/{run_id}/main")
+    once("local-s1", "*", "m6-run/local-s1/main")
+    once("local-s1", "ibt_a/b", "m6-run/local-s1/main")
+    proc = subprocess.run(
+        [
+            git,
+            "--git-dir",
+            str(bare),
+            "rev-parse",
+            "--verify",
+            "refs/heads/m6-run/a/b/main",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        fail("run id a/b deleted m6-run/a/b/main")
+
+
+def case_ledger_corrupt(mode: str) -> None:
+    require_mode(mode)
+    work = Path(os.environ["M6_CASE_WORK"])
+    env = base_env(mode, work)
+    env["M6_GITHUB_API_BASE"] = "http://127.0.0.1:9"
+    log = install_tools(work, env, forward_curl=False)
+    apply_env(env)
+    bodies = [
+        "{",
+        "[]",
+        json.dumps({"version": 1, "run_id": "local-s1", "entries": None}),
+    ]
+    for body in bodies:
+        (work / "remote-ledger.json").write_text(body, encoding="utf-8")
+        log.write_text("", encoding="utf-8")
+        fail_path = work / "remote-fail"
+        if fail_path.exists():
+            fail_path.unlink()
+        try:
+            code = call_captured(work, lambda: remote.main(["remote.py", "cleanup"]))
+        except (json.JSONDecodeError, TypeError) as exc:
+            fail(f"corrupt ledger raised {type(exc).__name__}")
+        err = (work / "captured.err").read_text(encoding="utf-8")
+        if "Traceback" in err or "JSONDecodeError" in err or "TypeError" in err:
+            fail("corrupt ledger traceback")
+        if code == 0:
+            fail("corrupt ledger was accepted")
+        reason = fail_path.read_text(encoding="utf-8") if fail_path.exists() else ""
+        if "remote ledger is invalid" not in reason:
+            fail("corrupt ledger message was not remote ledger is invalid")
+        assert_no_calls(log)
+
+
+class Stall:
+    def __init__(self) -> None:
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(32)
+        self.port = int(self.sock.getsockname()[1])
+        self.held: list[socket.socket] = []
+        self.closed = False
+        self.thread = threading.Thread(target=self._accept, daemon=True)
+        self.thread.start()
+
+    def _accept(self) -> None:
+        self.sock.settimeout(0.2)
+        while not self.closed:
+            try:
+                conn, _addr = self.sock.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            self.held.append(conn)
+
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def stop(self) -> None:
+        self.closed = True
+        self.sock.close()
+        for conn in self.held:
+            conn.close()
+
+
+def within(limit: float, fn):
+    outcome: dict[str, object] = {}
+
+    def target() -> None:
+        outcome["value"] = fn()
+
+    thread = threading.Thread(target=target, daemon=True)
+    started = time.monotonic()
+    thread.start()
+    thread.join(limit)
+    elapsed = time.monotonic() - started
+    if thread.is_alive():
+        fail(f"still running after {elapsed:.2f}s")
+    if "value" not in outcome:
+        fail("cleanup raised")
+    return outcome["value"], elapsed
+
+
+def bound_ledger(work: Path, git_url: str) -> None:
+    ledger = {
+        "version": 1,
+        "run_id": "local-s1",
+        "owner": "acme",
+        "repo": "widgets",
+        "git_url": git_url,
+        "api_base": "http://127.0.0.1:9",
+        "base_ref": "m6-run/local-s1/main",
+        "candidate_ref": "m6-run/local-s1/candidate",
+        "batch_id": BATCH,
+        "entries": [
+            {"kind": "ref", "name": "m6-run/local-s1/main", "phase": "created"}
+        ],
+    }
+    path = work / "remote-ledger.json"
+    path.write_text(json.dumps(ledger), encoding="utf-8")
+    path.chmod(0o600)
+
+
+def assert_bounded(elapsed: float, what: str) -> None:
+    if elapsed < 3 or elapsed >= 6.5:
+        fail(f"{what} finished in {elapsed:.2f}s")
+
+
+def case_cleanup_bound_git(mode: str) -> None:
+    require_mode(mode)
+    work = Path(os.environ["M6_CASE_WORK"])
+    stall = Stall()
+    try:
+        bare = bare_repo(work)
+        git = commit_ref(work, bare, "m6-run/local-s1/main")
+        env = base_env(mode, work)
+        env["M6_REUSE_TOKEN"] = "1"
+        env["M6_GITHUB_API_BASE"] = "http://127.0.0.1:9"
+        token = work / "github-app-token"
+        token.write_text(TOKEN + "\n", encoding="utf-8")
+        token.chmod(0o600)
+        bound_ledger(work, f"{stall.url()}/acme/widgets.git")
+        apply_env(env)
+        code, elapsed = within(6.5, lambda: remote.main(["remote.py", "cleanup"]))
+        print(f"bounded git in {elapsed:.2f}s")
+        assert_bounded(elapsed, "stalled delete")
+        if code == 0:
+            fail("stalled delete succeeded")
+        reason = ""
+        fail_path = work / "remote-fail"
+        if fail_path.exists():
+            reason = fail_path.read_text(encoding="utf-8")
+        if "timed out" not in reason and "delete " not in reason:
+            fail("stalled delete did not time out")
+        secret_absent(reason, TOKEN)
+        proc = subprocess.run(
+            [
+                git,
+                "--git-dir",
+                str(bare),
+                "rev-parse",
+                "--verify",
+                "refs/heads/m6-run/local-s1/main",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            fail("stalled delete removed the ref")
+    finally:
+        stall.stop()
+
+
+def case_cleanup_bound_mint(mode: str) -> None:
+    require_mode(mode)
+    work = Path(os.environ["M6_CASE_WORK"])
+    key = ensure_key(work)
+    binary = ensure_apptoken(work)
+    stall = Stall()
+    try:
+        env = base_env(mode, work)
+        env["M6_APPTOKEN_BIN"] = str(binary)
+        env["M6_GITHUB_API_BASE"] = stall.url()
+        env["FACTORY_GITHUB_APP_ID"] = "17"
+        env["FACTORY_GITHUB_APP_PRIVATE_KEY_FILE"] = str(key)
+        log = install_tools(work, env, forward_curl=False)
+        bound_ledger(work, "file:///tmp/acme/widgets.git")
+        apply_env(env)
+        code, elapsed = within(6.5, lambda: remote.main(["remote.py", "cleanup"]))
+        print(f"bounded mint in {elapsed:.2f}s")
+        assert_bounded(elapsed, "stalled mint")
+        if code == 0:
+            fail("stalled mint succeeded")
+        reason = ""
+        fail_path = work / "remote-fail"
+        if fail_path.exists():
+            reason = fail_path.read_text(encoding="utf-8")
+        if reason.strip() != "mint timed out":
+            fail("stalled mint did not time out")
+        assert_no_calls(log)
+        if "PRIVATE KEY" in reason or "ghs_" in reason:
+            fail("mint timeout leaked secret material")
+    finally:
+        stall.stop()
+
+
 def main() -> None:
     name = sys.argv[1]
     mode = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -1137,6 +1767,18 @@ def main() -> None:
         case_allow(mode)
     elif name == "token-argv":
         assert_seed(work, mode)
+    elif name == "close-guard":
+        case_close_guard(mode)
+    elif name == "watch-mismatch":
+        case_watch_mismatch(mode)
+    elif name == "ledger-run":
+        case_ledger_run(mode)
+    elif name == "ledger-corrupt":
+        case_ledger_corrupt(mode)
+    elif name == "cleanup-bound-git":
+        case_cleanup_bound_git(mode)
+    elif name == "cleanup-bound-mint":
+        case_cleanup_bound_mint(mode)
     elif name == "offline":
         case_offline()
     elif name == "forge-lookup":
