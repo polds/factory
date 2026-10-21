@@ -121,16 +121,3 @@ func (r RepoRef) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(r.String())
 }
-
-// WeakensApprovals reports approval gates that head weakens relative to base:
-// a removed gate, required changing from true to false, approvers widened,
-// or a gate renamed. T57 writes the body.
-func WeakensApprovals(base, head *Tree) []Diagnostic {
-	return nil
-}
-
-// GuardRails reports definition changes the improvement loop must not land.
-// T57 writes the body: WeakensApprovals plus the rail-5 selfImprovement check.
-func GuardRails(base, head *Tree) []Diagnostic {
-	return nil
-}

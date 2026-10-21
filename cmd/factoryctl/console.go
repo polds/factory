@@ -24,6 +24,8 @@ func cmdRuns(args []string, stdout, stderr io.Writer, getenv func(string) string
 		return cmdRunsFollowup(args[1:], stdout, stderr, getenv)
 	case "score":
 		return cmdRunsScore(args[1:], stdout, stderr, getenv)
+	case "scores":
+		return cmdRunsScores(args[1:], stdout, stderr, getenv)
 	case "capture-task":
 		return cmdRunsCapture(args[1:], stdout, stderr, getenv)
 	default:
@@ -40,6 +42,7 @@ Commands:
   interrupt RUN_ID
   followup RUN_ID --text TEXT
   score RUN_ID --scorer NAME
+  scores RUN_ID
   capture-task RUN_ID --suite SUITE --name NAME`)
 }
 

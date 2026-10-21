@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.internal/api/v1/factory-files/schemas/v1alpha1/task.schema.json",
+  "title": "Benchmark task",
+  "description": "benchmarks/<suite>/tasks/<task>.yaml. startingRepoRefs are host:owner/repo@<40 lowercase hex>. Unknown keys are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "prompt", "successCriteria"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "successCriteria": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceRunId": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "startingRepoRefs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[^:\\s]+:[^/\\s]+/[^/\\s]+@[0-9a-f]{40}$"
+      }
+    }
+  }
+}

@@ -38,15 +38,17 @@ func LoadDir(path string) (*Tree, []Diagnostic) {
 		}}
 	}
 	tree := &Tree{
-		Agents:      map[string]Agent{},
-		Runners:     map[string]Runner{},
-		Routers:     map[string]Router{},
-		Skills:      map[string]Skill{},
-		AgentSkills: map[string][]Skill{},
-		Automations: map[string]Automation{},
-		Scorers:     map[string]Scorer{},
-		Webhooks:    map[string]Webhook{},
-		Digest:      sum,
+		Agents:         map[string]Agent{},
+		Runners:        map[string]Runner{},
+		Routers:        map[string]Router{},
+		Skills:         map[string]Skill{},
+		AgentSkills:    map[string][]Skill{},
+		Automations:    map[string]Automation{},
+		Scorers:        map[string]Scorer{},
+		Webhooks:       map[string]Webhook{},
+		Benchmarks:     map[string]BenchmarkSuite{},
+		BenchmarkTasks: map[string]map[string]BenchmarkTask{},
+		Digest:         sum,
 	}
 	var diags []Diagnostic
 
@@ -63,6 +65,7 @@ func LoadDir(path string) (*Tree, []Diagnostic) {
 	loadAutomations(path, tree, &diags)
 	loadScorers(path, tree, &diags)
 	loadWebhooks(path, tree, &diags)
+	loadBenchmarks(path, tree, &diags)
 	validatePipeline(tree, factoryLines, &diags)
 	validateScorerDefaults(tree, factoryLines, &diags)
 	diags = append(diags, CheckAutomations(tree.Automations, nil)...)
@@ -91,7 +94,10 @@ func loadFactory(root string, tree *Tree, diags *[]Diagnostic) (map[string]any, 
 	scanMCPCredentials(file, "", raw, lines, diags)
 	if err := syaml.Unmarshal(body, &tree.Factory); err != nil {
 		addDiag(diags, file, 1, SeverityError, "invalid YAML: "+err.Error())
+	} else {
+		validateSelfImprovement(raw, tree.Factory.SelfImprovement, lines, diags)
 	}
+	recordApprovalLines(tree, lines)
 	return raw, lines
 }
 

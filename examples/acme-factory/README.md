@@ -17,6 +17,9 @@ runners/
   linux-standard.yaml                         4 vCPU / 8 GB linux sandbox
 scorers/
   tests-run/scorer.md                         did the implementer actually run tests?
+benchmarks/
+  pr-review/suite.yaml                        baseline vs candidate reviewer
+  pr-review/tasks/broken-doc-link.yaml        pinned startingRepoRefs
 skills/
   repository-conventions/SKILL.md             factory-wide procedure
 webhooks/

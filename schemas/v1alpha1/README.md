@@ -11,4 +11,4 @@ Unknown keys are rejected.
 
 Markdown frontmatter resources (agent.md, automation.md, scorer.md, SKILL.md) are validated offline (layer 2), not by JSON Schema.
 
-YAML resources covered here: `factory.yaml`, `runners/<name>.yaml`, `routers/<name>.yaml`, and `webhooks/<name>.yaml`.
+YAML resources covered here: `factory.yaml`, `runners/<name>.yaml`, `routers/<name>.yaml`, `webhooks/<name>.yaml`, `benchmarks/<suite>/suite.yaml`, and `benchmarks/<suite>/tasks/<task>.yaml`.

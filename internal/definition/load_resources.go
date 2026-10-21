@@ -251,22 +251,43 @@ func parseSkill(rel, name string, body []byte, diags *[]Diagnostic) (Skill, bool
 	return Skill{Name: name, Description: doc.Description, Body: markdown}, true
 }
 
-func loadAutomations(root string, tree *Tree, diags *[]Diagnostic) {
-	dir := filepath.Join(root, "automations")
-	entries, err := os.ReadDir(dir)
+// eachResource walks one resource directory and calls fn with the file body.
+//
+// file is either a nested document name (automation.md, scorer.md, suite.yaml),
+// read from dir/<name>/<file>, or a flat suffix that starts with '.' (.yaml),
+// read from dir/<name>.yaml. A missing directory is not an error. A missing
+// nested document is skipped. A flat-file read error is reported. Callers:
+// automations, scorers, webhooks, and benchmarks (suites and tasks).
+func eachResource(root, dir, file string, diags *[]Diagnostic, fn func(rel, name string, body []byte)) {
+	abs := filepath.Join(root, filepath.FromSlash(dir))
+	entries, err := os.ReadDir(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return
 		}
-		addDiag(diags, "automations", 1, SeverityError, err.Error())
+		addDiag(diags, dir, 1, SeverityError, err.Error())
 		return
 	}
+	flat := strings.HasPrefix(file, ".")
 	for _, e := range entries {
+		if flat {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), file) {
+				continue
+			}
+			rel := filepath.ToSlash(filepath.Join(dir, e.Name()))
+			body, err := os.ReadFile(filepath.Join(abs, e.Name()))
+			if err != nil {
+				addDiag(diags, rel, 1, SeverityError, err.Error())
+				continue
+			}
+			fn(rel, strings.TrimSuffix(e.Name(), file), body)
+			continue
+		}
 		if !e.IsDir() {
 			continue
 		}
-		rel := filepath.ToSlash(filepath.Join("automations", e.Name(), "automation.md"))
-		body, err := os.ReadFile(filepath.Join(dir, e.Name(), "automation.md"))
+		rel := filepath.ToSlash(filepath.Join(dir, e.Name(), file))
+		body, err := os.ReadFile(filepath.Join(abs, e.Name(), file))
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -274,12 +295,18 @@ func loadAutomations(root string, tree *Tree, diags *[]Diagnostic) {
 			addDiag(diags, rel, 1, SeverityError, err.Error())
 			continue
 		}
-		auto, ok := parseAutomation(rel, e.Name(), body, tree, diags)
-		if !ok {
-			continue
-		}
-		tree.Automations[e.Name()] = auto
+		fn(rel, e.Name(), body)
 	}
+}
+
+func loadAutomations(root string, tree *Tree, diags *[]Diagnostic) {
+	eachResource(root, "automations", "automation.md", diags, func(rel, name string, body []byte) {
+		auto, ok := parseAutomation(rel, name, body, tree, diags)
+		if !ok {
+			return
+		}
+		tree.Automations[name] = auto
+	})
 }
 
 type automationDoc struct {
@@ -389,34 +416,13 @@ func parseAutomation(rel, name string, body []byte, tree *Tree, diags *[]Diagnos
 }
 
 func loadScorers(root string, tree *Tree, diags *[]Diagnostic) {
-	dir := filepath.Join(root, "scorers")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
+	eachResource(root, "scorers", "scorer.md", diags, func(rel, name string, body []byte) {
+		sc, ok := parseScorer(rel, name, body, tree, diags)
+		if !ok {
 			return
 		}
-		addDiag(diags, "scorers", 1, SeverityError, err.Error())
-		return
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		rel := filepath.ToSlash(filepath.Join("scorers", e.Name(), "scorer.md"))
-		body, err := os.ReadFile(filepath.Join(dir, e.Name(), "scorer.md"))
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			addDiag(diags, rel, 1, SeverityError, err.Error())
-			continue
-		}
-		sc, ok := parseScorer(rel, e.Name(), body, tree, diags)
-		if !ok {
-			continue
-		}
-		tree.Scorers[e.Name()] = sc
-	}
+		tree.Scorers[name] = sc
+	})
 }
 
 type scorerDoc struct {
@@ -487,7 +493,7 @@ func parseScorer(rel, name string, body []byte, tree *Tree, diags *[]Diagnostic)
 			addDiag(diags, rel, lineAt(lines, "agents"), SeverityError, fmt.Sprintf("agent %q not found", agent.Name))
 		}
 	}
-	return Scorer{
+	sc := Scorer{
 		Name:            name,
 		Description:     doc.Description,
 		Agents:          doc.Agents,
@@ -498,35 +504,21 @@ func parseScorer(rel, name string, body []byte, tree *Tree, diags *[]Diagnostic)
 		Model:           model,
 		SelfImprovement: doc.SelfImprovement,
 		Body:            markdown,
-	}, true
+	}
+	if _, set := raw["selfImprovement"]; set {
+		sc.selfImprovementLine = lineAt(lines, "selfImprovement")
+	}
+	return sc, true
 }
 
 func loadWebhooks(root string, tree *Tree, diags *[]Diagnostic) {
-	dir := filepath.Join(root, "webhooks")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
+	eachResource(root, "webhooks", ".yaml", diags, func(rel, name string, body []byte) {
+		hook, ok := parseWebhook(rel, name, body, diags)
+		if !ok {
 			return
 		}
-		addDiag(diags, "webhooks", 1, SeverityError, err.Error())
-		return
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
-			continue
-		}
-		rel := filepath.ToSlash(filepath.Join("webhooks", e.Name()))
-		body, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			addDiag(diags, rel, 1, SeverityError, err.Error())
-			continue
-		}
-		hook, ok := parseWebhook(rel, strings.TrimSuffix(e.Name(), ".yaml"), body, diags)
-		if !ok {
-			continue
-		}
 		tree.Webhooks[hook.Name] = hook
-	}
+	})
 }
 
 type webhookDoc struct {

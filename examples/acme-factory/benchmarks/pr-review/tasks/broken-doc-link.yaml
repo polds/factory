@@ -1,0 +1,8 @@
+title: Fix a broken documentation link
+prompt: Find the broken internal documentation link and update it.
+successCriteria: The destination resolves and the link text names the destination.
+sourceRunId: run_01J00000000000000000000000
+tags:
+  - docs
+startingRepoRefs:
+  - github.com:acme/payments-docs@0123456789abcdef0123456789abcdef01234567

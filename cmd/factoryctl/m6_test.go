@@ -32,7 +32,7 @@ func TestM6HelpListsCommands(t *testing.T) {
 	stderr.Reset()
 	execute([]string{"runs", "--help"}, &stdout, &stderr, func(string) string { return "" })
 	usage := stdout.String() + stderr.String()
-	if !strings.Contains(usage, "score RUN_ID --scorer NAME") || !strings.Contains(usage, "capture-task RUN_ID --suite SUITE --name NAME") {
+	if !strings.Contains(usage, "score RUN_ID --scorer NAME") || !strings.Contains(usage, "scores RUN_ID") || !strings.Contains(usage, "capture-task RUN_ID --suite SUITE --name NAME") {
 		t.Fatalf("runs help %s", usage)
 	}
 }
@@ -62,6 +62,7 @@ func TestM6CommandsAgainstUnwiredServer(t *testing.T) {
 		{"scorers", "list", "--factory", "fac_1"},
 		{"scorers", "results", "--factory", "fac_1", "correctness"},
 		{"runs", "score", "run_1", "--scorer", "correctness"},
+		{"runs", "scores", "run_1"},
 		{"runs", "capture-task", "run_1", "--suite", "pr-review", "--name", "broken-doc-link"},
 		{"benchmarks", "list", "--factory", "fac_1"},
 		{"benchmarks", "run", "--factory", "fac_1", "pr-review", "--repetitions", "5"},
@@ -99,6 +100,8 @@ func TestM6CommandsPrintResults(t *testing.T) {
 		case "POST /api/v1/agent/runs/run_1/score":
 			status = http.StatusAccepted
 			body = `{"result_id":"sr_1","judge_run_id":"run_judge_1"}`
+		case "GET /api/v1/agent/runs/run_1/scores":
+			body = `[{"scorer":"correctness","label":"pass","score":1,"passed":true,"reasoning":"SECRET-REASONING","status":"ok"},{"scorer":"tests-run","label":"tests_skipped","score":0,"passed":false,"reasoning":"also-secret","status":"ok"}]`
 		case "POST /api/v1/agent/runs/run_1:capture-benchmark-task":
 			body = `{"path":"benchmarks/pr-review/tasks/broken-doc-link.yaml","content":"title: Fix a broken documentation link\n","head_refs":[{"host":"github.com","owner":"acme","repo":"payments-docs","sha":"0123456789abcdef0123456789abcdef01234567"}]}`
 		case "GET /api/v1/factory/fac_1/benchmarks":
@@ -140,6 +143,7 @@ func TestM6CommandsPrintResults(t *testing.T) {
 		{[]string{"scorers", "list", "--factory", "fac_1"}, "correctness agents=reviewer"},
 		{[]string{"scorers", "results", "--factory", "fac_1", "correctness", "--passed", "false"}, "sr_1 run=run_1"},
 		{[]string{"runs", "score", "run_1", "--scorer", "correctness"}, "sr_1 judge_run=run_judge_1"},
+		{[]string{"runs", "scores", "run_1"}, "correctness pass 1 true ok\ntests-run tests_skipped 0 false ok\n"},
 		{[]string{"runs", "capture-task", "run_1", "--suite", "pr-review", "--name", "broken-doc-link"}, yaml},
 		{[]string{"benchmarks", "list", "--factory", "fac_1"}, "pr-review agent=reviewer"},
 		{[]string{"benchmarks", "run", "--factory", "fac_1", "pr-review", "--repetitions", "5"}, "br_1\n"},
@@ -159,6 +163,9 @@ func TestM6CommandsPrintResults(t *testing.T) {
 		}
 		if strings.Contains(stdout.String()+stderr.String(), "cli-key") {
 			t.Fatalf("%v printed the api key", tc.args)
+		}
+		if strings.Contains(stdout.String()+stderr.String(), "SECRET-REASONING") || strings.Contains(stdout.String(), "also-secret") {
+			t.Fatalf("%v printed reasoning %q", tc.args, stdout.String())
 		}
 	}
 	var stdout, stderr strings.Builder
