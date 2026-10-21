@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Shared process and container teardown for the spike drivers.
-# spike/m1/run.sh through spike/m5/run.sh source this file. It has no
-# top-level side effects. m6 does not source it (T76b).
+# spike/m1/run.sh through spike/m6/run.sh source this file. It has no
+# top-level side effects.
 #
 # A long step has to run under spike_fg (or spike_spawn plus wait). bash
 # runs a trap only after the current foreground command returns, and wait
@@ -20,6 +20,7 @@
 #   spike_install_trap                     # tests and drivers with no extra steps
 #   spike_emit_children                    # shell assignments for stack.env
 #   spike_load_children_from_env
+#   spike_respawn_child <n>                # spawn SPIKE_CHILD_<n>_* again
 #   spike_docker                           # docker run plus the run label, when set
 #
 # SPIKE_STOP_GRACE (default 5) is the one shared deadline in seconds.
@@ -94,51 +95,20 @@ spike_read_field() {
 # signalled. Stdout and stderr stay with the caller unless --out or --err
 # is set, which is how drivers keep their log paths.
 spike_spawn() {
-  local class="stack" out="" err="" append=0 name=""
+  local class="stack" out="" err="" append=0 name="" seen=0
+  # One scan. Known flags may sit before the name or between the name
+  # and the command. The first other word is the name. The next other
+  # word starts the command, so the command's own flags are not scanned.
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --class)
+        if [[ $# -lt 2 ]]; then
+          echo "spike_spawn: --class needs a value" >&2
+          return 1
+        fi
         class="$2"
         shift 2
         ;;
-      --out)
-        out="$2"
-        shift 2
-        ;;
-      --err)
-        err="$2"
-        shift 2
-        ;;
-      --append)
-        append=1
-        shift
-        ;;
-      --)
-        shift
-        break
-        ;;
-      *)
-        break
-        ;;
-    esac
-  done
-  if [[ "$class" != stack && "$class" != transient ]]; then
-    echo "spike_spawn: class must be stack or transient" >&2
-    return 1
-  fi
-  name="${1:-}"
-  shift || true
-  if [[ -z "$name" ]]; then
-    echo "spike_spawn: name and command are required" >&2
-    return 1
-  fi
-  if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
-    echo "spike_spawn: bad name" >&2
-    return 1
-  fi
-  # Drivers write: spike_spawn --class stack <name> --out <path> --err <path> <cmd...>
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
       --out)
         if [[ $# -lt 2 ]]; then
           echo "spike_spawn: --out needs a path" >&2
@@ -161,13 +131,37 @@ spike_spawn() {
         ;;
       --)
         shift
+        if [[ "$seen" -eq 0 ]]; then
+          name="${1:-}"
+          shift || true
+          seen=1
+          continue
+        fi
         break
         ;;
       *)
+        if [[ "$seen" -eq 0 ]]; then
+          name="$1"
+          shift
+          seen=1
+          continue
+        fi
         break
         ;;
     esac
   done
+  if [[ "$class" != stack && "$class" != transient ]]; then
+    echo "spike_spawn: class must be stack or transient" >&2
+    return 1
+  fi
+  if [[ -z "$name" ]]; then
+    echo "spike_spawn: name and command are required" >&2
+    return 1
+  fi
+  if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "spike_spawn: bad name" >&2
+    return 1
+  fi
   if [[ $# -eq 0 ]]; then
     echo "spike_spawn: name and command are required" >&2
     return 1
@@ -243,6 +237,38 @@ spike_spawn() {
   SPIKE_LAST_PGID="$pgid"
   # shellcheck disable=SC2034
   SPIKE_LAST_DIR="$dir"
+}
+
+# spike_respawn_child starts SPIKE_CHILD_<n>_* again. The record lives in
+# the environment (stack.env), not the registry, because a restart clears
+# the registry before it spawns. --append is kept when the record says so.
+spike_respawn_child() {
+  local n="$1" class="" name="" argv_q="" out="" err="" append=""
+  local -a argv=() flags=()
+  eval "class=\${SPIKE_CHILD_${n}_CLASS-}"
+  eval "name=\${SPIKE_CHILD_${n}_NAME-}"
+  eval "argv_q=\${SPIKE_CHILD_${n}_ARGV-}"
+  eval "out=\${SPIKE_CHILD_${n}_OUT-}"
+  eval "err=\${SPIKE_CHILD_${n}_ERR-}"
+  eval "append=\${SPIKE_CHILD_${n}_APPEND-}"
+  if [[ -z "$class" ]]; then
+    class="stack"
+  fi
+  argv=()
+  # argv_q is a list of %q words produced by spike_spawn.
+  # shellcheck disable=SC2294
+  eval "argv=( ${argv_q} )"
+  flags=(--class "$class")
+  if [[ "$append" == 1 ]]; then
+    flags+=(--append)
+  fi
+  if [[ -n "$out" ]]; then
+    flags+=(--out "$out")
+  fi
+  if [[ -n "$err" ]]; then
+    flags+=(--err "$err")
+  fi
+  spike_spawn "${flags[@]}" "$name" "${argv[@]}"
 }
 
 # spike_fg runs a long foreground step as a child and waits for it, so a

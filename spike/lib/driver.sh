@@ -352,8 +352,8 @@ wipe_dir() {
   fi
   # Bind the resolved directory itself. A parent mount would let the
   # root find walk sideways out of the tree we agreed to delete.
-  # The label is opt-in. m6 leaves SPIKE_RUN_LABEL unset, so its argv
-  # stays the two-flag form above the image.
+  # The label is opt-in. A caller that has not run spike_run_init leaves
+  # SPIKE_RUN_LABEL unset, so its argv stays the two-flag form above the image.
   if [[ -n "${SPIKE_RUN_LABEL:-}" ]]; then
     docker run --rm --label "spike-run=${SPIKE_RUN_LABEL}" --user 0 \
       -v "$resolved:/wipe" golang:1.26-alpine \
@@ -692,4 +692,180 @@ print_playwright_failures() {
     /^[[:space:]]+[0-9]+\) / { show = 1 }
     show { print }
   ' "$log" >&2
+}
+
+# post_signed POSTs a body with an HMAC-SHA256 GitHub-style signature.
+# POST_SIGNED_SECRET overrides the default m5 webhook secret so another
+# driver can sign with its own value without copying this function.
+post_signed() {
+  local url="$1" dest="$2"
+  shift 2
+  local sig="" code="" secret=""
+  secret="${POST_SIGNED_SECRET:-${FACTORY_SECRET_M5_WEBHOOK:-}}"
+  sig="$(openssl dgst -sha256 -hmac "$secret" "$dest" | awk '{print $NF}')"
+  code="$(curl --connect-timeout 2 -m 5 -sS -o "$WORK/deliver-body.txt" -w '%{http_code}' \
+    -X POST "$url" \
+    -H "Content-Type: application/json" \
+    -H "X-Hub-Signature-256: sha256=${sig}" \
+    "$@" \
+    --data-binary @"$dest" || true)"
+  printf '%s' "$code"
+}
+
+# stack_env_write records the named variables and the stack-class children
+# under $WORK/stack.env (mode 600). It does nothing until spike_run_init.
+stack_env_write() {
+  local tmp="" name="" value=""
+  if [[ -z "${SPIKE_RUN_LABEL:-}" ]]; then
+    return 0
+  fi
+  umask 077
+  tmp="$(mktemp "${WORK}/stack.env.XXXXXX")"
+  {
+    for name in "$@"; do
+      eval "value=\${${name}-}"
+      printf '%s=%q\n' "$name" "$value"
+    done
+    spike_emit_children
+  } >"$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$WORK/stack.env"
+}
+
+stack_env_load() {
+  # shellcheck disable=SC1091
+  . "$WORK/stack.env"
+  export SPIKE_RUN_ID SPIKE_RUN_LABEL
+  SPIKE_REG="${WORK}/spike-run"
+  export SPIKE_REG
+  spike_load_children_from_env
+}
+
+# stack_refuse_live exits when a recorded stack pid is still alive.
+# A stale file (every pid dead) is removed so the default path can run.
+stack_refuse_live() {
+  local prefix="$1" cmd="$2"
+  if [[ ! -f "$WORK/stack.env" ]]; then
+    return 0
+  fi
+  if (
+    set +u
+    # shellcheck disable=SC1091
+    . "$WORK/stack.env"
+    i=1
+    n="${SPIKE_CHILD_COUNT:-0}"
+    while [[ "$i" -le "$n" ]]; do
+      eval "pid=\${SPIKE_CHILD_${i}_PID-}"
+      eval "class=\${SPIKE_CHILD_${i}_CLASS-}"
+      if [[ "$class" == stack && -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        exit 0
+      fi
+      i=$((i + 1))
+    done
+    exit 1
+  ); then
+    echo "${prefix} FAIL — KEEP_UP stack is still up (${cmd} down or ${cmd} specs)" >&2
+    exit 1
+  fi
+  rm -f "$WORK/stack.env"
+}
+
+stack_pids_match() {
+  local prefix="$1" dir="" name="" pid=""
+  for dir in "$SPIKE_REG"/children/*; do
+    [[ -d "$dir" ]] || continue
+    name="$(cat "$dir/name")"
+    pid="$(cat "$dir/pid")"
+    if ! spike_pid_identity_ok "$dir"; then
+      echo "${prefix} FAIL — stale stack: ${name} pid ${pid} is gone" >&2
+      return 1
+    fi
+  done
+}
+
+stack_compose_ready() {
+  local prefix="$1" services="" joined="" svc=""
+  shift
+  joined=""
+  for svc in "$@"; do
+    if [[ -z "$joined" ]]; then
+      joined="$svc"
+    else
+      joined="${joined} and ${svc}"
+    fi
+  done
+  services="$(compose ps --status running --services 2>/dev/null || true)"
+  for svc in "$@"; do
+    if ! printf '%s\n' "$services" | grep -qx "$svc"; then
+      echo "${prefix} FAIL — compose services ${joined} are not running" >&2
+      return 1
+    fi
+  done
+}
+
+# Each argument is name=url. The failure line keeps the caller's service name.
+stack_health_once() {
+  local prefix="$1" pair="" name="" url=""
+  shift
+  for pair in "$@"; do
+    name="${pair%%=*}"
+    url="${pair#*=}"
+    if ! curl -fsS --connect-timeout 2 -m 5 "$url" >/dev/null; then
+      echo "${prefix} FAIL — ${name} /healthz did not answer" >&2
+      return 1
+    fi
+  done
+}
+
+# stack_restart_processes stops stack-class children and starts them again
+# from SPIKE_CHILD_<n>_*. The ready callback runs after the respawn.
+stack_restart_processes() {
+  local ready="${1:-}" i=1 n=0 class=""
+  n="${SPIKE_CHILD_COUNT:-0}"
+  if [[ "$n" -eq 0 ]]; then
+    return 0
+  fi
+  KEEP_UP=0
+  spike_stop_processes || true
+  KEEP_UP=1
+  rm -rf "$SPIKE_REG/children"
+  mkdir -p "$SPIKE_REG/children"
+  printf '%s\n' 0 >"$SPIKE_REG/seq"
+  while [[ "$i" -le "$n" ]]; do
+    eval "class=\${SPIKE_CHILD_${i}_CLASS-}"
+    if [[ "$class" == stack ]]; then
+      spike_respawn_child "$i"
+    fi
+    i=$((i + 1))
+  done
+  if [[ -n "$ready" ]]; then
+    "$ready"
+  fi
+}
+
+stack_down() {
+  if [[ ! -f "$WORK/stack.env" ]]; then
+    printf 'nothing to stop\n'
+    exit 0
+  fi
+  stack_env_load
+  KEEP_UP=0
+  export KEEP_UP
+  # The caller's cleanup trap reads COMPOSE_STARTED after this function exits.
+  # shellcheck disable=SC2034
+  COMPOSE_STARTED=1
+  trap 'cleanup EXIT' EXIT
+  trap 'cleanup INT' INT
+  trap 'cleanup TERM' TERM
+  exit 0
+}
+
+# spike_playwright_pipeline is the foreground body spike_fg waits on.
+# PLAY_LOG is the tee target. The status is Playwright's, not tee's.
+spike_playwright_pipeline() {
+  local code=0
+  set +e
+  run_playwright 2>&1 | tee "$PLAY_LOG"
+  code="${PIPESTATUS[0]}"
+  return "$code"
 }

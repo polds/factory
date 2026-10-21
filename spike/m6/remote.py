@@ -16,9 +16,11 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -347,6 +349,29 @@ def git_env(token: str, origin: str) -> dict[str, str]:
     return env
 
 
+def _num(value: float) -> str:
+    rounded = round(value)
+    if abs(value - rounded) < 1e-9:
+        return str(int(rounded))
+    text = f"{value:.3f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def call_limits() -> tuple[float, float]:
+    """Return (max_time, connect_timeout). A set deadline shrinks both."""
+    raw = os.environ.get("M6_CLEANUP_DEADLINE", "").strip()
+    if raw == "":
+        return 5.0, 2.0
+    try:
+        deadline = float(raw)
+    except ValueError:
+        return 5.0, 2.0
+    left = deadline - time.time()
+    if left <= 0:
+        raise RemoteError("remote cleanup incomplete")
+    return min(5.0, left), min(2.0, left)
+
+
 def run_git(
     args: list[str],
     token: str,
@@ -355,13 +380,15 @@ def run_git(
     *,
     timeout: float | None = None,
     http_bound: bool = False,
+    connect_timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     cmd = ["git", "-c", "protocol.file.allow=always"]
     if http_bound:
+        connect = 2.0 if connect_timeout is None else connect_timeout
         cmd.extend(
             [
                 "-c",
-                "http.connectTimeout=2",
+                f"http.connectTimeout={_num(connect)}",
                 "-c",
                 "http.lowSpeedLimit=1",
                 "-c",
@@ -436,6 +463,7 @@ def request(
             'header = "Content-Type: application/json"',
         ]
     )
+    max_time, connect = call_limits()
     cmd = [
         "curl",
         "-q",
@@ -443,9 +471,9 @@ def request(
         "-",
         "-sS",
         "--connect-timeout",
-        "2",
+        _num(connect),
         "-m",
-        "5",
+        _num(max_time),
         "-o",
         str(body_file),
         "-w",
@@ -946,20 +974,84 @@ def delete_missing(stderr: str) -> bool:
     )
 
 
-def delete_ref(ledger: dict, name: str) -> None:
+def _named(rows: object, key: str) -> set[str]:
+    found: set[str] = set()
+    if not isinstance(rows, list):
+        return found
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        value = row.get(key)
+        if isinstance(value, str) and value:
+            found.add(value)
+    return found
+
+
+def porcelain_deleted(stdout: str) -> set[str]:
+    done: set[str] = set()
+    for line in stdout.splitlines():
+        if "\t" not in line:
+            continue
+        parts = line.split("\t")
+        flag = parts[0]
+        if flag == "!":
+            continue
+        refspec = parts[1] if len(parts) > 1 else ""
+        target = refspec.split(":", 1)[1] if ":" in refspec else refspec
+        if target.startswith("refs/heads/"):
+            done.add(target[len("refs/heads/") :])
+    return done
+
+
+def delete_refs(ledger: dict, names: list[str]) -> set[str]:
     run_id = accepted_run_id(str(ledger.get("run_id") or ""))
     batch_id = str(ledger.get("batch_id") or "")
     accepted_batch_id(batch_id)
-    if not ref_allowed(name, run_id, batch_id):
-        refuse(name)
-        raise RemoteError(f"remote ref refused: {name}: allow-list")
+    for name in names:
+        if not ref_allowed(name, run_id, batch_id):
+            refuse(name)
+            raise RemoteError(f"remote ref refused: {name}: allow-list")
+    if not names:
+        return set()
     token = read_secret(token_path())
     url = str(ledger["git_url"])
-    spec = f":refs/heads/{name}"
-    proc = run_git(["push", url, spec], token, url, timeout=5, http_bound=True)
-    if proc.returncode == 0 or delete_missing(proc.stderr or ""):
+    specs = [f":refs/heads/{name}" for name in names]
+    budgeted = os.environ.get("M6_CLEANUP_DEADLINE", "").strip() != ""
+    timeout = 5.0
+    connect: float | None = None
+    if budgeted:
+        timeout, connect = call_limits()
+    proc = run_git(
+        ["push", "--porcelain", url, *specs],
+        token,
+        url,
+        timeout=timeout,
+        http_bound=True,
+        connect_timeout=connect,
+    )
+    done = porcelain_deleted(proc.stdout or "")
+    if proc.returncode == 0:
+        return done or set(names)
+    if done:
+        return done
+    if delete_missing(proc.stderr or ""):
+        return set(names)
+    git_ok(proc, "delete refs failed")
+    return done
+
+
+def ensure_cleanup_token(ledger: dict) -> None:
+    path = token_path()
+    if path.is_file() and (time.time() - path.stat().st_mtime) < 50 * 60:
+        read_secret(path)
         return
-    git_ok(proc, f"delete {name} failed")
+    binary = work_dir() / "apptoken"
+    if binary.is_file():
+        os.environ["M6_APPTOKEN_BIN"] = str(binary)
+        limit, _connect = call_limits()
+        mint_token(str(ledger["owner"]), str(ledger["repo"]), path, timeout=limit)
+        return
+    raise RemoteError("remote cleanup incomplete")
 
 
 def pull_document(body: bytes) -> dict:
@@ -1030,15 +1122,20 @@ def close_pr(ledger: dict, entry: dict) -> None:
     if not head_matches(doc, owner, batch_id):
         refuse(live_identity(doc, owner) or f"{owner}:improve/{batch_id}")
         return
-    logins = reviewer_logins()
-    status, body = request(
-        "DELETE",
-        f"{base}/pulls/{number}/requested_reviewers",
-        token,
-        {"reviewers": logins},
-    )
-    accept_status(status, {200, 404, 422}, "reviewer removal failed", body)
+    present_logins = _named(doc.get("requested_reviewers"), "login")
+    needed = [login for login in reviewer_logins() if login in present_logins]
+    if needed:
+        status, body = request(
+            "DELETE",
+            f"{base}/pulls/{number}/requested_reviewers",
+            token,
+            {"reviewers": needed},
+        )
+        accept_status(status, {200, 404, 422}, "reviewer removal failed", body)
+    present_labels = _named(doc.get("labels"), "name")
     for label in LABELS_TO_REMOVE:
+        if label not in present_labels:
+            continue
         status, body = request(
             "DELETE",
             f"{base}/issues/{number}/labels/{urllib.parse.quote(label)}",
@@ -1068,6 +1165,10 @@ def remint(ledger: dict) -> None:
 
 
 def cleanup() -> None:
+    # The hook has already ignored INT and TERM in the shell. A second
+    # Ctrl-C still reaches this process group; don't raise from it.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     if not live_mode():
         return
     ledger = load_ledger()
@@ -1078,16 +1179,34 @@ def cleanup() -> None:
         return
     accepted_run_id(str(ledger.get("run_id") or ""))
     accepted_batch_id(str(ledger.get("batch_id") or ""))
-    remint(ledger)
+    budgeted = os.environ.get("M6_CLEANUP_DEADLINE", "").strip() != ""
+    if budgeted:
+        ensure_cleanup_token(ledger)
+    else:
+        remint(ledger)
+    refs: list[dict] = []
     for entry in sorted(pending, key=cleanup_key):
+        if budgeted:
+            call_limits()
         if entry.get("kind") == "pr":
             close_pr(ledger, entry)
+            entry["phase"] = "cleaned"
+            save_ledger(ledger)
         elif entry.get("kind") == "ref":
-            delete_ref(ledger, str(entry.get("name") or ""))
+            refs.append(entry)
         else:
             raise RemoteError("remote ledger entry is invalid")
-        entry["phase"] = "cleaned"
-        save_ledger(ledger)
+    if not refs:
+        return
+    if budgeted:
+        call_limits()
+    deleted = delete_refs(ledger, [str(entry.get("name") or "") for entry in refs])
+    for entry in refs:
+        if str(entry.get("name") or "") in deleted:
+            entry["phase"] = "cleaned"
+    save_ledger(ledger)
+    if any(entry.get("phase") != "cleaned" for entry in refs):
+        raise RemoteError("remote cleanup incomplete")
 
 
 def remember_watch_error(err: RemoteError) -> None:

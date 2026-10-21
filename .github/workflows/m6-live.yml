@@ -4,7 +4,7 @@
 # check. Dispatch it from the orchestrator only. Do not run it on
 # pull_request or push, and do not dispatch it from an agent.
 #
-# A dispatch runs MODE=live-ci against the definition repo and the App.
+# exec so cancel SIGINT reaches the driver; if: cancelled() runs --cleanup-remote.
 # The driver preflights the installation, pushes a run-scoped base
 # (m6-run/<run-id>/main), watches this run's improvement pull request,
 # and on the way out deletes only that run's remote resources.
@@ -165,7 +165,21 @@ jobs:
           FACTORY_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
           FACTORY_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/m6-github-app.pem
           FACTORY_REVIEWERS_ADMINS: ${{ inputs.reviewer }}
-        run: MODE=live-ci ./spike/m6/run.sh
+        run: MODE=live-ci exec ./spike/m6/run.sh
+      - name: Clean up remote state after cancel
+        if: cancelled()
+        env:
+          M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          M1_OPENAI_EXTRA_HEADERS: ${{ secrets.M1_OPENAI_EXTRA_HEADERS }}
+          M6_LIVE_MODEL: ${{ inputs.model }}
+          M6_LIVE_MODEL_JUDGE: ${{ inputs.judge_model }}
+          M6_DEFINITION_GIT_URL: ${{ inputs.definition_git_url }}
+          M6_GITHUB_API_BASE: ${{ inputs.github_api_base }}
+          FACTORY_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
+          FACTORY_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/m6-github-app.pem
+          FACTORY_REVIEWERS_ADMINS: ${{ inputs.reviewer }}
+        run: MODE=live-ci ./spike/m6/run.sh --cleanup-remote
       # .work is a hidden directory, so the upload must opt in.
       # A preflight failure leaves no evidence directory.
       - name: Upload M6 evidence

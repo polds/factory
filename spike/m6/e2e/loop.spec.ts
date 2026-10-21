@@ -142,33 +142,38 @@ test("m6 exit loop", async ({ browser }) => {
   try {
     await signIn(page);
     await chooseFactory(page, "m6");
-    await createItem(page, "cite one", "Describe the change in one sentence.");
-    await createItem(page, "cite two", "Describe the change in one sentence.");
-    await createItem(page, "cite three", "Describe the change in one sentence.");
+    await createItem(page, scoped("cite one"), "Describe the change in one sentence.");
+    await createItem(page, scoped("cite two"), "Describe the change in one sentence.");
+    await createItem(page, scoped("cite three"), "Describe the change in one sentence.");
     if (offline) {
-      await createItem(page, "m6-bad-label", "m6-bad-label");
+      await createItem(page, scoped("m6-bad-label"), "m6-bad-label");
     }
     await axe(page, "work-items");
 
     await openSection(page, "Scorers");
     await page.getByRole("link", { name: "Results for cite-sources" }).click();
     await expect(page.getByRole("heading", { name: "Scorers" })).toBeVisible();
-    await reloadUntil(
-      page,
-      async () => (await page.getByRole("row").filter({ hasText: "missed" }).count()) >= 3,
-      12 * 60 * 1000,
-    );
-    const missed = page.getByRole("row").filter({ hasText: "missed" });
+    await reloadUntil(page, async () => (await missedIds(page)).length >= 3, 12 * 60 * 1000);
     trace.push("scorer: cite-sources");
-    const failingIds: string[] = [];
-    for (let i = 0; i < (await missed.count()); i += 1) {
-      const id = ((await missed.nth(i).getByRole("link").first().innerText()) ?? "").trim();
-      expect(id.startsWith("run_")).toBe(true);
-      failingIds.push(id);
-    }
+    const failingIds = await missedIds(page);
     trace.push("failing results: " + failingIds.join(" "));
     if (offline) {
-      await expect(page.getByText("Scorer invalid").first()).toBeVisible({ timeout: 180_000 });
+      if (runNonce === "") {
+        await expect(page.getByText("Scorer invalid").first()).toBeVisible({ timeout: 180_000 });
+      } else {
+        const allow = await runsForNonce(page);
+        await expect
+          .poll(async () => {
+            const rows = page.getByRole("row").filter({ hasText: "Scorer invalid" });
+            const count = await rows.count();
+            for (let i = 0; i < count; i += 1) {
+              const id = ((await rows.nth(i).getByRole("link").first().innerText()) ?? "").trim();
+              if (allow.has(id)) return true;
+            }
+            return false;
+          })
+          .toBe(true);
+      }
       trace.push("invalid label: not-a-label");
     } else {
       const labels = await page.getByRole("cell").allTextContents();
@@ -203,7 +208,10 @@ test("m6 exit loop", async ({ browser }) => {
     await expect(page.getByText("PR open").first()).toBeVisible();
     const batchId = (await page.locator("td.mono").first().textContent()) ?? "";
     trace.push("batch: " + batchId.trim());
-    const regressions = page.getByRole("table", { name: /Regressions for/ });
+    const regressions =
+      runNonce === ""
+        ? page.getByRole("table", { name: /Regressions for/ })
+        : page.getByRole("table", { name: `Regressions for ${batchId.trim()}` });
     await expect(regressions).toBeVisible();
     const regressionRows = regressions.locator("tbody").getByRole("row");
     await expect(regressionRows).toHaveCount(failingIds.length);
@@ -260,9 +268,11 @@ test("m6 exit loop", async ({ browser }) => {
         expect(forHead[0]?.reviewers ?? []).toContain("m6-reviewer");
         expect(guard).toBe(true);
       } else {
-        const product = creates.find(
-          (row) => row.status === 201 && (row.body ?? "").includes("## Regressions addressed"),
-        );
+        const product = creates.find((row) => {
+          if (row.status !== 201 || !(row.body ?? "").includes("## Regressions addressed")) return false;
+          if (runNonce === "") return true;
+          return failingIds.every((id) => (row.body ?? "").includes("- run " + id + " "));
+        });
         const body = productBody(product);
         expect(product?.status).toBe(201);
         expect(body).toContain("Layer changed: skill");
@@ -271,7 +281,12 @@ test("m6 exit loop", async ({ browser }) => {
           expect(body).toContain("- run " + id + " ");
         }
         expect(creates.some((row) => (row.body ?? "").includes("Opened by the offline improver."))).toBe(false);
-        expect(pulls[0]?.reviewers ?? []).toContain("m6-reviewer");
+        if (runNonce === "") {
+          expect(pulls[0]?.reviewers ?? []).toContain("m6-reviewer");
+        } else {
+          const mine = pulls.filter((pull) => pull.head === "improve/" + batchId.trim());
+          expect(mine[0]?.reviewers ?? []).toContain("m6-reviewer");
+        }
         expect(guard).toBe(true);
       }
       trace.push("guard: factory/config passed");
@@ -377,7 +392,20 @@ test("m6 exit loop", async ({ browser }) => {
 
     await openSection(page, "Scorers");
     await page.getByRole("link", { name: "Results for cite-sources" }).click();
-    const runLink = page.getByRole("row").filter({ hasText: "missed" }).getByRole("link").first();
+    let runLink = page.getByRole("row").filter({ hasText: "missed" }).getByRole("link").first();
+    if (runNonce !== "") {
+      const allow = await runsForNonce(page);
+      const rows = page.getByRole("row").filter({ hasText: "missed" });
+      const count = await rows.count();
+      for (let i = 0; i < count; i += 1) {
+        const link = rows.nth(i).getByRole("link").first();
+        const id = ((await link.innerText()) ?? "").trim();
+        if (allow.has(id)) {
+          runLink = link;
+          break;
+        }
+      }
+    }
     await runLink.click();
     await expect(page.getByRole("heading", { name: "Scores" })).toBeVisible();
     const scoreRow = page.getByRole("row").filter({ has: page.getByRole("rowheader", { name: "cite-sources" }) });
@@ -424,3 +452,47 @@ test("m6 exit loop", async ({ browser }) => {
     await context.close().catch(() => undefined);
   }
 });
+
+// Empty on a default run, so titles stay the ones the offline router and
+// the evidence checks already use. specs sets a hex nonce so a second
+// run does not match the previous run's rows. These sit below the test
+// so the reporter line stays where the default run prints it.
+const runNonce = process.env.M6_RUN_NONCE ?? "";
+if (runNonce !== "" && !/^[0-9a-f]+$/.test(runNonce)) {
+  throw new Error("M6_RUN_NONCE must be hex");
+}
+
+function scoped(title: string): string {
+  if (runNonce === "") return title;
+  const space = title.indexOf(" ");
+  if (space === -1) return `${title} ${runNonce}`;
+  return `${title.slice(0, space)} ${runNonce}${title.slice(space)}`;
+}
+
+async function runsForNonce(page: Page): Promise<Set<string>> {
+  const response = await page.request.get("/api/v1/agent/runs", {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  const rows = (await response.json()) as { id?: string; title?: string }[];
+  const ids = new Set<string>();
+  for (const row of rows) {
+    const title = row.title ?? "";
+    const id = row.id ?? "";
+    if (title.includes(runNonce) && id.startsWith("run_")) ids.add(id);
+  }
+  return ids;
+}
+
+async function missedIds(page: Page): Promise<string[]> {
+  const missed = page.getByRole("row").filter({ hasText: "missed" });
+  const allow = runNonce === "" ? null : await runsForNonce(page);
+  const ids: string[] = [];
+  const count = await missed.count();
+  for (let i = 0; i < count; i += 1) {
+    const id = ((await missed.nth(i).getByRole("link").first().innerText()) ?? "").trim();
+    if (allow && !allow.has(id)) continue;
+    expect(id.startsWith("run_")).toBe(true);
+    ids.push(id);
+  }
+  return ids;
+}

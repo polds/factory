@@ -6,6 +6,8 @@
 #   MODE=live-ci ./spike/m6/run.sh
 #   KEEP_UP=1 ./spike/m6/run.sh
 #   ./spike/m6/run.sh --manual
+#   ./spike/m6/run.sh specs
+#   ./spike/m6/run.sh down
 #
 # offline plays the agent, the judge, and the improver. live and live-ci
 # use the same spec with structural assertions. A missing live variable
@@ -33,6 +35,8 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
 # shellcheck source=spike/lib/driver.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/driver.sh"
+# shellcheck source=spike/lib/cleanup.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/cleanup.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$ROOT/spike/m6/.work"
@@ -344,43 +348,45 @@ build_images() {
 }
 
 start_git() {
-  git daemon --reuseaddr --export-all --enable=receive-pack \
+  spike_spawn --class stack git --out "$WORK/git-daemon.log" --err "$WORK/git-daemon.log" \
+    git daemon --reuseaddr --export-all --enable=receive-pack \
     --listen=0.0.0.0 --port="$GIT_PORT" \
-    --base-path="$WORK/git" "$WORK/git" \
-    >"$WORK/git-daemon.log" 2>&1 &
-  GIT_PID=$!
-  wait_port "$GIT_PORT"
+    --base-path="$WORK/git" "$WORK/git"
+  spike_fg wait_port "$GIT_PORT"
 }
 
 start_forge() {
-  local fake=""
-  fake="$(pick_port M6_FAKE_PORT "")"
-  (cd "$ROOT" && CGO_ENABLED=0 GOOS="$(uname -s | tr '[:upper:]' '[:lower:]')" GOARCH="$(go env GOARCH)" \
-    go build -o "$WORK/fake-github" ./spike/m4/fakes/github)
-  "$WORK/fake-github" -addr "127.0.0.1:${fake}" >"$WORK/fake-github.log" 2>&1 &
-  FAKE_PID=$!
-  if ! wait_http "http://127.0.0.1:${fake}/healthz"; then
+  FAKE_PORT="$(pick_port M6_FAKE_PORT "")"
+  export FAKE_PORT
+  spike_fg_dir "$ROOT" env \
+    CGO_ENABLED=0 \
+    GOOS="$(uname -s | tr '[:upper:]' '[:lower:]')" \
+    GOARCH="$(go env GOARCH)" \
+    go build -o "$WORK/fake-github" ./spike/m4/fakes/github
+  spike_spawn --class stack fake --out "$WORK/fake-github.log" --err "$WORK/fake-github.log" \
+    "$WORK/fake-github" -addr "127.0.0.1:${FAKE_PORT}"
+  if ! spike_fg wait_http "http://127.0.0.1:${FAKE_PORT}/healthz"; then
     echo "fake-github did not become reachable" >&2
     return 1
   fi
-  M6_UPSTREAM_GITHUB="http://127.0.0.1:${fake}" \
+  spike_spawn --class stack forge --out "$WORK/forge.log" --err "$WORK/forge.log" \
+    env \
+    M6_UPSTREAM_GITHUB="http://127.0.0.1:${FAKE_PORT}" \
     M6_TOKEN_FILE="$WORK/install-token" \
-    python3 "$ROOT/spike/m6/forge.py" --addr "0.0.0.0:${FORGE_PORT}" \
-    >"$WORK/forge.log" 2>&1 &
-  FORGE_PID=$!
-  if ! wait_http "http://127.0.0.1:${FORGE_PORT}/_spike/m6"; then
+    python3 "$ROOT/spike/m6/forge.py" --addr "0.0.0.0:${FORGE_PORT}"
+  if ! spike_fg wait_http "http://127.0.0.1:${FORGE_PORT}/_spike/m6"; then
     echo "forge did not become reachable" >&2
     return 1
   fi
 }
 
 start_router() {
-  M6_DEFINITION_GIT_URL="$M6_TASK_GIT_URL" \
+  spike_spawn --class stack router --out "$WORK/router.log" --err "$WORK/router.log" \
+    env \
+    M6_DEFINITION_GIT_URL="$M6_TASK_GIT_URL" \
     M6_GITHUB_API_BASE="$M6_TASK_GITHUB_API" \
-    python3 "$ROOT/spike/m6/router.py" --addr "0.0.0.0:${ROUTER_PORT}" \
-    >"$WORK/router.log" 2>&1 &
-  ROUTER_PID=$!
-  if ! wait_http "http://127.0.0.1:${ROUTER_PORT}/healthz"; then
+    python3 "$ROOT/spike/m6/router.py" --addr "0.0.0.0:${ROUTER_PORT}"
+  if ! spike_fg wait_http "http://127.0.0.1:${ROUTER_PORT}/healthz"; then
     echo "model router did not become reachable" >&2
     return 1
   fi
@@ -471,7 +477,7 @@ seed_remote() {
     unset M6_RUN_BASE
     return 0
   fi
-  if ! remote_cmd seed; then
+  if ! spike_fg remote_cmd seed; then
     local reason="remote seed failed"
     if [[ -f "$WORK/remote-fail" ]]; then
       IFS= read -r reason <"$WORK/remote-fail" || true
@@ -502,10 +508,17 @@ copy_remote_ledger() {
   fi
 }
 
+# cleanup reads reviewer logins. A later down or --cleanup-remote is a
+# new process, so apply the same default the main path uses.
+m6_arm_reviewers() {
+  export FACTORY_REVIEWERS_ADMINS="${FACTORY_REVIEWERS_ADMINS:-m6-reviewer}"
+}
+
 cleanup_remote() {
   if [[ "${MODE:-}" == offline ]]; then
     return 0
   fi
+  m6_arm_reviewers
   if keep_remote_state; then
     note_remote_kept
     copy_remote_ledger
@@ -530,27 +543,558 @@ copy_shots() {
   done
 }
 
+m6_note() {
+  if [[ -n "${M6_ORDER_LOG:-}" ]]; then
+    printf '%s\n' "$1" >>"$M6_ORDER_LOG"
+  fi
+}
+
+m6_count_pre() {
+  local n=0
+  if [[ -z "${M6_CLEANUP_PRE_COUNT:-}" ]]; then
+    return 0
+  fi
+  if [[ -f "$M6_CLEANUP_PRE_COUNT" ]]; then
+    n="$(tr -d '[:space:]' <"$M6_CLEANUP_PRE_COUNT" || true)"
+  fi
+  n=$((${n:-0} + 1))
+  printf '%s\n' "$n" >"$M6_CLEANUP_PRE_COUNT"
+}
+
+# m6_stop_writers TERM-then-KILLs the watch group and an in-flight seed
+# before cleanup_remote reads the ledger. The cap is about half a second.
+m6_stop_writers() {
+  local dir="" name="" child_argv="" pid="" pgid="" i=0 alive=0
+  local -a pids=() pgids=()
+  [[ -n "${SPIKE_REG:-}" && -d "${SPIKE_REG}/children" ]] || return 0
+  for dir in "$SPIKE_REG"/children/*; do
+    [[ -d "$dir" ]] || continue
+    name="$(spike_read_field "$dir/name")"
+    child_argv="$(spike_read_field "$dir/argv")"
+    if [[ "$name" != watch && ("$child_argv" != *remote_cmd* || "$child_argv" != *seed*) ]]; then
+      continue
+    fi
+    if ! spike_pid_identity_ok "$dir"; then
+      continue
+    fi
+    pid="$(spike_read_field "$dir/pid")"
+    pgid="$(spike_read_field "$dir/pgid")"
+    if [[ -n "$pid" && "$pid" != "$$" ]]; then
+      kill -TERM "$pid" 2>/dev/null || true
+      pids+=("$pid")
+    fi
+    pgids+=("$pgid")
+    spike_signal_group TERM "$pgid"
+  done
+  while [[ "$i" -lt 5 ]]; do
+    alive=0
+    if [[ "${#pids[@]}" -gt 0 ]]; then
+      for pid in "${pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+          alive=1
+        fi
+      done
+    fi
+    if [[ "$alive" -eq 0 ]]; then
+      break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [[ "${#pgids[@]}" -gt 0 ]]; then
+    for pgid in "${pgids[@]}"; do
+      spike_signal_group KILL "$pgid"
+    done
+  fi
+  if [[ "${#pids[@]}" -gt 0 ]]; then
+    for pid in "${pids[@]}"; do
+      kill -KILL "$pid" 2>/dev/null || true
+      disown "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    done
+  fi
+}
+
+m6_budgeted_remote_cleanup() {
+  local start="" end="" elapsed="" cap="" g=""
+  if [[ "${MODE:-}" == offline ]]; then
+    return 0
+  fi
+  if keep_remote_state; then
+    note_remote_kept
+    copy_remote_ledger
+    return 0
+  fi
+  m6_arm_reviewers
+  start="$(python3 -c 'import time; print("%.3f" % time.time())')"
+  M6_CLEANUP_DEADLINE="$(python3 -c 'import time; print("%.3f" % (time.time() + 5))')"
+  export M6_CLEANUP_DEADLINE
+  m6_note "remote-begin"
+  if ! remote_cmd cleanup; then
+    printf 'remote cleanup incomplete; ledger %s; run ./spike/m6/run.sh --cleanup-remote\n' "$WORK/remote-ledger.json"
+  fi
+  unset M6_CLEANUP_DEADLINE
+  end="$(python3 -c 'import time; print("%.3f" % time.time())')"
+  elapsed="$(python3 -c 'import sys; print("%.3f" % (float(sys.argv[1]) - float(sys.argv[2])))' "$end" "$start")"
+  cap="${SPIKE_STOP_GRACE:-5}"
+  g="$(python3 -c 'import math,sys; e=float(sys.argv[1]); cap=int(float(sys.argv[2])); g=math.floor((6.2-e)/2); print(max(0, min(g, cap)))' "$elapsed" "$cap")"
+  SPIKE_STOP_GRACE="$g"
+  export SPIKE_STOP_GRACE
+  if [[ -n "${M6_TRACE_CANCEL:-}" ]]; then
+    printf 'cancel-window e=%s G=%s\n' "$elapsed" "$g"
+  fi
+  copy_remote_ledger
+}
+
+# shellcheck disable=SC2317,SC2329 # invoked by the EXIT/INT/TERM trap
+spike_cleanup_pre() {
+  m6_count_pre
+  m6_note "cleanup-pre"
+  mkdir -p "$SIGNAL" 2>/dev/null || true
+  touch "$SIGNAL/stop" 2>/dev/null || true
+  m6_stop_writers
+  m6_note "writers-stopped"
+  if [[ "${SPIKE_STOP_WHY:-EXIT}" == INT || "${SPIKE_STOP_WHY:-EXIT}" == TERM ]] && [[ "${MODE:-}" != offline ]]; then
+    m6_budgeted_remote_cleanup
+  else
+    cleanup_remote
+  fi
+}
+
+# Names only. stack_env_write is the one writer. Live inference values
+# and token contents are not in this list.
+m6_save_stack() {
+  local STACK_MODE="${MODE:-}"
+  local COMPOSE_PROJECT="${COMPOSE_PROJECT:-factory-m6}"
+  local -a names=()
+  names=(
+    SPIKE_RUN_ID SPIKE_RUN_LABEL STACK_MODE COMPOSE_PROJECT
+    CONSOLE_PORT GIT_PORT FORGE_PORT FAKE_PORT
+    TASK_HOST M6_TASK_GIT_URL M6_TASK_GITHUB_API
+    FACTORY_API_KEY FACTORY_WORKER_API_KEY S3_SECRET_KEY
+    FACTORY_SECRET_M6_PLANTED FACTORY_GITHUB_WEBHOOK_SECRET
+    M6_APP_KEY_FILE
+  )
+  if [[ "${MODE:-}" == offline ]]; then
+    names+=(ROUTER_PORT FACTORY_INFERENCE_OPENAI_API_KEY FACTORY_GITHUB_APP_ID)
+  else
+    names+=(M6_DEFINITION_REF M6_RUN_BASE)
+  fi
+  stack_env_write "${names[@]}"
+}
+
+m6_remote_pending() {
+  local rc=0
+  [[ "${MODE:-}" == offline ]] && return 1
+  [[ -f "$WORK/remote-ledger.json" ]] || return 1
+  python3 - "$WORK/remote-ledger.json" <<'PY' || rc=$?
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+entries = doc.get("entries") or []
+pending = any(isinstance(row, dict) and row.get("phase") != "cleaned" for row in entries)
+raise SystemExit(0 if pending else 1)
+PY
+  if [[ "$rc" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "$rc" -eq 1 ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# shellcheck disable=SC2317,SC2329 # invoked by the EXIT/INT/TERM trap
 cleanup() {
   local code=$?
-  touch "$SIGNAL/stop" 2>/dev/null || true
-  if [[ -n "${WATCH_PID:-}" ]]; then
-    kill "$WATCH_PID" 2>/dev/null || true
-    wait "$WATCH_PID" 2>/dev/null || true
-  fi
-  local pid=""
-  for pid in ${ROUTER_PID:-} ${FORGE_PID:-} ${FAKE_PID:-} ${GIT_PID:-}; do
-    if [[ -n "$pid" ]]; then
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
+  local why="${1:-EXIT}"
+  spike_teardown_begin "$why" || return 0
+  if [[ "${KEEP_UP:-}" == 1 ]]; then
+    if [[ -n "${SPIKE_RUN_LABEL:-}" ]]; then
+      m6_save_stack || true
+      printf 'specs: ./spike/m6/run.sh specs\n'
+      printf 'down: ./spike/m6/run.sh down\n'
     fi
-  done
-  cleanup_remote
-  if [[ "${COMPOSE_STARTED:-}" == 1 && "${KEEP_UP:-}" != 1 ]]; then
-    # -v drops postgres and minio so a later offline run cannot see a
-    # previous improvement batch and skip the improver.
-    compose down -v --remove-orphans >/dev/null 2>&1 || true
+  else
+    if [[ "${COMPOSE_STARTED:-0}" == 1 ]]; then
+      # -v drops postgres and minio so a later offline run cannot see a
+      # previous improvement batch and skip the improver.
+      compose down -v --remove-orphans >/dev/null 2>&1 || true
+      COMPOSE_STARTED=0
+    fi
+    rm -f "$WORK/stack.env"
   fi
-  exit "$code"
+  spike_teardown_finish "$code"
+}
+
+m6_stop_named() {
+  local want="$1" dir=""
+  [[ -n "${SPIKE_REG:-}" && -d "${SPIKE_REG}/children" ]] || return 0
+  for dir in "$SPIKE_REG"/children/*; do
+    [[ -d "$dir" ]] || continue
+    if [[ "$(spike_read_field "$dir/name")" != "$want" ]]; then
+      continue
+    fi
+    m6_stop_one "$dir"
+    rm -rf "$dir"
+  done
+}
+
+m6_stop_one() {
+  local dir="$1" pid="" pgid="" i=0
+  pid="$(spike_read_field "$dir/pid")"
+  pgid="$(spike_read_field "$dir/pgid")"
+  if [[ -n "$pid" && "$pid" != "$$" ]]; then
+    kill -TERM "$pid" 2>/dev/null || true
+  fi
+  spike_signal_group TERM "$pgid"
+  while [[ "$i" -lt 5 ]]; do
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  spike_signal_group KILL "$pgid"
+  if [[ -n "$pid" && "$pid" != "$$" ]]; then
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+}
+
+m6_respawn_named() {
+  local want="$1" i=1 n=0 name=""
+  m6_stop_named "$want"
+  n="${SPIKE_CHILD_COUNT:-0}"
+  while [[ "$i" -le "$n" ]]; do
+    eval "name=\${SPIKE_CHILD_${i}_NAME-}"
+    if [[ "$name" == "$want" ]]; then
+      spike_respawn_child "$i"
+      printf '%s\n' "$SPIKE_LAST_PID"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+m6_wait_listener() {
+  local url="$1" pid="$2" index="$3" try=0
+  while [[ "$try" -lt 20 ]]; do
+    if curl -fsS --connect-timeout 1 -m 2 "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      sleep 0.2
+      try=$((try + 1))
+      continue
+    fi
+    pid="$(m6_respawn_named "$index")"
+    sleep 0.3
+    try=$((try + 1))
+  done
+  return 1
+}
+
+m6_retire_open_batches() {
+  local base="" factories="" uid="" batches="" started="" now="" id="" code="" rc=0
+  base="http://127.0.0.1:${CONSOLE_PORT}"
+  factories="$(curl -fsS --connect-timeout 2 -m 5 \
+    -H "Authorization: Bearer ${FACTORY_API_KEY}" \
+    "${base}/api/v1/factory" || true)"
+  uid="$(printf '%s' "$factories" | python3 -c 'import json,sys
+try:
+    rows=json.load(sys.stdin)
+except Exception:
+    rows=[]
+if isinstance(rows, list):
+    for row in rows:
+        if isinstance(row, dict) and row.get("name")=="m6":
+            print(row.get("id") or "")
+            break
+')"
+  if [[ -z "$uid" ]]; then
+    return 1
+  fi
+  POST_SIGNED_SECRET="${FACTORY_GITHUB_WEBHOOK_SECRET:-}"
+  export POST_SIGNED_SECRET
+  started="$(date +%s)"
+  while true; do
+    batches="$(curl -fsS --connect-timeout 2 -m 5 \
+      -H "Authorization: Bearer ${FACTORY_API_KEY}" \
+      "${base}/api/v1/factory/${uid}/improvement-batches" || true)"
+    set +e
+    printf '%s' "$batches" | python3 -c 'import json,sys
+try:
+    rows=json.load(sys.stdin)
+except Exception:
+    raise SystemExit(2)
+if not isinstance(rows, list):
+    raise SystemExit(2)
+raise SystemExit(0 if any(isinstance(r, dict) and r.get("status")=="pr_open" for r in rows) else 1)'
+    rc=$?
+    set -e
+    if [[ "$rc" -eq 1 ]]; then
+      return 0
+    fi
+    if [[ "$rc" -ne 0 ]]; then
+      return 1
+    fi
+    python3 - "$batches" "$WORK" <<'PY'
+import json, sys
+from pathlib import Path
+rows = json.loads(sys.argv[1] or "[]")
+work = Path(sys.argv[2])
+for row in rows:
+    if not isinstance(row, dict) or row.get("status") != "pr_open":
+        continue
+    batch = str(row.get("id") or "")
+    pr_url = str(row.get("pr_url") or "")
+    parts = [part for part in pr_url.split("/") if part]
+    number = 0
+    owner, repo = "m6", "factory"
+    if "pull" in parts:
+        i = parts.index("pull")
+        if i >= 2:
+            owner, repo = parts[i - 2], parts[i - 1]
+        if i + 1 < len(parts) and parts[i + 1].isdigit():
+            number = int(parts[i + 1])
+    body = {
+        "action": "closed",
+        "number": number,
+        "pull_request": {
+            "id": number or 1,
+            "number": number,
+            "title": "improvement",
+            "body": "closed without merge",
+            "html_url": pr_url or "https://github.com/m6/factory/pull/0",
+            "merged": False,
+            "updated_at": "2026-01-02T05:00:00Z",
+            "labels": [],
+            "head": {"ref": "improve/" + batch, "sha": "abc123"},
+            "base": {"ref": "main", "sha": "def456"},
+        },
+        "repository": {"name": repo, "owner": {"login": owner}},
+        "sender": {"login": "m6-reviewer", "id": 1, "type": "User"},
+    }
+    (work / ("retire-%s.json" % batch)).write_text(json.dumps(body), encoding="utf-8")
+PY
+    while IFS= read -r id; do
+      [[ -n "$id" ]] || continue
+      code="$(post_signed "${base}/api/v1/ingress/github" "$WORK/retire-${id}.json" \
+        -H "X-GitHub-Event: pull_request" \
+        -H "X-GitHub-Delivery: m6-close-${id}")"
+      case "$code" in
+        2*) ;;
+        *) return 1 ;;
+      esac
+    done < <(python3 -c 'import json,sys
+rows=json.loads(sys.argv[1] or "[]")
+for row in rows:
+    if isinstance(row, dict) and row.get("status")=="pr_open":
+        print(row.get("id") or "")
+' "$batches")
+    now="$(date +%s)"
+    if [[ $((now - started)) -gt 20 ]]; then
+      return 1
+    fi
+    sleep 0.4
+  done
+}
+
+m6_reset_offline_refs() {
+  local bare="$WORK/git/m6/factory.git" ref=""
+  [[ -d "$bare" ]] || return 0
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    git --git-dir="$bare" update-ref -d "$ref" || true
+  done < <(git --git-dir="$bare" for-each-ref --format='%(refname)' 'refs/heads/improve/*' || true)
+  if git --git-dir="$bare" rev-parse --verify --quiet refs/heads/main >/dev/null 2>&1; then
+    git --git-dir="$bare" update-ref refs/heads/candidate refs/heads/main
+  fi
+}
+
+m6_restart_offline_children() {
+  local forge_pid="" router_pid="" forge_index="" router_index="" i=1 n=0 name=""
+  n="${SPIKE_CHILD_COUNT:-0}"
+  while [[ "$i" -le "$n" ]]; do
+    eval "name=\${SPIKE_CHILD_${i}_NAME-}"
+    case "$name" in
+      forge) forge_index="$i" ;;
+      router) router_index="$i" ;;
+      *) ;;
+    esac
+    i=$((i + 1))
+  done
+  if [[ -n "$forge_index" ]]; then
+    forge_pid="$(m6_respawn_named forge)"
+    if ! m6_wait_listener "http://127.0.0.1:${FORGE_PORT}/_spike/m6" "$forge_pid" forge; then
+      echo "forge did not become reachable" >&2
+      return 1
+    fi
+  fi
+  if [[ -n "$router_index" ]]; then
+    router_pid="$(m6_respawn_named router)"
+    if ! m6_wait_listener "http://127.0.0.1:${ROUTER_PORT}/healthz" "$router_pid" router; then
+      echo "model router did not become reachable" >&2
+      return 1
+    fi
+  fi
+}
+
+m6_playwright_and_evidence() {
+  local play_start=0 evidence_start=0 play_code=0 play_log=""
+  say "Playwright"
+  play_start="$SECONDS"
+  mkdir -p "$EVIDENCE" "$SIGNAL"
+  rm -f "$SIGNAL/stop" "$SIGNAL/candidate-ready"
+  PLAY_LOG="$EVIDENCE/playwright.log"
+  play_log="$PLAY_LOG"
+  export PLAY_LOG
+  PLAYWRIGHT_DOCKER_ARGS="--init --label spike-run=${SPIKE_RUN_LABEL} --name spike-pw-${SPIKE_RUN_LABEL}"
+  export PLAYWRIGHT_DOCKER_ARGS
+  spike_spawn --class transient watch watch_candidate
+  WATCH_PID=$SPIKE_LAST_PID
+  export WATCH_PID
+  set +e
+  spike_fg spike_playwright_pipeline
+  play_code=$?
+  set -e
+  phase_report "Playwright" "$play_start"
+  touch "$SIGNAL/stop" || true
+  if [[ -n "${WATCH_PID:-}" ]]; then
+    wait "$WATCH_PID" 2>/dev/null || true
+    WATCH_PID=""
+  fi
+  save_logs
+  copy_shots
+  if [[ -f "$WORK/install-token" ]]; then
+    INSTALL_TOKEN="$(tr -d '[:space:]' <"$WORK/install-token")"
+    export INSTALL_TOKEN
+  fi
+  if [[ -f "$WORK/github-app-token" ]]; then
+    M6_APP_TOKEN="$(tr -d '[:space:]' <"$WORK/github-app-token")"
+    export M6_APP_TOKEN
+  fi
+  copy_remote_ledger
+  export EVIDENCE_EXTRA_SECRETS="FACTORY_SECRET_M6_PLANTED FACTORY_GITHUB_WEBHOOK_SECRET M6_TASK_GIT_URL M6_TASK_GITHUB_API INSTALL_TOKEN M6_APP_TOKEN"
+  export EVIDENCE_HAR EVIDENCE_TRACE EVIDENCE_HOSTS
+  evidence_start="$SECONDS"
+  if ! grep -F "$PINNED_SHA" "$EVIDENCE/compose.log" >/dev/null 2>&1 &&
+    ! grep -F "$PINNED_SHA" "$EVIDENCE/head-override.txt" >/dev/null 2>&1; then
+    phase_report "evidence" "$evidence_start"
+    die "pinned startingRepoRefs SHA is not in the factory logs or the task argv"
+  fi
+  if ! assert_evidence; then
+    phase_report "evidence" "$evidence_start"
+    die "evidence check"
+  fi
+  phase_report "evidence" "$evidence_start"
+  if [[ -f "$EVIDENCE/exit-trace.txt" ]]; then
+    cat "$EVIDENCE/exit-trace.txt"
+  fi
+  if [[ "$play_code" -ne 0 ]]; then
+    print_playwright_failures "$play_log"
+    die "playwright exit ${play_code}"
+  fi
+}
+
+m6_arm_playwright_env() {
+  # specs is a new process. The key lives in stack.env as FACTORY_API_KEY.
+  M6_API_KEY="${M6_API_KEY:-${FACTORY_API_KEY:-}}"
+  export M6_API_KEY
+  export M6_FACTORY_URL="http://127.0.0.1:${CONSOLE_PORT}"
+  if [[ -z "${PLAYWRIGHT_EXTRA_ENV:-}" ]]; then
+    PLAYWRIGHT_EXTRA_ENV="M6_IMPROVER_OPENS_PR M6_RUN_BASE"
+  else
+    case " ${PLAYWRIGHT_EXTRA_ENV} " in
+      *" M6_IMPROVER_OPENS_PR "*) ;;
+      *) PLAYWRIGHT_EXTRA_ENV="${PLAYWRIGHT_EXTRA_ENV} M6_IMPROVER_OPENS_PR" ;;
+    esac
+    case " ${PLAYWRIGHT_EXTRA_ENV} " in
+      *" M6_RUN_BASE "*) ;;
+      *) PLAYWRIGHT_EXTRA_ENV="${PLAYWRIGHT_EXTRA_ENV} M6_RUN_BASE" ;;
+    esac
+  fi
+  export PLAYWRIGHT_EXTRA_ENV
+}
+
+m6_down() {
+  local pending=0
+  if m6_remote_pending; then
+    pending=1
+  fi
+  if [[ ! -f "$WORK/stack.env" && "$pending" -eq 0 ]]; then
+    printf 'nothing to stop\n'
+    exit 0
+  fi
+  if [[ -f "$WORK/stack.env" ]]; then
+    stack_env_load
+    COMPOSE_STARTED=1
+  fi
+  KEEP_UP=0
+  export KEEP_UP
+  trap 'cleanup EXIT' EXIT
+  trap 'cleanup INT' INT
+  trap 'cleanup TERM' TERM
+  exit 0
+}
+
+m6_specs() {
+  if [[ ! -f "$WORK/stack.env" ]]; then
+    echo "M6 FAIL — no KEEP_UP stack (run KEEP_UP=1 ./spike/m6/run.sh first)" >&2
+    exit 1
+  fi
+  stack_env_load
+  if [[ "$MODE" != "${STACK_MODE:-}" ]]; then
+    echo "M6 FAIL — MODE is ${MODE}, recorded stack is ${STACK_MODE:-unset}" >&2
+    exit 1
+  fi
+  if ! stack_pids_match "M6"; then
+    exit 1
+  fi
+  if ! stack_compose_ready "M6" factoryd-m6; then
+    exit 1
+  fi
+  if ! stack_health_once "M6" "factoryd-m6=http://127.0.0.1:${CONSOLE_PORT}/healthz"; then
+    exit 1
+  fi
+  if [[ "$MODE" != offline ]]; then
+    if [[ -f "$ROOT/deploy/.env" ]]; then
+      load_env_file "$ROOT/deploy/.env"
+    fi
+    apply_live_inference_env
+  fi
+  if ! m6_retire_open_batches; then
+    die "could not retire the previous improvement batch"
+  fi
+  if [[ "$MODE" == offline ]]; then
+    m6_reset_offline_refs
+    if ! m6_restart_offline_children; then
+      exit 1
+    fi
+  fi
+  KEEP_UP=1
+  export KEEP_UP
+  COMPOSE_STARTED=1
+  mkdir -p "$WORK"
+  trap 'cleanup EXIT' EXIT
+  trap 'cleanup INT' INT
+  trap 'cleanup TERM' TERM
+  M6_RUN_NONCE="$(openssl rand -hex 4)"
+  if [[ ! "$M6_RUN_NONCE" =~ ^[0-9a-f]{8}$ ]]; then
+    die "could not mint a spec nonce"
+  fi
+  export M6_RUN_NONCE
+  case " ${PLAYWRIGHT_EXTRA_ENV:-} " in
+    *" M6_RUN_NONCE "*) ;;
+    *) PLAYWRIGHT_EXTRA_ENV="${PLAYWRIGHT_EXTRA_ENV:+$PLAYWRIGHT_EXTRA_ENV }M6_RUN_NONCE" ;;
+  esac
+  export PLAYWRIGHT_EXTRA_ENV
+  m6_arm_playwright_env
+  m6_playwright_and_evidence
+  mode_name="$(printf '%s' "$MODE" | tr '[:lower:]' '[:upper:]')"
+  printf 'M6 %s PASS\n' "$mode_name"
+  exit 0
 }
 
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
@@ -558,10 +1102,27 @@ if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
 fi
 
 CLEANUP_ONLY=0
+SUB=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --manual) MANUAL=1 ;;
-    --cleanup-remote) CLEANUP_ONLY=1 ;;
+    --manual)
+      if [[ -n "$SUB" || "$CLEANUP_ONLY" -eq 1 ]]; then
+        die "unknown argument $1"
+      fi
+      MANUAL=1
+      ;;
+    --cleanup-remote)
+      if [[ "$MANUAL" -eq 1 || -n "$SUB" ]]; then
+        die "unknown argument $1"
+      fi
+      CLEANUP_ONLY=1
+      ;;
+    specs | down)
+      if [[ "$MANUAL" -eq 1 || "$CLEANUP_ONLY" -eq 1 || -n "$SUB" ]]; then
+        die "unknown argument $1"
+      fi
+      SUB="$1"
+      ;;
     *) die "unknown argument $1" ;;
   esac
   shift
@@ -571,6 +1132,16 @@ if [[ "$MANUAL" == 1 ]]; then
   KEEP_UP=1
 fi
 
+if [[ -n "$SUB" && "${KEEP_UP:-}" == 1 ]]; then
+  die "unknown argument ${SUB}"
+fi
+
+case "$SUB" in
+  down) m6_down ;;
+  specs) m6_specs ;;
+  "") ;;
+esac
+
 if [[ "$CLEANUP_ONLY" == 1 ]]; then
   if [[ "$MODE" == offline ]]; then
     die "--cleanup-remote is for live and live-ci"
@@ -579,6 +1150,7 @@ if [[ "$CLEANUP_ONLY" == 1 ]]; then
   command -v go >/dev/null || die "go not found"
   command -v git >/dev/null || die "git not found"
   command -v curl >/dev/null || die "curl not found"
+  m6_arm_reviewers
   mkdir -p "$WORK"
   if ! remote_cmd cleanup; then
     reason="remote cleanup failed"
@@ -594,6 +1166,7 @@ phase_start="$SECONDS"
 if ! require_mode_secrets; then
   exit 1
 fi
+stack_refuse_live "M6" "./spike/m6/run.sh"
 apply_live_inference_env
 phase_report "prep" "$phase_start"
 
@@ -694,7 +1267,10 @@ fi
 PLAYWRIGHT_HEADED_URL="http://127.0.0.1:${CONSOLE_PORT}"
 export PLAYWRIGHT_HEADED_URL
 
-trap cleanup EXIT INT TERM
+spike_run_init m6
+trap 'cleanup EXIT' EXIT
+trap 'cleanup INT' INT
+trap 'cleanup TERM' TERM
 
 prepare_definition
 seed_git
@@ -705,92 +1281,36 @@ if [[ "$MODE" == offline ]]; then
   start_router
 fi
 
-build_images
+spike_fg build_images
 stack_start="$SECONDS"
-compose down -v --remove-orphans >/dev/null 2>&1 || true
+spike_fg compose down -v --remove-orphans >/dev/null 2>&1 || true
 COMPOSE_STARTED=1
-if ! compose up -d --wait --remove-orphans; then
+if ! spike_fg compose up -d --wait --remove-orphans; then
   phase_report "stack up" "$stack_start"
   die "compose up failed"
 fi
-if ! wait_http "http://127.0.0.1:${CONSOLE_PORT}/healthz"; then
+if ! spike_fg wait_http "http://127.0.0.1:${CONSOLE_PORT}/healthz"; then
   phase_report "stack up" "$stack_start"
   die "factoryd-m6 /healthz did not become ready"
 fi
-if ! wait_factory_name "http://127.0.0.1:${CONSOLE_PORT}/api/v1/factory" "m6"; then
+if ! spike_fg wait_factory_name "http://127.0.0.1:${CONSOLE_PORT}/api/v1/factory" "m6"; then
   phase_report "stack up" "$stack_start"
   die "factory m6 did not appear"
 fi
 phase_report "stack up" "$stack_start"
 
-export M6_FACTORY_URL="http://127.0.0.1:${CONSOLE_PORT}"
-if [[ -z "${PLAYWRIGHT_EXTRA_ENV:-}" ]]; then
-  PLAYWRIGHT_EXTRA_ENV="M6_IMPROVER_OPENS_PR M6_RUN_BASE"
-else
-  PLAYWRIGHT_EXTRA_ENV="${PLAYWRIGHT_EXTRA_ENV} M6_IMPROVER_OPENS_PR M6_RUN_BASE"
-fi
-export PLAYWRIGHT_EXTRA_ENV
+m6_arm_playwright_env
 
 if [[ "$MANUAL" == 1 ]]; then
   printf 'console: http://127.0.0.1:%s\n' "$CONSOLE_PORT"
   printf 'api key file: %s\n' "$WORK/api-key"
-  note_remote_kept
-  trap - EXIT INT TERM
   exit 0
 fi
 
-watch_candidate &
-WATCH_PID=$!
-
-say "Playwright"
-play_start="$SECONDS"
-set +e
-play_log="$EVIDENCE/playwright.log"
-run_playwright 2>&1 | tee "$play_log"
-play_code="${PIPESTATUS[0]}"
-set -e
-phase_report "Playwright" "$play_start"
-touch "$SIGNAL/stop" || true
-if [[ -n "${WATCH_PID:-}" ]]; then
-  wait "$WATCH_PID" 2>/dev/null || true
-  WATCH_PID=""
-fi
-save_logs
-copy_shots
-if [[ -f "$WORK/install-token" ]]; then
-  INSTALL_TOKEN="$(tr -d '[:space:]' <"$WORK/install-token")"
-  export INSTALL_TOKEN
-fi
-if [[ -f "$WORK/github-app-token" ]]; then
-  M6_APP_TOKEN="$(tr -d '[:space:]' <"$WORK/github-app-token")"
-  export M6_APP_TOKEN
-fi
-copy_remote_ledger
-export EVIDENCE_EXTRA_SECRETS="FACTORY_SECRET_M6_PLANTED FACTORY_GITHUB_WEBHOOK_SECRET M6_TASK_GIT_URL M6_TASK_GITHUB_API INSTALL_TOKEN M6_APP_TOKEN"
-export EVIDENCE_HAR EVIDENCE_TRACE EVIDENCE_HOSTS
-evidence_start="$SECONDS"
-if ! grep -F "$PINNED_SHA" "$EVIDENCE/compose.log" >/dev/null 2>&1 &&
-  ! grep -F "$PINNED_SHA" "$EVIDENCE/head-override.txt" >/dev/null 2>&1; then
-  phase_report "evidence" "$evidence_start"
-  die "pinned startingRepoRefs SHA is not in the factory logs or the task argv"
-fi
-if ! assert_evidence; then
-  phase_report "evidence" "$evidence_start"
-  die "evidence check"
-fi
-phase_report "evidence" "$evidence_start"
-if [[ -f "$EVIDENCE/exit-trace.txt" ]]; then
-  cat "$EVIDENCE/exit-trace.txt"
-fi
-if [[ "$play_code" -ne 0 ]]; then
-  print_playwright_failures "$play_log"
-  die "playwright exit ${play_code}"
-fi
+m6_playwright_and_evidence
 if [[ "${KEEP_UP:-}" == 1 ]]; then
   printf 'console: http://127.0.0.1:%s\n' "$CONSOLE_PORT"
   printf 'api key file: %s\n' "$WORK/api-key"
-  note_remote_kept
-  trap - EXIT INT TERM
 fi
 mode_name="$(printf '%s' "$MODE" | tr '[:lower:]' '[:upper:]')"
 printf 'M6 %s PASS\n' "$mode_name"

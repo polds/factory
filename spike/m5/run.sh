@@ -614,20 +614,6 @@ with open(dest, "w", encoding="utf-8") as fh:
 PY
 }
 
-post_signed() {
-  local url="$1" dest="$2"
-  shift 2
-  local sig="" code=""
-  sig="$(openssl dgst -sha256 -hmac "$FACTORY_SECRET_M5_WEBHOOK" "$dest" | awk '{print $NF}')"
-  code="$(curl --connect-timeout 2 -m 5 -sS -o "$WORK/deliver-body.txt" -w '%{http_code}' \
-    -X POST "$url" \
-    -H "Content-Type: application/json" \
-    -H "X-Hub-Signature-256: sha256=${sig}" \
-    "$@" \
-    --data-binary @"$dest" || true)"
-  printf '%s' "$code"
-}
-
 handle_deliver() {
   local op="" uid="" match="" code="" dest="$WORK/deliver.json" id=""
   op="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("op",""))' "$SIGNAL/deliver")"
@@ -735,32 +721,21 @@ EOF
 
 # m5_write_stack_env records the stack under $WORK. It is not evidence.
 # Live inference credentials are not written. Offline records the dummy key.
+# spike/m5/run_test.sh calls this name. The writer itself is stack_env_write.
 m5_write_stack_env() {
-  local tmp=""
-  if [[ -z "${SPIKE_RUN_LABEL:-}" ]]; then
-    return 0
+  local STACK_MODE="${MODE:-}"
+  local STACK_ROUTER_PORT="${ROUTER_PORT:-}"
+  local COMPOSE_PROJECT="${COMPOSE_PROJECT:-factory-m5}"
+  local -a names=()
+  names=(
+    SPIKE_RUN_ID SPIKE_RUN_LABEL STACK_MODE STACK_ROUTER_PORT COMPOSE_PROJECT
+    FACTORY_API_KEY FACTORY_SECRET_M5_WEBHOOK FACTORY_GITHUB_WEBHOOK_SECRET
+    FACTORY_WORKER_API_KEY S3_SECRET_KEY FACTORY_SECRET_M5_PLANTED
+  )
+  if [[ "${MODE:-}" == offline ]]; then
+    names+=(FACTORY_INFERENCE_OPENAI_API_KEY)
   fi
-  umask 077
-  tmp="$(mktemp "${WORK}/stack.env.XXXXXX")"
-  {
-    printf 'SPIKE_RUN_ID=%q\n' "${SPIKE_RUN_ID:-}"
-    printf 'SPIKE_RUN_LABEL=%q\n' "${SPIKE_RUN_LABEL:-}"
-    printf 'STACK_MODE=%q\n' "${MODE:-}"
-    printf 'STACK_ROUTER_PORT=%q\n' "${ROUTER_PORT:-}"
-    printf 'COMPOSE_PROJECT=%q\n' "${COMPOSE_PROJECT:-factory-m5}"
-    printf 'FACTORY_API_KEY=%q\n' "${FACTORY_API_KEY:-}"
-    printf 'FACTORY_SECRET_M5_WEBHOOK=%q\n' "${FACTORY_SECRET_M5_WEBHOOK:-}"
-    printf 'FACTORY_GITHUB_WEBHOOK_SECRET=%q\n' "${FACTORY_GITHUB_WEBHOOK_SECRET:-}"
-    printf 'FACTORY_WORKER_API_KEY=%q\n' "${FACTORY_WORKER_API_KEY:-}"
-    printf 'S3_SECRET_KEY=%q\n' "${S3_SECRET_KEY:-}"
-    printf 'FACTORY_SECRET_M5_PLANTED=%q\n' "${FACTORY_SECRET_M5_PLANTED:-}"
-    if [[ "${MODE:-}" == offline ]]; then
-      printf 'FACTORY_INFERENCE_OPENAI_API_KEY=%q\n' "${FACTORY_INFERENCE_OPENAI_API_KEY:-}"
-    fi
-    spike_emit_children
-  } >"$tmp"
-  chmod 600 "$tmp"
-  mv -f "$tmp" "$WORK/stack.env"
+  stack_env_write "${names[@]}"
 }
 
 # shellcheck disable=SC2317,SC2329 # invoked by the EXIT/INT/TERM trap
@@ -795,128 +770,45 @@ cleanup() {
 # A live stack.env means some recorded stack pid is still alive.
 # A stale file (every pid dead) is removed so the default path can run.
 m5_refuse_live_stack() {
-  if [[ ! -f "$WORK/stack.env" ]]; then
-    return 0
-  fi
-  if (
-    set +u
-    # shellcheck disable=SC1091
-    . "$WORK/stack.env"
-    i=1
-    n="${SPIKE_CHILD_COUNT:-0}"
-    while [[ "$i" -le "$n" ]]; do
-      eval "pid=\${SPIKE_CHILD_${i}_PID}"
-      eval "class=\${SPIKE_CHILD_${i}_CLASS}"
-      if [[ "$class" == stack && -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-        exit 0
-      fi
-      i=$((i + 1))
-    done
-    exit 1
-  ); then
-    echo "M5 FAIL — KEEP_UP stack is still up (./spike/m5/run.sh down or ./spike/m5/run.sh specs)" >&2
-    exit 1
-  fi
-  rm -f "$WORK/stack.env"
+  stack_refuse_live "M5" "./spike/m5/run.sh"
 }
 
 m5_load_stack_env() {
-  # shellcheck disable=SC1091
-  . "$WORK/stack.env"
-  export SPIKE_RUN_ID SPIKE_RUN_LABEL
-  SPIKE_REG="${WORK}/spike-run"
-  export SPIKE_REG
-  spike_load_children_from_env
+  stack_env_load
 }
 
 m5_pids_match() {
-  local dir="" name="" pid=""
-  for dir in "$SPIKE_REG"/children/*; do
-    [[ -d "$dir" ]] || continue
-    name="$(cat "$dir/name")"
-    pid="$(cat "$dir/pid")"
-    if ! spike_pid_identity_ok "$dir"; then
-      echo "M5 FAIL — stale stack: ${name} pid ${pid} is gone" >&2
-      return 1
-    fi
-  done
+  stack_pids_match "M5"
 }
 
 m5_compose_ready() {
-  local services=""
-  services="$(compose ps --status running --services 2>/dev/null || true)"
-  if ! printf '%s\n' "$services" | grep -qx 'factoryd'; then
-    echo "M5 FAIL — compose services factoryd and factoryd-git are not running" >&2
-    return 1
-  fi
-  if ! printf '%s\n' "$services" | grep -qx 'factoryd-git'; then
-    echo "M5 FAIL — compose services factoryd and factoryd-git are not running" >&2
-    return 1
-  fi
+  stack_compose_ready "M5" factoryd factoryd-git
 }
 
 m5_health_once() {
-  if ! curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:8080/healthz" >/dev/null; then
-    echo "M5 FAIL — factoryd /healthz did not answer" >&2
-    return 1
-  fi
-  if ! curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:8081/healthz" >/dev/null; then
-    echo "M5 FAIL — factoryd-git /healthz did not answer" >&2
-    return 1
-  fi
+  stack_health_once "M5" \
+    "factoryd=http://127.0.0.1:8080/healthz" \
+    "factoryd-git=http://127.0.0.1:8081/healthz"
 }
 
 # Route A: keep compose and the database. Restart offline stubs and the
 # router from the recorded argv so their scripts start fresh.
-m5_restart_stack_processes() {
-  local i=1 n=0 class="" name="" argv_q="" out="" err="" append=""
-  local spawned_stub=0 spawned_router=0 router_pid=""
-  local -a argv=()
+m5_restart_ready() {
+  local dir="" name="" port="" spawned_stub=0 spawned_router=0 router_pid=""
+  local i=1 n=0 try=0
   n="${SPIKE_CHILD_COUNT:-0}"
-  if [[ "$n" -eq 0 ]]; then
-    return 0
-  fi
-  KEEP_UP=0
-  spike_stop_processes || true
-  KEEP_UP=1
-  rm -rf "$SPIKE_REG/children"
-  mkdir -p "$SPIKE_REG/children"
-  printf '%s\n' 0 >"$SPIKE_REG/seq"
-  while [[ "$i" -le "$n" ]]; do
-    eval "class=\${SPIKE_CHILD_${i}_CLASS}"
-    if [[ "$class" != stack ]]; then
-      i=$((i + 1))
-      continue
-    fi
-    eval "name=\${SPIKE_CHILD_${i}_NAME}"
-    eval "argv_q=\${SPIKE_CHILD_${i}_ARGV}"
-    eval "out=\${SPIKE_CHILD_${i}_OUT}"
-    eval "err=\${SPIKE_CHILD_${i}_ERR}"
-    eval "append=\${SPIKE_CHILD_${i}_APPEND}"
-    argv=()
-    # argv_q is a list of %q words produced by spike_spawn.
-    # shellcheck disable=SC2294
-    eval "argv=( ${argv_q} )"
-    if [[ -n "$out" && -n "$err" ]]; then
-      if [[ "$append" == 1 ]]; then
-        spike_spawn --class stack --append --out "$out" --err "$err" "$name" "${argv[@]}"
-      else
-        spike_spawn --class stack --out "$out" --err "$err" "$name" "${argv[@]}"
-      fi
-    else
-      spike_spawn --class stack "$name" "${argv[@]}"
-    fi
+  for dir in "$SPIKE_REG"/children/*; do
+    [[ -d "$dir" ]] || continue
+    name="$(cat "$dir/name")"
     case "$name" in
       stub-*) spawned_stub=1 ;;
       router)
         spawned_router=1
-        router_pid="$SPIKE_LAST_PID"
+        router_pid="$(cat "$dir/pid")"
         ;;
       *) ;;
     esac
-    i=$((i + 1))
   done
-  local port=""
   if [[ "$spawned_stub" -eq 1 ]]; then
     for port in 9091 9092 9093 9094 9095 9096; do
       if ! wait_http "http://127.0.0.1:${port}/healthz"; then
@@ -930,7 +822,7 @@ m5_restart_stack_processes() {
     if [[ -n "$ROUTER_PORT" ]]; then
       # The previous listener can still own the port for a moment after
       # SIGKILL. Respawn only after that process has exited.
-      local try=0
+      try=0
       while [[ "$try" -lt 20 ]]; do
         if curl -fsS --connect-timeout 1 -m 2 "http://127.0.0.1:${ROUTER_PORT}/healthz" >/dev/null 2>&1; then
           return 0
@@ -942,20 +834,15 @@ m5_restart_stack_processes() {
         fi
         i=1
         while [[ "$i" -le "$n" ]]; do
-          eval "name=\${SPIKE_CHILD_${i}_NAME}"
+          eval "name=\${SPIKE_CHILD_${i}_NAME-}"
           if [[ "$name" == router ]]; then
-            eval "argv_q=\${SPIKE_CHILD_${i}_ARGV}"
-            eval "out=\${SPIKE_CHILD_${i}_OUT}"
-            eval "err=\${SPIKE_CHILD_${i}_ERR}"
-            eval "append=\${SPIKE_CHILD_${i}_APPEND}"
-            argv=()
-            # shellcheck disable=SC2294
-            eval "argv=( ${argv_q} )"
-            if [[ -n "$out" && -n "$err" ]]; then
-              spike_spawn --class stack --out "$out" --err "$err" router "${argv[@]}"
-            else
-              spike_spawn --class stack router "${argv[@]}"
-            fi
+            for dir in "$SPIKE_REG"/children/*; do
+              [[ -d "$dir" ]] || continue
+              if [[ "$(cat "$dir/name")" == router && "$(cat "$dir/pid")" == "$router_pid" ]]; then
+                rm -rf "$dir"
+              fi
+            done
+            spike_respawn_child "$i"
             router_pid="$SPIKE_LAST_PID"
             break
           fi
@@ -968,6 +855,10 @@ m5_restart_stack_processes() {
       return 1
     fi
   fi
+}
+
+m5_restart_stack_processes() {
+  stack_restart_processes m5_restart_ready
 }
 
 m5_prepare_playwright_watch() {
@@ -988,11 +879,7 @@ m5_prepare_playwright_watch() {
 }
 
 m5_playwright_pipeline() {
-  local code=0
-  set +e
-  run_playwright 2>&1 | tee "$PLAY_LOG"
-  code="${PIPESTATUS[0]}"
-  return "$code"
+  spike_playwright_pipeline
 }
 
 m5_playwright_and_evidence() {
@@ -1032,18 +919,7 @@ m5_playwright_and_evidence() {
 }
 
 m5_down() {
-  if [[ ! -f "$WORK/stack.env" ]]; then
-    printf 'nothing to stop\n'
-    exit 0
-  fi
-  m5_load_stack_env
-  KEEP_UP=0
-  export KEEP_UP
-  COMPOSE_STARTED=1
-  trap 'cleanup EXIT' EXIT
-  trap 'cleanup INT' INT
-  trap 'cleanup TERM' TERM
-  exit 0
+  stack_down
 }
 
 m5_specs() {

@@ -508,6 +508,238 @@ case_spawn_redirects() {
   rm -rf "$dir"
 }
 
+case_spawn_flags_one_loop() {
+  local dir
+  dir="$(mktemp -d)"
+  if ! bash -c '
+    set -euo pipefail
+    # shellcheck source=spike/lib/cleanup.sh
+    . "$1"
+    SPIKE_STOP_GRACE=1
+    SPIKE_REG="$2/reg"
+    WORK="$2/work"
+    mkdir -p "$WORK"
+    spike_run_init t76
+    spike_install_trap
+    printf "OLD\n" >"$2/both.out"
+    spike_spawn --out "$2/both.out" --class transient both --err "$2/both.err" --append \
+      bash -c "echo OUT; echo ERR >&2; printf \"%s\n\" \"\$@\"" _ --reuseaddr
+    wait "$SPIKE_LAST_PID"
+    class="$(cat "$SPIKE_LAST_DIR/class")"
+    [[ "$class" == transient ]]
+    spike_spawn -- dash-name --out "$2/dash.out" --err "$2/dash.err" \
+      bash -c "echo DASH"
+    wait "$SPIKE_LAST_PID"
+    [[ "$(cat "$SPIKE_LAST_DIR/name")" == dash-name ]]
+    set +e
+    spike_spawn --out >"$2/miss-out.err" 2>&1
+    out_ec=$?
+    spike_spawn --class transient --err >"$2/miss-err.err" 2>&1
+    err_ec=$?
+    set -e
+    [[ "$out_ec" -ne 0 && "$err_ec" -ne 0 ]]
+  ' _ "$LIB" "$dir"; then
+    echo "spawn flag loop failed" >&2
+    return 1
+  fi
+  if ! grep -qx OLD "$dir/both.out"; then
+    echo "append before the command did not keep the old line" >&2
+    return 1
+  fi
+  if ! grep -qx OUT "$dir/both.out" || ! grep -qx ERR "$dir/both.err"; then
+    echo "flags on both sides did not redirect" >&2
+    return 1
+  fi
+  if ! grep -qx -- --reuseaddr "$dir/both.out"; then
+    echo "command flag was scanned" >&2
+    return 1
+  fi
+  if ! grep -qx DASH "$dir/dash.out"; then
+    echo "-- before the name did not leave the command" >&2
+    return 1
+  fi
+  if ! grep -qx "spike_spawn: --out needs a path" "$dir/miss-out.err"; then
+    echo "missing --out path line" >&2
+    cat "$dir/miss-out.err" >&2
+    return 1
+  fi
+  if ! grep -qx "spike_spawn: --err needs a path" "$dir/miss-err.err"; then
+    echo "missing --err path line" >&2
+    cat "$dir/miss-err.err" >&2
+    return 1
+  fi
+  rm -rf "$dir"
+}
+
+case_respawn_child() {
+  local dir
+  dir="$(mktemp -d)"
+  cat >"$dir/first.sh" <<'EOF'
+set -euo pipefail
+# shellcheck source=spike/lib/cleanup.sh
+. "$1"
+SPIKE_STOP_GRACE=1
+SPIKE_REG="$2/reg"
+WORK="$2/work"
+mkdir -p "$WORK"
+spike_run_init t76
+spike_install_trap
+printf "OLD\n" >"$2/out"
+printf "OLDERR\n" >"$2/err"
+spike_spawn --class stack --append --out "$2/out" --err "$2/err" child \
+  bash -c "echo NEW; echo NEWERR >&2"
+wait "$SPIKE_LAST_PID"
+spike_emit_children >"$2/emit"
+EOF
+  cat >"$dir/second.sh" <<'EOF'
+set -euo pipefail
+# shellcheck source=spike/lib/cleanup.sh
+. "$1"
+SPIKE_STOP_GRACE=1
+SPIKE_REG="$2/reg2"
+WORK="$2/work"
+# shellcheck disable=SC1091
+. "$2/emit"
+spike_respawn_child 1
+wait "$SPIKE_LAST_PID"
+[[ "$(cat "$SPIKE_LAST_DIR/append")" == 1 ]]
+[[ "$(cat "$SPIKE_LAST_DIR/out")" == "$2/out" ]]
+[[ "$(cat "$SPIKE_LAST_DIR/err")" == "$2/err" ]]
+[[ "$(cat "$SPIKE_LAST_DIR/argv")" == "$(cat "$2/reg/children/0001/argv")" ]]
+EOF
+  if ! bash "$dir/first.sh" "$LIB" "$dir"; then
+    echo "respawn first spawn failed" >&2
+    return 1
+  fi
+  if ! env -u SPIKE_RUN_LABEL bash "$dir/second.sh" "$LIB" "$dir"; then
+    echo "respawn round trip failed" >&2
+    return 1
+  fi
+  if ! grep -qx OLD "$dir/out" || ! grep -qx OLDERR "$dir/err"; then
+    echo "respawn truncated the log" >&2
+    return 1
+  fi
+  if [[ "$(grep -cx NEW "$dir/out")" -lt 2 || "$(grep -cx NEWERR "$dir/err")" -lt 2 ]]; then
+    echo "respawn did not append" >&2
+    return 1
+  fi
+  rm -rf "$dir"
+}
+
+case_stack_env_roundtrip() {
+  local dir pid ec
+  dir="$(mktemp -d)"
+  bash -c '
+    set -euo pipefail
+    # shellcheck source=spike/lib/cleanup.sh
+    . "$1"
+    # shellcheck source=spike/lib/driver.sh
+    . "$2"
+    SPIKE_STOP_GRACE=1
+    WORK="$3/work"
+    SPIKE_REG="$3/reg"
+    mkdir -p "$WORK"
+    spike_run_init t76
+    spike_spawn --class stack held sleep 60
+    printf "%s\n" "$SPIKE_LAST_PID" >"$3/pid"
+    DEMO_KEY=demo-value-not-a-secret
+    stack_env_write DEMO_KEY
+  ' _ "$LIB" "$ROOT/spike/lib/driver.sh" "$dir"
+  pid="$(cat "$dir/pid")"
+  mode="$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$dir/work/stack.env")"
+  if [[ "$mode" != 0o600 ]]; then
+    echo "stack.env mode ${mode}, want 0o600" >&2
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    return 1
+  fi
+  if ! grep -q '^DEMO_KEY=demo-value-not-a-secret$' "$dir/work/stack.env"; then
+    echo "caller variable was not recorded" >&2
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    return 1
+  fi
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  set +e
+  bash -c '
+    set -euo pipefail
+    . "$1"
+    . "$2"
+    WORK="$3/work"
+    stack_env_load
+    [[ "$DEMO_KEY" == demo-value-not-a-secret ]]
+    stack_pids_match ZZ
+  ' _ "$LIB" "$ROOT/spike/lib/driver.sh" "$dir" >"$dir/out" 2>"$dir/err"
+  ec=$?
+  set -e
+  if [[ "$ec" -eq 0 ]]; then
+    echo "stale pid was accepted" >&2
+    return 1
+  fi
+  if ! grep -F "ZZ FAIL — stale stack: held pid ${pid} is gone" "$dir/err" >/dev/null; then
+    echo "stale line mismatch" >&2
+    cat "$dir/err" >&2
+    return 1
+  fi
+  rm -rf "$dir"
+}
+
+case_stack_refuse_live() {
+  local dir pid ec
+  dir="$(mktemp -d)"
+  mkdir -p "$dir/work"
+  sleep 60 &
+  pid=$!
+  cat >"$dir/work/stack.env" <<EOF
+SPIKE_CHILD_1_CLASS=stack
+SPIKE_CHILD_1_PID=${pid}
+SPIKE_CHILD_COUNT=1
+SPIKE_RUN_LABEL=t76-refuse
+EOF
+  set +e
+  bash -c '
+    set -euo pipefail
+    . "$1"
+    . "$2"
+    WORK="$3"
+    stack_refuse_live PRE ./cmd
+  ' _ "$LIB" "$ROOT/spike/lib/driver.sh" "$dir/work" >"$dir/out" 2>"$dir/err"
+  ec=$?
+  set -e
+  if [[ "$ec" -eq 0 ]]; then
+    echo "live stack was not refused" >&2
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    return 1
+  fi
+  if ! grep -F "PRE FAIL — KEEP_UP stack is still up (./cmd down or ./cmd specs)" "$dir/err" >/dev/null; then
+    echo "refuse line mismatch" >&2
+    cat "$dir/err" >&2
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    return 1
+  fi
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  if ! bash -c '
+    set -euo pipefail
+    . "$1"
+    . "$2"
+    WORK="$3"
+    stack_refuse_live PRE ./cmd
+    [[ ! -f "$WORK/stack.env" ]]
+  ' _ "$LIB" "$ROOT/spike/lib/driver.sh" "$dir/work"; then
+    echo "stale stack.env was kept" >&2
+    return 1
+  fi
+  rm -rf "$dir"
+}
+
+run_case spawn-flags-one-loop case_spawn_flags_one_loop
+run_case respawn-child case_respawn_child
+run_case stack-env-roundtrip case_stack_env_roundtrip
+run_case stack-refuse-live case_stack_refuse_live
 run_case spawn-redirects case_spawn_redirects
 run_case term-ignoring case_term_ignoring
 run_case int-ignored case_int_ignored
