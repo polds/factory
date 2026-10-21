@@ -192,15 +192,28 @@ test("m6 exit loop", async ({ browser }) => {
     // GET .../trials is 404 until a benchmark run exists, and the suite page
     // then replaces itself with an error, which hides Run benchmark. An empty
     // matrix is what the page renders once a run exists and has no cells yet.
+    // The stand-in is no-store so a later reload can read the real matrix.
+    // Copy the body: fulfilling the fetch response object drops it.
     await page.route("**/benchmarks/*/trials*", async (route) => {
       const response = await route.fetch();
       if (response.status() !== 404) {
-        await route.fulfill({ response });
+        // body() is decoded. Leaving content-encoding set makes the browser
+        // gunzip the JSON and the suite page stays on the error state.
+        const headers = { ...response.headers() };
+        delete headers["content-encoding"];
+        delete headers["content-length"];
+        headers["cache-control"] = "no-store";
+        await route.fulfill({
+          status: response.status(),
+          headers,
+          body: await response.body(),
+        });
         return;
       }
       await route.fulfill({
         status: 200,
         contentType: "application/json",
+        headers: { "cache-control": "no-store" },
         body: JSON.stringify({ cells: [], report: { winner: "", reason: "" } }),
       });
     });
