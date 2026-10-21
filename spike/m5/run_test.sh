@@ -424,9 +424,6 @@ case_keep_up_skips_defs_wipe() {
     EVIDENCE="$WORK/keep-up-evidence"
     SIGNAL="$WORK/keep-up-signal"
     COMPOSE_STARTED=0
-    WATCH_PID=""
-    ROUTER_PID=""
-    STUB_PIDS=""
     cleanup
   )
   if [[ ! -f "$defs/marker" ]]; then
@@ -1443,7 +1440,348 @@ run_case har-type-missing-allowed case_har_type_missing_allowed
 expect_fail har-type-missing-rejected "non-api GET /hooks/github" case_har_type_missing_rejected
 expect_fail har-type-present-rejected "non-api xhr /assets/app.js" case_har_type_present_rejected
 run_case har-woff2-allowed case_har_woff2_allowed
+t76_stub_bin() {
+  local bin="$1" log="$2"
+  mkdir -p "$bin"
+  cat >"$bin/docker" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$log"
+exit 0
+EOF
+  cat >"$bin/go" <<EOF
+#!/bin/sh
+printf '%s\n' "go \$*" >>"$log"
+exit 99
+EOF
+  cat >"$bin/curl" <<EOF
+#!/bin/sh
+exit 0
+EOF
+  chmod +x "$bin/docker" "$bin/go" "$bin/curl"
+}
+
+t76_fail_tools() {
+  local bin="$1" log="$2"
+  mkdir -p "$bin"
+  cat >"$bin/docker" <<EOF
+#!/bin/sh
+printf '%s\n' "docker \$*" >>"$log"
+exit 99
+EOF
+  cp "$bin/docker" "$bin/go"
+  chmod +x "$bin/docker" "$bin/go"
+}
+
+case_specs_no_stack() {
+  local bin log start end code=0
+  rm -f "$WORK/stack.env"
+  bin="$(mktemp -d)"
+  log="$bin/called"
+  : >"$log"
+  t76_fail_tools "$bin" "$log"
+  start="$(date +%s)"
+  set +e
+  env PATH="$bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" bash "$ROOT/spike/m5/run.sh" specs >"$bin/out" 2>"$bin/err"
+  code=$?
+  set -e
+  end="$(date +%s)"
+  if [[ "$code" -eq 0 ]]; then
+    echo "specs without a stack exited 0" >&2
+    return 1
+  fi
+  if ! grep -F "M5 FAIL — no KEEP_UP stack (run KEEP_UP=1 ./spike/m5/run.sh first)" "$bin/err" >/dev/null; then
+    echo "missing no-stack line" >&2
+    cat "$bin/err" >&2
+    return 1
+  fi
+  if [[ -s "$log" ]]; then
+    echo "docker or go ran" >&2
+    return 1
+  fi
+  if [[ $((end - start)) -gt 5 ]]; then
+    echo "no-stack specs took $((end - start))s" >&2
+    return 1
+  fi
+  rm -rf "$bin"
+}
+
+case_specs_stale_pid() {
+  local bin log start end code=0
+  bin="$(mktemp -d)"
+  log="$bin/called"
+  : >"$log"
+  t76_fail_tools "$bin" "$log"
+  cat >"$WORK/stack.env" <<'EOF'
+SPIKE_RUN_ID=abcd1234
+SPIKE_RUN_LABEL=m5-abcd1234
+STACK_MODE=offline
+STACK_ROUTER_PORT=
+COMPOSE_PROJECT=factory-m5
+SPIKE_CHILD_COUNT=1
+SPIKE_CHILD_1_CLASS=stack
+SPIKE_CHILD_1_NAME=router
+SPIKE_CHILD_1_PID=999999
+SPIKE_CHILD_1_PGID=999999
+SPIKE_CHILD_1_LSTART=
+SPIKE_CHILD_1_ARGS=
+SPIKE_CHILD_1_ARGV=
+SPIKE_CHILD_1_OUT=
+SPIKE_CHILD_1_ERR=
+SPIKE_CHILD_1_APPEND=0
+EOF
+  chmod 600 "$WORK/stack.env"
+  start="$(date +%s)"
+  set +e
+  env PATH="$bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" bash "$ROOT/spike/m5/run.sh" specs >"$bin/out" 2>"$bin/err"
+  code=$?
+  set -e
+  end="$(date +%s)"
+  rm -f "$WORK/stack.env"
+  if [[ "$code" -eq 0 ]]; then
+    echo "stale specs exited 0" >&2
+    return 1
+  fi
+  if ! grep -F "M5 FAIL — stale stack: router pid 999999 is gone" "$bin/err" >/dev/null; then
+    echo "missing stale line" >&2
+    cat "$bin/err" >&2
+    return 1
+  fi
+  if [[ -s "$log" ]]; then
+    echo "docker or go ran for a stale pid" >&2
+    return 1
+  fi
+  if [[ $((end - start)) -gt 5 ]]; then
+    echo "stale specs took $((end - start))s" >&2
+    return 1
+  fi
+  rm -rf "$bin"
+}
+
+case_specs_mode_mismatch() {
+  local bin log start end code=0
+  bin="$(mktemp -d)"
+  log="$bin/called"
+  : >"$log"
+  t76_fail_tools "$bin" "$log"
+  cat >"$WORK/stack.env" <<'EOF'
+SPIKE_RUN_ID=abcd1234
+SPIKE_RUN_LABEL=m5-abcd1234
+STACK_MODE=offline
+STACK_ROUTER_PORT=
+COMPOSE_PROJECT=factory-m5
+SPIKE_CHILD_COUNT=0
+EOF
+  chmod 600 "$WORK/stack.env"
+  start="$(date +%s)"
+  set +e
+  env PATH="$bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" MODE=live bash "$ROOT/spike/m5/run.sh" specs >"$bin/out" 2>"$bin/err"
+  code=$?
+  set -e
+  end="$(date +%s)"
+  rm -f "$WORK/stack.env"
+  if [[ "$code" -eq 0 ]]; then
+    echo "mode mismatch exited 0" >&2
+    return 1
+  fi
+  if ! grep -F "M5 FAIL — MODE is live, recorded stack is offline" "$bin/err" >/dev/null; then
+    echo "missing mode line" >&2
+    cat "$bin/err" >&2
+    return 1
+  fi
+  if [[ -s "$log" ]]; then
+    echo "docker or go ran for a mode mismatch" >&2
+    return 1
+  fi
+  if [[ $((end - start)) -gt 5 ]]; then
+    echo "mode mismatch took $((end - start))s" >&2
+    return 1
+  fi
+  rm -rf "$bin"
+}
+
+case_specs_fake_stack() {
+  local bin log runs=0 builds=0
+  bin="$(mktemp -d)"
+  log="$bin/docker.log"
+  : >"$log"
+  mkdir -p "$bin"
+  cat >"$bin/docker" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$log"
+case "\$*" in
+  *build*|*' up'*) exit 99 ;;
+esac
+case "\$*" in
+  *' ps '*) printf '%s\n' factoryd factoryd-git ;;
+esac
+exit 0
+EOF
+  cat >"$bin/go" <<EOF
+#!/bin/sh
+printf '%s\n' "go \$*" >>"$log"
+exit 99
+EOF
+  cat >"$bin/curl" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+  chmod +x "$bin/docker" "$bin/go" "$bin/curl"
+  cat >"$WORK/stack.env" <<'EOF'
+SPIKE_RUN_ID=abcd1234
+SPIKE_RUN_LABEL=m5-abcd1234
+STACK_MODE=offline
+STACK_ROUTER_PORT=
+COMPOSE_PROJECT=factory-m5
+FACTORY_API_KEY=k
+FACTORY_SECRET_M5_WEBHOOK=w
+FACTORY_GITHUB_WEBHOOK_SECRET=w
+FACTORY_WORKER_API_KEY=worker
+S3_SECRET_KEY=s3
+FACTORY_SECRET_M5_PLANTED=planted
+FACTORY_INFERENCE_OPENAI_API_KEY=offline-dummy
+SPIKE_CHILD_COUNT=0
+EOF
+  chmod 600 "$WORK/stack.env"
+  set +e
+  env PATH="$bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" bash "$ROOT/spike/m5/run.sh" specs >"$bin/out" 2>"$bin/err"
+  set -e
+  rm -f "$WORK/stack.env"
+  runs="$(grep -c 'playwright' "$log" || true)"
+  builds="$(grep -c -E 'build| up' "$log" || true)"
+  if [[ "$runs" -ne 1 || "$builds" -ne 0 ]]; then
+    echo "playwright runs=$runs build/up=$builds" >&2
+    cat "$log" >&2
+    return 1
+  fi
+  if grep -q '^go ' "$log"; then
+    echo "go ran during specs" >&2
+    return 1
+  fi
+  rm -rf "$bin"
+  return 0
+}
+
+case_down_idempotent() {
+  local bin first second
+  bin="$(mktemp -d)"
+  t76_stub_bin "$bin" "$bin/docker-log"
+  cat >"$WORK/stack.env" <<'EOF'
+SPIKE_RUN_ID=abcd1234
+SPIKE_RUN_LABEL=m5-abcd1234
+STACK_MODE=offline
+COMPOSE_PROJECT=factory-m5
+SPIKE_CHILD_COUNT=0
+EOF
+  chmod 600 "$WORK/stack.env"
+  first="$(env PATH="$bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" bash "$ROOT/spike/m5/run.sh" down)"
+  if [[ -f "$WORK/stack.env" ]]; then
+    echo "down left stack.env" >&2
+    rm -f "$WORK/stack.env"
+    return 1
+  fi
+  second="$(env PATH="$bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" bash "$ROOT/spike/m5/run.sh" down)"
+  if [[ "$second" != "nothing to stop" ]]; then
+    echo "second down printed: $second" >&2
+    return 1
+  fi
+  if [[ "$first" == "nothing to stop" ]]; then
+    echo "first down found nothing" >&2
+    return 1
+  fi
+  rm -rf "$bin"
+}
+
+case_default_refuses_live_stack() {
+  local bin log code=0 sleeper
+  bin="$(mktemp -d)"
+  log="$bin/called"
+  : >"$log"
+  t76_fail_tools "$bin" "$log"
+  sleep 30 &
+  sleeper=$!
+  cat >"$WORK/stack.env" <<EOF
+SPIKE_RUN_ID=abcd1234
+SPIKE_RUN_LABEL=m5-abcd1234
+STACK_MODE=offline
+COMPOSE_PROJECT=factory-m5
+SPIKE_CHILD_COUNT=1
+SPIKE_CHILD_1_CLASS=stack
+SPIKE_CHILD_1_NAME=router
+SPIKE_CHILD_1_PID=${sleeper}
+SPIKE_CHILD_1_PGID=${sleeper}
+SPIKE_CHILD_1_LSTART=
+SPIKE_CHILD_1_ARGS=
+SPIKE_CHILD_1_ARGV=
+SPIKE_CHILD_1_OUT=
+SPIKE_CHILD_1_ERR=
+SPIKE_CHILD_1_APPEND=0
+EOF
+  chmod 600 "$WORK/stack.env"
+  set +e
+  env PATH="$bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" bash "$ROOT/spike/m5/run.sh" >"$bin/out" 2>"$bin/err"
+  code=$?
+  set -e
+  kill "$sleeper" 2>/dev/null || true
+  wait "$sleeper" 2>/dev/null || true
+  rm -f "$WORK/stack.env"
+  if [[ "$code" -eq 0 ]]; then
+    echo "default run ignored a live stack" >&2
+    return 1
+  fi
+  if ! grep -F "M5 FAIL — KEEP_UP stack is still up (./spike/m5/run.sh down or ./spike/m5/run.sh specs)" "$bin/err" >/dev/null; then
+    echo "missing refuse line" >&2
+    cat "$bin/err" >&2
+    return 1
+  fi
+  if [[ -s "$log" ]]; then
+    echo "docker or go ran before the refuse" >&2
+    return 1
+  fi
+  rm -rf "$bin"
+}
+
+case_stack_env_not_evidence() {
+  local secret="m5-planted-canary-t76-not-evidence"
+  mkdir -p "$WORK/evidence" "$WORK/spike-run/children"
+  printf 'ok\n' >"$WORK/evidence/plain.txt"
+  (
+    SPIKE_RUN_LABEL=m5-abcd1234
+    SPIKE_RUN_ID=abcd1234
+    MODE=offline
+    FACTORY_API_KEY="$secret"
+    FACTORY_SECRET_M5_WEBHOOK="$secret"
+    FACTORY_GITHUB_WEBHOOK_SECRET="$secret"
+    FACTORY_WORKER_API_KEY="$secret"
+    S3_SECRET_KEY="$secret"
+    FACTORY_SECRET_M5_PLANTED="$secret"
+    FACTORY_INFERENCE_OPENAI_API_KEY="$secret"
+    SPIKE_REG="$WORK/spike-run"
+    m5_write_stack_env
+  )
+  if [[ ! -f "$WORK/stack.env" ]]; then
+    echo "stack.env was not written" >&2
+    return 1
+  fi
+  if grep -R -F -q "$secret" "$WORK/evidence"; then
+    echo "stack secret landed in evidence" >&2
+    rm -f "$WORK/stack.env"
+    return 1
+  fi
+  if ! grep -q 'FACTORY_SECRET_M5_PLANTED=' "$WORK/stack.env"; then
+    echo "planted name missing from stack.env" >&2
+    return 1
+  fi
+  rm -f "$WORK/stack.env"
+}
+
 run_case offline-idle-on-copy case_offline_idle_on_copy
+run_case specs-no-stack case_specs_no_stack
+run_case specs-stale-pid case_specs_stale_pid
+run_case specs-mode-mismatch case_specs_mode_mismatch
+run_case specs-fake-stack case_specs_fake_stack
+run_case down-idempotent case_down_idempotent
+run_case default-refuses-live-stack case_default_refuses_live_stack
+run_case stack-env-not-evidence case_stack_env_not_evidence
 
 if [[ "$fails" -ne 0 ]]; then
   printf '%s case(s) failed\n' "$fails" >&2

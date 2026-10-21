@@ -119,3 +119,10 @@ The script exits non-zero if the worker tree is dirty, if `m0-spike` does not
 report `task_completed`, if the offline branch was not pushed, if the live PR
 URL is empty, if `events.ndjson` was not archived, or if a secret value
 appears in the logs or in that file.
+
+## Stopping a run
+
+Ctrl-C or SIGTERM stops the processes and containers this invocation started.
+The grace period is `SPIKE_STOP_GRACE` (default 5 seconds), then SIGKILL. A
+process or container still running after that is a bug. Report `ps` and
+`docker ps`.

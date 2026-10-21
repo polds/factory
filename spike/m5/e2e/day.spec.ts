@@ -11,7 +11,25 @@ const mode = process.env.M5_MODE ?? "offline";
 // Offline is m5-reviewing. Live and live-ci are the reviewing model
 // run.sh wrote into the definition (M5_LIVE_MODEL_REVIEWING or M5_LIVE_MODEL).
 const reviewingModel = process.env.M5_REVIEWING_MODEL ?? "";
-const prURL = "https://github.com/polds/m5/pull/7";
+// Empty on a default run, so titles stay the ones the offline router and
+// the evidence checks already use. specs sets a hex nonce so a second
+// run does not match the previous run's rows. hasText is a substring,
+// and the nonce is not part of those titles.
+const runNonce = process.env.M5_RUN_NONCE ?? "";
+if (runNonce !== "" && !/^[0-9a-f]+$/.test(runNonce)) {
+  throw new Error("M5_RUN_NONCE must be hex");
+}
+const prURL =
+  runNonce === ""
+    ? "https://github.com/polds/m5/pull/7"
+    : `https://github.com/polds/m5/pull/${100000 + (Number.parseInt(runNonce.slice(0, 4), 16) % 50000)}`;
+
+function scoped(title: string): string {
+  if (runNonce === "") return title;
+  const space = title.indexOf(" ");
+  if (space === -1) return `${title} ${runNonce}`;
+  return `${title.slice(0, space)} ${runNonce}${title.slice(space)}`;
+}
 
 let replayPosts = 0;
 const axeFindings: string[] = [];
@@ -325,7 +343,7 @@ async function waitAgentReported(page: Page, title: string): Promise<boolean> {
 // Two attempts, then a step 8 failure. approveOnly fail-fasts when a run
 // has already failed or moved past the spec gate.
 async function driveInfraKill(page: Page): Promise<void> {
-  const title = "m5-infra-kill wait for the container to stop";
+  const title = scoped("m5-infra-kill wait for the container to stop");
   const body = "Stay in the model call until the container stops.";
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     await createItem(page, title, body);
@@ -346,7 +364,7 @@ async function driveAgentFailure(page: Page): Promise<void> {
   const stem = "m5-agent-failure the agent should report failure";
   const body = "Report the failure and stop.";
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const title = `${stem} #${attempt}`;
+    const title = scoped(`${stem} #${attempt}`);
     await createItem(page, title, body);
     if (await waitAgentReported(page, title)) return;
   }
@@ -422,7 +440,7 @@ function questionInboxRow(page: Page): Locator {
     .locator("li.inbox-row")
     .filter({ has: page.locator('[data-kind="question"]') })
     .filter({ has: page.locator("a[href*='/runs/']") })
-    .filter({ hasText: "m5-question" });
+    .filter({ hasText: scoped("m5-question") });
   if (liveMode(mode)) return row;
   return row.filter({ hasText: "Which staging env?" });
 }
@@ -594,29 +612,29 @@ test("day of factory", async ({ browser }) => {
 
     await driveInfraKill(page);
     await driveAgentFailure(page);
-    await createItem(page, "m5-scratch", "Scratch item. Leave it at the spec gate.");
+    await createItem(page, scoped("m5-scratch"), "Scratch item. Leave it at the spec gate.");
     await saveShot(page, "board");
     await axe(page, "work-items");
-    await createItem(page, "m5-question", "Need a staging decision.");
+    await createItem(page, scoped("m5-question"), "Need a staging decision.");
 
     const issueAck = await signal("deliver", '{"op":"issue"}\n');
     if (!issueAck.startsWith("status 2")) throw new Error(`step 6: issue delivery ${issueAck}`);
     const boardRuns = runListURLs.filter((url) => url.includes("factory_id=fac_")).length;
     await outcome(boardRuns > 0, "board runs were fetched without factory_id").toBe(true);
 
-    await approveOnly(page, "m5-day");
+    await approveOnly(page, scoped("m5-day"));
     const inboxRuns = runListURLs.filter((url) => url.includes("factory_id=fac_")).length;
     await outcome(inboxRuns > boardRuns, "inbox runs were fetched without factory_id").toBe(true);
 
     await openSection(page, "Runs");
     const building = page
       .locator("tr[data-run]")
-      .filter({ hasText: "m5-day" })
+      .filter({ hasText: scoped("m5-day") })
       .filter({ hasText: "building" })
       .filter({ hasText: "Running" });
     await expect(building.first()).toBeVisible({ timeout: 180_000 });
     const dayRun = (await building.first().getAttribute("data-run")) ?? "";
-    await building.first().getByRole("link", { name: "m5-day" }).click();
+    await building.first().getByRole("link", { name: scoped("m5-day") }).click();
     const log = page.getByRole("log", { name: "Run transcript" });
     await expect(log.locator("[data-seq]").first()).toBeVisible({ timeout: 60_000 });
     const before = await seqs(page);
@@ -711,7 +729,7 @@ test("day of factory", async ({ browser }) => {
 
     await openSection(page, "Work items");
     const done = page.getByRole("region", { name: "Done" });
-    const dayCard = done.getByRole("link", { name: "m5-day" });
+    const dayCard = done.getByRole("link", { name: scoped("m5-day") });
     // The harness emits the terminal event after idleTimeoutMinutes (5), and
     // reviewing starts only then. This wait covers that idle plus the review run.
     await expect(dayCard).toBeVisible({ timeout: 8 * 60 * 1000 });
@@ -731,8 +749,8 @@ test("day of factory", async ({ browser }) => {
     await openSection(page, "Runs");
     await axe(page, "runs");
     await expect(page.getByRole("columnheader", { name: "Started" })).toBeVisible();
-    const questionAt = await rowIndex(page, "m5-question");
-    const agentAt = await rowIndex(page, "m5-agent-failure");
+    const questionAt = await rowIndex(page, scoped("m5-question"));
+    const agentAt = await rowIndex(page, scoped("m5-agent-failure"));
     await outcome(
       questionAt >= 0 && agentAt >= 0 && questionAt <= agentAt,
       `created_at order question ${questionAt} agent ${agentAt}`,
@@ -740,14 +758,14 @@ test("day of factory", async ({ browser }) => {
     await outcome(
       page
         .locator("tr[data-run]")
-        .filter({ hasText: "m5-agent-failure" })
+        .filter({ hasText: scoped("m5-agent-failure") })
         .first()
         .locator("td")
         .last()
         .locator("time"),
     ).toHaveAttribute("datetime", /^\d{4}-/);
     await page.locator("#filter-source").selectOption("manual");
-    await outcome(page.locator("tr[data-run]").filter({ hasText: "m5-agent-failure" }).first()).toBeVisible();
+    await outcome(page.locator("tr[data-run]").filter({ hasText: scoped("m5-agent-failure") }).first()).toBeVisible();
     await outcome(page.locator("tr[data-run]").filter({ hasText: "m5-day" })).toHaveCount(0);
     await page.getByRole("button", { name: "Clear filters" }).click();
     await page.locator("#filter-worker").selectOption("local-1");
@@ -757,7 +775,7 @@ test("day of factory", async ({ browser }) => {
     await failureGroup.getByRole("button", { name: "Agent" }).click();
     const agentListRow = page
       .locator("tr[data-run]")
-      .filter({ hasText: "m5-agent-failure" })
+      .filter({ hasText: scoped("m5-agent-failure") })
       .filter({ hasText: "agent_reported" })
       .first();
     await expect(agentListRow).toBeVisible({ timeout: 60_000 });
@@ -781,7 +799,7 @@ test("day of factory", async ({ browser }) => {
     await failureGroup.getByRole("button", { name: "Infrastructure" }).click();
     const infraListRow = page
       .locator("tr[data-run]")
-      .filter({ hasText: "m5-infra-kill" })
+      .filter({ hasText: scoped("m5-infra-kill") })
       .filter({ hasText: "container_killed" })
       .first();
     await expect(infraListRow).toBeVisible();
@@ -910,7 +928,11 @@ test("day of factory", async ({ browser }) => {
     await openSection(page, "Deliveries");
     await axe(page, "deliveries");
     await page.getByRole("tab", { name: /Unmatched/ }).click();
-    await page.locator("table").getByRole("button", { name: /^m5-pr-/ }).click();
+    const prDelivery =
+      runNonce === ""
+        ? page.locator("table").getByRole("button", { name: /^m5-pr-/ })
+        : page.locator("table").getByRole("button", { name: `m5-pr-${runNonce}` });
+    await prDelivery.click();
     // Close is the next click. The event text below is report-only and must
     // not be the only wait for this control.
     await expect(page.getByRole("button", { name: "Close", exact: true })).toBeVisible();
@@ -920,7 +942,10 @@ test("day of factory", async ({ browser }) => {
     await outcome(normalized).toContainText("pull_request_opened");
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
-    const delivery = page.locator("table").getByRole("button", { name: /^m5-wh-/ });
+    const delivery =
+      runNonce === ""
+        ? page.locator("table").getByRole("button", { name: /^m5-wh-/ })
+        : page.locator("table").getByRole("button", { name: new RegExp(`^m5-wh-${runNonce}`) });
     await expect(delivery).toBeVisible();
     await delivery.click();
     await page.getByRole("button", { name: "Replay delivery" }).click();
@@ -941,8 +966,8 @@ test("day of factory", async ({ browser }) => {
     const questionDeadline = Date.now() + 90_000;
     let sawQuestion = false;
     while (Date.now() < questionDeadline) {
-      const run = await readNewestRun(page, "m5-question");
-      if (run?.status === "failed") throw failedRunError("m5-question", run);
+      const run = await readNewestRun(page, scoped("m5-question"));
+      if (run?.status === "failed") throw failedRunError(scoped("m5-question"), run);
       await openInbox(page);
       await page.getByRole("group", { name: "Filter by kind" }).getByRole("button", { name: "Questions" }).click();
       if (await visibleWithin(question, 1_000)) {
@@ -953,7 +978,7 @@ test("day of factory", async ({ browser }) => {
     }
     if (!sawQuestion) {
       await openSection(page, "Runs");
-      const rows = page.locator("tr[data-run]").filter({ hasText: "m5-question" });
+      const rows = page.locator("tr[data-run]").filter({ hasText: scoped("m5-question") });
       await expect(rows.first()).toBeVisible({ timeout: 30_000 });
       const count = await rows.count();
       const chunks: string[] = [];
@@ -961,7 +986,7 @@ test("day of factory", async ({ browser }) => {
         await openSection(page, "Runs");
         await page
           .locator("tr[data-run]")
-          .filter({ hasText: "m5-question" })
+          .filter({ hasText: scoped("m5-question") })
           .nth(i)
           .getByRole("link")
           .click();

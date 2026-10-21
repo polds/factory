@@ -352,8 +352,16 @@ wipe_dir() {
   fi
   # Bind the resolved directory itself. A parent mount would let the
   # root find walk sideways out of the tree we agreed to delete.
-  docker run --rm --user 0 -v "$resolved:/wipe" golang:1.26-alpine \
-    sh -c 'find /wipe -mindepth 1 -depth -exec rm -rf {} +'
+  # The label is opt-in. m6 leaves SPIKE_RUN_LABEL unset, so its argv
+  # stays the two-flag form above the image.
+  if [[ -n "${SPIKE_RUN_LABEL:-}" ]]; then
+    docker run --rm --label "spike-run=${SPIKE_RUN_LABEL}" --user 0 \
+      -v "$resolved:/wipe" golang:1.26-alpine \
+      sh -c 'find /wipe -mindepth 1 -depth -exec rm -rf {} +'
+  else
+    docker run --rm --user 0 -v "$resolved:/wipe" golang:1.26-alpine \
+      sh -c 'find /wipe -mindepth 1 -depth -exec rm -rf {} +'
+  fi
 }
 
 copy_e2e() {
@@ -396,10 +404,14 @@ run_playwright() {
   headed_git="${PLAYWRIGHT_HEADED_GIT_URL:-http://127.0.0.1:8081}"
   : >"$EVIDENCE/driver.log"
   if declare -F watch_signals >/dev/null; then
-    watch_signals &
-    # Callers (m5 and m6) kill this pid from their own cleanup.
-    WATCH_PID=$!
-    export WATCH_PID
+    # PLAYWRIGHT_WATCH_IN_PARENT=1: the caller starts watch_signals in
+    # the parent shell. A pipeline would otherwise hide WATCH_PID.
+    if [[ "${PLAYWRIGHT_WATCH_IN_PARENT:-}" != 1 ]]; then
+      watch_signals &
+      # Callers (m5 and m6) kill this pid from their own cleanup.
+      WATCH_PID=$!
+      export WATCH_PID
+    fi
   fi
   if [[ "${HEADED:-}" == 1 ]]; then
     (cd "$WORK/e2e" && npm ci &&
@@ -417,7 +429,17 @@ run_playwright() {
         npx playwright test --reporter=list)
     return $?
   fi
-  docker run --rm \
+  # PLAYWRIGHT_DOCKER_ARGS is empty unless a caller opts in (--init, label, name).
+  # An empty value must leave this argv identical to the historical form.
+  local -a pw_prefix=()
+  pw_prefix=(run --rm)
+  if [[ -n "${PLAYWRIGHT_DOCKER_ARGS:-}" ]]; then
+    local -a pw_extra=()
+    # shellcheck disable=SC2206 # opt-in flags are separate words
+    pw_extra=(${PLAYWRIGHT_DOCKER_ARGS})
+    pw_prefix+=("${pw_extra[@]}")
+  fi
+  docker "${pw_prefix[@]}" \
     --network "$network" \
     -v "$WORK/e2e:/work" \
     -v "$EVIDENCE:/evidence" \

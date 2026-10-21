@@ -25,6 +25,8 @@
 set -euo pipefail
 # shellcheck source=spike/lib/common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
+# shellcheck source=spike/lib/cleanup.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/cleanup.sh"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -42,7 +44,6 @@ OFFLINE_DUMMY_KEY="m3-offline-dummy-7f3c9a"
 OFFLINE_GH="m3-offline-gh-7f3c9a2e"
 PLANTED_DUMMY="m3-planted-dummy-7f3c9a"
 
-ROUTER_PID=""
 WATCH_PID=""
 COMPOSE_STARTED=0
 SECRETS=()
@@ -56,23 +57,10 @@ DEF=""
 
 # shellcheck disable=SC2317,SC2329 # invoked by the EXIT/INT/TERM trap
 cleanup() {
-  local code=$? pid=""
-  trap - EXIT INT TERM ERR
+  local code=$?
+  local why="${1:-EXIT}"
+  spike_teardown_begin "$why" || return 0
   set +e
-  if [[ -n "${WATCH_PID}" ]]; then
-    kill "${WATCH_PID}" 2>/dev/null || true
-  fi
-  if [[ -n "${ROUTER_PID}" ]]; then
-    kill "${ROUTER_PID}" 2>/dev/null || true
-  fi
-  if [[ -f "$WORK/stub.pids" ]]; then
-    while read -r pid; do
-      if [[ -n "$pid" ]]; then
-        kill "$pid" 2>/dev/null || true
-      fi
-    done <"$WORK/stub.pids"
-  fi
-  wait 2>/dev/null || true
   if [[ "${COMPOSE_STARTED}" -eq 1 ]]; then
     save_compose_logs || true
     docker compose -p "$PROJECT" -f "$COMPOSE_FILE" down -v --timeout 20 >/dev/null 2>&1 ||
@@ -83,7 +71,7 @@ cleanup() {
     announce_leak
     code=1
   fi
-  exit "${code}"
+  spike_teardown_finish "$code"
 }
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
@@ -327,9 +315,8 @@ start_stub() {
   local name="$1" port="$2" text="$3"
   local script="$WORK/script-${name}.json"
   write_final_script "$script" "$text"
-  "$WORK/model-stub" -addr "127.0.0.1:${port}" -script "$script" \
-    >"$WORK/model-stub-${name}.log" 2>&1 &
-  echo "$!" >>"$WORK/stub.pids"
+  spike_spawn --class stack "stub-${name}" --out "$WORK/model-stub-${name}.log" --err "$WORK/model-stub-${name}.log" \
+    "$WORK/model-stub" -addr "127.0.0.1:${port}" -script "$script"
 }
 
 wait_http() {
@@ -557,7 +544,9 @@ if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
 fi
 
-trap cleanup EXIT INT TERM
+trap 'cleanup EXIT' EXIT
+trap 'cleanup INT' INT
+trap 'cleanup TERM' TERM
 trap 'on_err $? $LINENO' ERR
 
 say "Preflight"
@@ -612,7 +601,7 @@ if [[ "$MODE" == live ]]; then
 fi
 
 mkdir -p "$WORK" "$WORK/evidence"
-: >"$WORK/stub.pids"
+spike_run_init m3
 prove_scanner
 
 GW="$(bridge_gateway)"
@@ -678,19 +667,19 @@ distinct_models "$MODEL_TRIAGE" "$MODEL_PLANNING" "$MODEL_BUILDING" "$MODEL_REVI
 echo "models: triage=${MODEL_TRIAGE} planning=${MODEL_PLANNING} building=${MODEL_BUILDING} reviewing=${MODEL_REVIEWING}"
 
 say "Build factoryctl, the harness image, and the task image"
-(cd "$ROOT" && CGO_ENABLED=0 go build -o "$WORK/factoryctl" ./cmd/factoryctl)
-(cd "$ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH_TARGET" \
-  go build -o harness/generic-openai/factory-harness ./cmd/factory-harness)
+spike_fg_dir "$ROOT" env CGO_ENABLED=0 go build -o "$WORK/factoryctl" ./cmd/factoryctl
+spike_fg_dir "$ROOT" env CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH_TARGET" \
+  go build -o harness/generic-openai/factory-harness ./cmd/factory-harness
 assert_linux_elf "$ROOT/harness/generic-openai/factory-harness" "$GOARCH_TARGET" ||
   fail "harness binary is not a linux/${GOARCH_TARGET} ELF"
-docker build --platform "$OCI_PLATFORM" -q -t "$HARNESS_IMAGE" "$ROOT/harness/generic-openai" >/dev/null
+spike_fg docker build --platform "$OCI_PLATFORM" -q -t "$HARNESS_IMAGE" "$ROOT/harness/generic-openai" >/dev/null
 assert_image_platform "$HARNESS_IMAGE" "$OCI_PLATFORM" ||
   fail "harness image platform does not match ${OCI_PLATFORM}"
-docker build --platform "$OCI_PLATFORM" -q -t "$TASK_IMAGE" "$ROOT/spike/m1/task-image" >/dev/null
+spike_fg docker build --platform "$OCI_PLATFORM" -q -t "$TASK_IMAGE" "$ROOT/spike/m1/task-image" >/dev/null
 assert_image_platform "$TASK_IMAGE" "$OCI_PLATFORM" ||
   fail "task image platform does not match ${OCI_PLATFORM}"
 HARNESS_EXEC_CODE=0
-run_capture HARNESS_EXEC_CODE docker run --rm --platform "$OCI_PLATFORM" \
+run_capture HARNESS_EXEC_CODE spike_docker run --rm --platform "$OCI_PLATFORM" \
   --entrypoint /factory-harness "$HARNESS_IMAGE" \
   >"$WORK/image-exec.out" 2>"$WORK/image-exec.err"
 if ! harness_contract_exit "$HARNESS_EXEC_CODE"; then
@@ -698,7 +687,7 @@ if ! harness_contract_exit "$HARNESS_EXEC_CODE"; then
 fi
 rm -f "$WORK/image-exec.out" "$WORK/image-exec.err"
 TASK_UNAME_CODE=0
-run_capture TASK_UNAME_CODE docker run --rm --platform "$OCI_PLATFORM" \
+run_capture TASK_UNAME_CODE spike_docker run --rm --platform "$OCI_PLATFORM" \
   --entrypoint /bin/sh "$TASK_IMAGE" -c 'uname -m && git --version >/dev/null && go version >/dev/null && command -v gh >/dev/null' \
   >"$WORK/task-uname.txt" 2>"$WORK/image-exec.err"
 TASK_UNAME="$(tr -d '[:space:]' <"$WORK/task-uname.txt" 2>/dev/null || true)"
@@ -712,7 +701,7 @@ FACTORYCTL="$WORK/factoryctl"
 
 if [[ "$MODE" == offline ]]; then
   say "Route model-stub responses by model id on ${GW}:9090"
-  (cd "$ROOT" && CGO_ENABLED=0 go build -o "$WORK/model-stub" ./spike/m1/model-stub)
+  spike_fg_dir "$ROOT" env CGO_ENABLED=0 go build -o "$WORK/model-stub" ./spike/m1/model-stub
   start_stub triage 9091 "triage: scope is the Hello exclamation change"
   start_stub planning 9092 "planning: add an exclamation mark in Hello and update the test"
   start_stub building 9093 "building: greeting change recorded"
@@ -724,9 +713,9 @@ if [[ "$MODE" == offline ]]; then
     printf '%s|http://127.0.0.1:9094\n' "$MODEL_REVIEWING"
   } >"$WORK/routes.txt"
   write_router
-  M3_ROUTES_FILE="$WORK/routes.txt" M3_ROUTER_ADDR="0.0.0.0:9090" \
-    python3 "$WORK/model-router.py" >"$WORK/model-router.log" 2>&1 &
-  ROUTER_PID=$!
+  spike_spawn --class stack router --out "$WORK/model-router.log" --err "$WORK/model-router.log" \
+    env M3_ROUTES_FILE="$WORK/routes.txt" M3_ROUTER_ADDR="0.0.0.0:9090" \
+    python3 "$WORK/model-router.py"
   if ! wait_http "http://127.0.0.1:9090/healthz"; then
     fail "model router did not become reachable"
   fi
@@ -738,24 +727,22 @@ if [[ "$MODE" == offline ]]; then
       fail "model-stub ${pair%%:*} did not become reachable"
     fi
   done
-  docker run --rm --network bridge --entrypoint curl "$TASK_IMAGE" \
+  spike_docker run --rm --network bridge --entrypoint curl "$TASK_IMAGE" \
     -fsS "http://${GW}:9090/healthz" >/dev/null
   echo "model router reachable from a bridge container"
 fi
 
 say "Start the laptop stack"
 COMPOSE_STARTED=1
-compose build
+spike_fg compose build
 assert_image_platform factoryd:dev "$OCI_PLATFORM" ||
   fail "factoryd image platform does not match ${OCI_PLATFORM}"
 assert_image_platform factory-upstream-worker:dev "$OCI_PLATFORM" ||
   fail "worker image platform does not match ${OCI_PLATFORM}"
-compose up -d --wait postgres
-compose --profile migrate run --rm migrate
-(
-  cd "$ROOT/deploy"
-  docker compose -p "$PROJECT" up -d --build --wait
-)
+spike_fg compose up -d --wait postgres
+spike_fg compose --profile migrate run --rm migrate
+# shellcheck disable=SC2016 # single quotes are the child script
+spike_fg bash -c 'cd "$1" && docker compose -p "$2" up -d --build --wait' spike-fg-dir "$ROOT/deploy" "$PROJECT"
 
 for _ in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then
@@ -789,9 +776,9 @@ echo "task id: $TASK_ID"
 
 trap - ERR
 set +e
-"$FACTORYCTL" task watch --factory "$FACTORY_NAME" "$TASK_ID" \
-  >"$WORK/watch.ts" 2>"$WORK/factoryctl-watch.err" &
-WATCH_PID=$!
+spike_spawn --class transient factoryctl-watch --out "$WORK/watch.ts" --err "$WORK/factoryctl-watch.err" \
+  "$FACTORYCTL" task watch --factory "$FACTORY_NAME" "$TASK_ID"
+WATCH_PID=$SPIKE_LAST_PID
 set -e
 trap 'on_err $? $LINENO' ERR
 

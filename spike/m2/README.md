@@ -145,3 +145,7 @@ Both modes grep compose logs, the watch transcript, and the archived events
 for every injected secret. A match fails the run and withholds those files.
 Before the run, the script plants a dummy value in a scratch file and
 requires the same grep to fail, then deletes the file.
+
+## Stopping a run
+
+Ctrl-C or SIGTERM stops the processes and containers this invocation started. The grace period is `SPIKE_STOP_GRACE` (default 5 seconds), then SIGKILL. A process or container still running after that is a bug. Report `ps` and `docker ps`.

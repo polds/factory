@@ -22,6 +22,8 @@
 # Requires: docker (running), go, git, curl. Live also requires gh and
 # OPENAI_BASE_URL, M1_MODEL, GH_TOKEN. OPENAI_API_KEY is optional.
 set -euo pipefail
+# shellcheck source=spike/lib/cleanup.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/cleanup.sh"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -40,32 +42,23 @@ OFFLINE_DUMMY_KEY="m1-offline-dummy-7f3c9a"
 
 SERVER_PID=""
 WORKER_PID=""
-MODEL_PID=""
-GITD_PID=""
 GITD_PIDFILE=""
 
-# shellcheck disable=SC2329 # invoked by the EXIT/INT/TERM trap
+# shellcheck disable=SC2317,SC2329 # invoked by the EXIT/INT/TERM trap
 cleanup() {
   local code=$?
-  if [[ -n "${WORKER_PID}" ]]; then
-    kill "${WORKER_PID}" 2>/dev/null || true
-  fi
-  if [[ -n "${SERVER_PID}" ]]; then
-    kill "${SERVER_PID}" 2>/dev/null || true
-  fi
-  if [[ -n "${MODEL_PID}" ]]; then
-    kill "${MODEL_PID}" 2>/dev/null || true
-  fi
-  if [[ -n "${GITD_PID}" ]]; then
-    kill "${GITD_PID}" 2>/dev/null || true
-  fi
+  local why="${1:-EXIT}"
+  spike_teardown_begin "$why" || return 0
+  set +e
+  # git daemon detaches. The pid file is the process that left the group.
   if [[ -n "${GITD_PIDFILE}" && -f "${GITD_PIDFILE}" ]]; then
     kill "$(cat "${GITD_PIDFILE}")" 2>/dev/null || true
   fi
-  wait 2>/dev/null || true
-  exit "${code}"
+  spike_teardown_finish "$code"
 }
-trap cleanup EXIT INT TERM
+trap 'cleanup EXIT' EXIT
+trap 'cleanup INT' INT
+trap 'cleanup TERM' TERM
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
@@ -113,7 +106,7 @@ archive_events() {
   fi
   if [[ -r "$src" ]]; then
     cp "$src" "$dest" || return 1
-  elif ! docker run --rm --network none --user 0 --entrypoint cat \
+  elif ! spike_docker run --rm --network none --user 0 --entrypoint cat \
     -v "$WORK/runtime:/src:ro" \
     "$TASK_IMAGE" /src/events.ndjson >"$dest"; then
     rm -f "$dest"
@@ -201,24 +194,25 @@ if [[ "$MODE" == live ]]; then
 fi
 
 mkdir -p "$WORK"
+spike_run_init m1
 
 # ---------------------------------------------------------------------------
 say "Build the generic-openai sidecar ($HARNESS_IMAGE)"
-(cd "$ROOT" && CGO_ENABLED=0 go build -o harness/generic-openai/factory-harness ./cmd/factory-harness)
-docker build -q -t "$HARNESS_IMAGE" "$ROOT/harness/generic-openai" >/dev/null
+spike_fg_dir "$ROOT" env CGO_ENABLED=0 go build -o harness/generic-openai/factory-harness ./cmd/factory-harness
+spike_fg docker build -q -t "$HARNESS_IMAGE" "$ROOT/harness/generic-openai" >/dev/null
 echo "built $HARNESS_IMAGE"
 
 say "Build the task image ($TASK_IMAGE)"
-docker build -q -t "$TASK_IMAGE" "$HERE/task-image" >/dev/null
+spike_fg docker build -q -t "$TASK_IMAGE" "$HERE/task-image" >/dev/null
 echo "built $TASK_IMAGE"
 
 # ---------------------------------------------------------------------------
 say "Build the unmodified upstream worker (ref: $WORKER_REF)"
 if [[ ! -d "$WORK/oz-agent-worker/.git" ]]; then
-  git clone --depth 1 --branch "$WORKER_REF" "$WORKER_REPO" "$WORK/oz-agent-worker"
+  spike_fg git clone --depth 1 --branch "$WORKER_REF" "$WORKER_REPO" "$WORK/oz-agent-worker"
 fi
 WORKER_SHA="$(git -C "$WORK/oz-agent-worker" rev-parse --short HEAD)"
-(cd "$WORK/oz-agent-worker" && go build -o "$WORK/oz-agent-worker-bin" .)
+spike_fg_dir "$WORK/oz-agent-worker" go build -o "$WORK/oz-agent-worker-bin" .
 dirty="$(git -C "$WORK/oz-agent-worker" status --porcelain)"
 if [[ -n "$dirty" ]]; then
   printf '%s\n' "$dirty"
@@ -228,8 +222,8 @@ echo "built worker from $WORKER_SHA — clean tree, no local modifications"
 
 # ---------------------------------------------------------------------------
 say "Build m0-spike and the offline model stub"
-(cd "$ROOT" && go build -o "$WORK/m0-spike" ./cmd/m0-spike)
-(cd "$ROOT" && CGO_ENABLED=0 go build -o "$WORK/model-stub" ./spike/m1/model-stub)
+spike_fg_dir "$ROOT" go build -o "$WORK/m0-spike" ./cmd/m0-spike
+spike_fg_dir "$ROOT" env CGO_ENABLED=0 go build -o "$WORK/model-stub" ./spike/m1/model-stub
 echo "built m0-spike and model-stub"
 
 # The harness writes /var/run/factory/events.ndjson inside the task
@@ -277,15 +271,12 @@ if [[ "$MODE" == offline ]]; then
 
   GITD_PIDFILE="$WORK/git-daemon.pid"
   rm -f "$GITD_PIDFILE"
-  git daemon --reuseaddr --export-all --enable=receive-pack \
+  spike_spawn --class stack git-daemon --out "$WORK/git-daemon.log" --err "$WORK/git-daemon.log" \
+    git daemon --reuseaddr --export-all --enable=receive-pack \
     --listen="$GW" --port=9418 --pid-file="$GITD_PIDFILE" \
-    --base-path="$WORK/git" "$WORK/git" \
-    >"$WORK/git-daemon.log" 2>&1 &
-  GITD_PID=$!
-
-  "$WORK/model-stub" -addr "${GW}:9090" -script "$WORK/offline-script.json" \
-    >"$WORK/model-stub.log" 2>&1 &
-  MODEL_PID=$!
+    --base-path="$WORK/git" "$WORK/git"
+  spike_spawn --class stack model-stub --out "$WORK/model-stub.log" --err "$WORK/model-stub.log" \
+    "$WORK/model-stub" -addr "${GW}:9090" -script "$WORK/offline-script.json"
 
   git_ready=0
   model_ready=0
@@ -306,9 +297,9 @@ if [[ "$MODE" == offline ]]; then
     die "git daemon or model stub did not become reachable on ${GW}"
   fi
   # Same path the task container will use.
-  docker run --rm --network bridge --entrypoint git "$TASK_IMAGE" \
+  spike_docker run --rm --network bridge --entrypoint git "$TASK_IMAGE" \
     ls-remote "git://${GW}/remote.git" >/dev/null
-  docker run --rm --network bridge --entrypoint curl "$TASK_IMAGE" \
+  spike_docker run --rm --network bridge --entrypoint curl "$TASK_IMAGE" \
     -fsS "http://${GW}:9090/healthz" >/dev/null
   echo "fixture and model stub reachable from a bridge container"
 
@@ -369,8 +360,9 @@ else
   )
 fi
 
-"$WORK/m0-spike" "${SPIKE_ARGS[@]}" >"$WORK/server.log" 2>&1 &
-SERVER_PID=$!
+spike_spawn --class stack m0-spike --out "$WORK/server.log" --err "$WORK/server.log" \
+  "$WORK/m0-spike" "${SPIKE_ARGS[@]}"
+SERVER_PID=$SPIKE_LAST_PID
 
 for _ in $(seq 1 50); do
   if curl -fsS "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
@@ -390,15 +382,15 @@ rm -rf "$WORK/runtime" "$WORK/evidence"
 mkdir -p "$WORK/runtime" "$WORK/evidence"
 # The worker may start the task container as an arbitrary uid.
 chmod 1777 "$WORK/runtime"
-WARP_API_KEY="$API_KEY" "$WORK/oz-agent-worker-bin" \
+spike_spawn --class stack worker --out "$WORK/worker.log" --err "$WORK/worker.log" \
+  env WARP_API_KEY="$API_KEY" "$WORK/oz-agent-worker-bin" \
   --worker-id "$WORKER_ID" \
   --backend docker \
   --config-file "$WORK/worker.yaml" \
   --log-level debug \
   --web-socket-url "ws://127.0.0.1:${PORT}/api/v1/selfhosted/worker/ws" \
-  --server-root-url "http://127.0.0.1:${PORT}" \
-  >"$WORK/worker.log" 2>&1 &
-WORKER_PID=$!
+  --server-root-url "http://127.0.0.1:${PORT}"
+WORKER_PID=$SPIKE_LAST_PID
 
 say "Waiting for a terminal message"
 set +e
