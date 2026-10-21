@@ -225,10 +225,12 @@ test("m6 exit loop", async ({ browser }) => {
         const matrix = page.getByRole("table", { name: "Trial matrix" });
         if ((await matrix.count()) === 0) return false;
         const text = await matrix.innerText();
+        // Row headers are uppercased in CSS, so innerText says WINNER.
+        const folded = text.toLowerCase();
         if (offline) {
-          return text.includes("Winner") && text.includes("100%") && text.includes("0%");
+          return folded.includes("winner") && text.includes("100%") && text.includes("0%");
         }
-        return text.includes("Winner");
+        return folded.includes("winner");
       },
       15 * 60 * 1000,
     );
