@@ -277,22 +277,7 @@ func (s *Store) ListRuns(ctx context.Context, f RunFilter) ([]Run, error) {
 		  AND ($3 = '' OR status = $3)
 		ORDER BY created_at DESC, id DESC
 		LIMIT $4`, f.FactoryID, f.AgentID, f.Status, limit)
-	if err != nil {
-		return nil, fmt.Errorf("store: list runs: %w", err)
-	}
-	defer rows.Close()
-	out := []Run{}
-	for rows.Next() {
-		run, err := scanRun(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: list runs: %w", err)
-		}
-		out = append(out, run)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list runs: %w", err)
-	}
-	return out, nil
+	return collect(rows, err, "store: list runs", scanRun)
 }
 
 // Lease claims up to n queued runs in pool whose lease is free.
@@ -342,24 +327,15 @@ func (s *Store) Lease(ctx context.Context, pool string, ttl time.Duration, n int
 		FROM upd
 		ORDER BY upd.priority DESC, upd.enqueued_at ASC, upd.run_id ASC`,
 		pool, n, ttl.Milliseconds())
-	if err != nil {
-		return nil, fmt.Errorf("store: lease: %w", err)
-	}
-	defer rows.Close()
-	out := []QueuedRun{}
-	for rows.Next() {
-		var row QueuedRun
+	return collect(rows, err, "store: lease", func(row pgx.Row) (QueuedRun, error) {
+		var queued QueuedRun
 		var priority int
-		if err := rows.Scan(&row.RunID, &row.FactoryID, &row.Pool, &priority, &row.EnqueuedAt, &row.LeaseUntil, &row.Attempts); err != nil {
-			return nil, fmt.Errorf("store: lease: %w", err)
+		if err := row.Scan(&queued.RunID, &queued.FactoryID, &queued.Pool, &priority, &queued.EnqueuedAt, &queued.LeaseUntil, &queued.Attempts); err != nil {
+			return QueuedRun{}, err
 		}
-		row.Priority = Priority(priority)
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: lease: %w", err)
-	}
-	return out, nil
+		queued.Priority = Priority(priority)
+		return queued, nil
+	})
 }
 
 // Requeue returns a leased run to the queue after task_rejected.

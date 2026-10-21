@@ -190,22 +190,7 @@ func (s *Store) ListDeliveries(ctx context.Context, factory, status string, limi
 		  AND ($2 = '' OR status = $2)
 		ORDER BY received_at DESC, id DESC
 		LIMIT $3`, factory, status, limit)
-	if err != nil {
-		return nil, fmt.Errorf("store: list deliveries: %w", err)
-	}
-	defer rows.Close()
-	out := []Delivery{}
-	for rows.Next() {
-		d, err := scanDelivery(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: list deliveries: %w", err)
-		}
-		out = append(out, d)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list deliveries: %w", err)
-	}
-	return out, nil
+	return collect(rows, err, "store: list deliveries", scanDelivery)
 }
 
 // SetDeliveryNormalized stores the dispatcher event list for id.
@@ -258,22 +243,7 @@ func (s *Store) ListWebhookDeliveries(ctx context.Context, factoryID, webhookUID
 		  AND ($3 = '' OR status = $3)
 		ORDER BY received_at DESC, id DESC
 		LIMIT $4`, factoryID, webhookUID, status, limit)
-	if err != nil {
-		return nil, fmt.Errorf("store: list webhook deliveries: %w", err)
-	}
-	defer rows.Close()
-	out := []Delivery{}
-	for rows.Next() {
-		d, err := scanDelivery(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: list webhook deliveries: %w", err)
-		}
-		out = append(out, d)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list webhook deliveries: %w", err)
-	}
-	return out, nil
+	return collect(rows, err, "store: list webhook deliveries", scanDelivery)
 }
 
 // PurgeExpiredDeliveries deletes deliveries whose retention has elapsed.

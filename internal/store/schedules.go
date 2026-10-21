@@ -143,22 +143,7 @@ func (s *Store) ListSchedules(ctx context.Context, factoryID string) ([]Schedule
 		FROM schedules
 		WHERE factory_id = $1
 		ORDER BY automation ASC, name ASC, id ASC`, factoryID)
-	if err != nil {
-		return nil, fmt.Errorf("store: list schedules: %w", err)
-	}
-	defer rows.Close()
-	out := []Schedule{}
-	for rows.Next() {
-		row, err := scanSchedule(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: list schedules: %w", err)
-		}
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list schedules: %w", err)
-	}
-	return out, nil
+	return collect(rows, err, "store: list schedules", scanSchedule)
 }
 
 // DueSchedules returns unpaused schedules whose next_fire_at is at or before now.
@@ -173,22 +158,7 @@ func (s *Store) DueSchedules(ctx context.Context, now time.Time) ([]Schedule, er
 		  AND next_fire_at IS NOT NULL
 		  AND next_fire_at <= $1
 		ORDER BY next_fire_at ASC, id ASC`, now)
-	if err != nil {
-		return nil, fmt.Errorf("store: due schedules: %w", err)
-	}
-	defer rows.Close()
-	out := []Schedule{}
-	for rows.Next() {
-		row, err := scanSchedule(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: due schedules: %w", err)
-		}
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: due schedules: %w", err)
-	}
-	return out, nil
+	return collect(rows, err, "store: due schedules", scanSchedule)
 }
 
 // MarkFired records the fire time and the following next_fire_at.

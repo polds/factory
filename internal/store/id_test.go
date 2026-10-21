@@ -86,7 +86,7 @@ func TestNewIDShapeAndUniqueness(t *testing.T) {
 			t.Fatalf("id %q body length %d", id, len(body))
 		}
 		for _, r := range body {
-			if !strings.ContainsRune(crockfordAlphabet, r) {
+			if !strings.ContainsRune("0123456789ABCDEFGHJKMNPQRSTVWXYZ", r) {
 				t.Fatalf("id %q has non-crockford rune %q", id, r)
 			}
 		}
@@ -104,5 +104,48 @@ func TestNewIDShapeAndUniqueness(t *testing.T) {
 	}
 	if _, err := NewID("run"); err == nil {
 		t.Fatal("accepted prefix without trailing underscore")
+	}
+}
+
+func TestFormatIDGolden(t *testing.T) {
+	t.Parallel()
+	zero := make([]byte, 10)
+	maxEnt := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	prefixes := []string{
+		PrefixRun, PrefixExec, PrefixFactory, PrefixAgent, PrefixDefinition,
+		PrefixWorkItem, PrefixApproval, PrefixConversation, PrefixDelivery,
+		PrefixSchedule, PrefixInputRequest, PrefixWebhook, PrefixSteer,
+		PrefixAutomation, PrefixScorerResult, PrefixImproveBatch,
+		PrefixBenchmarkRun, PrefixBenchmarkTrial,
+	}
+	if len(prefixes) != 18 {
+		t.Fatalf("prefixes %d", len(prefixes))
+	}
+	for _, prefix := range prefixes {
+		got, err := FormatID(prefix, 0, zero)
+		if err != nil || got != prefix+"00000000000000000000000000" {
+			t.Fatalf("zero %s %q %v", prefix, got, err)
+		}
+		got, err = FormatID(prefix, (1<<48)-1, maxEnt)
+		if err != nil || got != prefix+"7ZZZZZZZZZZZZZZZZZZZZZZZZZ" {
+			t.Fatalf("max %s %q %v", prefix, got, err)
+		}
+	}
+}
+
+func TestFormatIDErrorText(t *testing.T) {
+	t.Parallel()
+	entropy := make([]byte, 10)
+	_, err := FormatID(PrefixRun, 1<<48, entropy)
+	if err == nil || err.Error() != "store: timestamp does not fit in 48 bits" {
+		t.Fatalf("timestamp %v", err)
+	}
+	_, err = FormatID(PrefixRun, 1, entropy[:9])
+	if err == nil || err.Error() != "store: entropy must be 10 bytes" {
+		t.Fatalf("entropy %v", err)
+	}
+	_, err = FormatID("nope_", 1, entropy)
+	if err == nil || err.Error() != `store: unknown id prefix "nope_"` {
+		t.Fatalf("prefix %v", err)
 	}
 }

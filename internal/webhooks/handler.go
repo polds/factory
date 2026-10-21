@@ -1,7 +1,6 @@
 package webhooks
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -167,8 +166,8 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request, route routeKind,
 		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
 		return
 	}
-	body, err := readBody(r)
-	if errors.Is(err, errTooLarge) {
+	body, err := ingress.ReadBody(r)
+	if errors.Is(err, ingress.ErrTooLarge) {
 		h.metrics.addTooLarge()
 		writeJSON(w, http.StatusRequestEntityTooLarge, errorBody{Error: "payload too large"})
 		return
@@ -197,7 +196,7 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request, route routeKind,
 		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
 		return
 	}
-	stored, truncated := clipBody(body)
+	stored, truncated := ingress.ClipBody(body)
 	dup, err := h.sink.Enqueue(r.Context(), reg.FactoryID, ingress.Delivery{
 		ID:         id,
 		Provider:   ingress.ProviderWebhook,
@@ -308,10 +307,7 @@ func (h *handler) secret(r *http.Request, name string) (string, error) {
 	return value, nil
 }
 
-var (
-	errUnauthorized = errors.New("webhooks: unauthorized")
-	errTooLarge     = errors.New("webhooks: body exceeds 1MiB")
-)
+var errUnauthorized = errors.New("webhooks: unauthorized")
 
 func newDeliveryID(now time.Time) (string, error) {
 	var entropy [10]byte
@@ -327,36 +323,6 @@ func newDeliveryID(now time.Time) (string, error) {
 		return "", fmt.Errorf("webhooks: delivery id: %w", err)
 	}
 	return id, nil
-}
-
-func readBody(r *http.Request) ([]byte, error) {
-	if r.ContentLength > ingress.MaxBody {
-		if r.Body != nil {
-			_ = r.Body.Close()
-		}
-		return nil, errTooLarge
-	}
-	if r.Body == nil {
-		return []byte{}, nil
-	}
-	defer func() { _ = r.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(r.Body, ingress.MaxBody+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > ingress.MaxBody {
-		return nil, errTooLarge
-	}
-	return body, nil
-}
-
-func clipBody(body []byte) ([]byte, bool) {
-	if len(body) > ingress.MaxStoredBody {
-		out := make([]byte, ingress.MaxStoredBody)
-		copy(out, body)
-		return out, true
-	}
-	return bytes.Clone(body), false
 }
 
 type ackBody struct {

@@ -214,20 +214,5 @@ func (s *Store) ListWebhookRegistrations(ctx context.Context, factoryID string) 
 		FROM webhook_registrations
 		WHERE factory_id = $1
 		ORDER BY name ASC, uid ASC`, factoryID)
-	if err != nil {
-		return nil, fmt.Errorf("store: list webhooks: %w", err)
-	}
-	defer rows.Close()
-	out := []WebhookRegistration{}
-	for rows.Next() {
-		row, err := scanWebhook(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: list webhooks: %w", err)
-		}
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list webhooks: %w", err)
-	}
-	return out, nil
+	return collect(rows, err, "store: list webhooks", scanWebhook)
 }

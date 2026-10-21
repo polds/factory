@@ -153,22 +153,7 @@ func (s *Store) ListWorkItems(ctx context.Context, f WorkItemFilter) ([]WorkItem
 		  AND ($4 = '' OR source = $4)
 		ORDER BY created_at DESC, id DESC
 		LIMIT $5`, f.FactoryID, f.Stage, f.Status, f.Source, limit)
-	if err != nil {
-		return nil, fmt.Errorf("store: list work items: %w", err)
-	}
-	defer rows.Close()
-	out := []WorkItem{}
-	for rows.Next() {
-		item, err := scanWorkItem(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: list work items: %w", err)
-		}
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list work items: %w", err)
-	}
-	return out, nil
+	return collect(rows, err, "store: list work items", scanWorkItem)
 }
 
 // UpdateWorkItemStage sets stage and status. RevisionCount is left unchanged.
@@ -392,22 +377,7 @@ func (s *Store) ListApprovals(ctx context.Context, factoryID string, pendingOnly
 		WHERE w.factory_id = $1
 		  AND ($2 = false OR a.decision = '')
 		ORDER BY a.requested_at ASC, a.id ASC`, factoryID, pendingOnly)
-	if err != nil {
-		return nil, fmt.Errorf("store: list approvals: %w", err)
-	}
-	defer rows.Close()
-	out := []Approval{}
-	for rows.Next() {
-		row, err := scanApproval(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: list approvals: %w", err)
-		}
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list approvals: %w", err)
-	}
-	return out, nil
+	return collect(rows, err, "store: list approvals", scanApproval)
 }
 
 // HasApprovalDecision reports whether this work item has a row for gate
