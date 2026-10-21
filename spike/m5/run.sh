@@ -6,6 +6,8 @@
 #   MODE=live-ci ./spike/m5/run.sh
 #   KEEP_UP=1 ./spike/m5/run.sh
 #   ./spike/m5/run.sh --manual
+#   ./spike/m5/run.sh specs
+#   ./spike/m5/run.sh down
 #   HEADED=1 ./spike/m5/run.sh
 #
 # MODE defaults to offline. offline, live, and live-ci run the same
@@ -75,6 +77,8 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
 # shellcheck source=spike/lib/driver.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/driver.sh"
+# shellcheck source=spike/lib/cleanup.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/cleanup.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$ROOT/spike/m5/.work"
@@ -86,9 +90,7 @@ ROUTER_PORT=""
 MODE="${MODE:-offline}"
 MANUAL=0
 COMPOSE_STARTED=0
-ROUTER_PID=""
 WATCH_PID=""
-STUB_PIDS=""
 
 die() {
   echo "$*" >&2
@@ -386,13 +388,13 @@ fetch_container_router_models() {
   local port="$1" dest="$2"
   local url="http://host.docker.internal:${port}/v1/models"
   if container_needs_host_gateway "${OS_NAME:-}" "$(uname -s)"; then
-    docker run --rm --network bridge \
+    spike_docker run --rm --network bridge \
       --add-host=host.docker.internal:host-gateway \
       busybox:1.36 \
       wget -q -T 5 -O - "$url" >"$dest"
     return
   fi
-  docker run --rm --network bridge \
+  spike_docker run --rm --network bridge \
     busybox:1.36 \
     wget -q -T 5 -O - "$url" >"$dest"
 }
@@ -434,9 +436,8 @@ verify_router_identity() {
 
 start_stub() {
   local name="$1" port="$2" script="$3"
-  "$WORK/model-stub" -addr "127.0.0.1:${port}" -script "$script" \
-    >"$WORK/stub-${name}.log" 2>&1 &
-  STUB_PIDS="${STUB_PIDS} $!"
+  spike_spawn --class stack "stub-${name}" --out "$WORK/stub-${name}.log" --err "$WORK/stub-${name}.log" \
+    "$WORK/model-stub" -addr "127.0.0.1:${port}" -script "$script"
   if ! wait_http "http://127.0.0.1:${port}/healthz"; then
     echo "model-stub ${name} did not become reachable" >&2
     return 1
@@ -446,8 +447,8 @@ start_stub() {
 start_offline_models() {
   say "Build model-stub and the router"
   mkdir -p "$WORK"
-  (cd "$ROOT" && CGO_ENABLED=0 GOOS="$(uname -s | tr '[:upper:]' '[:lower:]')" GOARCH="$(go env GOARCH)" \
-    go build -o "$WORK/model-stub" ./spike/m1/model-stub)
+  spike_fg_dir "$ROOT" env CGO_ENABLED=0 GOOS="$(uname -s | tr '[:upper:]' '[:lower:]')" GOARCH="$(go env GOARCH)" \
+    go build -o "$WORK/model-stub" ./spike/m1/model-stub
   write_offline_scripts "$WORK/scripts"
   start_stub question 9091 "$WORK/scripts/question.json"
   start_stub agent 9092 "$WORK/scripts/agent.json"
@@ -458,15 +459,15 @@ start_offline_models() {
   if ! router_py ensure "$ROUTER_PORT"; then
     return 1
   fi
-  M5_STUB_QUESTION=http://127.0.0.1:9091 \
+  spike_spawn --class stack router --out "$WORK/router.log" --err "$WORK/router.log" \
+    env \
+    M5_STUB_QUESTION=http://127.0.0.1:9091 \
     M5_STUB_AGENT=http://127.0.0.1:9092 \
     M5_STUB_TRIAGE=http://127.0.0.1:9093 \
     M5_STUB_PLANNING=http://127.0.0.1:9094 \
     M5_STUB_BUILDING=http://127.0.0.1:9095 \
     M5_STUB_REVIEWING=http://127.0.0.1:9096 \
-    python3 "$ROOT/spike/m5/router.py" --addr "0.0.0.0:${ROUTER_PORT}" \
-    >"$WORK/router.log" 2>&1 &
-  ROUTER_PID=$!
+    python3 "$ROOT/spike/m5/router.py" --addr "0.0.0.0:${ROUTER_PORT}"
   if ! wait_http "http://127.0.0.1:${ROUTER_PORT}/healthz"; then
     echo "model router did not become reachable" >&2
     return 1
@@ -479,17 +480,17 @@ start_offline_models() {
 build_images() {
   say "Build images for ${OCI_PLATFORM}"
   local phase_start="$SECONDS"
-  docker build --platform "$OCI_PLATFORM" -t factoryd:dev \
+  spike_fg docker build --platform "$OCI_PLATFORM" -t factoryd:dev \
     -f "$ROOT/deploy/factoryd/Dockerfile" "$ROOT"
-  docker build --platform "$OCI_PLATFORM" -t factory-upstream-worker:dev \
+  spike_fg docker build --platform "$OCI_PLATFORM" -t factory-upstream-worker:dev \
     "$ROOT/deploy/worker"
-  (cd "$ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH_TARGET" \
-    go build -o harness/generic-openai/factory-harness ./cmd/factory-harness)
-  docker build --platform "$OCI_PLATFORM" -t factory-harness:dev \
+  spike_fg_dir "$ROOT" env CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH_TARGET" \
+    go build -o harness/generic-openai/factory-harness ./cmd/factory-harness
+  spike_fg docker build --platform "$OCI_PLATFORM" -t factory-harness:dev \
     "$ROOT/harness/generic-openai"
-  docker build --platform "$OCI_PLATFORM" -t factory-m1-task:dev \
+  spike_fg docker build --platform "$OCI_PLATFORM" -t factory-m1-task:dev \
     "$ROOT/spike/m1/task-image"
-  docker build --platform "$OCI_PLATFORM" -t factoryd-git:dev \
+  spike_fg docker build --platform "$OCI_PLATFORM" -t factoryd-git:dev \
     -f "$ROOT/spike/m5/factoryd-git.Dockerfile" "$ROOT/spike/m5"
   phase_report "image build" "$phase_start"
 }
@@ -702,68 +703,365 @@ Live run checklist
 EOF
 }
 
-stop_background() {
-  if [[ -n "$WATCH_PID" ]]; then
-    kill "$WATCH_PID" 2>/dev/null || true
-    wait "$WATCH_PID" 2>/dev/null || true
-    WATCH_PID=""
-  fi
-  if [[ "${KEEP_UP:-}" == 1 ]]; then
+# m5_write_stack_env records the stack under $WORK. It is not evidence.
+# Live inference credentials are not written. Offline records the dummy key.
+m5_write_stack_env() {
+  local tmp=""
+  if [[ -z "${SPIKE_RUN_LABEL:-}" ]]; then
     return 0
   fi
-  if [[ -n "$ROUTER_PID" ]]; then
-    kill "$ROUTER_PID" 2>/dev/null || true
-    wait "$ROUTER_PID" 2>/dev/null || true
-    ROUTER_PID=""
-  fi
-  local pid
-  for pid in $STUB_PIDS; do
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-  done
-  STUB_PIDS=""
-  if [[ "$COMPOSE_STARTED" == 1 ]]; then
-    compose down -v --remove-orphans >/dev/null 2>&1 || true
-    COMPOSE_STARTED=0
-  fi
+  umask 077
+  tmp="$(mktemp "${WORK}/stack.env.XXXXXX")"
+  {
+    printf 'SPIKE_RUN_ID=%q\n' "${SPIKE_RUN_ID:-}"
+    printf 'SPIKE_RUN_LABEL=%q\n' "${SPIKE_RUN_LABEL:-}"
+    printf 'STACK_MODE=%q\n' "${MODE:-}"
+    printf 'STACK_ROUTER_PORT=%q\n' "${ROUTER_PORT:-}"
+    printf 'COMPOSE_PROJECT=%q\n' "${COMPOSE_PROJECT:-factory-m5}"
+    printf 'FACTORY_API_KEY=%q\n' "${FACTORY_API_KEY:-}"
+    printf 'FACTORY_SECRET_M5_WEBHOOK=%q\n' "${FACTORY_SECRET_M5_WEBHOOK:-}"
+    printf 'FACTORY_GITHUB_WEBHOOK_SECRET=%q\n' "${FACTORY_GITHUB_WEBHOOK_SECRET:-}"
+    printf 'FACTORY_WORKER_API_KEY=%q\n' "${FACTORY_WORKER_API_KEY:-}"
+    printf 'S3_SECRET_KEY=%q\n' "${S3_SECRET_KEY:-}"
+    printf 'FACTORY_SECRET_M5_PLANTED=%q\n' "${FACTORY_SECRET_M5_PLANTED:-}"
+    if [[ "${MODE:-}" == offline ]]; then
+      printf 'FACTORY_INFERENCE_OPENAI_API_KEY=%q\n' "${FACTORY_INFERENCE_OPENAI_API_KEY:-}"
+    fi
+    spike_emit_children
+  } >"$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$WORK/stack.env"
 }
 
+# shellcheck disable=SC2317,SC2329 # invoked by the EXIT/INT/TERM trap
 cleanup() {
   local code=$?
-  mkdir -p "$SIGNAL"
+  local why="${1:-EXIT}"
+  mkdir -p "$SIGNAL" 2>/dev/null || true
   touch "$SIGNAL/done" 2>/dev/null || true
-  stop_background
-  # Drop the definition tree after the mount is gone so the next prep
-  # is not the first thing that has to delete a mode-700 directory.
-  # KEEP_UP leaves factoryd running, so the bind is still live.
-  # --manual sets KEEP_UP and also clears this trap.
-  if [[ "${KEEP_UP:-}" != 1 ]]; then
+  spike_teardown_begin "$why" || return 0
+  set +e
+  # KEEP_UP leaves factoryd running, so the definition bind is still live.
+  if [[ "${KEEP_UP:-}" == 1 ]]; then
+    if [[ -n "${SPIKE_RUN_LABEL:-}" ]]; then
+      m5_write_stack_env || true
+      printf 'specs: ./spike/m5/run.sh specs\n'
+      printf 'down: ./spike/m5/run.sh down\n'
+    fi
+  else
+    if [[ "${COMPOSE_STARTED:-0}" == 1 ]]; then
+      compose down -v --remove-orphans >/dev/null 2>&1 || true
+      COMPOSE_STARTED=0
+    fi
     wipe_dir "$DEFS" || true
+    rm -f "$WORK/stack.env"
   fi
   if [[ -d "$EVIDENCE" && ! -f "$EVIDENCE/compose.log" ]]; then
     save_logs || true
   fi
-  exit "$code"
+  spike_teardown_finish "$code"
+}
+
+# A live stack.env means some recorded stack pid is still alive.
+# A stale file (every pid dead) is removed so the default path can run.
+m5_refuse_live_stack() {
+  if [[ ! -f "$WORK/stack.env" ]]; then
+    return 0
+  fi
+  if (
+    set +u
+    # shellcheck disable=SC1091
+    . "$WORK/stack.env"
+    i=1
+    n="${SPIKE_CHILD_COUNT:-0}"
+    while [[ "$i" -le "$n" ]]; do
+      eval "pid=\${SPIKE_CHILD_${i}_PID}"
+      eval "class=\${SPIKE_CHILD_${i}_CLASS}"
+      if [[ "$class" == stack && -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        exit 0
+      fi
+      i=$((i + 1))
+    done
+    exit 1
+  ); then
+    echo "M5 FAIL — KEEP_UP stack is still up (./spike/m5/run.sh down or ./spike/m5/run.sh specs)" >&2
+    exit 1
+  fi
+  rm -f "$WORK/stack.env"
+}
+
+m5_load_stack_env() {
+  # shellcheck disable=SC1091
+  . "$WORK/stack.env"
+  export SPIKE_RUN_ID SPIKE_RUN_LABEL
+  SPIKE_REG="${WORK}/spike-run"
+  export SPIKE_REG
+  spike_load_children_from_env
+}
+
+m5_pids_match() {
+  local dir="" name="" pid=""
+  for dir in "$SPIKE_REG"/children/*; do
+    [[ -d "$dir" ]] || continue
+    name="$(cat "$dir/name")"
+    pid="$(cat "$dir/pid")"
+    if ! spike_pid_identity_ok "$dir"; then
+      echo "M5 FAIL — stale stack: ${name} pid ${pid} is gone" >&2
+      return 1
+    fi
+  done
+}
+
+m5_compose_ready() {
+  local services=""
+  services="$(compose ps --status running --services 2>/dev/null || true)"
+  if ! printf '%s\n' "$services" | grep -qx 'factoryd'; then
+    echo "M5 FAIL — compose services factoryd and factoryd-git are not running" >&2
+    return 1
+  fi
+  if ! printf '%s\n' "$services" | grep -qx 'factoryd-git'; then
+    echo "M5 FAIL — compose services factoryd and factoryd-git are not running" >&2
+    return 1
+  fi
+}
+
+m5_health_once() {
+  if ! curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:8080/healthz" >/dev/null; then
+    echo "M5 FAIL — factoryd /healthz did not answer" >&2
+    return 1
+  fi
+  if ! curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:8081/healthz" >/dev/null; then
+    echo "M5 FAIL — factoryd-git /healthz did not answer" >&2
+    return 1
+  fi
+}
+
+# Route A: keep compose and the database. Restart offline stubs and the
+# router from the recorded argv so their scripts start fresh.
+m5_restart_stack_processes() {
+  local i=1 n=0 class="" name="" argv_q="" out="" err="" append=""
+  local spawned_stub=0 spawned_router=0
+  local -a argv=()
+  n="${SPIKE_CHILD_COUNT:-0}"
+  if [[ "$n" -eq 0 ]]; then
+    return 0
+  fi
+  KEEP_UP=0
+  spike_stop_processes || true
+  KEEP_UP=1
+  rm -rf "$SPIKE_REG/children"
+  mkdir -p "$SPIKE_REG/children"
+  printf '%s\n' 0 >"$SPIKE_REG/seq"
+  while [[ "$i" -le "$n" ]]; do
+    eval "class=\${SPIKE_CHILD_${i}_CLASS}"
+    if [[ "$class" != stack ]]; then
+      i=$((i + 1))
+      continue
+    fi
+    eval "name=\${SPIKE_CHILD_${i}_NAME}"
+    eval "argv_q=\${SPIKE_CHILD_${i}_ARGV}"
+    eval "out=\${SPIKE_CHILD_${i}_OUT}"
+    eval "err=\${SPIKE_CHILD_${i}_ERR}"
+    eval "append=\${SPIKE_CHILD_${i}_APPEND}"
+    argv=()
+    # argv_q is a list of %q words produced by spike_spawn.
+    # shellcheck disable=SC2294
+    eval "argv=( ${argv_q} )"
+    if [[ -n "$out" && -n "$err" ]]; then
+      if [[ "$append" == 1 ]]; then
+        spike_spawn --class stack --append --out "$out" --err "$err" "$name" "${argv[@]}"
+      else
+        spike_spawn --class stack --out "$out" --err "$err" "$name" "${argv[@]}"
+      fi
+    else
+      spike_spawn --class stack "$name" "${argv[@]}"
+    fi
+    case "$name" in
+      stub-*) spawned_stub=1 ;;
+      router) spawned_router=1 ;;
+      *) ;;
+    esac
+    i=$((i + 1))
+  done
+  local port=""
+  if [[ "$spawned_stub" -eq 1 ]]; then
+    for port in 9091 9092 9093 9094 9095 9096; do
+      if ! wait_http "http://127.0.0.1:${port}/healthz"; then
+        echo "M5 FAIL — model-stub on ${port} did not become reachable" >&2
+        return 1
+      fi
+    done
+  fi
+  if [[ "$spawned_router" -eq 1 ]]; then
+    ROUTER_PORT="${STACK_ROUTER_PORT:-}"
+    if [[ -n "$ROUTER_PORT" ]]; then
+      if ! wait_http "http://127.0.0.1:${ROUTER_PORT}/healthz"; then
+        echo "M5 FAIL — model router did not become reachable" >&2
+        return 1
+      fi
+    fi
+  fi
+}
+
+m5_prepare_playwright_watch() {
+  export PLAYWRIGHT_WATCH_IN_PARENT=1
+  PLAYWRIGHT_DOCKER_ARGS="--init --label spike-run=${SPIKE_RUN_LABEL} --name spike-pw-${SPIKE_RUN_LABEL}"
+  export PLAYWRIGHT_DOCKER_ARGS
+  if declare -F watch_signals >/dev/null; then
+    spike_spawn --class transient watch watch_signals
+    WATCH_PID=$SPIKE_LAST_PID
+    export WATCH_PID
+  fi
+}
+
+m5_playwright_pipeline() {
+  local code=0
+  set +e
+  run_playwright 2>&1 | tee "$PLAY_LOG"
+  code="${PIPESTATUS[0]}"
+  return "$code"
+}
+
+m5_playwright_and_evidence() {
+  local play_start=0 evidence_start=0 play_code=0 mode_name=""
+  say "Playwright"
+  play_start="$SECONDS"
+  set +e
+  mkdir -p "$EVIDENCE"
+  PLAY_LOG="$EVIDENCE/playwright.log"
+  m5_prepare_playwright_watch
+  spike_fg m5_playwright_pipeline
+  play_code=$?
+  set -e
+  phase_report "Playwright" "$play_start"
+  if [[ ! -f "$SIGNAL/done" ]]; then
+    touch "$SIGNAL/done"
+  fi
+  if [[ -n "$WATCH_PID" ]]; then
+    wait "$WATCH_PID" 2>/dev/null || true
+    WATCH_PID=""
+  fi
+  save_logs
+  if [[ "$play_code" -ne 0 ]]; then
+    print_playwright_failures "$PLAY_LOG"
+  fi
+  evidence_start="$SECONDS"
+  if ! assert_evidence; then
+    phase_report "evidence" "$evidence_start"
+    die "M5 FAIL — evidence check"
+  fi
+  phase_report "evidence" "$evidence_start"
+  if [[ "$play_code" -ne 0 ]]; then
+    die "M5 FAIL — playwright exit ${play_code}"
+  fi
+  mode_name="$(printf '%s' "$MODE" | tr '[:lower:]' '[:upper:]')"
+  printf 'M5 %s PASS\n' "$mode_name"
+}
+
+m5_down() {
+  if [[ ! -f "$WORK/stack.env" ]]; then
+    printf 'nothing to stop\n'
+    exit 0
+  fi
+  m5_load_stack_env
+  KEEP_UP=0
+  export KEEP_UP
+  COMPOSE_STARTED=1
+  trap 'cleanup EXIT' EXIT
+  trap 'cleanup INT' INT
+  trap 'cleanup TERM' TERM
+  exit 0
+}
+
+m5_specs() {
+  if [[ ! -f "$WORK/stack.env" ]]; then
+    echo "M5 FAIL — no KEEP_UP stack (run KEEP_UP=1 ./spike/m5/run.sh first)" >&2
+    exit 1
+  fi
+  m5_load_stack_env
+  if [[ "$MODE" != "${STACK_MODE:-}" ]]; then
+    echo "M5 FAIL — MODE is ${MODE}, recorded stack is ${STACK_MODE:-unset}" >&2
+    exit 1
+  fi
+  if ! m5_pids_match; then
+    exit 1
+  fi
+  if ! m5_compose_ready; then
+    exit 1
+  fi
+  if ! m5_health_once; then
+    exit 1
+  fi
+  if [[ "$MODE" != offline ]]; then
+    if [[ -f "$ROOT/deploy/.env" ]]; then
+      load_env_file "$ROOT/deploy/.env"
+    fi
+    apply_live_inference_env
+  fi
+  KEEP_UP=1
+  export KEEP_UP
+  COMPOSE_STARTED=1
+  mkdir -p "$WORK"
+  trap 'cleanup EXIT' EXIT
+  trap 'cleanup INT' INT
+  trap 'cleanup TERM' TERM
+  if [[ "$MODE" == offline ]]; then
+    ROUTER_PORT="${STACK_ROUTER_PORT:-}"
+    export ROUTER_PORT
+    if ! m5_restart_stack_processes; then
+      exit 1
+    fi
+  fi
+  m5_playwright_and_evidence
+  exit 0
 }
 
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
 fi
 
+SUB=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --manual) MANUAL=1 ;;
+    --manual)
+      if [[ -n "$SUB" ]]; then
+        die "unknown argument $1"
+      fi
+      MANUAL=1
+      ;;
+    specs | down)
+      if [[ "$MANUAL" -eq 1 || -n "$SUB" ]]; then
+        die "unknown argument $1"
+      fi
+      SUB="$1"
+      ;;
     *) die "unknown argument $1" ;;
   esac
   shift
 done
+
+if [[ -n "$SUB" && "${KEEP_UP:-}" == 1 ]]; then
+  die "unknown argument ${SUB}"
+fi
+
+case "$SUB" in
+  down) m5_down ;;
+  specs) m5_specs ;;
+  "") ;;
+  *) die "unknown argument ${SUB}" ;;
+esac
+
+# File, MODE, and pid checks happen before any docker or go.
+m5_refuse_live_stack
 
 if [[ "$MANUAL" == 1 ]]; then
   KEEP_UP=1
   export KEEP_UP
 fi
 
-trap cleanup EXIT INT TERM
+trap 'cleanup EXIT' EXIT
+trap 'cleanup INT' INT
+trap 'cleanup TERM' TERM
 
 say "Preflight"
 if ! accept_mode "$MODE"; then
@@ -812,6 +1110,7 @@ fi
 apply_live_inference_env
 
 mkdir -p "$WORK"
+spike_run_init m5
 umask 077
 printf '%s\n' "$FACTORY_API_KEY" >"$WORK/api-key"
 chmod 600 "$WORK/api-key"
@@ -864,7 +1163,7 @@ build_images
 stack_start="$SECONDS"
 compose down -v --remove-orphans >/dev/null 2>&1 || true
 COMPOSE_STARTED=1
-if ! compose up -d --wait; then
+if ! spike_fg compose up -d --wait; then
   mkdir -p "$EVIDENCE"
   save_logs || true
   phase_report "stack up" "$stack_start"
@@ -894,45 +1193,7 @@ if [[ "$MANUAL" == 1 ]]; then
   printf 'git console: http://127.0.0.1:8081\n'
   printf 'api key file: %s\n' "$WORK/api-key"
   print_checklist
-  if [[ -n "$ROUTER_PID" ]]; then
-    disown "$ROUTER_PID" 2>/dev/null || true
-  fi
-  stub_pid=""
-  for stub_pid in $STUB_PIDS; do
-    disown "$stub_pid" 2>/dev/null || true
-  done
-  trap - EXIT INT TERM
   exit 0
 fi
 
-say "Playwright"
-play_start="$SECONDS"
-set +e
-mkdir -p "$EVIDENCE"
-play_log="$EVIDENCE/playwright.log"
-run_playwright 2>&1 | tee "$play_log"
-play_code="${PIPESTATUS[0]}"
-set -e
-phase_report "Playwright" "$play_start"
-if [[ ! -f "$SIGNAL/done" ]]; then
-  touch "$SIGNAL/done"
-fi
-if [[ -n "$WATCH_PID" ]]; then
-  wait "$WATCH_PID" 2>/dev/null || true
-  WATCH_PID=""
-fi
-save_logs
-if [[ "$play_code" -ne 0 ]]; then
-  print_playwright_failures "$play_log"
-fi
-evidence_start="$SECONDS"
-if ! assert_evidence; then
-  phase_report "evidence" "$evidence_start"
-  die "M5 FAIL — evidence check"
-fi
-phase_report "evidence" "$evidence_start"
-if [[ "$play_code" -ne 0 ]]; then
-  die "M5 FAIL — playwright exit ${play_code}"
-fi
-mode_name="$(printf '%s' "$MODE" | tr '[:lower:]' '[:upper:]')"
-printf 'M5 %s PASS\n' "$mode_name"
+m5_playwright_and_evidence

@@ -19,6 +19,8 @@
 set -euo pipefail
 # shellcheck source=spike/lib/common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
+# shellcheck source=spike/lib/cleanup.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/cleanup.sh"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -38,7 +40,6 @@ OFFLINE_GH="m2-offline-gh-7f3c9a2e"
 PLANTED_DUMMY="m2-planted-dummy-7f3c9a"
 
 MODEL_PID=""
-GITD_PID=""
 GITD_PIDFILE=""
 COMPOSE_STARTED=0
 SECRETS=()
@@ -47,18 +48,12 @@ LEAK_ANNOUNCED=0
 # shellcheck disable=SC2317,SC2329 # invoked by the EXIT/INT/TERM trap
 cleanup() {
   local code=$?
-  trap - EXIT INT TERM ERR
+  local why="${1:-EXIT}"
+  spike_teardown_begin "$why" || return 0
   set +e
-  if [[ -n "${MODEL_PID}" ]]; then
-    kill "${MODEL_PID}" 2>/dev/null || true
-  fi
-  if [[ -n "${GITD_PID}" ]]; then
-    kill "${GITD_PID}" 2>/dev/null || true
-  fi
   if [[ -n "${GITD_PIDFILE}" && -f "${GITD_PIDFILE}" ]]; then
     kill "$(cat "${GITD_PIDFILE}")" 2>/dev/null || true
   fi
-  wait 2>/dev/null || true
   if [[ "${COMPOSE_STARTED}" -eq 1 ]]; then
     save_compose_logs || true
     docker compose -p "$PROJECT" -f "$COMPOSE_FILE" down -v --timeout 20 >/dev/null 2>&1 ||
@@ -69,7 +64,7 @@ cleanup() {
     announce_leak
     code=1
   fi
-  exit "${code}"
+  spike_teardown_finish "$code"
 }
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
@@ -294,7 +289,8 @@ loopback_reachable() {
 # ignores /etc/hosts; Docker Desktop answers the name from its resolver.
 container_resolves() {
   local name="$1"
-  docker run --rm --platform "$OCI_PLATFORM" busybox:1.36 \
+  # shellcheck disable=SC2016 # single quotes are the container script
+  spike_docker run --rm --platform "$OCI_PLATFORM" busybox:1.36 \
     sh -c 'grep -w -- "$1" /etc/hosts >/dev/null 2>&1 || nslookup "$1" >/dev/null 2>&1' \
     sh "$name"
 }
@@ -352,29 +348,32 @@ apply_offline_secrets() {
   SECRETS+=("$OFFLINE_DUMMY_KEY" "$OFFLINE_GH")
 }
 
+# m2_fifo_reader prefixes each factoryctl line with a timestamp.
+m2_fifo_reader() {
+  local fifo="$1" out="$2" line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '%s\t%s\n' "$(unix_ns)" "$line"
+  done <"$fifo" >"$out"
+}
+
 # timestamped_run writes "<unix-ns>\t<line>" as factoryctl prints each line.
 # The caller must be in a context where a non-zero return is not fatal
 # (run_capture, or set +e). Re-enabling errexit before the return aborts
-# the script, and fail never prints.
+# the script, and fail never prints. The command runs under spike_fg so a
+# trapped signal is handled while factoryctl is still in the foreground.
 timestamped_run() {
   local out="$1"
   shift
-  local fifo="$WORK/watch.fifo"
+  local fifo="$WORK/watch.fifo" reader="" code=0 wait_code=0
   rm -f "$fifo"
   mkfifo "$fifo"
   : >"$out"
-  (
-    set -euo pipefail
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      printf '%s\t%s\n' "$(unix_ns)" "$line"
-    done <"$fifo" >"$out"
-  ) &
-  local reader=$!
+  spike_spawn --class transient fifo-reader m2_fifo_reader "$fifo" "$out"
+  reader="$SPIKE_LAST_PID"
   set +e
-  "$@" >"$fifo"
-  local code=$?
-  wait "$reader"
-  local wait_code=$?
+  spike_fg "$@" >"$fifo"
+  code=$?
+  wait "$reader" || wait_code=$?
   rm -f "$fifo"
   if [[ "$code" -eq 0 && "$wait_code" -ne 0 ]]; then
     code=$wait_code
@@ -440,7 +439,7 @@ wait_status() {
 # mc_sh runs bash -s inside the pinned mc image on the compose network.
 # The script is stdin. Secrets arrive only as container env.
 mc_sh() {
-  docker run --rm -i --network "$NETWORK" \
+  spike_docker run --rm -i --network "$NETWORK" \
     -e MINIO_ROOT_USER="$S3_ACCESS_KEY" \
     -e MINIO_ROOT_PASSWORD="$S3_SECRET_KEY" \
     -e RUN_ID="${RUN_ID:-}" \
@@ -523,7 +522,9 @@ if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
 fi
 
-trap cleanup EXIT INT TERM
+trap 'cleanup EXIT' EXIT
+trap 'cleanup INT' INT
+trap 'cleanup TERM' TERM
 trap 'on_err $? $LINENO' ERR
 
 # ---------------------------------------------------------------------------
@@ -574,6 +575,7 @@ if [[ "$MODE" == live ]]; then
 fi
 
 mkdir -p "$WORK" "$WORK/evidence"
+spike_run_init m2
 reset_stale_host_logs
 prove_scanner
 
@@ -624,16 +626,14 @@ if [[ "$MODE" == offline ]]; then
 
   GITD_PIDFILE="$WORK/git-daemon.pid"
   rm -f "$GITD_PIDFILE"
-  git daemon --reuseaddr --export-all --enable=receive-pack \
+  spike_spawn --class stack git-daemon --out "$WORK/git-daemon.log" --err "$WORK/git-daemon.log" \
+    git daemon --reuseaddr --export-all --enable=receive-pack \
     --listen="$GW" --port=9418 --pid-file="$GITD_PIDFILE" \
-    --base-path="$WORK/git" "$WORK/git" \
-    >"$WORK/git-daemon.log" 2>&1 &
-  GITD_PID=$!
-
-  (cd "$ROOT" && CGO_ENABLED=0 go build -o "$WORK/model-stub" ./spike/m1/model-stub)
-  "$WORK/model-stub" -addr "${GW}:9090" -script "$WORK/offline-script.json" \
-    >"$WORK/model-stub.log" 2>&1 &
-  MODEL_PID=$!
+    --base-path="$WORK/git" "$WORK/git"
+  spike_fg_dir "$ROOT" env CGO_ENABLED=0 go build -o "$WORK/model-stub" ./spike/m1/model-stub
+  spike_spawn --class stack model-stub --out "$WORK/model-stub.log" --err "$WORK/model-stub.log" \
+    "$WORK/model-stub" -addr "${GW}:9090" -script "$WORK/offline-script.json"
+  MODEL_PID=$SPIKE_LAST_PID
 else
   TS="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || true)"
   if [[ ! "$TS" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
@@ -657,21 +657,21 @@ fi
 
 # ---------------------------------------------------------------------------
 say "Build factoryctl, the harness image, and the task image"
-(cd "$ROOT" && CGO_ENABLED=0 go build -o "$WORK/factoryctl" ./cmd/factoryctl)
+spike_fg_dir "$ROOT" env CGO_ENABLED=0 go build -o "$WORK/factoryctl" ./cmd/factoryctl
 # The harness is copied into a Linux image and exec'd in the task container.
 # A host binary (darwin/arm64 on a Mac) is not a Linux ELF; bash exits 126.
-(cd "$ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH_TARGET" \
-  go build -o harness/generic-openai/factory-harness ./cmd/factory-harness)
+spike_fg_dir "$ROOT" env CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH_TARGET" \
+  go build -o harness/generic-openai/factory-harness ./cmd/factory-harness
 assert_linux_elf "$ROOT/harness/generic-openai/factory-harness" "$GOARCH_TARGET" ||
   fail "harness binary is not a linux/${GOARCH_TARGET} ELF"
-docker build --platform "$OCI_PLATFORM" -q -t "$HARNESS_IMAGE" "$ROOT/harness/generic-openai" >/dev/null
+spike_fg docker build --platform "$OCI_PLATFORM" -q -t "$HARNESS_IMAGE" "$ROOT/harness/generic-openai" >/dev/null
 assert_image_platform "$HARNESS_IMAGE" "$OCI_PLATFORM" ||
   fail "harness image platform does not match ${OCI_PLATFORM}"
-docker build --platform "$OCI_PLATFORM" -q -t "$TASK_IMAGE" "$ROOT/spike/m1/task-image" >/dev/null
+spike_fg docker build --platform "$OCI_PLATFORM" -q -t "$TASK_IMAGE" "$ROOT/spike/m1/task-image" >/dev/null
 assert_image_platform "$TASK_IMAGE" "$OCI_PLATFORM" ||
   fail "task image platform does not match ${OCI_PLATFORM}"
 HARNESS_EXEC_CODE=0
-run_capture HARNESS_EXEC_CODE docker run --rm --platform "$OCI_PLATFORM" \
+run_capture HARNESS_EXEC_CODE spike_docker run --rm --platform "$OCI_PLATFORM" \
   --entrypoint /factory-harness "$HARNESS_IMAGE" \
   >"$WORK/image-exec.out" 2>"$WORK/image-exec.err"
 if ! harness_contract_exit "$HARNESS_EXEC_CODE"; then
@@ -679,7 +679,7 @@ if ! harness_contract_exit "$HARNESS_EXEC_CODE"; then
 fi
 rm -f "$WORK/image-exec.out" "$WORK/image-exec.err"
 TASK_UNAME_CODE=0
-run_capture TASK_UNAME_CODE docker run --rm --platform "$OCI_PLATFORM" \
+run_capture TASK_UNAME_CODE spike_docker run --rm --platform "$OCI_PLATFORM" \
   --entrypoint /bin/sh "$TASK_IMAGE" -c 'uname -m && git --version >/dev/null && go version >/dev/null && command -v gh >/dev/null' \
   >"$WORK/task-uname.txt" 2>"$WORK/image-exec.err"
 TASK_UNAME="$(tr -d '[:space:]' <"$WORK/task-uname.txt" 2>/dev/null || true)"
@@ -709,9 +709,9 @@ if [[ "$MODE" == offline ]]; then
   if [[ "$git_ready" -ne 1 || "$model_ready" -ne 1 ]]; then
     fail "git daemon or model stub did not become reachable on ${GW}"
   fi
-  docker run --rm --network bridge --entrypoint git "$TASK_IMAGE" \
+  spike_docker run --rm --network bridge --entrypoint git "$TASK_IMAGE" \
     ls-remote "git://${GW}/remote.git" >/dev/null
-  docker run --rm --network bridge --entrypoint curl "$TASK_IMAGE" \
+  spike_docker run --rm --network bridge --entrypoint curl "$TASK_IMAGE" \
     -fsS "http://${GW}:9090/healthz" >/dev/null
   echo "fixture and model stub reachable from a bridge container"
 fi
@@ -729,18 +729,16 @@ fi
 # ---------------------------------------------------------------------------
 say "Start the laptop stack"
 COMPOSE_STARTED=1
-compose build
+spike_fg compose build
 assert_image_platform factoryd:dev "$OCI_PLATFORM" ||
   fail "factoryd image platform does not match ${OCI_PLATFORM}"
 assert_image_platform factory-upstream-worker:dev "$OCI_PLATFORM" ||
   fail "worker image platform does not match ${OCI_PLATFORM}"
-compose up -d --wait postgres
-compose --profile migrate run --rm migrate
+spike_fg compose up -d --wait postgres
+spike_fg compose --profile migrate run --rm migrate
 # Exact laptop command, from the directory that holds the compose file.
-(
-  cd "$ROOT/deploy"
-  docker compose -p "$PROJECT" up -d --build --wait
-)
+# shellcheck disable=SC2016 # single quotes are the child script
+spike_fg bash -c 'cd "$1" && docker compose -p "$2" up -d --build --wait' spike-fg-dir "$ROOT/deploy" "$PROJECT"
 COMPOSE_STARTED=1
 
 for _ in $(seq 1 30); do
@@ -821,9 +819,9 @@ if [[ "$MODE" == offline ]]; then
   }
 ]
 JSON
-  "$WORK/model-stub" -addr "${GW}:9090" -script "$WORK/hang-script.json" \
-    >>"$WORK/model-stub.log" 2>&1 &
-  MODEL_PID=$!
+  spike_spawn --class stack model-stub --out "$WORK/model-stub.log" --err "$WORK/model-stub.log" --append \
+    "$WORK/model-stub" -addr "${GW}:9090" -script "$WORK/hang-script.json"
+  MODEL_PID=$SPIKE_LAST_PID
   for _ in $(seq 1 50); do
     if curl -fsS "http://${GW}:9090/healthz" >/dev/null 2>&1; then
       break
@@ -844,10 +842,10 @@ JSON
   # The background shell must not treat watch's exit 2 as a script failure.
   trap - ERR
   set +e
-  timestamped_run "$WORK/watch-cancel.ts" \
-    "$FACTORYCTL" watch "$CANCEL_ID" \
-    2>>"$WORK/factoryctl-cancel.err" &
-  WATCH_PID=$!
+  spike_spawn --class transient factoryctl-watch --err "$WORK/factoryctl-cancel.err" --append \
+    timestamped_run "$WORK/watch-cancel.ts" \
+    "$FACTORYCTL" watch "$CANCEL_ID"
+  WATCH_PID=$SPIKE_LAST_PID
   set -e
   trap 'on_err $? $LINENO' ERR
   saw_tool=0

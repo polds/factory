@@ -82,3 +82,7 @@ Incidents:
 Leftover live-test issues and PRs #77–#90, except #79, were closed on 2026-10-16 with Peter's approval. #89 and #90 are closed. #90 was not merged.
 
 `m4-live.yml` has no workflow runs. The laptop run is the exit evidence. The same record is summarized in [`docs/12-build-sequence.md`](../../docs/12-build-sequence.md).
+
+## Stopping a run
+
+Ctrl-C or SIGTERM stops the processes and containers this invocation started. The grace period is `SPIKE_STOP_GRACE` (default 5 seconds), then SIGKILL. A process or container still running after that is a bug. Report `ps` and `docker ps`.

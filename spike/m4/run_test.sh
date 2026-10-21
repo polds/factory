@@ -1993,6 +1993,8 @@ run_case progress_live case_progress_live
 run_case progress_live_ci case_progress_live_ci
 run_case no_gnu_flags case_no_gnu_flags
 
+bash "$ROOT/spike/lib/cleanup_test.sh"
+
 echo
 echo "${pass} passed, ${fail} failed"
 if [[ "$fail" -ne 0 ]]; then

@@ -19,3 +19,40 @@ Live and live-ci use soft expects for report-only checks, so one run lists every
 When `run.sh` is inside a git checkout and the mode is offline or live, preflight runs `git fetch origin` and, if `HEAD` is behind `origin/main`, prints a warning with how many commits behind and `git pull`. The warning does not fail the run. A fetch error or a fetch that is still going after 15 seconds is skipped. `MODE=live-ci` and GitHub Actions do not fetch.
 
 `MODE=live-ci` copies optional `M1_OPENAI_EXTRA_HEADERS` onto `FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS`. `MODE=live` reads that variable from the environment (including `deploy/.env`). Unset or empty leaves each request as `Authorization: Bearer` plus the API key when the key is set, and omits `Authorization` when the key is empty. The value is newline-separated `Name: value` lines. A name that matches a default header replaces it, so an `Authorization` line replaces the API-key bearer header. LiteLLM placeholder: `x-litellm-api-key: Bearer sk-...`. The catalog probe and every model call send these headers. Values are not printed.
+
+## Fast rerun
+
+A full offline run builds images and starts compose. To leave that stack up and rerun only Playwright:
+
+```bash
+KEEP_UP=1 ./spike/m5/run.sh
+./spike/m5/run.sh specs
+```
+
+`./spike/m5/run.sh --manual` records the same stack and prints the console URLs. It does not run Playwright.
+
+`specs` keeps the compose project and the database. Offline restarts the model stubs and the router from the recorded commands so their scripts start fresh. It then runs Playwright and the evidence check. It does not run `go build`, `docker build`, or `compose up`. `HEADED=1 ./spike/m5/run.sh specs` uses the host Playwright path. Live and live-ci read inference settings again from the environment and `deploy/.env`. They are not stored in the stack record.
+
+With no recorded stack, `specs` prints this and starts nothing:
+
+```text
+M5 FAIL — no KEEP_UP stack (run KEEP_UP=1 ./spike/m5/run.sh first)
+```
+
+A recorded pid that is gone prints `M5 FAIL — stale stack: <name> pid <pid> is gone`. A different `MODE` prints `M5 FAIL — MODE is <mode>, recorded stack is <recorded>`. Compose or `/healthz` failures each print one line.
+
+```bash
+./spike/m5/run.sh down
+```
+
+stops the recorded stack, runs `compose down -v --remove-orphans`, and deletes the record. A second `down`, or `down` with no record, prints `nothing to stop` and exits 0.
+
+A default run that finds a live record stops before it builds anything:
+
+```text
+M5 FAIL — KEEP_UP stack is still up (./spike/m5/run.sh down or ./spike/m5/run.sh specs)
+```
+
+## Stopping a run
+
+Ctrl-C or SIGTERM stops the processes and containers this invocation started. The grace period is `SPIKE_STOP_GRACE` (default 5 seconds), then SIGKILL. A process or container still running after that is a bug. Report `ps` and `docker ps`.

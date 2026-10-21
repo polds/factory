@@ -50,3 +50,7 @@ That command needs the live credentials in `deploy/.env` or the shell. CI and th
 The four model ids are written into a copy of `deploy/m3-factory` before factoryd boots. Offline keeps the ids in that tree (`m3-triage`, `m3-planning`, `m3-building`, `m3-reviewing`). Those offline ids are not the live run's model ids.
 
 Scratch is `spike/m3/.work/`, which is gitignored.
+
+## Stopping a run
+
+Ctrl-C or SIGTERM stops the processes and containers this invocation started. The grace period is `SPIKE_STOP_GRACE` (default 5 seconds), then SIGKILL. A process or container still running after that is a bug. Report `ps` and `docker ps`.
