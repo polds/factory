@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse, type JsonBodyType } from "msw";
 import { describe, expect, it } from "vitest";
@@ -299,6 +299,99 @@ describe("inbox", () => {
     expect(row).toHaveAttribute("aria-expanded", "false");
     expect(row).toHaveFocus();
     release(HttpResponse.json({ id: "apr_01", decision: "approve" }) as unknown as Response);
+  });
+
+  it("keeps an improvement PR in oldest-first order with a Review PR link", async () => {
+    setAPIKey(demoAPIKey);
+    const user = userEvent.setup();
+    const httpsUrl = "https://github.com/acme/factory/pull/42";
+    const httpUrl = "http://github.com/acme/factory/pull/9";
+    install([
+      item({
+        kind: "approval",
+        id: "apr_old",
+        created_at: "2026-04-01T00:00:00Z",
+        title: "Older gate",
+        detail: "planning",
+      }),
+      item({
+        kind: "improvement_pr",
+        id: "ib_https",
+        created_at: "2026-04-02T00:00:00Z",
+        title: "Reviewer misses test runs",
+        detail: httpsUrl,
+        run_id: "run_improve_1",
+        work_item_id: "",
+      }),
+      item({
+        kind: "improvement_pr",
+        id: "ib_http",
+        created_at: "2026-04-03T00:00:00Z",
+        title: "Plain improvement",
+        detail: httpUrl,
+        run_id: "run_improve_2",
+        work_item_id: "",
+      }),
+    ]);
+    await renderApp(`/f/${factoryId}/inbox`);
+    const rows = await screen.findAllByRole("button", {
+      name: /Older gate|Reviewer misses test runs|Plain improvement/,
+    });
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("Older gate"),
+      expect.stringContaining("Reviewer misses test runs"),
+      expect.stringContaining("Plain improvement"),
+    ]);
+    const badges = document.querySelectorAll('[data-kind="improvement_pr"]');
+    expect(badges).toHaveLength(2);
+    for (const badge of badges) {
+      expect(badge.closest("li")).toHaveClass("inbox-row");
+    }
+    await user.click(screen.getByRole("button", { name: /Reviewer misses test runs/ }));
+    const httpsBody = document.getElementById("inbox-body-ib_https");
+    expect(httpsBody).not.toBeNull();
+    expect(
+      within(httpsBody as HTMLElement).getByRole("link", { name: "Review PR" }),
+    ).toHaveAttribute("href", httpsUrl);
+    expect(
+      within(httpsBody as HTMLElement).getByRole("link", { name: "Open run" }),
+    ).toHaveAttribute("href", "/runs/run_improve_1");
+    expect(httpsBody?.querySelector('a[href*="work-items"]')).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Plain improvement/ }));
+    const httpBody = document.getElementById("inbox-body-ib_http");
+    expect(httpBody).not.toBeNull();
+    expect(within(httpBody as HTMLElement).getByText(httpUrl)).toBeInTheDocument();
+    expect(within(httpBody as HTMLElement).queryByRole("link", { name: "Review PR" })).toBeNull();
+    expect(within(httpBody as HTMLElement).getByRole("link", { name: "Open run" })).toHaveAttribute(
+      "href",
+      "/runs/run_improve_2",
+    );
+    expect(document.body.textContent).not.toContain("SECRET_PLANT");
+    await user.click(screen.getByRole("button", { name: /Improvements/ }));
+    expect(screen.queryByText("Older gate")).not.toBeInTheDocument();
+    expect(screen.getByText("Reviewer misses test runs")).toBeInTheDocument();
+  });
+
+  it("has no serious accessibility violations on an improvement PR", async () => {
+    setAPIKey(demoAPIKey);
+    const user = userEvent.setup();
+    install([
+      item({
+        kind: "improvement_pr",
+        id: "ib_https",
+        created_at: "2026-04-02T00:00:00Z",
+        title: "Reviewer misses test runs",
+        detail: "https://github.com/acme/factory/pull/42",
+        run_id: "run_improve_1",
+      }),
+    ]);
+    await renderApp(`/f/${factoryId}/inbox`);
+    expect(
+      await screen.findByRole("button", { name: /Reviewer misses test runs/ }),
+    ).toBeInTheDocument();
+    await expectNoSeriousViolations(document.body);
+    await user.click(screen.getByRole("button", { name: "Switch to dark theme" }));
+    await expectNoSeriousViolations(document.body);
   });
 
   it("has no serious accessibility violations when empty or full", async () => {

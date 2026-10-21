@@ -3,12 +3,18 @@ import { Link } from "@tanstack/react-router";
 import { Radio } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { client } from "../../api/client";
+import { liveLabel, useFactoryEvents, type StreamStatus } from "../../api/live";
 import type { Factory, FactorySummary } from "../../api/types";
-import { StatusBadge } from "../../components/StatusBadge";
+import { Caveat } from "../../components/Caveat";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
+import { PageHeader } from "../../components/PageHeader";
+import { Panel } from "../../components/Panel";
+import { RunStatusBadge } from "../../components/RunStatusBadge";
+import { RunsTable } from "../../components/RunsTable";
+import { StatusBadge } from "../../components/StatusBadge";
 import { formatDuration } from "../../lib/format";
-import { liveLabel, useFactoryEvents, type StreamStatus } from "./live";
+import { MetricsBoard, type MetricsResult } from "./metrics";
 import {
   FAILURE_CLASSES,
   RUN_STATUSES,
@@ -20,7 +26,6 @@ import {
   type RangeKey,
   type RunRow,
 } from "./model";
-import { Caveat, PageHeader, Panel, RunStatusBadge, RunsTable } from "./ui";
 
 export default function DashboardPage() {
   const queryClient = useQueryClient();
@@ -34,6 +39,17 @@ export default function DashboardPage() {
       queryFn: () => client.summary(factory.id, bounds),
     })),
   });
+  const metricsQueries = useQueries({
+    queries: factoryList.map((factory) => ({
+      queryKey: ["metrics", factory.id, bounds.from, bounds.to],
+      queryFn: () => client.metrics(factory.id, bounds),
+    })),
+  });
+  const metricsResults: MetricsResult[] = metricsQueries.map((query) => ({
+    isPending: query.isPending,
+    isError: query.isError,
+    data: query.data,
+  }));
   const runs = useQuery({
     queryKey: ["runs", "recent"],
     queryFn: () => client.listRuns() as Promise<RunRow[]>,
@@ -44,6 +60,9 @@ export default function DashboardPage() {
       current[factoryId] === status ? current : { ...current, [factoryId]: status },
     );
   }, []);
+  const retryMetrics = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["metrics"] });
+  }, [queryClient]);
 
   if (factories.isPending) return <p>Loading dashboard</p>;
   if (factories.isError) {
@@ -103,6 +122,7 @@ export default function DashboardPage() {
       ) : summaryError ? null : (
         <p>Loading dashboard</p>
       )}
+      <MetricsBoard factories={factoryList} results={metricsResults} onRetry={retryMetrics} />
       <RecentRuns
         runs={runs.data}
         pending={runs.isPending}

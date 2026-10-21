@@ -119,23 +119,48 @@ describe("dashboard", () => {
     await waitFor(() => expect(streams.has("fac_payments")).toBe(true));
     const before = counts.get("fac_payments") ?? 0;
     const other = counts.get("fac_platform") ?? 0;
+    // useFactoryEvents measures the remaining delay with Date.now() and arms a
+    // setTimeout. After the axe test the SSE frames can land during a later
+    // timer advance, and a few real milliseconds between the two effects make
+    // that delay shorter than STREAM_REFRESH_MS, so the refetch fires inside
+    // the "not yet" window. Freeze Date.now and flush until the timeout is
+    // armed before advancing the window.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const payload = JSON.stringify({ SECRET_PLANT: "SECRET_PLANT", run_id: "run_1" });
-    emit("fac_payments", `id: 1\nevent: run.terminal\ndata: ${payload}\n\n`);
-    emit("fac_payments", `id: 2\nevent: run.terminal\ndata: ${payload}\n\n`);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(STREAM_REFRESH_MS - 1);
-    });
-    expect(counts.get("fac_payments")).toBe(before);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1);
-    });
-    expect(counts.get("fac_payments")).toBe(before + 1);
-    expect(counts.get("fac_platform")).toBe(other);
-    expect(document.body.textContent).not.toContain("SECRET_PLANT");
+    const now = Date.now();
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const payload = JSON.stringify({ SECRET_PLANT: "SECRET_PLANT", run_id: "run_1" });
+      emit("fac_payments", `id: 1\nevent: run.terminal\ndata: ${payload}\n\n`);
+      emit("fac_payments", `id: 2\nevent: run.terminal\ndata: ${payload}\n\n`);
+      let armed = false;
+      for (let attempt = 0; attempt < 40 && !armed; attempt += 1) {
+        const calls = timeoutSpy.mock.calls.length;
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        const debounceArmed = timeoutSpy.mock.calls.some(
+          (call) => Number(call[1]) === STREAM_REFRESH_MS,
+        );
+        armed = debounceArmed && timeoutSpy.mock.calls.length === calls;
+      }
+      expect(timeoutSpy.mock.calls.some((call) => Number(call[1]) === STREAM_REFRESH_MS)).toBe(
+        true,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(STREAM_REFRESH_MS - 1);
+      });
+      expect(counts.get("fac_payments")).toBe(before);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(counts.get("fac_payments")).toBe(before + 1);
+      expect(counts.get("fac_platform")).toBe(other);
+      expect(document.body.textContent).not.toContain("SECRET_PLANT");
+    } finally {
+      timeoutSpy.mockRestore();
+      dateNow.mockRestore();
+    }
   });
 
   it("changes the live indicator when the stream drops", async () => {
@@ -162,6 +187,9 @@ describe("dashboard", () => {
     const user = userEvent.setup();
     const { container } = await renderApp("/");
     expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    expect(
+      (await screen.findAllByText("Comparison metric, not a billing figure")).length,
+    ).toBeGreaterThan(0);
     await expectNoSeriousViolations(container);
     await user.click(screen.getByRole("button", { name: "Switch to dark theme" }));
     await expectNoSeriousViolations(document.body);

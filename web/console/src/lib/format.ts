@@ -22,3 +22,25 @@ export function formatPercent(rate: number): string {
   const text = Number.isInteger(percent) ? String(percent) : percent.toFixed(1);
   return `${text}%`;
 }
+
+export function formatCost(cents: number | undefined): string {
+  if (cents === undefined) return "—";
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+export function formatCount(value: number): string {
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+// Returns a parsed https href, or null for empty, relative, and non-https values.
+export function httpsHref(value: string): string | null {
+  const text = value.trim();
+  if (text === "") return null;
+  try {
+    const url = new URL(text);
+    if (url.protocol !== "https:") return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}

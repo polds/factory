@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { StatusBadge } from "../../components/StatusBadge";
-import { isFailureClass, shortId } from "./format";
+import { isFailureClass } from "../../lib/run-labels";
+import { shortId } from "./format";
 import { RunStatusBadge } from "./status";
 import type { RunDetailWire, RunRow } from "./types";
 

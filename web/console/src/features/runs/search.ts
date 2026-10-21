@@ -1,5 +1,5 @@
 import type { FailureClass, RunListQuery } from "../../api/types";
-import { isFailureClass } from "./format";
+import { isFailureClass } from "../../lib/run-labels";
 import { FILTER_KEYS, type FilterKey, type RunFilters } from "./types";
 
 export const EMPTY_FILTERS: RunFilters = {

@@ -2,14 +2,18 @@ import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { APIError, client } from "../../api/client";
+import { useFactoryEvents } from "../../api/live";
 import { Button } from "../../components/Button";
+import { Caveat } from "../../components/Caveat";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { DurationPair } from "../../components/DurationPair";
 import { ErrorState } from "../../components/ErrorState";
 import { StatusBadge } from "../../components/StatusBadge";
-import { Caveat } from "./caveat";
+import { formatCost } from "../../lib/format";
+import { isFailureClass } from "../../lib/run-labels";
+import { CapturePanel } from "./capture-panel";
 import { rowsFromEvents, steerSignals, canCancel, isTerminalStatus } from "./events";
-import { formatCost, isFailureClass, prNumber, QUEUE_CAVEAT, shortId, workerLabel } from "./format";
+import { prNumber, QUEUE_CAVEAT, shortId, workerLabel } from "./format";
 import { FailurePanel } from "./failure-panel";
 import { FilesTab } from "./files-tab";
 import { RunStatusBadge } from "./status";
@@ -19,8 +23,14 @@ import { TimelineTab } from "./timeline-tab";
 import { Transcript } from "./transcript";
 import { TreeTab } from "./tree-tab";
 import type { LocalSteer, RunDetailWire, RunRow } from "./types";
+import { ScoresPanel } from "./scores-panel";
 import { UsageTab } from "./usage-tab";
 import { useRunEvents } from "./use-run-events";
+
+function RunFactoryStream({ factoryId }: { factoryId: string }) {
+  useFactoryEvents(factoryId);
+  return null;
+}
 
 function messageOf(error: unknown): string {
   if (error instanceof APIError) return error.problem?.detail || error.message;
@@ -288,6 +298,9 @@ export function RunDetailPage({ runId }: { runId: string }) {
         </dl>
       </header>
       <FailurePanel run={run} />
+      {run.factory_id ? <RunFactoryStream factoryId={run.factory_id} /> : null}
+      <ScoresPanel runId={run.id} factoryId={run.factory_id ?? ""} />
+      <CapturePanel runId={run.id} />
       <div className="detail-layout">
         <RunTabs panels={panels} />
         <SteerPanel

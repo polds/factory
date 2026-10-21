@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -342,10 +342,17 @@ describe("run detail", () => {
     expect(await screen.findByText(/Idle: accepting follow-ups for 4m 12s/)).toBeInTheDocument();
     expect(screen.getByLabelText("Send a follow-up to the agent")).toBeEnabled();
 
-    await vi.advanceTimersByTimeAsync(1000);
+    // jsdom's requestAnimationFrame is a setInterval. Scores and the factory
+    // stream make the transcript virtualizer schedule one, so advancing the
+    // fake clock also runs animation frames. act flushes the steer setNow.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
     expect(screen.getByText(/Idle: accepting follow-ups for 4m 11s/)).toBeInTheDocument();
 
-    await vi.advanceTimersByTimeAsync(251_000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(251_000);
+    });
     expect(screen.queryByText(/Idle: accepting follow-ups/)).not.toBeInTheDocument();
     const reason = `run finished; idle window ended at ${idleUntil}`;
     expect(screen.getByText(reason)).toBeInTheDocument();
