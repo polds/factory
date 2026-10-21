@@ -248,20 +248,21 @@ test("m6 exit loop", async ({ browser }) => {
     await axe(page, "benchmarks");
     await saveDom(page, "benchmarks");
     await saveShot(page, "benchmarks");
-    await fs.appendFile(path.join(evidence, "progress.txt"), "benchmarks saved\n");
 
     if (offline) {
       trialsLive = false;
       const factoryId = new URL(page.url()).pathname.split("/")[2] ?? "";
       await page.goto(`/f/${factoryId}/benchmarks`);
-      await fs.appendFile(path.join(evidence, "progress.txt"), "suite list\n");
       await expect(page.getByRole("link", { name: "fault", exact: true })).toBeVisible();
       await page.getByRole("link", { name: "fault", exact: true }).click();
       await page.locator("#benchmark-repetitions").fill("1");
       await page.getByRole("button", { name: "Run benchmark" }).click();
+      const accepted = page.waitForResponse(
+        (response) => response.request().method() === "POST" && response.url().includes("/benchmarks/fault:run"),
+      );
       await page.getByRole("dialog", { name: "Run benchmark?" }).getByRole("button", { name: "Run benchmark" }).click();
+      expect((await accepted).ok()).toBe(true);
       trialsLive = true;
-      await fs.appendFile(path.join(evidence, "progress.txt"), "fault started\n");
       await reloadUntil(
         page,
         async () => (await page.getByText("Infrastructure").count()) >= 1,
@@ -280,7 +281,11 @@ test("m6 exit loop", async ({ browser }) => {
     await page.getByLabel("Scorer").selectOption("cite-sources");
     await page.getByRole("button", { name: "Score now" }).click();
     const scoreDialog = page.getByRole("dialog", { name: "Score this run?" });
+    const scored = page.waitForResponse(
+      (response) => response.request().method() === "POST" && response.url().includes("/score"),
+    );
     await scoreDialog.getByRole("button", { name: "Score now" }).click();
+    expect((await scored).ok()).toBe(true);
     await reloadUntil(
       page,
       async () => {
