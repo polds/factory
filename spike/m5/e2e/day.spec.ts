@@ -979,7 +979,17 @@ test("day of factory", async ({ browser }) => {
     const runHref = await question.locator("a[href*='/runs/']").getAttribute("href");
     if (runHref === null || runHref === "") throw new Error("step 7: question row had no run link");
     await question.getByLabel("Answer").fill("staging-a");
+    // The row hides before the POST returns. Leaving the page on that hide
+    // aborts the request, the answer rolls back, and the resume never starts.
+    const answered = page.waitForResponse(
+      (res) => res.url().includes("/input") && res.request().method() === "POST",
+      { timeout: 30_000 },
+    );
     await question.getByRole("button", { name: "Send answer" }).click();
+    const answerResponse = await answered;
+    if (answerResponse.status() !== 200) {
+      throw new Error(`step 7: answer HTTP ${answerResponse.status()}`);
+    }
     // Same row as the wait. A missing question sentence must not satisfy this.
     await expect(question).toBeHidden({ timeout: 30_000 });
     await page.goto(runHref);
