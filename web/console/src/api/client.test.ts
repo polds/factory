@@ -2,7 +2,7 @@ import { http, HttpResponse } from "msw";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { demoAPIKey } from "../mocks/demo-key";
 import { server } from "../mocks/server";
-import { ConsoleClient } from "./client";
+import { APIError, ConsoleClient } from "./client";
 import { setAPIKey } from "./session";
 import type { Run, RunRow } from "./types";
 
@@ -29,7 +29,7 @@ describe("console client fetch plumbing", () => {
     await expect(api.listDeliveriesDetailed("fac_1")).resolves.toBeNull();
   });
 
-  it("returns undefined when apply has an empty body", async () => {
+  it("throws APIError when apply has an empty body", async () => {
     setAPIKey(demoAPIKey);
     server.use(
       http.post("/api/v1/factory/:uid/definition:apply", async ({ request }) => {
@@ -39,9 +39,17 @@ describe("console client fetch plumbing", () => {
         return new HttpResponse(null, { status: 200 });
       }),
     );
-    await expect(
-      api.applyDefinitionTree("fac_1", [{ path: "factory.yaml", content: "name: a\n" }]),
-    ).resolves.toBeUndefined();
+    const error = await api
+      .applyDefinitionTree("fac_1", [{ path: "factory.yaml", content: "name: a\n" }])
+      .then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+    expect(error).toBeInstanceOf(APIError);
+    if (!(error instanceof APIError)) return;
+    expect(error.status).toBe(200);
+    expect(error.problem).toBeNull();
+    expect(error.message).toBe("HTTP 200");
   });
 
   it("derives RunRow from Run", () => {
