@@ -1945,7 +1945,7 @@ case_progress_live_ci() {
 
 case_no_gnu_flags() {
   if grep -n -E '(grep[[:space:]]+-P|sed[[:space:]]+-i|[[:space:]]mapfile[[:space:]]|^mapfile[[:space:]]|(^|[[:space:]])timeout[[:space:]])' \
-    "$SCRIPT" "$HERE/run_test.sh"; then
+    "$SCRIPT" "$HERE/run_test.sh" "$ROOT"/spike/lib/*.sh; then
     echo "gnu-only flag present" >&2
     return 1
   fi

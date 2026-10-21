@@ -71,6 +71,8 @@
 # spike/m5/run_test.sh sources this file. Executing it runs the stack.
 
 set -euo pipefail
+# shellcheck source=spike/lib/common.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$ROOT/spike/m5/.work"
@@ -100,52 +102,6 @@ say() {
 phase_report() {
   local name="$1" start="$2"
   printf 'm5 phase %s %ss\n' "$name" "$((SECONDS - start))"
-}
-
-accept_mode() {
-  case "${1:-}" in
-    offline | live | live-ci) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# load_env_file reads KEY=VALUE lines. It does not expand or execute values.
-# Empty values are ignored. A variable that is already non-empty is kept.
-load_env_file() {
-  local file="$1" line="" n=0 key="" val=""
-  local -a keys=() vals=()
-  [[ -f "$file" ]] || return 1
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    n=$((n + 1))
-    line="${line%$'\r'}"
-    line="${line#"${line%%[![:space:]]*}"}"
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    if [[ "$line" == export\ * ]]; then
-      line="${line#export }"
-      line="${line#"${line%%[![:space:]]*}"}"
-    fi
-    if [[ ! "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-      echo "deploy/.env:${n}: invalid line" >&2
-      return 1
-    fi
-    key="${BASH_REMATCH[1]}"
-    val="${BASH_REMATCH[2]}"
-    if [[ ${#val} -ge 2 && "$val" == \"*\" && "$val" == *\" ]]; then
-      val="${val:1:${#val}-2}"
-    elif [[ ${#val} -ge 2 && "$val" == \'*\' && "$val" == *\' ]]; then
-      val="${val:1:${#val}-2}"
-    fi
-    if [[ -z "$val" || -n "${!key:-}" ]]; then
-      continue
-    fi
-    keys+=("$key")
-    vals+=("$val")
-  done <"$file"
-  local i
-  for i in "${!keys[@]}"; do
-    printf -v "${keys[$i]}" '%s' "${vals[$i]}"
-    export "${keys[$i]}"
-  done
 }
 
 require_mode_secrets() {
@@ -196,30 +152,6 @@ require_headed_node() {
     echo "missing Node" >&2
     return 1
   fi
-}
-
-normalize_docker_platform() {
-  case "$1" in
-    linux/aarch64 | linux/arm64) printf '%s\n' linux/arm64 ;;
-    linux/x86_64 | linux/amd64) printf '%s\n' linux/amd64 ;;
-    *) return 1 ;;
-  esac
-}
-
-goarch_for_platform() {
-  case "$1" in
-    linux/arm64) printf '%s\n' arm64 ;;
-    linux/amd64) printf '%s\n' amd64 ;;
-    *) return 1 ;;
-  esac
-}
-
-uname_for_platform() {
-  case "$1" in
-    linux/arm64) printf '%s\n' aarch64 ;;
-    linux/amd64) printf '%s\n' x86_64 ;;
-    *) return 1 ;;
-  esac
 }
 
 detect_platform() {

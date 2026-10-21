@@ -1,10 +1,10 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import axe from "axe-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setAPIKey } from "../../api/session";
 import { demoAPIKey } from "../../mocks/demo-key";
 import { server } from "../../mocks/server";
+import { expectNoSeriousViolations } from "../../test/axe";
 import { renderApp } from "../../test/render";
 import "../../index.css";
 import { goldenRun, goldenRuns, installRuns, runningRun } from "./test-support";
@@ -14,14 +14,6 @@ const paths: string[] = [];
 
 function rememberRequest(event: { request: Request }) {
   paths.push(new URL(event.request.url).pathname);
-}
-
-async function expectClean(node: Element) {
-  const results = await axe.run(node);
-  const blocking = results.violations.filter(
-    (violation) => violation.impact === "serious" || violation.impact === "critical",
-  );
-  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
 }
 
 beforeEach(() => {
@@ -95,7 +87,7 @@ describe("runs accessibility", () => {
     });
     await renderApp("/runs");
     expect(await screen.findByRole("table")).toBeInTheDocument();
-    await expectClean(document.body);
+    await expectNoSeriousViolations(document.body);
   });
 
   it("has no serious or critical violations on a running detail", async () => {
@@ -103,21 +95,21 @@ describe("runs accessibility", () => {
     installRuns({ run });
     await renderApp(`/runs/${run.id}`);
     expect(await screen.findByRole("heading", { name: "Settle the batch" })).toBeInTheDocument();
-    await expectClean(document.body);
+    await expectNoSeriousViolations(document.body);
   });
 
   it("has no serious or critical violations on an agent failure", async () => {
     installRuns();
     await renderApp(`/runs/${goldenRun.id}`);
     expect(await screen.findByRole("region", { name: "Failure" })).toBeInTheDocument();
-    await expectClean(document.body);
+    await expectNoSeriousViolations(document.body);
   });
 
   it("has no serious or critical violations on an infrastructure failure", async () => {
     installRuns({ run: infraRun() });
     await renderApp(`/runs/${goldenRun.id}`);
     expect(await screen.findByRole("region", { name: "Failure" })).toBeInTheDocument();
-    await expectClean(document.body);
+    await expectNoSeriousViolations(document.body);
   });
 
   it("keeps the confirm dialog clean and restores focus", async () => {
@@ -129,7 +121,7 @@ describe("runs accessibility", () => {
     trigger.focus();
     await user.click(trigger);
     const dialog = await screen.findByRole("dialog", { name: "Interrupt this turn?" });
-    await expectClean(document.body);
+    await expectNoSeriousViolations(document.body);
     const seen = new Set<string>();
     for (let step = 0; step < 6; step += 1) {
       if (document.activeElement instanceof HTMLElement) {

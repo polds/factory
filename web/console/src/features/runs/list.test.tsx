@@ -1,10 +1,10 @@
-import { http, HttpResponse } from "msw";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setAPIKey } from "../../api/session";
 import { demoAPIKey } from "../../mocks/demo-key";
 import { server } from "../../mocks/server";
+import { emit, installFactoryStream } from "../../test/factory-stream";
 import { renderApp } from "../../test/render";
 import { QUEUE_CAVEAT } from "./format";
 import { goldenRuns, installRuns, sseEvent } from "./test-support";
@@ -160,20 +160,7 @@ describe("runs list", () => {
       exec_ms: 2,
     };
     let release = false;
-    const streams = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
-    const encoder = new TextEncoder();
-    server.use(
-      http.get("/api/v1/factory/:factoryId/events", ({ params }) => {
-        const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            streams.set(String(params.factoryId), controller);
-          },
-        });
-        return new HttpResponse(stream, {
-          headers: { "Content-Type": "text/event-stream" },
-        });
-      }),
-    );
+    const streams = installFactoryStream();
     installRuns({
       rows: () => (release ? [...goldenRuns, created] : goldenRuns),
     });
@@ -185,14 +172,13 @@ describe("runs list", () => {
     ).not.toBeInTheDocument();
     await waitFor(() => expect(streams.has("fac_payments")).toBe(true));
     release = true;
-    streams.get("fac_payments")?.enqueue(
-      encoder.encode(
-        sseEvent(1, "run.created", {
-          run_id: created.id,
-          status: "running",
-          stage: "building",
-        }),
-      ),
+    emit(
+      "fac_payments",
+      sseEvent(1, "run.created", {
+        run_id: created.id,
+        status: "running",
+        stage: "building",
+      }),
     );
 
     const link = await screen.findByRole(

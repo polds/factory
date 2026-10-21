@@ -1,25 +1,17 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import axe from "axe-core";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 import { setAPIKey } from "../../api/session";
 import { demoAPIKey } from "../../mocks/demo-key";
 import { server } from "../../mocks/server";
+import { expectNoSeriousViolations } from "../../test/axe";
 import { renderApp } from "../../test/render";
 import automations from "./__fixtures__/automations.json";
 
 async function renderAutomations() {
   setAPIKey(demoAPIKey);
   return await renderApp("/f/fac_1/automations");
-}
-
-async function expectClean() {
-  const results = await axe.run(document.body);
-  const blocking = results.violations.filter(
-    (violation) => violation.impact === "serious" || violation.impact === "critical",
-  );
-  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
 }
 
 describe("automations", () => {
@@ -59,7 +51,7 @@ describe("automations", () => {
     await user.dblClick(await screen.findByRole("button", { name: "Pause" }));
     expect(await screen.findByText("Paused at runtime")).toBeInTheDocument();
     expect(pauses).toBe(1);
-    await expectClean();
+    await expectNoSeriousViolations();
     await user.click(screen.getByRole("switch", { name: "Resume on-label" }));
     await user.click(await screen.findByRole("button", { name: "Resume" }));
     await waitFor(() => expect(screen.queryByText("Paused at runtime")).not.toBeInTheDocument());

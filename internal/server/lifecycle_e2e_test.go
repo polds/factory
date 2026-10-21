@@ -1,28 +1,20 @@
 package server
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
 )
-
-type lifeFrame struct {
-	id    int64
-	event string
-	data  string
-}
 
 func TestLifecycleSSEReconnect(t *testing.T) {
 	skipNoDB(t)
 	env := boot(t, bootOpts{})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	frames := env.lifeFrames(t, ctx, "/api/v1/factory/m2/events", "")
+	frames := env.factoryFrames(t, ctx, "/api/v1/factory/m2/events", "")
 	runID := env.startRun(t, "lifecycle reconnect "+lifecyclePlant)
 	created := waitLife(t, frames, runID)
 	if created.event != "run.created" {
@@ -45,7 +37,7 @@ func TestLifecycleSSEReconnect(t *testing.T) {
 
 	again, stop := context.WithCancel(context.Background())
 	defer stop()
-	resumed := env.lifeFrames(t, again, "/api/v1/factory/m2/events", fmt.Sprintf("%d", created.id))
+	resumed := env.factoryFrames(t, again, "/api/v1/factory/m2/events", fmt.Sprintf("%d", created.id))
 	againIdle := waitLife(t, resumed, `"status":"idle"`)
 	if againIdle.id != idle.id || againIdle.event != "run.status" || againIdle.data != idle.data {
 		t.Fatalf("resumed %+v want %+v", againIdle, idle)
@@ -55,7 +47,7 @@ func TestLifecycleSSEReconnect(t *testing.T) {
 
 	tail, stopTail := context.WithCancel(context.Background())
 	defer stopTail()
-	next := env.lifeFrames(t, tail, "/api/v1/factory/m2/events", fmt.Sprintf("%d", idle.id))
+	next := env.factoryFrames(t, tail, "/api/v1/factory/m2/events", fmt.Sprintf("%d", idle.id))
 	if _, err := env.raw.Exec(context.Background(), `UPDATE runs SET status = 'succeeded' WHERE id = $1`, runID); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +65,7 @@ func TestLifecycleRestart(t *testing.T) {
 	skipNoDB(t)
 	env := boot(t, bootOpts{})
 	ctx, cancel := context.WithCancel(context.Background())
-	frames := env.lifeFrames(t, ctx, "/api/v1/factory/m2/events", "")
+	frames := env.factoryFrames(t, ctx, "/api/v1/factory/m2/events", "")
 	runID := env.startRun(t, "lifecycle restart "+lifecyclePlant)
 	created := waitLife(t, frames, runID)
 	if created.event != "run.created" {
@@ -92,7 +84,7 @@ func TestLifecycleRestart(t *testing.T) {
 
 	resumed, stop := context.WithCancel(context.Background())
 	defer stop()
-	frames = env.lifeFrames(t, resumed, "/api/v1/factory/m2/events", fmt.Sprintf("%d", created.id))
+	frames = env.factoryFrames(t, resumed, "/api/v1/factory/m2/events", fmt.Sprintf("%d", created.id))
 	again := waitLife(t, frames, `"status":"idle"`)
 	if again.id != idle.id || again.event != idle.event || again.data != idle.data {
 		t.Fatalf("after restart %+v want %+v", again, idle)
@@ -121,7 +113,7 @@ func TestLifecyclePerRunSeq(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	frames := env.lifeFrames(t, ctx, "/api/v1/agent/runs/"+runID+"/events?from_seq=0", "")
+	frames := env.factoryFrames(t, ctx, "/api/v1/agent/runs/"+runID+"/events?from_seq=0", "")
 	first := waitLife(t, frames, "one")
 	second := waitLife(t, frames, "two")
 	if first.id != 1 || second.id != 2 || first.event != "message.delta" || second.event != "message.delta" {
@@ -169,59 +161,7 @@ func TestLifecyclePerRunSeq(t *testing.T) {
 
 const lifecyclePlant = "rt_SECRET_PLANT"
 
-func (e *env) lifeFrames(t *testing.T, ctx context.Context, path, lastID string) <-chan lifeFrame {
-	t.Helper()
-	out := make(chan lifeFrame, 16)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.base+path, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Authorization", "Bearer "+e.apiKey)
-	req.Header.Set("Accept", "text/event-stream")
-	if lastID != "" {
-		req.Header.Set("Last-Event-ID", lastID)
-	}
-	go func() {
-		defer close(out)
-		res, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return
-		}
-		defer func() { _ = res.Body.Close() }()
-		sc := bufio.NewScanner(res.Body)
-		var id int64
-		var event string
-		var data strings.Builder
-		for sc.Scan() {
-			line := sc.Text()
-			switch {
-			case strings.HasPrefix(line, "id: "):
-				if _, scanErr := fmt.Sscanf(line, "id: %d", &id); scanErr != nil {
-					id = 0
-				}
-			case strings.HasPrefix(line, "event: "):
-				event = strings.TrimPrefix(line, "event: ")
-			case strings.HasPrefix(line, "data: "):
-				if data.Len() > 0 {
-					data.WriteByte('\n')
-				}
-				data.WriteString(strings.TrimPrefix(line, "data: "))
-			case line == "" && data.Len() > 0:
-				frame := lifeFrame{id: id, event: event, data: data.String()}
-				data.Reset()
-				event = ""
-				select {
-				case <-ctx.Done():
-					return
-				case out <- frame:
-				}
-			}
-		}
-	}()
-	return out
-}
-
-func waitLife(t *testing.T, frames <-chan lifeFrame, needle string) lifeFrame {
+func waitLife(t *testing.T, frames <-chan sseFrame, needle string) sseFrame {
 	t.Helper()
 	deadline := time.After(4 * time.Second)
 	for {
@@ -235,12 +175,12 @@ func waitLife(t *testing.T, frames <-chan lifeFrame, needle string) lifeFrame {
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for %s", needle)
-			return lifeFrame{}
+			return sseFrame{}
 		}
 	}
 }
 
-func expectNoLife(t *testing.T, frames <-chan lifeFrame, wait time.Duration) {
+func expectNoLife(t *testing.T, frames <-chan sseFrame, wait time.Duration) {
 	t.Helper()
 	select {
 	case frame, ok := <-frames:
@@ -251,7 +191,7 @@ func expectNoLife(t *testing.T, frames <-chan lifeFrame, wait time.Duration) {
 	}
 }
 
-func assertWireLifecycle(t *testing.T, frame lifeFrame, runID, status, stage string) {
+func assertWireLifecycle(t *testing.T, frame sseFrame, runID, status, stage string) {
 	t.Helper()
 	if strings.Contains(frame.data, lifecyclePlant) {
 		t.Fatalf("wire contains a secret %s", frame.data)

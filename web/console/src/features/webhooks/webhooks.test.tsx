@@ -1,11 +1,11 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import axe from "axe-core";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { setAPIKey } from "../../api/session";
 import { demoAPIKey } from "../../mocks/demo-key";
 import { server } from "../../mocks/server";
+import { expectNoSeriousViolations } from "../../test/axe";
 import { renderApp } from "../../test/render";
 import webhooks from "./__fixtures__/webhooks.json";
 
@@ -14,14 +14,6 @@ const github = webhooks[0];
 async function renderWebhooks() {
   setAPIKey(demoAPIKey);
   return await renderApp("/f/fac_1/webhooks");
-}
-
-async function expectClean() {
-  const results = await axe.run(document.body);
-  const blocking = results.violations.filter(
-    (violation) => violation.impact === "serious" || violation.impact === "critical",
-  );
-  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
 }
 
 describe("webhooks", () => {
@@ -62,7 +54,7 @@ describe("webhooks", () => {
     expect(
       urls.map((item) => new URL(item).pathname).every((path) => path.startsWith("/api/v1")),
     ).toBe(true);
-    await expectClean();
+    await expectNoSeriousViolations();
   });
 
   it("expands a row to deliveries for that webhook only", async () => {

@@ -1,24 +1,16 @@
 import { screen, within } from "@testing-library/react";
-import axe from "axe-core";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 import { setAPIKey } from "../../api/session";
 import { demoAPIKey } from "../../mocks/demo-key";
 import { server } from "../../mocks/server";
+import { expectNoSeriousViolations } from "../../test/axe";
 import { renderApp } from "../../test/render";
 import workers from "./__fixtures__/workers.json";
 
 async function renderWorkers() {
   setAPIKey(demoAPIKey);
   return await renderApp("/workers");
-}
-
-async function expectClean() {
-  const results = await axe.run(document.body);
-  const blocking = results.violations.filter(
-    (violation) => violation.impact === "serious" || violation.impact === "critical",
-  );
-  expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
 }
 
 describe("workers", () => {
@@ -40,7 +32,7 @@ describe("workers", () => {
     expect(
       urls.map((url) => new URL(url).pathname).every((path) => path.startsWith("/api/v1")),
     ).toBe(true);
-    await expectClean();
+    await expectNoSeriousViolations();
   });
 
   it("shows stale, never, unknown, and an empty p50 as a dash", async () => {
@@ -90,6 +82,6 @@ describe("workers", () => {
     expect(
       screen.getByText("Sustained rejections usually mean the pool is too small."),
     ).toBeInTheDocument();
-    await expectClean();
+    await expectNoSeriousViolations();
   });
 });

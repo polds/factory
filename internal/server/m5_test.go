@@ -731,7 +731,7 @@ func resumeFactorySSE(t *testing.T, env *env, w *wsWorker) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	frames := env.factoryFrames(t, ctx, "m2", "")
+	frames := env.factoryFrames(t, ctx, "/api/v1/factory/m2/events", "")
 	defer cancel()
 
 	schemaDSN := env.schemaDSN(t)
@@ -779,7 +779,7 @@ func resumeFactorySSE(t *testing.T, env *env, w *wsWorker) {
 
 	more, stop := context.WithCancel(context.Background())
 	defer stop()
-	resumed := env.factoryFrames(t, more, "m2", fmt.Sprintf("%d", late.id))
+	resumed := env.factoryFrames(t, more, "/api/v1/factory/m2/events", fmt.Sprintf("%d", late.id))
 	postEvents(t, asgA.EnvVars["FACTORY_EVENTS_URL"], asgA.EnvVars["FACTORY_RUN_TOKEN"], 2, []string{
 		`{"type":"message.delta","text":"after-resume"}`,
 	})
@@ -797,8 +797,9 @@ func resumeFactorySSE(t *testing.T, env *env, w *wsWorker) {
 }
 
 type sseFrame struct {
-	id   int64
-	data string
+	id    int64
+	event string
+	data  string
 }
 
 func (e *env) schemaDSN(t *testing.T) string {
@@ -814,10 +815,10 @@ func (e *env) schemaDSN(t *testing.T) string {
 	return dsn
 }
 
-func (e *env) factoryFrames(t *testing.T, ctx context.Context, factory, lastID string) <-chan sseFrame {
+func (e *env) factoryFrames(t *testing.T, ctx context.Context, path, lastID string) <-chan sseFrame {
 	t.Helper()
 	out := make(chan sseFrame, 16)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.base+"/api/v1/factory/"+factory+"/events", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.base+path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -835,6 +836,7 @@ func (e *env) factoryFrames(t *testing.T, ctx context.Context, factory, lastID s
 		defer func() { _ = res.Body.Close() }()
 		sc := bufio.NewScanner(res.Body)
 		var id int64
+		var event string
 		var data strings.Builder
 		for sc.Scan() {
 			line := sc.Text()
@@ -843,18 +845,22 @@ func (e *env) factoryFrames(t *testing.T, ctx context.Context, factory, lastID s
 				if _, scanErr := fmt.Sscanf(line, "id: %d", &id); scanErr != nil {
 					id = 0
 				}
+			case strings.HasPrefix(line, "event: "):
+				event = strings.TrimPrefix(line, "event: ")
 			case strings.HasPrefix(line, "data: "):
 				if data.Len() > 0 {
 					data.WriteByte('\n')
 				}
 				data.WriteString(strings.TrimPrefix(line, "data: "))
 			case line == "" && data.Len() > 0:
+				frame := sseFrame{id: id, event: event, data: data.String()}
+				data.Reset()
+				event = ""
 				select {
 				case <-ctx.Done():
 					return
-				case out <- sseFrame{id: id, data: data.String()}:
+				case out <- frame:
 				}
-				data.Reset()
 			}
 		}
 	}()
@@ -1486,7 +1492,7 @@ func TestM5SecretWalk(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	frames := env.factoryFrames(t, ctx, "m2", "")
+	frames := env.factoryFrames(t, ctx, "/api/v1/factory/m2/events", "")
 	select {
 	case frame := <-frames:
 		forbidPlanted(t, "sse", frame.data, token)

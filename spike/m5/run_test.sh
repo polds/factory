@@ -192,15 +192,15 @@ case_task_host_override() {
 }
 
 case_no_gnu_flags() {
-  # The pattern lives in this file, so the scan covers the driver only.
-  if grep -n -E 'sed -i|date -d|readlink -f|grep -P' "$ROOT/spike/m5/run.sh"; then
+  # The pattern lives in this file, so the scan covers the driver and spike/lib.
+  if grep -n -E 'sed -i|date -d|readlink -f|grep -P' "$ROOT/spike/m5/run.sh" "$ROOT"/spike/lib/*.sh; then
     echo "GNU-only flag" >&2
     return 1
   fi
 }
 
 case_build_flags() {
-  grep -F 'GOOS=linux' "$ROOT/spike/m5/run.sh" >/dev/null
+  grep -F 'GOOS=linux' "$ROOT/spike/m5/run.sh" "$ROOT"/spike/lib/*.sh >/dev/null
   grep -F 'GOARCH=' "$ROOT/spike/m5/run.sh" >/dev/null
   grep -F -- '--platform' "$ROOT/spike/m5/run.sh" >/dev/null
 }

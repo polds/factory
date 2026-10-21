@@ -40,7 +40,7 @@ func TestPurposeMigrationOnM5(t *testing.T) {
 		t.Fatalf("lifecycle rows before 0010: %d", before)
 	}
 
-	body, err := testMigrationFS.ReadFile("migrations/0010_m6.sql")
+	body, err := store.MigrationFS.ReadFile("migrations/0010_m6.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func applyBefore0010(t *testing.T, h *harness) {
 		if name >= "0010" {
 			break
 		}
-		body, err := testMigrationFS.ReadFile("migrations/" + name)
+		body, err := store.MigrationFS.ReadFile("migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
 		}

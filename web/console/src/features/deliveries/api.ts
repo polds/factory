@@ -1,6 +1,5 @@
-import { APIError, UnauthorizedError } from "../../api/client";
-import { clearAPIKey, getAPIKey } from "../../api/session";
-import type { Delivery, NormalizedEvent, Problem } from "../../api/types";
+import { client } from "../../api/client";
+import type { Delivery, NormalizedEvent } from "../../api/types";
 
 export type HeaderEntry = {
   name: string;
@@ -34,18 +33,11 @@ export type NormalizedEventView = {
 
 const SENSITIVE_HEADER = /signature|secret|token|authorization/i;
 
-// Lift candidate: client.listDeliveries cannot pass include=body, so the
-// detail view would never receive a body from factoryd.
 export async function listDeliveriesDetailed(
   factoryId: string,
   query: { status?: string; limit?: number } = {},
 ): Promise<DeliveryRow[]> {
-  const params = new URLSearchParams();
-  if (query.status) params.set("status", query.status);
-  if (query.limit !== undefined) params.set("limit", String(query.limit));
-  params.set("include", "body");
-  const path = `/api/v1/factory/${encodeURIComponent(factoryId)}/deliveries?${params.toString()}`;
-  const rows = await authedGet<Delivery[]>(path);
+  const rows = await client.listDeliveriesDetailed(factoryId, query);
   return rows.map(presentDelivery);
 }
 
@@ -97,33 +89,5 @@ export function formatBody(body: unknown): string {
     return JSON.stringify(body, null, 2);
   } catch {
     return "";
-  }
-}
-
-async function authedGet<T>(path: string): Promise<T> {
-  const headers = new Headers({ Accept: "application/json" });
-  const key = getAPIKey();
-  if (key) headers.set("Authorization", `Bearer ${key}`);
-  const response = await fetch(path, { headers });
-  const text = await response.text();
-  if (response.status === 401) {
-    clearAPIKey();
-    throw new UnauthorizedError();
-  }
-  if (!response.ok) throw new APIError(response.status, readProblem(text));
-  if (!text) return [] as T;
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    throw new APIError(response.status, null);
-  }
-}
-
-function readProblem(text: string): Problem | null {
-  if (!text) return null;
-  try {
-    return JSON.parse(text) as Problem;
-  } catch {
-    return null;
   }
 }
