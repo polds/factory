@@ -30,9 +30,10 @@ func TestEligible(t *testing.T) {
 		{name: "empty agents", s: definition.Scorer{Name: "correctness"}, r: ok, want: false, why: "not covered"},
 		{name: "running", s: s, r: RunFacts{Agent: "implementer", Status: "running", Purpose: api.PurposeWork}, want: false, why: "not terminal"},
 		{name: "caller terminal", s: s, r: RunFacts{Agent: "implementer", Status: "running", Terminal: true, Purpose: api.PurposeWork}, want: true},
-		{name: "cancelled status empty class", s: s, r: RunFacts{Agent: "implementer", Status: failure.StatusCancelled, Purpose: api.PurposeWork}, want: false, why: `status "cancelled" with an empty failure class`},
-		{name: "cancelled status cancelled class", s: s, r: RunFacts{Agent: "implementer", Status: failure.StatusCancelled, FailureClass: string(failure.ClassCancelled), Purpose: api.PurposeWork}, want: false, why: "not eligible"},
-		{name: "cancelled status agent class", s: s, r: RunFacts{Agent: "implementer", Status: failure.StatusCancelled, FailureClass: string(failure.ClassAgent), Purpose: api.PurposeWork}, want: true},
+		{name: "cancelled status empty class", s: s, r: RunFacts{Agent: "implementer", Status: failure.StatusCancelled, Purpose: api.PurposeWork}, want: false, why: "cancelled runs are not scored"},
+		{name: "cancelled status cancelled class", s: s, r: RunFacts{Agent: "implementer", Status: failure.StatusCancelled, FailureClass: string(failure.ClassCancelled), Purpose: api.PurposeWork}, want: false, why: "cancelled runs are not scored"},
+		// D2 excludes cancelled runs even when failure_class is agent.
+		{name: "cancelled status agent class", s: s, r: RunFacts{Agent: "implementer", Status: failure.StatusCancelled, FailureClass: string(failure.ClassAgent), Purpose: api.PurposeWork}, want: false, why: "cancelled runs are not scored"},
 		{name: "succeeded empty class", s: s, r: ok, want: true},
 		{name: "succeeded cancelled class", s: s, r: RunFacts{Agent: "implementer", Status: failure.StatusSucceeded, FailureClass: string(failure.ClassCancelled), Purpose: api.PurposeWork}, want: false, why: "not eligible"},
 		{name: "succeeded agent class", s: s, r: RunFacts{Agent: "implementer", Status: failure.StatusSucceeded, FailureClass: string(failure.ClassAgent), Purpose: api.PurposeWork}, want: true},

@@ -23,8 +23,9 @@ type RunFacts struct {
 // Eligible reports whether a work run may be judged by s.
 // Rejection reasons name the first failed docs/08 rule: agent match
 // (the run's agent is listed, or a parent is listed with
-// includeDescendants — the caller passes ParentAgents), terminal, the D2
-// failure-class predicate, then purpose work. An empty agents list matches
+// includeDescendants — the caller passes ParentAgents), terminal, D2
+// cancelled status, the D2 failure-class predicate, then purpose work.
+// An empty agents list matches
 // no run. The built-in correctness scorer has an empty list and a sampling
 // rate of 0; benchmarks call the judge directly.
 func Eligible(s definition.Scorer, r RunFacts) (bool, string) {
@@ -33,6 +34,12 @@ func Eligible(s definition.Scorer, r RunFacts) (bool, string) {
 	}
 	if !runTerminal(r) {
 		return false, "run is not terminal"
+	}
+	// D2 excludes cancelled runs. Status stays cancelled when a late exit 10
+	// persists class agent (recordLateExit / commitFinish), so this check
+	// is ahead of the class predicate.
+	if r.Status == failure.StatusCancelled {
+		return false, "cancelled runs are not scored"
 	}
 	if ok, why := eligibleFailureClass(r.Status, r.FailureClass); !ok {
 		return false, why
