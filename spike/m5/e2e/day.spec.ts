@@ -928,7 +928,11 @@ test("day of factory", async ({ browser }) => {
     await openSection(page, "Deliveries");
     await axe(page, "deliveries");
     await page.getByRole("tab", { name: /Unmatched/ }).click();
-    await page.locator("table").getByRole("button", { name: /^m5-pr-/ }).click();
+    const prDelivery =
+      runNonce === ""
+        ? page.locator("table").getByRole("button", { name: /^m5-pr-/ })
+        : page.locator("table").getByRole("button", { name: `m5-pr-${runNonce}` });
+    await prDelivery.click();
     // Close is the next click. The event text below is report-only and must
     // not be the only wait for this control.
     await expect(page.getByRole("button", { name: "Close", exact: true })).toBeVisible();
@@ -938,7 +942,10 @@ test("day of factory", async ({ browser }) => {
     await outcome(normalized).toContainText("pull_request_opened");
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
-    const delivery = page.locator("table").getByRole("button", { name: /^m5-wh-/ });
+    const delivery =
+      runNonce === ""
+        ? page.locator("table").getByRole("button", { name: /^m5-wh-/ })
+        : page.locator("table").getByRole("button", { name: new RegExp(`^m5-wh-${runNonce}`) });
     await expect(delivery).toBeVisible();
     await delivery.click();
     await page.getByRole("button", { name: "Replay delivery" }).click();

@@ -633,13 +633,21 @@ handle_deliver() {
   op="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("op",""))' "$SIGNAL/deliver")"
   case "$op" in
     issue)
-      id="m5-issue-${RANDOM}"
+      if [[ -n "${M5_RUN_NONCE:-}" ]]; then
+        id="m5-issue-${M5_RUN_NONCE}"
+      else
+        id="m5-issue-${RANDOM}"
+      fi
       write_github_body issue "$dest"
       code="$(post_signed "http://127.0.0.1:8080/api/v1/ingress/github" "$dest" \
         -H "X-GitHub-Event: issues" -H "X-GitHub-Delivery: ${id}")"
       ;;
     pr)
-      id="m5-pr-${RANDOM}"
+      if [[ -n "${M5_RUN_NONCE:-}" ]]; then
+        id="m5-pr-${M5_RUN_NONCE}"
+      else
+        id="m5-pr-${RANDOM}"
+      fi
       write_github_body pr "$dest"
       code="$(post_signed "http://127.0.0.1:8080/api/v1/ingress/github" "$dest" \
         -H "X-GitHub-Event: pull_request" -H "X-GitHub-Delivery: ${id}")"
@@ -651,7 +659,11 @@ handle_deliver() {
         ack_file deliver "error bad webhook uid"
         return 0
       fi
-      id="m5-wh-${RANDOM}"
+      if [[ -n "${M5_RUN_NONCE:-}" ]]; then
+        id="m5-wh-${M5_RUN_NONCE}-${RANDOM}"
+      else
+        id="m5-wh-${RANDOM}"
+      fi
       if [[ "$match" == true ]]; then
         printf '%s\n' '{"action":"opened","source":"m5"}' >"$dest"
       else
