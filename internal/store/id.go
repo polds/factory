@@ -8,20 +8,24 @@ import (
 )
 
 const (
-	PrefixRun          = "run_"
-	PrefixExec         = "exec_"
-	PrefixFactory      = "fac_"
-	PrefixAgent        = "agt_"
-	PrefixDefinition   = "def_"
-	PrefixWorkItem     = "task_"
-	PrefixApproval     = "apr_"
-	PrefixConversation = "conv_"
-	PrefixDelivery     = "dlv_"
-	PrefixSchedule     = "sch_"
-	PrefixInputRequest = "inr_"
-	PrefixWebhook      = "whk_"
-	PrefixSteer        = "str_"
-	PrefixAutomation   = "aut_"
+	PrefixRun            = "run_"
+	PrefixExec           = "exec_"
+	PrefixFactory        = "fac_"
+	PrefixAgent          = "agt_"
+	PrefixDefinition     = "def_"
+	PrefixWorkItem       = "task_"
+	PrefixApproval       = "apr_"
+	PrefixConversation   = "conv_"
+	PrefixDelivery       = "dlv_"
+	PrefixSchedule       = "sch_"
+	PrefixInputRequest   = "inr_"
+	PrefixWebhook        = "whk_"
+	PrefixSteer          = "str_"
+	PrefixAutomation     = "aut_"
+	PrefixScorerResult   = "scr_"
+	PrefixImproveBatch   = "ibt_"
+	PrefixBenchmarkRun   = "bmr_"
+	PrefixBenchmarkTrial = "bmt_"
 )
 
 // crockfordAlphabet is Crockford base32 (no I, L, O, or U).
@@ -68,7 +72,8 @@ func knownPrefix(prefix string) bool {
 	case PrefixRun, PrefixExec, PrefixFactory, PrefixAgent, PrefixDefinition,
 		PrefixWorkItem, PrefixApproval, PrefixConversation,
 		PrefixDelivery, PrefixSchedule, PrefixInputRequest, PrefixWebhook,
-		PrefixSteer, PrefixAutomation:
+		PrefixSteer, PrefixAutomation, PrefixScorerResult, PrefixImproveBatch,
+		PrefixBenchmarkRun, PrefixBenchmarkTrial:
 		return true
 	default:
 		return false
