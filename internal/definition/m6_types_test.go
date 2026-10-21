@@ -1,6 +1,7 @@
 package definition
 
 import (
+	"strings"
 	"testing"
 
 	syaml "sigs.k8s.io/yaml"
@@ -105,5 +106,21 @@ func TestM6FuncSignatures(t *testing.T) {
 	}
 	if got := checks[1](&Tree{}, &Tree{}); got != nil {
 		t.Fatalf("rails %#v", got)
+	}
+	base := &Tree{Factory: Factory{Pipeline: &Pipeline{Approvals: map[string]ApprovalGate{
+		"spec": {Required: true, Approvers: "role:editor"},
+	}}}}
+	head := &Tree{Factory: Factory{Pipeline: &Pipeline{Approvals: map[string]ApprovalGate{}}}}
+	for i, fn := range checks {
+		got := fn(base, head)
+		found := false
+		for _, d := range got {
+			if d.File == "factory.yaml" && d.Severity == SeverityError && strings.Contains(d.Message, "spec") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("check %d: %#v", i, got)
+		}
 	}
 }

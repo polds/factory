@@ -1,0 +1,15 @@
+name: Pull request review
+description: Compare the production reviewer with a candidate definition.
+agent: reviewer
+configurations:
+  - name: Baseline
+    agents:
+      - agent: reviewer
+        model: auto
+  - name: Candidate
+    definitionRef: benchmarks/pr-review/candidate
+    agents:
+      - agent: reviewer
+        model: claude-5-opus-high
+tasks:
+  - broken-doc-link

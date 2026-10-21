@@ -236,6 +236,49 @@ func validatePipeline(tree *Tree, lines map[string]int, diags *[]Diagnostic) {
 	}
 }
 
+func validateSelfImprovement(raw map[string]any, si *SelfImprovement, lines map[string]int, diags *[]Diagnostic) {
+	block, ok := raw["selfImprovement"].(map[string]any)
+	if !ok || block == nil || si == nil {
+		return
+	}
+	const file = "factory.yaml"
+	if _, set := block["failedRunThreshold"]; set {
+		if si.FailedRunThreshold < 1 || si.FailedRunThreshold > 50 {
+			addDiag(diags, file, lineAt(lines, "selfImprovement.failedRunThreshold"), SeverityError, "failedRunThreshold must be from 1 to 50")
+		}
+	}
+	if _, set := block["staleFailureDays"]; set {
+		if si.StaleFailureDays < 1 {
+			addDiag(diags, file, lineAt(lines, "selfImprovement.staleFailureDays"), SeverityError, "staleFailureDays must be >= 1")
+		}
+	}
+	rt := strings.TrimSpace(si.ReviewerType)
+	if _, set := block["reviewerType"]; set && !validReviewerType(rt) {
+		addDiag(diags, file, lineAt(lines, "selfImprovement.reviewerType"), SeverityError, fmt.Sprintf("reviewerType %q must be admins, team, custom, or none", si.ReviewerType))
+	}
+	if rt == "" {
+		rt = ReviewerAdmins
+	}
+	if rt != ReviewerCustom {
+		return
+	}
+	for _, email := range si.ReviewerEmails {
+		if strings.TrimSpace(email) != "" {
+			return
+		}
+	}
+	addDiag(diags, file, lineAt(lines, "selfImprovement.reviewerEmails"), SeverityError, "reviewerEmails is required when reviewerType is custom")
+}
+
+func validReviewerType(rt string) bool {
+	switch rt {
+	case ReviewerAdmins, ReviewerTeam, ReviewerCustom, ReviewerNone:
+		return true
+	default:
+		return false
+	}
+}
+
 func validateScorerDefaults(tree *Tree, lines map[string]int, diags *[]Diagnostic) {
 	if tree.Factory.ScorerDefaults == nil {
 		return

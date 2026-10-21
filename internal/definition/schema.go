@@ -257,6 +257,34 @@ var (
 		"deliveryIdHeader": leaf(),
 		"enabled":          leaf(),
 	}}
+
+	bindingSchema = &keySpec{children: map[string]*keySpec{
+		"agent":   leaf(),
+		"model":   leaf(),
+		"harness": harnessSpec,
+	}}
+
+	suiteSchema = &keySpec{children: map[string]*keySpec{
+		"name":        leaf(),
+		"description": leaf(),
+		"agent":       leaf(),
+		"configurations": {elem: &keySpec{children: map[string]*keySpec{
+			"name":          leaf(),
+			"definitionRef": leaf(),
+			"agents":        {elem: bindingSchema},
+		}}},
+		"tasks": leaf(),
+	}}
+
+	taskSchema = &keySpec{children: map[string]*keySpec{
+		"name":             leaf(),
+		"title":            leaf(),
+		"prompt":           leaf(),
+		"successCriteria":  leaf(),
+		"sourceRunId":      leaf(),
+		"tags":             leaf(),
+		"startingRepoRefs": leaf(),
+	}}
 )
 
 func newDeepFree() *keySpec {

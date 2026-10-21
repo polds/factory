@@ -22,19 +22,26 @@ type Diagnostic struct {
 // path or contents change.
 //
 // Agents are resolved through Inherit. Routers and skills are applied.
-// Automations, scorers, and webhooks are loaded and validated; their
-// engines are later milestones.
+// Automations, scorers, webhooks, and benchmarks are loaded and validated.
 type Tree struct {
-	Factory     Factory
-	Agents      map[string]Agent
-	Runners     map[string]Runner
-	Routers     map[string]Router
-	Skills      map[string]Skill
-	AgentSkills map[string][]Skill
-	Automations map[string]Automation
-	Scorers     map[string]Scorer
-	Webhooks    map[string]Webhook
-	Digest      string
+	Factory        Factory
+	Agents         map[string]Agent
+	Runners        map[string]Runner
+	Routers        map[string]Router
+	Skills         map[string]Skill
+	AgentSkills    map[string][]Skill
+	Automations    map[string]Automation
+	Scorers        map[string]Scorer
+	Webhooks       map[string]Webhook
+	Benchmarks     map[string]BenchmarkSuite
+	BenchmarkTasks map[string]map[string]BenchmarkTask
+	Digest         string
+
+	// approvalLines is the factory.yaml line of each pipeline.approvals key.
+	// approvalsLine is the approvals block. Both stay zero on a tree that was
+	// not loaded from a file; WeakensApprovals then reports line 1.
+	approvalLines map[string]int
+	approvalsLine int
 }
 
 // Factory is factory.yaml. Pipeline is applied when present.
@@ -147,6 +154,8 @@ type Scorer struct {
 	Model           string
 	SelfImprovement bool
 	Body            string
+	// selfImprovementLine is the scorer.md line of the selfImprovement key.
+	selfImprovementLine int
 }
 
 // ScorerAgent is an agent a scorer samples. A YAML string is the name.
@@ -328,7 +337,18 @@ type InferenceProvider struct {
 	BaseURL       string `json:"baseUrl,omitempty"`
 }
 
-// SelfImprovement is recorded but not evaluated in M2.
+// Reviewer pools named by selfImprovement.reviewerType. Admins is the default
+// when the key is omitted. improve.Route is the only consumer.
+const (
+	ReviewerAdmins = "admins"
+	ReviewerTeam   = "team"
+	ReviewerCustom = "custom"
+	ReviewerNone   = "none"
+)
+
+// SelfImprovement is the factory self-improvement block. Omitted numeric
+// fields stay zero; the improvement engine applies the docs/08 defaults
+// (threshold 25, stale 7 days). ReviewerType defaults to admins.
 type SelfImprovement struct {
 	FailedRunThreshold int      `json:"failedRunThreshold,omitempty"`
 	StaleFailureDays   int      `json:"staleFailureDays,omitempty"`

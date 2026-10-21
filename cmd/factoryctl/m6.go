@@ -156,6 +156,42 @@ func cmdRunsScore(args []string, stdout, stderr io.Writer, getenv func(string) s
 	return 0
 }
 
+func cmdRunsScores(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	fs := flag.NewFlagSet("runs scores", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		say(stderr, "usage: factoryctl runs scores RUN_ID")
+	}
+	flagArgs, pos, err := reorderArgs(args, helpFlags)
+	if err != nil {
+		say(stderr, "factoryctl:", err)
+		fs.Usage()
+		return 2
+	}
+	if err := fs.Parse(flagArgs); err != nil {
+		return 2
+	}
+	if len(pos) != 1 {
+		fs.Usage()
+		return 2
+	}
+	c, code := clientOrExit(stderr, getenv)
+	if code != 0 {
+		return code
+	}
+	rows, err := c.RunScores(context.Background(), pos[0])
+	if err != nil {
+		return exitAPI(stderr, err)
+	}
+	for _, row := range rows {
+		if _, err := fmt.Fprintf(stdout, "%s %s %g %t %s\n", row.Scorer, row.Label, row.Score, row.Passed, row.Status); err != nil {
+			say(stderr, "factoryctl:", err)
+			return 1
+		}
+	}
+	return 0
+}
+
 func cmdRunsCapture(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
 	fs := flag.NewFlagSet("runs capture-task", flag.ContinueOnError)
 	fs.SetOutput(stderr)
