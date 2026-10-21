@@ -1,0 +1,15 @@
+name: Citation convention
+description: Baseline misses the line. Candidate includes it.
+agent: implementer
+configurations:
+  - name: Baseline
+    agents:
+      - agent: implementer
+        model: factory-default
+  - name: Candidate
+    definitionRef: candidate
+    agents:
+      - agent: implementer
+        model: factory-default
+tasks:
+  - cite

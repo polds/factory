@@ -23,6 +23,7 @@ implementer, matching live and live-ci:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import select
@@ -32,6 +33,7 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import ClassVar
 
 MODELS = ("m5-triage", "m5-planning", "m5-building", "m5-reviewing")
@@ -40,67 +42,25 @@ HOLD_SECONDS = 55
 INFRA_HOLD_SECONDS = 120
 
 
-def port_is_free(port: int) -> bool:
-    """Return True when both 0.0.0.0 and 127.0.0.1 can bind port.
-
-    macOS allows those two addresses to listen on one port at the same
-    time. Binding only 0.0.0.0 can succeed while another process already
-    owns 127.0.0.1. Each probe is closed before the next bind: on Linux
-    a wildcard socket occupies the port for every address until then.
-    """
-    for host in ("0.0.0.0", "127.0.0.1"):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            sock.bind((host, port))
-        except OSError:
-            return False
-        finally:
-            sock.close()
-    return True
+def _load_ports():
+    path = Path(__file__).resolve().parents[1] / "lib" / "ports.py"
+    spec = importlib.util.spec_from_file_location("spike_lib_ports", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit("ports import failed")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def loopback_accepts(port: int) -> bool:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(0.5)
-    try:
-        sock.connect(("127.0.0.1", port))
-    except OSError:
-        return False
-    else:
-        return True
-    finally:
-        sock.close()
-
-
-def ensure_port_available(port: int) -> None:
-    if loopback_accepts(port) or not port_is_free(port):
-        raise SystemExit(f"router port {port} is answered by another process")
-
-
-def pick_free_port() -> int:
-    for _ in range(50):
-        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            probe.bind(("127.0.0.1", 0))
-            port = int(probe.getsockname()[1])
-        finally:
-            probe.close()
-        if not loopback_accepts(port) and port_is_free(port):
-            return port
-    raise SystemExit("could not find a free router port")
+_PORTS = _load_ports()
+port_is_free = _PORTS.port_is_free
+loopback_accepts = _PORTS.loopback_accepts
+ensure_port_available = _PORTS.ensure_port_available
+pick_free_port = _PORTS.pick_free_port
 
 
 def resolve_port(configured: str) -> int:
-    text = configured.strip()
-    if text == "":
-        return pick_free_port()
-    if not text.isdecimal():
-        raise SystemExit("M5_ROUTER_PORT must be a TCP port")
-    port = int(text)
-    if port < 1 or port > 65535:
-        raise SystemExit("M5_ROUTER_PORT must be a TCP port")
-    ensure_port_available(port)
-    return port
+    return _PORTS.resolve_port(configured, "M5_ROUTER_PORT")
 
 
 def models_document() -> dict:

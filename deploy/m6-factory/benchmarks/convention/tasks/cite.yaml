@@ -1,0 +1,5 @@
+title: Cite the source
+prompt: Summarize the change. Use only what the skill already says.
+successCriteria: "The final message includes the exact line CONVENTION: cite-sources."
+startingRepoRefs:
+  - github.com:m6/scratch@c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff

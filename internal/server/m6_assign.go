@@ -140,21 +140,37 @@ func (s *Server) benchmarkOverlay(ctx context.Context, run store.Run, bound boun
 	return bound, match.Overrides, nil
 }
 
+// skillsFor merges factory-level skills with the agent's own skills.
+// The agent copy wins when both use the same name. The spec and the
+// text are emitted in sorted name order.
 func (s *Server) skillsFor(tree *definition.Tree, agentName string) (string, string) {
 	if tree == nil || agentName == "" {
 		return "", ""
 	}
-	skills := tree.AgentSkills[agentName]
-	if len(skills) == 0 {
-		return "", ""
-	}
-	names := make([]string, 0, len(skills))
-	var text strings.Builder
-	for _, skill := range skills {
+	byName := make(map[string]definition.Skill)
+	for _, skill := range tree.Skills {
 		if skill.Name == "" {
 			continue
 		}
-		names = append(names, skill.Name)
+		byName[skill.Name] = skill
+	}
+	for _, skill := range tree.AgentSkills[agentName] {
+		if skill.Name == "" {
+			continue
+		}
+		byName[skill.Name] = skill
+	}
+	if len(byName) == 0 {
+		return "", ""
+	}
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var text strings.Builder
+	for _, name := range names {
+		skill := byName[name]
 		body := s.redact(harness.Redact(skill.Body, s.secretMaterial()))
 		text.WriteString("## skill ")
 		text.WriteString(skill.Name)
@@ -162,10 +178,6 @@ func (s *Server) skillsFor(tree *definition.Tree, agentName string) (string, str
 		text.WriteString(strings.TrimSpace(body))
 		text.WriteString("\n")
 	}
-	if len(names) == 0 {
-		return "", ""
-	}
-	sort.Strings(names)
 	return strings.Join(names, ","), strings.TrimSpace(text.String())
 }
 

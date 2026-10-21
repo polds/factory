@@ -1,0 +1,7 @@
+# spike/m6 overlay. The m6 services live in deploy/docker-compose.yml.
+# This file exists so `docker compose -f deploy/docker-compose.yml
+# -f spike/m6/compose.yml --profile m6 config` names the driver overlay.
+services:
+  factoryd-m6:
+    environment:
+      FACTORY_LOG_LEVEL: info

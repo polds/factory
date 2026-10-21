@@ -1,0 +1,5 @@
+title: Infrastructure trial
+prompt: m6-infra-trial
+successCriteria: The trial records an error. This criterion is not judged.
+startingRepoRefs:
+  - github.com:m6/scratch@c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff

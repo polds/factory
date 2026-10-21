@@ -35,6 +35,11 @@
 # mounts a writable definition parent and drops the worker idle flag.
 # The default project does not start the git factory.
 #
+# Profile m6 adds factoryd-m6 (factoryd-git image, its own database,
+# a worker) for spike/m6/run.sh. The console port is M6_CONSOLE_PORT
+# (default 8082). The default factoryd service is unchanged and still
+# starts, because it has no profile.
+#
 # Profile m4 adds fake-github and fake-slack for spike/m4/run.sh. That
 # script also passes spike/m4/compose.yml, which injects the M4 environment
 # into factoryd and mounts the App private key. The default project does
@@ -368,6 +373,125 @@ services:
       start_period: 10s
     logging: *logging
 
+  # Creates factory_m6, then stays up. An exited init container fails
+  # `up --wait`. factoryd-m6 migrates this database on boot.
+  factory-m6-db:
+    profiles: ["m6"]
+    image: postgres:16-alpine
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-factory}
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        until pg_isready -h postgres -U factory -d factory; do sleep 1; done;
+        psql -h postgres -U factory -d factory -v ON_ERROR_STOP=1 -tc
+        "SELECT 1 FROM pg_database WHERE datname='factory_m6'" | grep -q 1
+        || psql -h postgres -U factory -d factory -v ON_ERROR_STOP=1 -c
+        "CREATE DATABASE factory_m6";
+        touch /tmp/factory-m6-ready;
+        sleep infinity
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test -f /tmp/factory-m6-ready && pg_isready -h postgres -U factory -d factory_m6",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    logging: *logging
+
+  # Git-capable factoryd plus a worker. The definition is cloned from
+  # the host git daemon. Task containers use the published console port.
+  factoryd-m6:
+    profiles: ["m6"]
+    image: factoryd-git:dev
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio-init: { condition: service_healthy }
+      factory-m6-db: { condition: service_healthy }
+    ports:
+      - "${M6_CONSOLE_PORT:-8082}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      FACTORY_HTTP_ADDR: ":8080"
+      FACTORY_EXTERNAL_URL: ${FACTORY_EXTERNAL_URL:-http://127.0.0.1:8082}
+      FACTORY_DATABASE_URL: postgres://factory:${POSTGRES_PASSWORD:-factory}@postgres:5432/factory_m6?sslmode=disable
+      FACTORY_API_KEY: ${FACTORY_API_KEY:-m6-dev-api-key}
+      FACTORY_WORKER_API_KEY: ${FACTORY_WORKER_API_KEY:-m6-dev-worker-key}
+      FACTORY_WORKER_POOL: standard
+      FACTORY_WORKER_MAX_CONCURRENT: "4"
+      FACTORY_TASK_SERVER_URL: ${FACTORY_TASK_SERVER_URL:-http://172.17.0.1:8082}
+      FACTORY_S3_ENDPOINT: http://minio:9000
+      FACTORY_S3_BUCKET: factory
+      FACTORY_S3_ACCESS_KEY: ${S3_ACCESS_KEY:-factoryadmin}
+      FACTORY_S3_SECRET_KEY: ${S3_SECRET_KEY:-factorysecret}
+      FACTORY_S3_REGION: ${FACTORY_S3_REGION:-us-east-1}
+      FACTORY_S3_FORCE_PATH_STYLE: "true"
+      FACTORY_DEFINITION_PATH: /var/lib/factory/definition
+      FACTORY_DEFINITION_GIT_URL: ${M6_FACTORYD_GIT_URL:-git://host.docker.internal:9420/m6/factory.git}
+      FACTORY_DEFINITION_GIT_REF: main
+      FACTORY_DEFINITION_GIT_PRODUCTION_REF: main
+      FACTORY_DEFINITION_GIT_INTERVAL: 30s
+      FACTORY_CONSOLE: "on"
+      FACTORY_LOG_LEVEL: info
+      FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL: ${FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL:-}
+      FACTORY_INFERENCE_OPENAI_API_KEY: ${FACTORY_INFERENCE_OPENAI_API_KEY:-}
+      FACTORY_GITHUB_TOKEN_MODE: app
+      FACTORY_GITHUB_APP_ID: ${FACTORY_GITHUB_APP_ID:-17}
+      FACTORY_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app.pem
+      FACTORY_GITHUB_API_BASE: ${M6_FACTORYD_GITHUB_API:-http://host.docker.internal:9421}
+      FACTORY_GITHUB_WEBHOOK_SECRET: ${FACTORY_GITHUB_WEBHOOK_SECRET:-}
+      FACTORY_REVIEWERS_ADMINS: ${FACTORY_REVIEWERS_ADMINS:-m6-reviewer}
+      FACTORY_SAMPLER_INTERVAL: ${FACTORY_SAMPLER_INTERVAL:-2s}
+      FACTORY_IMPROVEMENT_INTERVAL: ${FACTORY_IMPROVEMENT_INTERVAL:-2s}
+      FACTORY_SECRET_DEFINITION_GIT_URL: ${M6_TASK_GIT_URL:-git://172.17.0.1:9420/m6/factory.git}
+      FACTORY_SECRET_GITHUB_API_BASE: ${M6_TASK_GITHUB_API:-http://172.17.0.1:9421}
+      FACTORY_SECRET_M6_PLANTED: ${FACTORY_SECRET_M6_PLANTED:-}
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: "*"
+      GIT_TERMINAL_PROMPT: "0"
+    volumes:
+      - ${M6_APP_KEY_FILE:-../spike/m6/.work/app.pem}:/run/secrets/github-app.pem:ro
+      - factory-m6-definition:/var/lib/factory
+    healthcheck:
+      test: ["CMD", "/factoryd", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    logging: *logging
+
+  worker-m6:
+    profiles: ["m6"]
+    image: factory-upstream-worker:dev
+    restart: unless-stopped
+    depends_on:
+      factoryd-m6: { condition: service_healthy }
+    command:
+      - --worker-id=local-m6
+      - --backend=docker
+      - --config-file=/etc/factory/worker.yaml
+      - --max-concurrent-tasks=4
+      - --web-socket-url=ws://factoryd-m6:8080/api/v1/selfhosted/worker/ws
+      - --server-root-url=http://factoryd-m6:8080
+      - --log-level=debug
+    environment:
+      WARP_API_KEY: ${FACTORY_WORKER_API_KEY:-m6-dev-worker-key}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../spike/m5/worker.yaml:/etc/factory/worker.yaml:ro
+    stop_grace_period: 30s
+    logging: *logging
+
   # Optional public ingress. Not part of MODE=offline. The URL is not stable.
   tunnel:
     profiles: ["tunnel"]
@@ -386,3 +510,4 @@ volumes:
   pgdata:
   miniodata:
   factory-git-definition:
+  factory-m6-definition:
