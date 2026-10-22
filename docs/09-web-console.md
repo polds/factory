@@ -28,6 +28,14 @@ Every metric that can mislead carries its caveat inline, not in a docs page nobo
 cost per PR is labelled a comparison metric; merged-vs-opened explains why merged can
 exceed opened in a period; total runs notes that it includes measurement runs.
 
+**M6 applied.** The same dashboard keeps the operational tiles (Waiting on
+human, Active runs, Queue wait p50, PRs opened, Unmatched deliveries, runs by
+status, runs by failure class) and adds the
+[08](08-measure-and-self-improvement.md#dashboard-metrics) set beside them.
+Each 08 caveat is on its metric. `forge_connected_at` is never filled, so
+autonomy and cycle time show "forge not connected". The definitions are in
+08; they are not repeated here.
+
 ### Work items
 The kanban view: columns are pipeline stages (Triage → Planning → Building → Reviewing →
 Handoff), cards are work items showing source, age, current agent, model, and blocking
@@ -66,6 +74,13 @@ controls when `steer.enabled` is true and `idle_until`, if set, is still ahead.
 Otherwise it shows `steer.reason` ("worker/harness does not support steering", "run
 has not started", or "run finished; idle window ended at …").
 
+**M6 applied.** Run detail also has Scores, Score now, and Capture as benchmark
+task. Score now posts the on-demand score. Capture asks for a suite and a name,
+shows the returned YAML, and offers copy. An identical rescore leaves the
+Scores row Pending: the scores response has no id or `created_at`, and the
+pending overlay clears only when the row for that scorer changes. That is a
+current limit.
+
 `idleTimeoutMinutes` (1–60) is the idle window while the run is still `running`.
 Once the run is terminal, interrupt and follow-up return the idle-window 409.
 
@@ -83,6 +98,11 @@ becomes `awaiting_input` and the worker slot is released. The inbox answer is
 `POST /work-items/{id}/input` with `{text}`, which records the answer and queues
 the next execution of that run.
 
+**M6 applied.** An open improvement pull request is inbox kind
+`improvement_pr`. The row's action is Review PR, an https link to that pull
+request. The route is still `GET /api/v1/factory/{uid}/inbox`
+([04](04-protocols-and-apis.md#scoring-and-benchmarks-new-surface)).
+
 ### Definition
 A file tree and a textarea. Validate is a button; diagnostics then mark the file and
 line. The Schema link loads those documents from factoryd, which embeds them for
@@ -99,11 +119,18 @@ applied — the same summary the pre-merge check posts.
 - **Scorers** — definitions, pass rate over time, result list with judge reasoning linked
   to the scored run. Score-this-run-now for tuning.
 - **Benchmarks** — suites, trial matrix (configurations × tasks), pass rate with confidence
-  intervals, cost and duration medians. Refuses to declare a winner below the minimum
-  repetition count and says so. "Capture as benchmark task" on any run, which writes a
-  task file with `sourceRunId` and the frozen head.
+  intervals, cost and duration medians. Refuses to declare a winner below the fixed
+  minimum of 5 repetitions and says so. "Capture as benchmark task" on a run returns
+  YAML to copy. It does not write a task file.
 - **Improvement** — batches, their failing runs, the PRs opened, and the
   *Regressions addressed* provenance. `Run now` to force a check.
+
+**M6 applied.** Routes are `/f/{factory}/scorers`, `/f/{factory}/scorers/{name}`,
+`/f/{factory}/benchmarks`, `/f/{factory}/benchmarks/{suite}`, and
+`/f/{factory}/improvement`. An empty benchmark winner renders the refusal
+reason and highlights no cell. Capture's copy path is the run-detail panel
+above. API shapes are in
+[04](04-protocols-and-apis.md#scoring-and-benchmarks-new-surface).
 
 ### Automations / Webhooks
 Automation list with enable/disable, last fired, match count, and runs started. **Unmatched

@@ -123,8 +123,12 @@ last observed), and `truncated`.
 
 **Design rule:** keep `failure_reason` orthogonal to agent outcome. A run that fails
 because a pod was evicted is not a quality signal, and scorers must never sample it.
-This is why scorer eligibility filters on `failure_reason == null`
-([08](08-measure-and-self-improvement.md)).
+
+**M6 applied.** Eligibility does not test `failure_reason == null`. The class
+rule is in [08](08-measure-and-self-improvement.md#eligibility-and-sampling).
+factoryd fills `repository_head_overrides` and `skill_spec` on the assignment
+when the run has them. What the in-repo harness does with the override flag
+and with skill text is in [05](05-harness-contract.md#invocation).
 
 ### Server obligations
 
@@ -275,6 +279,34 @@ GET    /factory/{uid}/improvement-batches
 POST   /factory/{uid}/improvement:run-now
 ```
 
+**M6 applied.** Eleven routes are registered under `/api/v1`. A backend that
+does not implement measure returns 501 with detail `measure backend not wired`.
+`repetitions` below 1 on a benchmark run returns 422. An ineligible run or an
+unknown scorer returns 422. An improvement batch already in flight returns 409.
+`:run` and `:capture-benchmark-task` are suffix checks; a path that does not
+end in the suffix is 404. Response bodies are the console goldens, not restated
+here.
+
+| Method | Path | Success | Golden |
+| --- | --- | --- | --- |
+| POST | `/api/v1/agent/runs/{runId}/score` | 202 | [`m6-score-accepted.json`](../internal/api/testdata/console/m6-score-accepted.json) |
+| GET | `/api/v1/factory/{uid}/scorers/{id}/results` | 200 | [`m6-scorer-results.json`](../internal/api/testdata/console/m6-scorer-results.json) |
+| POST | `/api/v1/factory/{uid}/benchmarks/{suite}:run` | 202 | [`m6-benchmark-accepted.json`](../internal/api/testdata/console/m6-benchmark-accepted.json) |
+| GET | `/api/v1/factory/{uid}/benchmarks/{suite}/trials` | 200 | [`m6-benchmark-trials.json`](../internal/api/testdata/console/m6-benchmark-trials.json) |
+| GET | `/api/v1/factory/{uid}/improvement-batches` | 200 | [`m6-improvement-batches.json`](../internal/api/testdata/console/m6-improvement-batches.json) |
+| POST | `/api/v1/factory/{uid}/improvement:run-now` | 202 | [`m6-improvement-run-now.json`](../internal/api/testdata/console/m6-improvement-run-now.json) |
+| GET | `/api/v1/factory/{uid}/scorers` | 200 | [`m6-scorers.json`](../internal/api/testdata/console/m6-scorers.json) |
+| GET | `/api/v1/agent/runs/{runId}/scores` | 200 | [`m6-run-scores.json`](../internal/api/testdata/console/m6-run-scores.json) |
+| GET | `/api/v1/factory/{uid}/benchmarks` | 200 | [`m6-benchmarks.json`](../internal/api/testdata/console/m6-benchmarks.json) |
+| POST | `/api/v1/agent/runs/{runId}:capture-benchmark-task` | 200 | [`m6-capture-benchmark-task.json`](../internal/api/testdata/console/m6-capture-benchmark-task.json) |
+| GET | `/api/v1/factory/{uid}/metrics` | 200 | [`m6-metrics.json`](../internal/api/testdata/console/m6-metrics.json) |
+
+The last five rows were added in M6: list scorers, list one run's scores, list
+benchmarks, capture a benchmark task, and metrics. Capture returns the task
+YAML and writes nothing. `GET /api/v1/factory/{uid}/inbox` is unchanged and
+now includes kind `improvement_pr`
+([`m6-inbox-improvement.json`](../internal/api/testdata/console/m6-inbox-improvement.json)).
+
 ---
 
 ## 3. Event stream
@@ -325,6 +357,21 @@ excluded, and a path alone does not identify an owner
 
 Aggregate stream for dashboards: `GET /api/v1/factory/{uid}/events` — same envelope,
 multiplexed, with `run_id` on every event.
+
+**M6 applied.** Inserting a run emits factory event `run.created`. Updating
+`runs.status` emits `run.status`. Setting status to the value it already has
+emits nothing. The payload is `run_id`, `status`, and `stage` when stage is
+not empty. It stores no prompt and no token. Rows live in
+`run_lifecycle_events`. They share `run_events.gid` and
+`run_events_factory_seq` with harness events, so the factory stream has one
+cursor. The cursor is exclusive: `factory_seq` greater than the cursor. A row
+that commits after a later gid is assigned a later `factory_seq` on the next
+read and is not skipped. The trigger notifies `run_events` with the run id
+after commit. A reader that drops, including across a restart, reads again
+from the last `factory_seq` it applied. Lifecycle rows are not per-run `seq`
+events. `runs.purpose` is separate: it is `work`, `scorer`, `benchmark`, or
+`improvement`, it defaults to `work`, and it cannot change after insert.
+Measurement runs are not a new `work_items.source`.
 
 ---
 

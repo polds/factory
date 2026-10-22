@@ -81,7 +81,7 @@ upstream worker can drive it:
 | `--computer-use`, `--computer-use-model`, `--no-computer-use` | Computer-use toggles |
 | `--idle-on-complete <dur>` | Stay alive for follow-ups after the conversation ends |
 | `--skip-initial-turn` | Attach without prompting (handoff/continuation) |
-| `--repository-head-override-json` | Frozen checkout state (benchmarks — O7) |
+| `--repository-head-override-json` | Accepted. The worker passes frozen checkout JSON. This harness does not apply it (below). |
 | `--remove-repository-origins` | Strip remotes after clone |
 | `--no-snapshot`, `--snapshot-upload-timeout`, `--snapshot-script-timeout` | Snapshot control |
 | `--bedrock-inference-role`, `--bedrock-role-region` | AWS STS AssumeRoleWithWebIdentity |
@@ -89,6 +89,14 @@ upstream worker can drive it:
 Unknown flags **must be ignored with a warning**, not rejected. The worker forwards
 `additional_oz_args` verbatim without deriving semantics (O3), so a newer control
 plane plus an older harness must not deadlock on an unrecognized token.
+
+**M6 applied.** factoryd fills `repository_head_overrides` on the assignment,
+and the worker forwards them as `--repository-head-override-json`. The in-repo
+`generic-openai` harness accepts that flag and does not read it, so the pinned
+SHA is not checked out. Replay is wired through the assignment, not through
+the checkout. Skill bodies are a different path: factoryd sets
+`FACTORY_SKILL_TEXT`, and the harness appends that text to the system prompt.
+`skill_spec` on the assignment is not consumed.
 
 Richer configuration arrives as JSON at `/var/run/factory/task.json` (the
 `agent_config_snapshot` from the assignment — [04](04-protocols-and-apis.md)), because a

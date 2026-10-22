@@ -223,6 +223,23 @@ func TestHarnessVerifyStillWired(t *testing.T) {
 	}
 }
 
+func TestUsageListsValidateBaseAndRunScores(t *testing.T) {
+	var stdout, stderr strings.Builder
+	code := execute([]string{"--help"}, &stdout, &stderr, func(string) string { return "" })
+	if code != 0 {
+		t.Fatalf("exit %d stderr %s", code, stderr.String())
+	}
+	text := stdout.String()
+	for _, want := range []string{
+		"validate [--base DIR] PATH",
+		"runs scores RUN_ID",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("usage missing %q\n%s", want, text)
+		}
+	}
+}
+
 func TestHarnessVerifyRequiresBin(t *testing.T) {
 	var stdout, stderr strings.Builder
 	code := execute([]string{"harness", "verify"}, &stdout, &stderr, os.Getenv)
