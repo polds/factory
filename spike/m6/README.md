@@ -35,11 +35,13 @@ bash spike/m6/run_test.sh
 
 CI's `m6-offline` job runs that script, then `MODE=offline ./spike/m6/run.sh`.
 Scratch is `spike/m6/.work/`, which is gitignored. The API key is written to
-`spike/m6/.work/api-key` (mode 600). The run prints that path and does not
-print the value. `M6_IMPROVER_OPENS_PR=1` is the live-only branch: the
-improver opens the pull request first, and factoryd's create is then a 422
-followed by a lookup. Router ports 8317 and 8318 stay reserved for a host
-proxy. The driver refuses them.
+`spike/m6/.work/api-key` (mode 600) on every run. A default run does not
+print the path. `KEEP_UP=1` and `--manual` each print `api key file:` and
+the absolute `$WORK/api-key`. The value is not printed.
+`M6_IMPROVER_OPENS_PR=1` is the live-only branch: the improver opens the
+pull request first, and factoryd's create is then a 422 followed by a
+lookup. Router ports 8317 and 8318 stay reserved for a host proxy. The
+driver refuses them.
 
 ```bash
 MODE=offline ./spike/m6/run.sh
@@ -77,7 +79,8 @@ leaves the stack and prints the `specs` and `down` commands.
 `M6_KEEP_REMOTE=1` leaves this run's remote refs and pull requests in place.
 `./spike/m6/run.sh --cleanup-remote` repeats remote cleanup from the saved
 ledger. It is for live and live-ci. If that cleanup does not finish, the
-driver prints `remote cleanup incomplete; ledger spike/m6/.work/remote-ledger.json; run ./spike/m6/run.sh --cleanup-remote`.
+driver prints `remote cleanup incomplete; ledger …; run ./spike/m6/run.sh --cleanup-remote`.
+The ledger argument is the absolute `$WORK/remote-ledger.json`.
 
 Task containers labelled `oz-task-id` are outside this trap.
 
