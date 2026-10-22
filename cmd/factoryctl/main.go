@@ -76,7 +76,7 @@ Commands:
   run --prompt TEXT [--factory NAME] [--agent NAME] [--title TITLE] [--watch]
   watch RUN_ID [--from-seq N]
   cancel RUN_ID
-  validate PATH
+  validate [--base DIR] PATH
   task create --factory NAME --title TEXT [--body TEXT] [--source issue|manual|api] [--ref REF]
   task list --factory NAME [--stage STAGE] [--status STATUS]
   task get --factory NAME TASK_ID
@@ -94,6 +94,7 @@ Commands:
   runs interrupt RUN_ID
   runs followup RUN_ID --text TEXT
   runs score RUN_ID --scorer NAME
+  runs scores RUN_ID
   runs capture-task RUN_ID --suite SUITE --name NAME
   scorers list --factory NAME
   scorers results --factory NAME SCORER [--from TIME] [--to TIME] [--passed true|false]

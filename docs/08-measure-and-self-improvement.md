@@ -45,20 +45,39 @@ A run is scorer-eligible only if **all** hold:
 
 1. Its agent is listed in the scorer's `agents`.
 2. It reached a terminal state.
-3. `failure_reason` is null — i.e. the agent finished, rather than the infrastructure
-   failing. Scoring an evicted pod teaches you nothing about agent quality and poisons
-   every trend line. This is why
-   [04](04-protocols-and-apis.md#messages) keeps `failure_reason` orthogonal to agent
-   outcome.
-4. It is not itself a measurement run (scorer, benchmark trial, or improvement run).
+3. Its failure class is eligible. Cancelled runs are never scored. Class `agent`
+   is eligible. An empty class is eligible when the run succeeded. Status `failed`
+   with an empty class is not. Infrastructure and configuration classes are not.
+   The earlier reading, `failure_reason` is null, is not what this build does:
+   a reason stored on an agent-reported failure would hide the runs a scorer
+   should see. Scoring an evicted pod still teaches you nothing about agent
+   quality.
+   [04](04-protocols-and-apis.md#messages) keeps `failure_reason` orthogonal to
+   agent outcome.
+4. Its purpose is `work`. A scorer, benchmark trial, or improvement run is not
+   eligible. `runs.purpose` cannot change after insert, so a run cannot be
+   retagged into or out of measurement.
 
 Eligible runs are sampled at `samplingRate` (default 25%, `0` disables). Sampling is
-deterministic on `hash(run_id, scorer_id)` so a given run's inclusion is reproducible and
-re-deriving history does not reshuffle the sample.
+deterministic so a given run's inclusion is reproducible and re-deriving history does
+not reshuffle the sample.
 
 On-demand scoring is always available for a single run and **replaces** that scorer's
 previous result — the intended workflow for tuning judge instructions before raising the
 rate.
+
+**M6 applied.** `scorer.Eligible` applies the four rules above, and it checks
+cancelled status before the class. The sample bucket is
+`sha256(run_id ‖ 0x00 ‖ scorer name) mod 100`. Rate 0 samples nothing. Rate 100
+or more samples every eligible run. The sampler leaves an existing `ok` or
+`scorer_invalid` row alone. On-demand scoring replaces the row. The store allows
+one row per run and scorer (`UNIQUE (run_id, scorer_name)`). The judge's
+context is in the prompt only. There is no checkout. A scorer run is given
+no factory secrets and no agent secrets. The prompt says only the inference
+credential is available. Its final message is one JSON object
+`{label, reasoning}`. An
+undeclared label or no JSON object is `scorer_invalid`. The label is not coerced
+to a failure.
 
 ### Judge execution
 
@@ -70,6 +89,9 @@ that can hide its own failures.
 
 Output is validated against the declared labels. A judge returning an undeclared label is
 a scorer error, recorded as `scorer_invalid` rather than silently coerced to a failure.
+
+**M6 applied.** That validation is `scorer.ParseVerdict`. Score and pass/fail
+come from the declared labels and `passingScore`, not from the model's JSON.
 
 ### What makes a good scorer
 
@@ -90,7 +112,7 @@ under a different configuration, on fixed tasks.
 
 A suite pins one agent and 1–6 configurations, each a set of (agent → model | harness)
 bindings, over an ordered list of tasks
-([`benchmarks/`](03-definition-schema.md#benchmarkssuitesuiteyaml-and-taskstaskyaml)).
+([`benchmarks/`](03-definition-schema.md#benchmarkssuitesuiteyaml-and-benchmarkssuitetaskstaskyaml)).
 
 ### Replay is the mechanism
 
@@ -117,6 +139,12 @@ Three properties this buys:
   benchmark tasks are replays of production failures, so capturing a failing run as a task
   should be one click in the console.
 
+**M6 applied.** factoryd fills `repository_head_overrides` on the assignment.
+The in-repo harness does not apply `--repository-head-override-json`, so the
+pinned SHA is not checked out by this harness. The flag and the skill path are
+in [05](05-harness-contract.md#invocation). Capture returns YAML and writes
+nothing ([09](09-web-console.md#scorers--benchmarks--improvement)).
+
 ### Trials and comparison
 
 `configurations × tasks × repetitions` trials, run at `batch` priority. Each trial is
@@ -126,8 +154,22 @@ that applies to the agent, plus cost and duration.
 Reported per configuration: pass rate with a confidence interval, median cost, median
 duration, and token usage by model. **Repetitions are required for a verdict** — agent
 runs are stochastic, and a single trial per cell cannot distinguish a real improvement from
-noise. The console refuses to render a winner below a configurable minimum (default 5
-repetitions) and says why.
+noise. The console refuses to render a winner below 5 repetitions and says why.
+There is no setting for that floor.
+
+**M6 applied.** Each trial is judged by the built-in `correctness` scorer
+against the task's `successCriteria`, unless `scorers/correctness/scorer.md`
+replaces it ([03](03-definition-schema.md#scorersnamescorermd)). An errored
+trial is not a failed trial: infrastructure, configuration, and cancelled runs
+are `errored` and are left out of `n`. Pass and fail come from a `correctness`
+verdict of `ok`. `benchmark.Compare` always uses a minimum of 5
+(`DefaultMinRepetitions`). A request may ask for a different repetition count
+of at least 1; the winner floor stays 5. Any cell with `n` below 5 refuses,
+and the reason names that configuration, task, and `n`. Otherwise a candidate
+wins only when its Wilson 95% lower bound is strictly above the baseline's
+upper bound. The baseline is the configuration named `Baseline` when one is
+present, otherwise the first configuration. One errored trial that drops a
+cell below 5 makes the report refuse.
 
 ## Dashboard metrics
 
@@ -142,9 +184,31 @@ repetitions) and says why.
 | **Scorer cards** | Pass rate per scorer over time | — |
 | **Improvement PRs** | Newest improvement PRs, regardless of date filter | — |
 
-Autonomy and cycle time require a connected code forge and only cover activity after it is
-connected. The dashboard's purpose is to **pick which runs to investigate**, never to
+The dashboard's purpose is to **pick which runs to investigate**, never to
 conclude what caused a change — which is what benchmarks are for.
+
+**M6 applied.** Counts use runs created in `[from, to)`, including measurement
+runs. The measurement figure is the scorer, benchmark, and improvement count
+inside those buckets. A run with no work item counts under an empty source
+name. PRs opened and PRs merged are separate counts, so merged can exceed
+opened. Autonomy is the share of PRs merged in the window whose
+`human_push_seen` is false. `n` is that merged count. A human actor is a
+non-empty handle that does not contain `[bot]`. Opening a pull request stores
+`human_push_seen` from that actor, so a human opener counts as a human push.
+A later human push sets the same flag. An event that matches an improvement
+batch (pull number, URL, or branch `improve/<batch id>`) is marked
+`is_improvement`. Cycle time uses PRs merged in the window. Kickoff is the
+work item's `created_at`. A stage median skips a PR that lacks either end.
+Cost per PR is the median over PRs opened in the window. A run's cost includes
+descendant runs that have no work item of their own, split by integer division
+across the work item's PRs, and remainder cents are dropped. Size buckets are
+S/M/L/XL at 100, 500, and 1,000 changed lines. Scorer cards are the `ok`-result
+pass rate per UTC day. Improvement PRs are batches that have a URL, newest
+first, with no date filter. `forge_connected_at` is never set: installation
+rows have no connected-at timestamp, and the schema does not add one. The
+console therefore shows the forge as not connected. The design sentence that
+autonomy and cycle time start only after a connection timestamp is not what
+this build computes.
 
 ## The self-improvement loop
 
@@ -165,6 +229,13 @@ agent with a single unreviewed failure. The operator cannot choose which failure
 processed — batching is by agent, so the loop sees a *pattern* rather than being pointed at
 one example it can special-case.
 
+**M6 applied.** A threshold or stale-day value of 0 or less uses 25 and 7.
+When `failedRunThreshold` is set in the tree, the loader requires 1–50. The
+scheduled pass skips an agent that already has a batch in `queued`, `running`,
+or `pr_open`. Run-now sets the threshold to 1 and does not skip those agents;
+creating a second batch returns 409. Only scorers with `selfImprovement: true`
+feed the list, and only from runs whose purpose is `work`.
+
 ### Improvement run
 
 Failures for one agent form an `improvement_batch` dispatched to an improvement run. Its
@@ -182,8 +253,22 @@ The proposal may target any of three layers, and choosing correctly is the whole
 | Model too weak for the stage | **definition** (`model`/`harness`/router) |
 | The code is genuinely broken | **application code** |
 
-Output is always a pull request. Nothing is applied directly, including to the factory's
-own definition — which is exactly why the definition lives in Git.
+Output is a pull request when the factory has a definition git URL. Nothing is
+applied directly, including to the factory's own definition — which is exactly
+why the definition lives in Git.
+
+**M6 applied.** The prompt lists each failure's run id, scorer, label, time,
+and reasoning. It does not include the work item, the transcript, or the
+diff. It adds a file listing of the definition tree, the layer table above,
+and prior rejection notes from closed batches for the same agent. It does
+not include the definition repo URL, and it says "Open a pull request" even
+though factoryd opens the request. That is a current limit. A factory with an empty `FACTORY_DEFINITION_GIT_URL` skips
+self-improvement: the pass and run-now log that the factory has no definition
+git URL and return no batches. They do not open a pull request. Benchmark
+resolution of an empty git URL returns an empty SHA and uses the published
+tree. The recorded layer is `skill` only when every changed path has a
+`skills` segment, including `agents/<name>/skills/...`. Any other path, or an
+empty diff, stays `definition`.
 
 ### Review
 
@@ -200,29 +285,73 @@ On close without merge, they are also marked reviewed — otherwise the loop wou
 a rejected change forever. The rejection is recorded so the next improvement run can see
 that this cause was already proposed and declined.
 
+**M6 applied.** The body is `## Regressions addressed`, one line per failing
+run and scorer result, then `Layer changed:`, then the loop footer. Pools are
+GitHub logins from `FACTORY_REVIEWERS_ADMINS`, `FACTORY_REVIEWERS_TEAM`, and
+`FACTORY_REVIEWER_LOGINS` (`email=login` pairs for `custom`). `none` leaves
+the pull request unassigned. `improve.Route` requests one login. The review
+request is capped at 3. Rails 1 and 6 are in
+[Guard rails](#guard-rails). A merged pull request marks the batch `merged`.
+A close without merge marks it `closed` and stores the rejection note (or
+`closed without merge` when the event has no text). `lookupOpenPR` does not
+patch the body. When the improver opens the pull request first, factoryd's
+create is a 422 and the lookup keeps the opener's body, so that pull request
+lacks *Regressions addressed* on the forge. That is a current limit.
+
 ### Guard rails
 
 A system that edits its own configuration needs limits that are structural, not advisory:
 
 1. **No self-merge.** The improvement run has no merge permission. Merging is branch
    protection plus repository permissions — enforced by your forge, not by us.
-2. **Definition PRs get the config check.** A proposed definition change is validated by
-   the same pre-merge check as a human's ([03](03-definition-schema.md#validation)), so
-   the loop cannot land an invalid tree.
+2. **Definition PRs get the config check.** factoryd validates the base and head
+   trees, including `definition.GuardRails`, before it opens the pull request
+   ([03](03-definition-schema.md#validation)). It then posts a `factory/config`
+   check run on that head. This is not the Actions job of the same name in
+   this repository.
 3. **Measurement is excluded from measurement.** Improvement, scorer, and benchmark runs
    are never scorer-eligible, so the loop cannot feed on itself.
 4. **One batch per agent in flight.** Prevents a stampede of overlapping proposals against
    the same cause.
 5. **Scorers cannot enable themselves.** A PR that sets `selfImprovement: true` on a new
    scorer is a privilege escalation in this system and is flagged in review as such.
-6. **Blast-radius limit.** An improvement PR touching more than a configurable number of
-   definition files (default 3) is labelled `needs-human-design` and assigned to the admin
-   pool rather than a random reviewer.
+6. **Blast-radius limit.** An improvement PR touching more than 3 definition
+   files is labelled `needs-human-design` and assigned to the admin pool rather
+   than a random reviewer. There is no setting.
 7. **Protect the gates.** A proposal that would weaken `pipeline.approvals` is rejected by
    the validator outright. The loop may not remove its own supervision — the single most
    important rule in this document, and the clearest argument for gates being declarative
    ([03](03-definition-schema.md#deviation-declarative-pipeline)) rather than sentences in
    a prompt the loop is free to rewrite.
+
+**M6 applied.** One line per rail, as enforced:
+
+1. No self-merge. The improvement-run token is `contents: write`,
+   `pull_requests: write`, and `metadata: read`. The token factoryd uses for
+   its own pull-request calls is `pull_requests: write`, `issues: write`,
+   `checks: write`, and `metadata: read`. Neither map has a merge permission,
+   and factoryd has no merge call
+([`internal/server/m6_tokens.go`](../internal/server/m6_tokens.go)).
+2. Before the pull request, `guardFindings` loads both trees and runs
+   `definition.GuardRails`. Errors fail the batch and no pull request is
+   opened. After the pull request exists, factoryd posts a check run named
+   `factory/config` on the head
+([`internal/server/m6_improve.go`](../internal/server/m6_improve.go)).
+3. Measurement runs have purpose `scorer`, `benchmark`, or `improvement`.
+   `scorer.Eligible` requires purpose `work`. `runs.purpose` is immutable
+   after insert
+([`internal/store/migrations/0010_m6.sql`](../internal/store/migrations/0010_m6.sql)).
+4. Partial unique index `improvement_batches_one_inflight` on
+   `(factory_id, agent_name)` where status is `queued`, `running`, or
+   `pr_open`. `CreateBatch` maps a violation to `ErrBatchInFlight`.
+5. A scorer that is new with `selfImprovement: true`, or flipped from false
+   to true, is `SeverityWarning` from `definition.GuardRails`. The pull
+   request is still opened. It gains the label `privilege-escalation` and a
+   body line. It is not a rejection.
+6. `improve.DefaultBlastLimit` is 3. More changed definition files than that
+   forces the admins pool and the label `needs-human-design` (`improve.Route`).
+7. `definition.WeakensApprovals` is `SeverityError`. Those errors fail the
+   batch and no pull request is opened.
 
 ### Running the loop well
 

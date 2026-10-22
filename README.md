@@ -23,7 +23,10 @@ Peter's Mac opened draft
 on 2026-10-19, `main` at `dd186bd`
 ([#120](https://github.com/polds/factory/pull/120)). Evidence is in
 [`docs/12-build-sequence.md`](docs/12-build-sequence.md). `m5-live.yml` is
-still open. The `claude-code` adapter is not in this build.
+still open. M6 code is merged. The measure and improve section is in
+[`docs/12`](docs/12-build-sequence.md#m6--measure-and-improve-weeks), and the
+driver is [`spike/m6`](spike/m6/README.md). The M6 live exit has not been run.
+The `claude-code` adapter is not in this build.
 
 ## Quickstart
 

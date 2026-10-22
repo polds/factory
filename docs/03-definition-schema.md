@@ -62,6 +62,13 @@ Three layers, all available before anything reaches the server:
 Markdown frontmatter is not covered by YAML schemas, so layers 2–3 are what actually
 validate `agent.md`, `automation.md`, and `scorer.md`.
 
+**M6 applied.** Layer 2 is `factoryctl validate [--base DIR] PATH`. Without
+`--base` it loads the tree and prints diagnostics. With `--base` it also runs
+`definition.GuardRails`. A rail 7 finding (`WeakensApprovals`) is an error and
+the command exits 1. A rail 5 finding (a scorer that is new, or flipped, with
+`selfImprovement: true`) is a warning: it is printed, and it does not by itself
+fail the command.
+
 ## `factory.yaml`
 
 ```yaml
@@ -161,7 +168,9 @@ channel id that outbound threads post to. Omit it when there is no default chann
 **M3 applied.** The loader applies `pipeline:`, routers, and skills. It no
 longer warns that those keys are not applied in M2. Automations, scorers, and
 webhooks are loaded and validated. The automation and webhook engines shipped
-in M4. Scorers are M6. Unknown keys are errors. The YAML JSON Schemas are in
+in M4. Scorers shipped in M6
+([Scorers](#scorersnamescorermd),
+[08](08-measure-and-self-improvement.md#scorers)). Unknown keys are errors. The YAML JSON Schemas are in
 [`schemas/v1alpha1`](../schemas/v1alpha1), and `factoryd` serves them with no
 authentication.
 
@@ -343,6 +352,12 @@ Judge scope from the issue text, not from the PR's description of itself.
 Constraint enforced by the validator: at least one label must meet `passingScore` and at
 least one must fall below it. A scorer that cannot fail is a scorer that measures nothing.
 
+**M6 applied.** The built-in scorer `correctness` judges pass or fail (scores 1
+and 0) on `scorerDefaults.model` and `scorerDefaults.runner`. A file at
+`scorers/correctness/scorer.md` replaces that built-in. Its sampling rate is 0;
+benchmarks call the judge directly. The trial rule is in
+[08](08-measure-and-self-improvement.md#trials-and-comparison).
+
 ## `webhooks/<name>.yaml`
 
 ```yaml
@@ -358,7 +373,7 @@ enabled: true
 URL is a security-relevant event, so the flow is delete-and-recreate under a new name.
 Details in [07](07-integrations-and-webhooks.md).
 
-## `benchmarks/<suite>/suite.yaml` and `tasks/<task>.yaml`
+## `benchmarks/<suite>/suite.yaml` and `benchmarks/<suite>/tasks/<task>.yaml`
 
 ```yaml
 # suite.yaml
@@ -369,6 +384,7 @@ configurations:                 # 1–6
   - name: Baseline
     agents: [{ agent: reviewer, model: auto }]
   - name: Candidate
+    definitionRef: improve/batch   # optional; empty means the production tree
     agents: [{ agent: reviewer, harness: { type: claude-code, model: claude-5-opus-high,
                                            auth: { source: managedSecret,
                                                    secretName: ANTHROPIC_API_KEY } } }]
@@ -376,7 +392,7 @@ tasks: [broken-doc-link]
 ```
 
 ```yaml
-# tasks/broken-doc-link.yaml
+# benchmarks/<suite>/tasks/broken-doc-link.yaml
 title: Fix a broken documentation link
 prompt: Find the broken internal documentation link and update it.
 successCriteria: The destination resolves and the link text names the destination.
@@ -390,6 +406,13 @@ startingRepoRefs:
 whose starting state can move is not a benchmark. This maps onto the observed
 `RepositoryHeadOverride` wire field (O7), including `clone_from` for repo
 substitution and `preserve_origin` to keep the original remote identity.
+
+**M6 applied.** Task files load from `benchmarks/<suite>/tasks/<task>.yaml`.
+The suite's `tasks` list names those files. `configurations[].definitionRef`
+is optional. It is a git ref name or a 40-hex SHA in the factory's definition
+repo, and the loader rejects any other syntax. Empty means the production tree.
+One benchmark run resolves each distinct ref to a SHA once and records that SHA
+on every trial of the configuration.
 
 ## Skills
 
@@ -418,15 +441,19 @@ Everything above marked NEW, and why:
 | `revisionLimit` | An unbounded reviewing↔building loop is the most expensive failure mode in this architecture. |
 | `staleFailureDays` | The 7-day staleness trigger is documented behavior (O12) but not a configurable key; it should be one. |
 | `scorerDefaults.model` | Upstream `scorerDefaults` carries only `runner`, `secrets`, and `mcpServers`, so every scorer must repeat its judge model. A default is the obvious missing key; scorers still override it. |
+| `configurations[].definitionRef` | Added in M6. Optional git ref name or 40-hex SHA so a benchmark can compare a definition change with the production tree. Not verified against upstream's validator. |
 
-This list is **exhaustive and verified**: running the example tree
-([`examples/acme-factory`](../examples/acme-factory)) through Warp's own published
-`validate_factory_files.py` — which uses the `warp-server` parser for `v1alpha1` — reports
-unknown-field errors for exactly these six keys and nothing else. Every other resource in
-the tree (five agents, a three-provider automation, a runner, a scorer, a skill, a webhook)
-validates clean against the upstream parser. That is the concrete measure of how
-compatible this schema is, and it means a Warp definition ports by addition rather than
-translation.
+Upstream verification is the six-key run, and only that run. Running the example
+tree ([`examples/acme-factory`](../examples/acme-factory)) through Warp's published
+`validate_factory_files.py` — which uses the `warp-server` parser for `v1alpha1` —
+was reported as unknown-field errors for exactly six keys, and as a clean parse
+of every other resource in the tree (five agents, a three-provider automation, a
+runner, a scorer, a skill, a webhook). That sentence was written beside a
+seven-row table, so this document does not name a seventh verified key, and the
+check has not been re-run. `configurations[].definitionRef` was added in M6 and
+was not part of that verification. `benchmarks/` shipped in M6 and was not part
+of it either. A Warp definition still ports by addition. This table is not an
+upstream-verified inventory of the current schema.
 
 ### Deviation: declarative pipeline
 
