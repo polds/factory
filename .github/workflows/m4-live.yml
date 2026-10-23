@@ -3,6 +3,7 @@
 # workflow_dispatch only. This workflow is not part of the required CI
 # check. Dispatch it from the orchestrator; do not run it on
 # pull_request or push.
+# exec so cancel SIGINT reaches the driver's EXIT/INT/TERM trap.
 #
 # permissions is contents:read only. GITHUB_TOKEN cannot push or open
 # PRs. The driver mints one GitHub App installation token from
@@ -83,7 +84,7 @@ jobs:
           M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
           M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
           M4_LIVE_MODEL: ${{ inputs.model }}
-        run: MODE=live-ci ./spike/m4/run.sh
+        run: MODE=live-ci exec ./spike/m4/run.sh
       # .work is a hidden directory, so the upload must opt in.
       - name: Upload M4 evidence
         if: always()

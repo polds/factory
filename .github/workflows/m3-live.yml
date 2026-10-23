@@ -5,6 +5,7 @@
 # building, and reviewing. This workflow is not part of the required CI
 # check. Dispatch it from the orchestrator; do not run it on
 # pull_request or push.
+# exec so cancel SIGINT reaches the driver's EXIT/INT/TERM trap.
 #
 # permissions is contents:read only. GITHUB_TOKEN cannot push or open
 # PRs. Live git and gh use the M1_GH_TOKEN secret.
@@ -81,7 +82,7 @@ jobs:
           M3_MODEL_REVIEWING: ${{ inputs.model_reviewing }}
           M3_REPO: ${{ inputs.repo }}
           APPROVAL_DECISION: ${{ inputs.approval_decision }}
-        run: MODE=live ./spike/m3/run.sh
+        run: MODE=live exec ./spike/m3/run.sh
       # .work is a hidden directory, so the upload must opt in.
       - name: Upload M3 evidence
         if: always()

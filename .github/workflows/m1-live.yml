@@ -4,6 +4,7 @@
 # worker through cmd/m0-spike and the generic-openai harness. The agent
 # clones the target repo, edits spike/m1/fixture, and opens a draft PR.
 # This workflow is not part of the required CI check.
+# exec so cancel SIGINT reaches the driver's EXIT/INT/TERM trap.
 #
 # Repository secrets (values are masked; never printed by run.sh):
 #   M1_OPENAI_BASE_URL   OpenAI-compatible endpoint (OPENAI_BASE_URL)
@@ -52,7 +53,7 @@ jobs:
           GH_TOKEN: ${{ secrets.M1_GH_TOKEN }}
           M1_MODEL: ${{ inputs.model }}
           M1_REPO: ${{ inputs.repo }}
-        run: MODE=live ./spike/m1/run.sh
+        run: MODE=live exec ./spike/m1/run.sh
       # .work is a hidden directory, so the upload must opt in.
       - name: Upload harness event archive
         if: always()
