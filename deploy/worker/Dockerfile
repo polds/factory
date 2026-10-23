@@ -1,4 +1,4 @@
-# Image of the unmodified upstream oz-agent-worker, pinned to 63dbb8a.
+# Image of the unmodified upstream oz-agent-worker. The commit is ARG WORKER_REF.
 #
 # The worker's Docker backend talks to the daemon with the Engine API
 # (github.com/moby/moby/client, client.New(client.FromEnv) in
@@ -16,11 +16,13 @@ RUN apk add --no-cache git=2.54.0-r0
 
 WORKDIR /src
 
+# Keep the existing image revision (go 1.26.6). Upstream main requires go 1.27.3.
+ARG WORKER_REF=63dbb8ae8ccb3941392691f5c628e3365d8e248e
 # Full clone, then the pinned commit, then a clean-tree check. go build
 # records vcs.revision / vcs.modified from this checkout. The binary is
 # written outside the tree so the build itself cannot dirty it.
 RUN git clone https://github.com/warpdotdev/oz-agent-worker.git . \
-    && git checkout 63dbb8a \
+    && git checkout "${WORKER_REF}" \
     && git status --porcelain \
     && test -z "$(git status --porcelain)" \
     && CGO_ENABLED=0 go build -buildvcs=true -o /oz-agent-worker .

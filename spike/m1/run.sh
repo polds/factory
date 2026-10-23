@@ -28,9 +28,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 WORK="$HERE/.work"
+# shellcheck source=spike/lib/upstream-worker.sh
+. "$ROOT/spike/lib/upstream-worker.sh"
 
-WORKER_REPO="https://github.com/warpdotdev/oz-agent-worker.git"
-WORKER_REF="${WORKER_REF:-main}"
 HARNESS_IMAGE="factory-harness:dev"
 TASK_IMAGE="factory-m1-task:dev"
 API_KEY="m1-spike-key"
@@ -207,9 +207,10 @@ spike_fg docker build -q -t "$TASK_IMAGE" "$HERE/task-image" >/dev/null
 echo "built $TASK_IMAGE"
 
 # ---------------------------------------------------------------------------
-say "Build the unmodified upstream worker (ref: $WORKER_REF)"
+worker_ref="$(upstream_worker_ref "$ROOT")"
+say "Build the unmodified upstream worker (ref: $worker_ref)"
 if [[ ! -d "$WORK/oz-agent-worker/.git" ]]; then
-  spike_fg git clone --depth 1 --branch "$WORKER_REF" "$WORKER_REPO" "$WORK/oz-agent-worker"
+  spike_fg bash "$ROOT/spike/lib/clone-upstream-worker.sh" "$WORK/oz-agent-worker"
 fi
 WORKER_SHA="$(git -C "$WORK/oz-agent-worker" rev-parse --short HEAD)"
 spike_fg_dir "$WORK/oz-agent-worker" go build -o "$WORK/oz-agent-worker-bin" .
