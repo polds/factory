@@ -19,12 +19,24 @@ unset WORKER_REF
 [[ "$(WORKER_REF=main upstream_worker_ref "$ROOT")" == "main" ]] ||
   fail "WORKER_REF did not override"
 
-if grep -n -E 'WORKER_REF:-main' "$ROOT/spike/m0/run.sh" "$ROOT/spike/m1/run.sh"; then
-  fail "m0 or m1 still defaults the worker ref to main"
-fi
-if grep -n -E 'git clone .*--branch' "$ROOT/spike/m0/run.sh" "$ROOT/spike/m1/run.sh"; then
-  fail "m0 or m1 still clones the worker with --branch"
-fi
+# Spike scripts and workflows must not default the worker to branch main.
+# upstream_worker_test.sh itself sets WORKER_REF=main to prove the override.
+while IFS= read -r -d '' file; do
+  found="$(grep -n -E \
+    -e 'WORKER_REF:-["'\'']?main["'\'']?' \
+    -e 'WORKER_REF:[[:space:]]*["'\'']?main["'\'']?[[:space:]]*$' \
+    -e 'git clone.*oz-agent-worker' \
+    "$file" || true)"
+  if grep -q -F 'oz-agent-worker.git' "$file" && grep -q -E 'git clone' "$file"; then
+    found="${found}"$'\n'"clones oz-agent-worker.git"
+  fi
+  if [[ -n "$found" ]]; then
+    printf '%s\n' "$found" >&2
+    fail "floating worker ref in ${file#"$ROOT"/}"
+  fi
+done < <(find "$ROOT/spike" "$ROOT/.github/workflows" \
+  \( -path '*/.work' -o -name 'upstream_worker_test.sh' \) -prune -o \
+  \( -name '*.sh' -o -name '*.yml' -o -name '*.yaml' \) -print0)
 for script in "$ROOT/spike/m0/run.sh" "$ROOT/spike/m1/run.sh"; do
   grep -F 'spike/lib/clone-upstream-worker.sh' "$script" >/dev/null ||
     fail "$script does not call the shared clone script"

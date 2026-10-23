@@ -16,8 +16,8 @@ RUN apk add --no-cache git=2.54.0-r0
 
 WORKDIR /src
 
-# Newest oz-agent-worker commit whose go.mod builds with Go 1.26; upstream main requires go 1.27.3.
-ARG WORKER_REF=3ba509a2f4bc2243cbff0a7869c2303c9dcad4e7
+# Keep the existing image revision (go 1.26.6). Upstream main requires go 1.27.3.
+ARG WORKER_REF=63dbb8ae8ccb3941392691f5c628e3365d8e248e
 # Full clone, then the pinned commit, then a clean-tree check. go build
 # records vcs.revision / vcs.modified from this checkout. The binary is
 # written outside the tree so the build itself cannot dirty it.
