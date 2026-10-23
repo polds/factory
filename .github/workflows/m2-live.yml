@@ -5,6 +5,7 @@
 # the target repo, edits spike/m1/fixture, and opens a draft PR.
 # This workflow is not part of the required CI check. Dispatch it from
 # the orchestrator; do not run it on pull_request or push.
+# exec so cancel SIGINT reaches the driver's EXIT/INT/TERM trap.
 #
 # permissions is contents:read only. GITHUB_TOKEN cannot push or open
 # PRs. Live git and gh use the M1_GH_TOKEN secret.
@@ -57,7 +58,7 @@ jobs:
           GH_TOKEN: ${{ secrets.M1_GH_TOKEN }}
           M2_MODEL: ${{ inputs.model }}
           M2_REPO: ${{ inputs.repo }}
-        run: MODE=live ./spike/m2/run.sh
+        run: MODE=live exec ./spike/m2/run.sh
       # .work is a hidden directory, so the upload must opt in.
       - name: Upload harness event archive
         if: always()
