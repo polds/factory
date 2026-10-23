@@ -241,6 +241,8 @@ jobs:
           # Printer flags override .editorconfig, so indent lives there.
           shfmt -d "${files[@]}"
           shellcheck -x "${files[@]}"
+      - name: Upstream worker pin
+        run: ./spike/lib/upstream_worker_test.sh
       - name: M2 run.sh unit tests
         run: ./spike/m2/run_test.sh
       - name: M4 run.sh unit tests

@@ -3,14 +3,17 @@
 #
 # Builds factory-upstream-worker:dev from this directory and checks:
 #   * the entrypoint is oz-agent-worker and accepts --web-socket-url
-#   * go version -m stamps vcs.revision 63dbb8a… and vcs.modified=false
+#   * go version -m stamps vcs.revision to the Dockerfile pin and vcs.modified=false
 #
 # Requires: docker (running), go.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+# shellcheck source=spike/lib/upstream-worker.sh
+. "$ROOT/spike/lib/upstream-worker.sh"
 IMAGE="factory-upstream-worker:dev"
-REV_PREFIX="63dbb8a"
+REV="$(upstream_worker_pin "$ROOT")"
 BIN_PATH="/oz-agent-worker"
 
 say() { printf '\n==> %s\n' "$*"; }
@@ -32,7 +35,7 @@ say "Build ${IMAGE}"
 docker build -t "$IMAGE" "$HERE"
 
 say "CLI help and --web-socket-url"
-# At 63dbb8a, WebSocketURL is a kong hidden flag, so `oz-agent-worker --help`
+# WebSocketURL is a kong hidden flag, so `oz-agent-worker --help`
 # omits --web-socket-url. Passing the flag with no value still names it in
 # the error (`--web-socket-url: expected string value`). That line is how
 # this smoke asserts the binary exposes the flag.
@@ -64,6 +67,6 @@ cid="$(docker create "$IMAGE")"
 tmp="$(mktemp -d)"
 docker cp "${cid}:${BIN_PATH}" "$tmp/oz-agent-worker"
 info="$(go version -m "$tmp/oz-agent-worker")"
-printf '%s\n' "$info" | grep -F "vcs.revision=${REV_PREFIX}" >/dev/null
+printf '%s\n' "$info" | grep -F "vcs.revision=${REV}" >/dev/null
 printf '%s\n' "$info" | grep -F 'vcs.modified=false' >/dev/null
-echo "vcs.revision ${REV_PREFIX}… vcs.modified=false"
+echo "vcs.revision ${REV} vcs.modified=false"
