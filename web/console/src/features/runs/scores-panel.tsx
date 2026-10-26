@@ -2,12 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, XCircle } from "lucide-react";
 import { useRef, useState } from "react";
 import { APIError, client } from "../../api/client";
-import type { RunScore, ScorerResultStatus } from "../../api/types";
+import type { RunScore } from "../../api/types";
 import { Button } from "../../components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { ErrorState } from "../../components/ErrorState";
 import { Panel } from "../../components/Panel";
-import { unexpected } from "../../lib/unexpected";
+import { formatScore } from "../../lib/format";
+import { scorerStatusLabel } from "../../lib/run-labels";
 import { problemDetail } from "../dashboard/model";
 
 type PendingScore = {
@@ -139,7 +140,7 @@ function ScoresTable({ rows }: { rows: readonly RunScore[] }) {
                 <PassedMark passed={row.passed} />
               </td>
               <td className="mono">{formatScore(row.score)}</td>
-              <td>{statusLabel(row.status)}</td>
+              <td>{scorerStatusLabel(row.status)}</td>
               <td>
                 <p className="quote">{row.reasoning}</p>
               </td>
@@ -170,24 +171,6 @@ function presentScore(raw: RunScore): RunScore {
     reasoning: raw.reasoning,
     status: raw.status,
   };
-}
-
-function formatScore(score: number): string {
-  if (!Number.isFinite(score)) return "—";
-  return String(score);
-}
-
-function statusLabel(status: ScorerResultStatus): string {
-  switch (status) {
-    case "ok":
-      return "OK";
-    case "scorer_invalid":
-      return "Scorer invalid";
-    case "pending":
-      return "Pending";
-    default:
-      return unexpected(status);
-  }
 }
 
 function sameRunScore(row: RunScore, baseline: RunScore | null): boolean {

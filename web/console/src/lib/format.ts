@@ -44,3 +44,8 @@ export function httpsHref(value: string): string | null {
     return null;
   }
 }
+
+export function formatScore(score: number): string {
+  if (!Number.isFinite(score)) return "—";
+  return String(score);
+}

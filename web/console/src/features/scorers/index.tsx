@@ -16,9 +16,12 @@ import type { ScorerResult, ScorerResultStatus, ScorerSummary } from "../../api/
 import { Caveat } from "../../components/Caveat";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
+import { IconLabel } from "../../components/IconLabel";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
 import { PassRateByDay } from "../../components/PassRateByDay";
+import { formatScore } from "../../lib/format";
+import { scorerStatusLabel } from "../../lib/run-labels";
 import { unexpected } from "../../lib/unexpected";
 import { problemDetail } from "../dashboard/model";
 
@@ -61,36 +64,22 @@ function presentResult(raw: ScorerResult): ResultRow {
   };
 }
 
-function formatScore(score: number): string {
-  if (!Number.isFinite(score)) return "—";
-  return String(score);
-}
-
 function resultStatus(status: ScorerResultStatus): { icon: LucideIcon; label: string } {
   switch (status) {
     case "ok":
-      return { icon: BadgeCheck, label: "OK" };
+      return { icon: BadgeCheck, label: scorerStatusLabel(status) };
     case "scorer_invalid":
-      return { icon: AlertTriangle, label: "Scorer invalid" };
+      return { icon: AlertTriangle, label: scorerStatusLabel(status) };
     case "pending":
-      return { icon: Clock, label: "Pending" };
+      return { icon: Clock, label: scorerStatusLabel(status) };
     default:
       return unexpected(status);
   }
 }
 
-function Mark({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
-  return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap">
-      <Icon aria-hidden="true" size={16} />
-      <span>{label}</span>
-    </span>
-  );
-}
-
 function SelfImprovement({ on }: { on: boolean }) {
-  if (on) return <Mark icon={Sparkles} label="Self-improvement" />;
-  return <Mark icon={CircleSlash} label="No self-improvement" />;
+  if (on) return <IconLabel icon={Sparkles} label="Self-improvement" />;
+  return <IconLabel icon={CircleSlash} label="No self-improvement" />;
 }
 
 function Definition({ scorer }: { scorer: ScorerSummary }) {
@@ -152,13 +141,13 @@ function ResultsTable({ rows }: { rows: readonly ResultRow[] }) {
                 <td className="mono">{formatScore(row.score)}</td>
                 <td>
                   {row.passed ? (
-                    <Mark icon={CheckCircle2} label="Passed" />
+                    <IconLabel icon={CheckCircle2} label="Passed" />
                   ) : (
-                    <Mark icon={XCircle} label="Failed" />
+                    <IconLabel icon={XCircle} label="Failed" />
                   )}
                 </td>
                 <td>
-                  <Mark icon={status.icon} label={status.label} />
+                  <IconLabel icon={status.icon} label={status.label} />
                 </td>
                 <td className="break-words whitespace-pre-wrap">{row.reasoning}</td>
                 <td>

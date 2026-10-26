@@ -17,8 +17,10 @@ import { Button } from "../../components/Button";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
+import { IconLabel } from "../../components/IconLabel";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
+import { httpsHref } from "../../lib/format";
 import { unexpected } from "../../lib/unexpected";
 import { problemDetail } from "../dashboard/model";
 
@@ -61,33 +63,12 @@ function batchStatus(status: ImprovementBatchStatus): { icon: LucideIcon; label:
   }
 }
 
-function Mark({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
-  return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap">
-      <Icon aria-hidden="true" size={16} />
-      <span>{label}</span>
-    </span>
-  );
-}
-
-function httpsURL(value: string): { href: string; text: string } | null {
-  const text = value.trim();
-  if (text === "") return null;
-  try {
-    const url = new URL(text);
-    if (url.protocol !== "https:") return null;
-    return { href: url.href, text };
-  } catch {
-    return null;
-  }
-}
-
 function PullRequest({ url }: { url: string }) {
-  const https = httpsURL(url);
-  if (https) {
+  const href = httpsHref(url);
+  if (href) {
     return (
-      <a href={https.href} className="mono break-all">
-        {https.text}
+      <a href={href} className="mono break-all">
+        {url.trim()}
       </a>
     );
   }
@@ -118,7 +99,7 @@ function BatchTable({ batches }: { batches: readonly ImprovementBatch[] }) {
                   <tr key={batch.id}>
                     <td className="mono">{batch.id}</td>
                     <td>
-                      <Mark icon={status.icon} label={status.label} />
+                      <IconLabel icon={status.icon} label={status.label} />
                     </td>
                     <td>{batch.agent}</td>
                     <td>
