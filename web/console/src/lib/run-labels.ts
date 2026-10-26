@@ -1,4 +1,4 @@
-import type { FailureClass, RunRow } from "../api/types";
+import type { FailureClass, RunRow, ScorerResultStatus } from "../api/types";
 
 export const PIPELINE_STAGES = [
   "triage",
@@ -44,4 +44,14 @@ export function failureClassOf(
   // directly; do not derive a class from failure_reason.
   if (isFailureClass(run.failure?.class)) return run.failure.class;
   return undefined;
+}
+
+const SCORER_STATUS_LABELS = {
+  ok: "OK",
+  scorer_invalid: "Scorer invalid",
+  pending: "Pending",
+} as const satisfies Record<ScorerResultStatus, string>;
+
+export function scorerStatusLabel(status: ScorerResultStatus): string {
+  return SCORER_STATUS_LABELS[status];
 }
