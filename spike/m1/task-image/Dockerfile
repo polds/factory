@@ -15,8 +15,8 @@ FROM golang:1.26-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b2
 
 RUN apk add --no-cache \
     bash=5.3.9-r1 \
-    ca-certificates=20260909-r0 \
-    curl=8.22.0-r0 \
+    ca-certificates=20261020-r0 \
+    curl=8.23.0-r0 \
     git=2.54.0-r0 \
     github-cli=2.97.0-r2 \
     && mkdir -p /workspace \
