@@ -19,12 +19,15 @@ not, do not invent one.
 When the task says you are improving the factory definition, use the tools.
 
 /workspace starts empty. This image has git and no credential helper.
-HOME and GIT_CONFIG_GLOBAL are /tmp. Before the clone, configure HTTPS so
-git sends GH_TOKEN. Do not print the token and do not put it in the URL:
+HOME and GIT_CONFIG_GLOBAL are /tmp. /workspace is owned by root, so mark
+it safe before any git command. Before the clone, configure HTTPS so git
+sends GH_TOKEN. Do not print the token and do not put it in the URL:
 
+    git config --global --add safe.directory /workspace
     git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
 
 1. Clone the repository in DEFINITION_GIT_URL.
+   Put the clone in the empty directory /workspace. Do not pass --depth 1 or --single-branch.
 2. Create the branch named on the `branch: improve/` line.
 3. Read the cite-sources scorer and add the line it requires to
    skills/cite-sources/SKILL.md.

@@ -172,23 +172,27 @@ def improve(body: dict) -> dict:
         return bash_call(command)
     if "M6_EDITED" in text:
         command = (
-            "cd /tmp/def && git add skills/cite-sources/SKILL.md && "
+            "cd /workspace && git add skills/cite-sources/SKILL.md && "
             "git commit -m 'cite sources' && "
             f"git push origin HEAD:refs/heads/{branch} && echo M6_PUSHED"
         )
         return bash_call(command)
     if "M6_CLONED" in text:
         command = (
-            f"cd /tmp/def && git checkout -b {branch} && "
+            f"cd /workspace && git checkout -b {branch} && "
             "cat >> skills/cite-sources/SKILL.md <<'EOF'\n"
             "\n## Required line\n\n"
             f"{CONVENTION}\n"
             "EOF\necho M6_EDITED"
         )
         return bash_call(command)
+    # /workspace is the task directory and starts empty. Clone into that
+    # exact path with full history: a shallow or single-branch clone cannot
+    # check out the live base m6-run/<id>/main.
     command = (
-        "rm -rf /tmp/def && GIT_TERMINAL_PROMPT=0 "
-        f"git clone --depth 1 '{git_url}' /tmp/def && echo M6_CLONED"
+        "cd /tmp && git config --global --add safe.directory /workspace && "
+        "GIT_TERMINAL_PROMPT=0 "
+        f"git clone '{git_url}' /workspace && echo M6_CLONED"
     )
     return bash_call(command)
 

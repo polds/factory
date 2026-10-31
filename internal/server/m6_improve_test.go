@@ -58,6 +58,8 @@ func TestImprovementPromptCarriesInstructions(t *testing.T) {
 		"reasoning: " + t81Reasoning,
 		when,
 		"/workspace starts empty.",
+		"A prose reply is not success",
+		"commit, and push the branch",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q", want)
@@ -107,6 +109,7 @@ func TestImprovementFailureStopsRetry(t *testing.T) {
 	t.Run("missing branch", func(t *testing.T) {
 		cloner := &scriptedCloner{missing: true}
 		env := bootM6(t, m6Boot{threshold: 1, git: true, cloner: cloner})
+		m6ShortCloneBounds(env)
 		_, batch := m6SeedImprovement(t, env, t81Reasoning)
 		m6ForceTerminal(t, env, []string{batch.ImprovementRunID}, failure.StatusSucceeded, "")
 		run, err := env.srv.store.GetRun(context.Background(), batch.ImprovementRunID)
@@ -124,8 +127,9 @@ func TestImprovementFailureStopsRetry(t *testing.T) {
 		if !strings.Contains(got.RejectionNote, "improvement branch missing") || !strings.Contains(got.RejectionNote, branch) {
 			t.Fatalf("note %q", got.RejectionNote)
 		}
-		if n := cloner.improveCount(); n != 1 {
-			t.Fatalf("improve clones %d", n)
+		first := cloner.improveCount()
+		if first < 2 {
+			t.Fatalf("improve clones %d", first)
 		}
 		if err := env.srv.settleImprovementRun(context.Background(), run); err != nil {
 			t.Fatal(err)
@@ -133,7 +137,68 @@ func TestImprovementFailureStopsRetry(t *testing.T) {
 		if err := env.srv.sweepImprovementBatches(context.Background(), batch.FactoryID); err != nil {
 			t.Fatal(err)
 		}
-		if n := cloner.improveCount(); n != 1 {
+		if n := cloner.improveCount(); n != first {
+			t.Fatalf("improve clones after retry %d", n)
+		}
+		m6AssertNextBatch(t, env, batch.ID)
+	})
+
+	t.Run("missing branch then advertised", func(t *testing.T) {
+		cloner := &scriptedCloner{missLeft: 1}
+		env := bootM6(t, m6Boot{threshold: 1, git: true, cloner: cloner})
+		m6ShortCloneBounds(env)
+		env.srv.m6BranchAdvertiseFor = 2 * time.Second
+		_, batch := m6SeedImprovement(t, env, t81Reasoning)
+		m6ForceTerminal(t, env, []string{batch.ImprovementRunID}, failure.StatusSucceeded, "")
+		run, err := env.srv.store.GetRun(context.Background(), batch.ImprovementRunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := env.srv.settleImprovementRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		got := m6LoadedBatch(t, env, batch.ID)
+		if got.Status != api.BatchPROpen || got.PRNumber != 41 {
+			t.Fatalf("status %s pr %d note %q", got.Status, got.PRNumber, got.RejectionNote)
+		}
+		if n := cloner.improveCount(); n != 2 {
+			t.Fatalf("improve clones %d", n)
+		}
+	})
+
+	t.Run("auth error", func(t *testing.T) {
+		cloner := &scriptedCloner{auth: true}
+		env := bootM6(t, m6Boot{
+			threshold: 1,
+			git:       true,
+			cloner:    cloner,
+			secrets:   map[string]string{"DEFINITION_GIT_URL": t81SecretURL},
+		})
+		m6ShortCloneBounds(env)
+		_, batch := m6SeedImprovement(t, env, t81Reasoning)
+		m6ForceTerminal(t, env, []string{batch.ImprovementRunID}, failure.StatusSucceeded, "")
+		run, err := env.srv.store.GetRun(context.Background(), batch.ImprovementRunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := env.srv.settleImprovementRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		got := m6LoadedBatch(t, env, batch.ID)
+		if got.Status != api.BatchFailed {
+			t.Fatalf("status %s", got.Status)
+		}
+		if !strings.Contains(got.RejectionNote, "authentication failed") || !strings.Contains(got.RejectionNote, "improvement clone") {
+			t.Fatalf("note %q", got.RejectionNote)
+		}
+		m6AssertNoSecret(t, got.RejectionNote)
+		if n := cloner.improveCount(); n != improveCloneAttempts {
+			t.Fatalf("improve clones %d", n)
+		}
+		if err := env.srv.settleImprovementRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		if n := cloner.improveCount(); n != improveCloneAttempts {
 			t.Fatalf("improve clones after retry %d", n)
 		}
 		m6AssertNextBatch(t, env, batch.ID)
@@ -177,10 +242,12 @@ func TestImprovementOpenedPRKeepsRegressions(t *testing.T) {
 }
 
 type scriptedCloner struct {
-	mu      sync.Mutex
-	improve int
-	missing bool
-	body    string
+	mu       sync.Mutex
+	improve  int
+	missing  bool
+	missLeft int
+	auth     bool
+	body     string
 }
 
 func (c *scriptedCloner) Clone(_ context.Context, _, ref, dest string) (string, error) {
@@ -188,6 +255,13 @@ func (c *scriptedCloner) Clone(_ context.Context, _, ref, dest string) (string, 
 	defer c.mu.Unlock()
 	if strings.HasPrefix(ref, improveBranchPrefix) {
 		c.improve++
+		if c.auth {
+			return "", fmt.Errorf("fatal: authentication failed for %s", t81SecretURL)
+		}
+		if c.missLeft > 0 {
+			c.missLeft--
+			return "", fmt.Errorf("fatal: couldn't find remote ref %s", ref)
+		}
 		if c.missing {
 			return "", fmt.Errorf("fatal: couldn't find remote ref %s", ref)
 		}
@@ -206,6 +280,13 @@ func (c *scriptedCloner) improveCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.improve
+}
+
+func m6ShortCloneBounds(env *env) {
+	env.srv.m6BranchAdvertiseFor = 150 * time.Millisecond
+	env.srv.m6BranchAdvertiseGap = 5 * time.Millisecond
+	env.srv.m6CloneAttempts = improveCloneAttempts
+	env.srv.m6CloneAttemptGap = time.Millisecond
 }
 
 func m6SeedImprovement(t *testing.T, env *env, reasoning string) (string, store.ImprovementBatch) {

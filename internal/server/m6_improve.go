@@ -26,6 +26,21 @@ const (
 	privilegeEscalationLabel = "privilege-escalation"
 	factoryConfigCheck       = "factory/config"
 	improveSettleLockKey     = "m6-improve-settle"
+
+	// improveBranchAdvertiseFor is how long a succeeded improver waits
+	// for a just-pushed improve/<batch> branch to show up on the remote.
+	// The first missing-ref clone is not a failure: advertisement lags
+	// the push. improveBranchAdvertiseGap is the first backoff; it doubles
+	// up to improveBranchAdvertiseGapMax and stays inside the window.
+	improveBranchAdvertiseFor    = 45 * time.Second
+	improveBranchAdvertiseGap    = 2 * time.Second
+	improveBranchAdvertiseGapMax = 8 * time.Second
+
+	// improveCloneAttempts caps a clone error that is not a missing
+	// improve branch (for example a permanent auth failure). After the
+	// cap the batch is failed once so it cannot block later batches.
+	improveCloneAttempts   = 3
+	improveCloneAttemptGap = 2 * time.Second
 )
 
 func (s *Server) RunImprovementNow(ctx context.Context, factory string) (api.ImprovementRunNow, error) {
@@ -375,23 +390,29 @@ func (s *Server) openImprovementPR(ctx context.Context, batch store.ImprovementB
 		if !terminalStatus(run.Status) {
 			return nil
 		}
-		// A failed improver, or a success that never pushed, used to leave
-		// the batch running. The in-flight row then blocked every later
-		// batch for this agent. Mark it failed once and do not clone again.
+		// A failed improver used to leave the batch running. The in-flight
+		// row then blocked every later batch for this agent. Mark it
+		// failed once and do not clone.
 		if run.Status != failure.StatusSucceeded {
 			return s.failImprovementBatch(ctx, current.ID, improvementRunNote(run))
 		}
-		baseSHA, baseDir, err := s.cloneRef(ctx, s.productionRef())
+		baseSHA, baseDir, err := s.cloneCapped(ctx, s.productionRef())
 		if err != nil {
-			return err
+			if ctx.Err() != nil {
+				return err
+			}
+			return s.failImprovementBatch(ctx, current.ID, "improvement clone: "+err.Error())
 		}
 		branch := improveBranchPrefix + current.ID
-		headSHA, headDir, err := s.cloneRef(ctx, branch)
+		headSHA, headDir, err := s.cloneImproveHead(ctx, branch)
 		if err != nil {
+			if ctx.Err() != nil {
+				return err
+			}
 			if missingRemoteRef(err) {
 				return s.failImprovementBatch(ctx, current.ID, "improvement branch missing: "+branch)
 			}
-			return err
+			return s.failImprovementBatch(ctx, current.ID, "improvement clone: "+err.Error())
 		}
 		_ = baseSHA
 		problems, warnings := guardFindings(baseDir, headDir)
@@ -564,6 +585,126 @@ func (s *Server) failImprovementBatch(ctx context.Context, batchID, note string)
 
 func missingRemoteRef(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "couldn't find remote ref")
+}
+
+func (s *Server) branchAdvertiseFor() time.Duration {
+	if s.m6BranchAdvertiseFor > 0 {
+		return s.m6BranchAdvertiseFor
+	}
+	return improveBranchAdvertiseFor
+}
+
+func (s *Server) branchAdvertiseGap() time.Duration {
+	if s.m6BranchAdvertiseGap > 0 {
+		return s.m6BranchAdvertiseGap
+	}
+	return improveBranchAdvertiseGap
+}
+
+func (s *Server) cloneAttemptLimit() int {
+	if s.m6CloneAttempts > 0 {
+		return s.m6CloneAttempts
+	}
+	return improveCloneAttempts
+}
+
+func (s *Server) cloneAttemptGap() time.Duration {
+	if s.m6CloneAttemptGap > 0 {
+		return s.m6CloneAttemptGap
+	}
+	return improveCloneAttemptGap
+}
+
+// cloneCapped retries a ref that is not the just-pushed improve branch.
+// The last error is returned after improveCloneAttempts. The caller marks
+// the batch failed once.
+func (s *Server) cloneCapped(ctx context.Context, ref string) (string, string, error) {
+	limit := s.cloneAttemptLimit()
+	var last error
+	for attempt := 1; attempt <= limit; attempt++ {
+		sha, dir, err := s.cloneRef(ctx, ref)
+		if err == nil {
+			return sha, dir, nil
+		}
+		if ctx.Err() != nil {
+			return "", "", ctx.Err()
+		}
+		last = err
+		if attempt == limit {
+			break
+		}
+		if err := s.improveSleep(ctx, s.cloneAttemptGap()); err != nil {
+			return "", "", err
+		}
+	}
+	return "", "", last
+}
+
+// cloneImproveHead clones improve/<batch>. A missing remote ref is retried
+// until improveBranchAdvertiseFor elapses, because the push may not be
+// advertised yet. Any other error uses the same attempt cap as cloneCapped.
+func (s *Server) cloneImproveHead(ctx context.Context, branch string) (string, string, error) {
+	deadline := time.Now().Add(s.branchAdvertiseFor())
+	gap := s.branchAdvertiseGap()
+	others := 0
+	limit := s.cloneAttemptLimit()
+	var last error
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", "", err
+		}
+		sha, dir, err := s.cloneRef(ctx, branch)
+		if err == nil {
+			return sha, dir, nil
+		}
+		if ctx.Err() != nil {
+			return "", "", ctx.Err()
+		}
+		last = err
+		if !missingRemoteRef(err) {
+			others++
+			if others >= limit || ctx.Err() != nil {
+				return "", "", last
+			}
+			if err := s.improveSleep(ctx, s.cloneAttemptGap()); err != nil {
+				return "", "", err
+			}
+			continue
+		}
+		if !time.Now().Before(deadline) {
+			return "", "", last
+		}
+		wait := gap
+		if remain := time.Until(deadline); wait > remain {
+			wait = remain
+		}
+		if wait <= 0 {
+			return "", "", last
+		}
+		if err := s.improveSleep(ctx, wait); err != nil {
+			return "", "", err
+		}
+		if gap < improveBranchAdvertiseGapMax {
+			gap *= 2
+			if gap > improveBranchAdvertiseGapMax {
+				gap = improveBranchAdvertiseGapMax
+			}
+		}
+	}
+}
+
+func (s *Server) improveSleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (s *Server) githubAPI() string {

@@ -23,7 +23,7 @@ const layerTable = `| Failure pattern | Right layer |
 // secrets are removed with harness.Redact.
 func RunPrompt(failures []Failure, definitionTree string, priorRejections []string, secrets []string) string {
 	var b strings.Builder
-	b.WriteString("You are improving the factory definition. Find the common cause of these failures and propose the smallest change that addresses it. Open a pull request. Do not merge it.\n\n")
+	b.WriteString("You are improving the factory definition. Find the common cause of these failures and make the smallest change that addresses it.\n\n")
 	b.WriteString("## Failures\n")
 	if len(failures) == 0 {
 		b.WriteString("(none)\n")
@@ -46,6 +46,6 @@ func RunPrompt(failures []Failure, definitionTree string, priorRejections []stri
 	for _, note := range priorRejections {
 		fmt.Fprintf(&b, "- %s\n", note)
 	}
-	b.WriteString("\nReply with a pull request that changes one layer.\n")
+	b.WriteString("\nThe required deliverable is a commit on the branch named by the `branch: improve/` line. Edit that definition, commit, and push the branch. A prose reply is not success. Do not merge.\n")
 	return harness.Redact(b.String(), secrets)
 }

@@ -1026,6 +1026,16 @@ m6_playwright_and_evidence() {
   export EVIDENCE_EXTRA_SECRETS="FACTORY_SECRET_M6_PLANTED FACTORY_GITHUB_WEBHOOK_SECRET M6_TASK_GIT_URL M6_TASK_GITHUB_API INSTALL_TOKEN M6_APP_TOKEN"
   export EVIDENCE_HAR EVIDENCE_TRACE EVIDENCE_HOSTS
   evidence_start="$SECONDS"
+  # A Playwright failure is the run's error. Report it before the pinned
+  # SHA check, which otherwise masks the excerpt with a different die().
+  if [[ "$play_code" -ne 0 ]]; then
+    print_playwright_failures "$play_log"
+    phase_report "evidence" "$evidence_start"
+    if [[ -f "$EVIDENCE/exit-trace.txt" ]]; then
+      cat "$EVIDENCE/exit-trace.txt"
+    fi
+    die "playwright exit ${play_code}"
+  fi
   if ! grep -F "$PINNED_SHA" "$EVIDENCE/compose.log" >/dev/null 2>&1 &&
     ! grep -F "$PINNED_SHA" "$EVIDENCE/head-override.txt" >/dev/null 2>&1; then
     phase_report "evidence" "$evidence_start"
@@ -1038,10 +1048,6 @@ m6_playwright_and_evidence() {
   phase_report "evidence" "$evidence_start"
   if [[ -f "$EVIDENCE/exit-trace.txt" ]]; then
     cat "$EVIDENCE/exit-trace.txt"
-  fi
-  if [[ "$play_code" -ne 0 ]]; then
-    print_playwright_failures "$play_log"
-    die "playwright exit ${play_code}"
   fi
 }
 

@@ -267,9 +267,12 @@ the `DEFINITION_GIT_URL` environment variable and not the URL value, names
 the base ref, names the `improve/<batch>` branch to push, and says
 `GH_TOKEN` is available for HTTPS push. It does not include the work
 item, the transcript, or the diff. When the improvement run does not
-succeed, or the `improve/<batch>` branch is missing, the batch is marked
-`failed` once and that clone is not retried, so a later batch for the
-agent can be scheduled. A factory with an empty `FACTORY_DEFINITION_GIT_URL` skips
+succeed, the batch is marked `failed` once and the improve branch is not
+cloned. When the run succeeds and the branch is not advertised yet,
+factoryd retries that missing-ref clone for 45 seconds and then marks the
+batch `failed` once. Any other clone error is retried up to 3 times and
+then the batch is marked `failed` once with the redacted error, so a later
+batch for the agent can be scheduled. A factory with an empty `FACTORY_DEFINITION_GIT_URL` skips
 self-improvement: the pass and run-now log that the factory has no definition
 git URL and return no batches. They do not open a pull request. Benchmark
 resolution of an empty git URL returns an empty SHA and uses the published

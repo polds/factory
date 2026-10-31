@@ -382,8 +382,15 @@ status, payload = chat(
     [{"role": "user", "content": "You are improving the factory definition.\nbranch: improve/batch1\n"}],
 )
 command = json.loads(payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])["command"]
-if "M6_CLONED" not in command or "GH_TOKEN" in command:
-    raise SystemExit("first improve step was not a clone")
+if (
+    "M6_CLONED" not in command
+    or "GH_TOKEN" in command
+    or "--depth" in command
+    or "--single-branch" in command
+    or "git clone" not in command
+    or "/workspace" not in command
+):
+    raise SystemExit("first improve step was not a full clone into /workspace")
 os.environ.pop("M6_IMPROVER_OPENS_PR", None)
 status, payload = chat(
     "m6-agent",
@@ -1208,6 +1215,62 @@ EOF
   rm -rf "$dir"
 }
 
+# Playwright's own exit and excerpt win when the pinned SHA is also absent.
+case_playwright_failure_before_sha() {
+  local dir="$ROOT/spike/m6/.work/playwright-before-sha"
+  local err="$dir/stderr" out="$dir/stdout"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  body=$(
+    cat <<'EOF'
+m6_arm_err
+m6_step=playwright
+WORK="$M6_CASE_WORK"
+EVIDENCE="$WORK/evidence"
+SIGNAL="$WORK/signal"
+MODE=offline
+export WORK EVIDENCE SIGNAL MODE
+mkdir -p "$EVIDENCE" "$SIGNAL"
+spike_run_init m6
+watch_candidate() {
+  while [[ ! -f "$SIGNAL/stop" ]]; do
+    sleep 0.05
+  done
+}
+run_playwright() {
+  printf '  1) loop.spec.ts:188 › m6 exit loop\n'
+  printf '    Error: timed out waiting for the page\n'
+  exit 3
+}
+compose() {
+  printf '1\n' >>"$M6_SAVE_MARK"
+  printf '%s\n' 'logs without the pinned sha'
+}
+m6_playwright_and_evidence
+EOF
+  )
+  m6_fresh "$body" \
+    M6_CASE_WORK="$dir" \
+    M6_SAVE_MARK="$dir/save-logs-called" \
+    SPIKE_REG="$dir/spike-run" \
+    >"$out" 2>"$err"
+  local rc=$?
+  [[ "$rc" -ne 0 ]] || return 1
+  grep -F 'M6 FAIL — playwright exit 3' "$err" >/dev/null || return 1
+  grep -F '== Playwright failures' "$err" >/dev/null || return 1
+  grep -F 'Error: timed out waiting for the page' "$err" >/dev/null || return 1
+  if grep -F 'pinned startingRepoRefs' "$err" >/dev/null; then
+    printf 'pinned SHA check masked the playwright failure\n' >&2
+    return 1
+  fi
+  [[ -s "$dir/save-logs-called" ]] || return 1
+  if grep -F "$PINNED_SHA" "$dir/evidence/compose.log" >/dev/null; then
+    printf 'compose log unexpectedly had the pinned sha\n' >&2
+    return 1
+  fi
+  rm -rf "$dir"
+}
+
 expect_fail step-build-images "M6 FAIL — build_images: exit 7" case_step_build_images
 expect_fail step-prepare-definition "M6 FAIL — prepare_definition: exit 1" case_step_prepare_definition
 expect_fail step-seed-git "M6 FAIL — seed_git: exit 1" case_step_seed_git
@@ -1217,6 +1280,7 @@ expect_fail step-start-router "M6 FAIL — start_router: exit 3" case_step_start
 run_case die-message case_die_message
 run_case forge-json-atomic case_forge_json_atomic
 run_case playwright-set-plus-e case_playwright_set_plus_e
+run_case playwright-failure-before-sha case_playwright_failure_before_sha
 
 if [[ "$fails" -ne 0 ]]; then
   printf '%s failed\n' "$fails" >&2

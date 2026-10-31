@@ -118,12 +118,17 @@ async function conventionReady(page: Page): Promise<boolean> {
   return /^\d+(?:\.\d+)?%$/.test(candidateRate) && /^\d+(?:\.\d+)?%$/.test(baselineRate);
 }
 
-async function reloadUntil(page: Page, ready: () => Promise<boolean>, timeoutMs: number): Promise<void> {
+async function reloadUntil(
+  page: Page,
+  ready: () => Promise<boolean>,
+  timeoutMs: number,
+  timeoutMessage = "timed out waiting for the page",
+): Promise<void> {
   const started = Date.now();
   for (;;) {
     if (await ready()) return;
     if (Date.now() - started > timeoutMs) {
-      throw new Error("timed out waiting for the page");
+      throw new Error(timeoutMessage);
     }
     await page.reload();
     await delay(2000);
@@ -370,7 +375,14 @@ test("m6 exit loop", async ({ browser }) => {
     const started = (await page.getByText(/Benchmark run .+ started/).textContent()) ?? "";
     trace.push("benchmark run: " + started.replace("Benchmark run ", "").replace(" started.", ""));
     trialsLive = true;
-    await reloadUntil(page, async () => conventionReady(page), 15 * 60 * 1000);
+    await reloadUntil(
+      page,
+      async () => conventionReady(page),
+      15 * 60 * 1000,
+      offline
+        ? "benchmark matrix never showed Candidate as the winner with pass rate 100% and Baseline at 0%. The candidate must print CONVENTION: cite-sources."
+        : "benchmark matrix never showed Candidate and Baseline pass rates. The candidate must print CONVENTION: cite-sources.",
+    );
     const candidate = matrixRow(page, "Candidate");
     const baseline = matrixRow(page, "Baseline");
     await expect(candidate.getByRole("rowheader")).toContainText("Winner");
