@@ -369,16 +369,17 @@ func (c *m6Cloner) improveDir() string {
 }
 
 type m6GitHub struct {
-	URL        string
-	mu         sync.Mutex
-	perms      []map[string]string
-	pulls      []m6PR
-	bad        int
-	revs       []string
-	labs       []string
-	checks     []m6Check
-	existingPR bool
-	patched    []string
+	URL          string
+	mu           sync.Mutex
+	perms        []map[string]string
+	pulls        []m6PR
+	bad          int
+	revs         []string
+	labs         []string
+	checks       []m6Check
+	existingPR   bool
+	patched      []string
+	createStatus int
 }
 
 type m6PR struct {
@@ -477,6 +478,14 @@ func (f *m6GitHub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.Unmarshal(body, &req)
 		f.mu.Lock()
+		if f.createStatus != 0 {
+			f.bad++
+			status := f.createStatus
+			f.mu.Unlock()
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"message":"create failed for ` + t81SecretURL + `"}`))
+			return
+		}
 		if f.existingPR {
 			if len(f.pulls) == 0 {
 				f.pulls = append(f.pulls, m6PR{
