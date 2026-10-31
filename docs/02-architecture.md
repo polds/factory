@@ -118,9 +118,19 @@ approvals(id, work_item_id, gate, requested_at, decided_at, decided_by, decision
 workers(id, pool, labels_json, platform, last_heartbeat_at, max_concurrent, status)
 run_queue(run_id, factory_id, pool, priority, enqueued_at, lease_until, attempts)
 
-scorer_results(id, run_id, scorer_id, label, score, passed, reasoning, reviewed_at)
-improvement_batches(id, factory_id, agent_id, status, failure_run_ids[], pr_url)
-benchmark_suites / benchmark_tasks / benchmark_trials(…)
+scorer_results(id, run_id, scorer_name, label, score, passed, reasoning, reviewed_at)
+improvement_batches(id, factory_id, agent_name, status, pr_url)
+improvement_batch_failures(batch_id, scorer_result_id)
+benchmark_runs / benchmark_trials(…)
+pr_facts(…)
+
+**M6 applied.** The shipped schema uses `scorer_name` (not `scorer_id`), links
+judge runs through `judge_run_id`, and stores batch failures in
+`improvement_batch_failures` rather than a `failure_run_ids[]` column on the
+batch row. `runs.purpose` is `work`, `scorer`, `benchmark`, or `improvement`
+and is immutable after insert (`internal/store/migrations/0010_m6.sql`).
+Benchmark trials live in `benchmark_runs` and `benchmark_trials`, not separate
+`suite` / `task` tables in this sketch.
 
 secrets(id, scope, name, provider, provider_ref, version)       -- never the value
 identities(id, factory_id, agent_id, kind, subject, credentials_ref)

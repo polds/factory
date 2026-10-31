@@ -211,6 +211,12 @@ The dispatch command's job is to hand the payload to a runtime and return quickl
 - **Head overrides.** For benchmark trials, the control plane freezes commit SHAs and may
   substitute a clone source while keeping the original repo identity (`clone_from` +
   `preserve_origin` — O7).
+
+**M6 applied.** factoryd puts the frozen SHAs on the assignment as
+`repository_head_overrides`. The worker forwards them as
+`--repository-head-override-json`. The in-repo `generic-openai` harness accepts
+that flag and does not read it, so the pinned SHA is not checked out. Replay is
+wired through the assignment, not through the checkout ([05](05-harness-contract.md#invocation)).
 - **Origin stripping.** `--remove-repository-origins` removes remotes after clone, so an
   agent cannot push to a repository the run was not meant to touch. Cheap, effective, and
   the right default for untrusted intake.
