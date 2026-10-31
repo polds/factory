@@ -106,14 +106,18 @@ def read_key_file(path: str) -> str:
 
 
 def public_https_url(value: str) -> bool:
-    """The public definition repo URL, or that repo's pull-request html_url.
+    """A public https value that is not a secret.
 
-    Replacing the repo URL would blank an html_url that starts with it.
-    The shape is strict_owner_name's (https, owner/name[.git], no userinfo,
-    query, or fragment) plus owner/name/pull/<digits>. A query token, a
-    percent-encoded token, or an extra path segment stays on the scrub list.
+    The definition repo URL and its pull html_url, or a bare https origin
+    such as https://api.github.com. Replacing the repo URL would blank an
+    html_url that starts with it, and replacing the origin would blank every
+    API url that starts with it. No userinfo, query, or fragment. A query
+    token, a percent-encoded token, an extra path segment, a URL with
+    embedded credentials, and a value urlsplit would shorten by deleting a
+    control character stay on the scrub list. assert_evidence uses this
+    same predicate.
     """
-    return remote.public_definition_url(value)
+    return remote.public_definition_url(value) or remote.public_https_origin(value)
 
 
 def secrets_to_scrub(secrets: list[str]) -> list[str]:

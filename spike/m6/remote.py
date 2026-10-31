@@ -146,13 +146,29 @@ _URL_SHAPE = (
 )
 
 
+def urlsplit_text(raw: str) -> str:
+    """Return text that urlsplit will parse without deleting characters.
+
+    strip() removes a trailing newline on a clean URL. urlsplit then
+    lstrips C0 controls and space and deletes tab, LF, and CR anywhere.
+    After strip(), a remaining character with ord < 32 is one of those,
+    so the value is rejected. The error is the shape message and does
+    not include the value. public_https_origin and strict_url_parts both
+    use this, so the allowlist cannot drift between them.
+    """
+    text = raw.strip()
+    if any(ord(char) < 32 for char in text):
+        raise RemoteError(_URL_SHAPE)
+    return text
+
+
 def strict_url_parts(raw: str) -> list[str]:
     """Path segments of an https URL with no userinfo, query, or fragment.
 
     A trailing .git is removed before the split. Each segment must match
     SEG_RE. Callers decide which lengths are a repository.
     """
-    parsed = urllib.parse.urlsplit(raw.strip())
+    parsed = urllib.parse.urlsplit(urlsplit_text(raw))
     if (
         parsed.scheme != "https"
         or parsed.username
@@ -194,6 +210,29 @@ def public_definition_url(raw: str) -> bool:
     if len(parts) == 2:
         return True
     return len(parts) == 4 and parts[2] == "pull" and parts[3].isdigit()
+
+
+def public_https_origin(raw: str) -> bool:
+    """https://<host>[:port][/] with no userinfo, path, query, or fragment.
+
+    The live GitHub API base is this shape. A path, query, embedded
+    credential, or character urlsplit would delete is outside this shape.
+    """
+    try:
+        text = urlsplit_text(raw)
+    except RemoteError:
+        return False
+    parsed = urllib.parse.urlsplit(text)
+    if (
+        parsed.scheme != "https"
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or not HOST_RE.fullmatch(parsed.netloc or "")
+    ):
+        return False
+    return parsed.path in ("", "/")
 
 
 def validate_run_id(run: str) -> str:

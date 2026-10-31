@@ -704,6 +704,213 @@ case_evidence_clean() {
   rm -rf "$dir"
 }
 
+# evidence_check_env is the live evidence list from m6_playwright_and_evidence.
+# Parent secrets are cleared so the fixture is the only match.
+evidence_check_env() {
+  unset FACTORY_API_KEY FACTORY_SECRET_M5_WEBHOOK FACTORY_WORKER_API_KEY \
+    S3_SECRET_KEY FACTORY_SECRET_M5_PLANTED FACTORY_INFERENCE_OPENAI_API_KEY \
+    FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS M1_OPENAI_EXTRA_HEADERS \
+    INSTALL_TOKEN M6_APP_TOKEN FACTORY_GITHUB_WEBHOOK_SECRET \
+    EVIDENCE_HAR EVIDENCE_TRACE EVIDENCE_HOSTS
+  FACTORY_SECRET_M6_PLANTED="planted-value-123"
+  export FACTORY_SECRET_M6_PLANTED
+  EVIDENCE_EXTRA_SECRETS="FACTORY_SECRET_M6_PLANTED FACTORY_GITHUB_WEBHOOK_SECRET M6_TASK_GIT_URL M6_TASK_GITHUB_API INSTALL_TOKEN M6_APP_TOKEN"
+  export EVIDENCE_EXTRA_SECRETS
+}
+
+case_evidence_public_definition_url() {
+  local dir="$ROOT/spike/m6/.work/evidence-public-$$"
+  local repo="https://github.com/polds/factory-m6-definition"
+  local code=0
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  printf '%s\n' \
+    "$repo" \
+    "${repo}/pull/7" \
+    "https://api.github.com/repos/polds/factory-m6-definition/pulls/7" \
+    >"$dir/dom-improvement.html"
+  (
+    MODE=live
+    M6_DEFINITION_GIT_URL="$repo"
+    M6_GITHUB_API_BASE="https://api.github.com"
+    export MODE M6_DEFINITION_GIT_URL M6_GITHUB_API_BASE
+    apply_definition_targets
+    EVIDENCE="$dir"
+    export EVIDENCE
+    evidence_check_env
+    [[ "$M6_TASK_GIT_URL" == "$repo" ]]
+    [[ "$M6_TASK_GITHUB_API" == "https://api.github.com" ]]
+    assert_evidence
+  ) || code=$?
+  rm -rf "$dir"
+  return "$code"
+}
+
+case_evidence_public_url_keeps_planted_secret() {
+  local dir="$ROOT/spike/m6/.work/evidence-public-secret-$$"
+  local repo="https://github.com/polds/factory-m6-definition"
+  local code=0
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  printf '%s\n' \
+    "$repo" \
+    "${repo}/pull/7" \
+    "planted-value-123" \
+    >"$dir/dom-improvement.html"
+  (
+    MODE=live
+    M6_DEFINITION_GIT_URL="$repo"
+    M6_GITHUB_API_BASE="https://api.github.com"
+    export MODE M6_DEFINITION_GIT_URL M6_GITHUB_API_BASE
+    apply_definition_targets
+    EVIDENCE="$dir"
+    export EVIDENCE
+    evidence_check_env
+    assert_evidence
+  ) || code=$?
+  rm -rf "$dir"
+  return "$code"
+}
+
+case_evidence_credentialed_url() {
+  local dir="$ROOT/spike/m6/.work/evidence-cred-$$"
+  local token="ghs_aaaaaaaaaaaaaaaaaaaa"
+  local url="https://x-access-token:${token}@github.com/polds/factory-m6-definition.git"
+  local code=0
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  printf '%s\n' "$url" >"$dir/dom-improvement.html"
+  (
+    MODE=live
+    M6_DEFINITION_GIT_URL="$url"
+    M6_GITHUB_API_BASE="https://api.github.com"
+    export MODE M6_DEFINITION_GIT_URL M6_GITHUB_API_BASE
+    apply_definition_targets
+    EVIDENCE="$dir"
+    export EVIDENCE
+    evidence_check_env
+    assert_evidence
+  ) || code=$?
+  rm -rf "$dir"
+  return "$code"
+}
+
+case_evidence_query_url() {
+  local dir="$ROOT/spike/m6/.work/evidence-query-$$"
+  local url="https://github.com/polds/factory-m6-definition?access=qqqqqqqqqqqqqqqqqqqqqqqq"
+  local code=0
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  printf '%s\n' "$url" >"$dir/dom-improvement.html"
+  (
+    MODE=live
+    M6_DEFINITION_GIT_URL="$url"
+    M6_GITHUB_API_BASE="https://api.github.com"
+    export MODE M6_DEFINITION_GIT_URL M6_GITHUB_API_BASE
+    apply_definition_targets
+    EVIDENCE="$dir"
+    export EVIDENCE
+    evidence_check_env
+    assert_evidence
+  ) || code=$?
+  rm -rf "$dir"
+  return "$code"
+}
+
+case_evidence_offline_task_url() {
+  local dir="$ROOT/spike/m6/.work/evidence-offline-url-$$"
+  local code=0
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  (
+    # shellcheck disable=SC2030 # each case sets MODE in its own subshell
+    MODE=offline
+    TASK_HOST=172.17.0.1
+    GIT_PORT=9420
+    FORGE_PORT=9419
+    export MODE TASK_HOST GIT_PORT FORGE_PORT
+    apply_definition_targets
+    printf '%s\n%s\n' "$M6_TASK_GIT_URL" "$M6_TASK_GITHUB_API" >"$dir/dom-improvement.html"
+    EVIDENCE="$dir"
+    export EVIDENCE
+    evidence_check_env
+    assert_evidence
+  ) || code=$?
+  rm -rf "$dir"
+  return "$code"
+}
+
+# case_evidence_control_splice plants URLs that urlsplit would shorten by
+# deleting tab, LF, or CR. The check must exit 1 and say planted secret.
+# Names are printed. Values are not.
+case_evidence_control_splice() {
+  local dir="$ROOT/spike/m6/.work/evidence-splice-$$"
+  local name="" err="" one=0
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  python3 - "$dir" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+origin = "https://api.github.com"
+repo = "https://github.com/polds/factory-m6-definition"
+ghs = "ghs_" + ("a" * 20)
+ghp = "ghp_" + ("b" * 20)
+tail = "c" * 24
+cases = {
+    "origin-lf": origin + "\n" + tail,
+    "origin-cr": origin + "\r" + tail,
+    "origin-tab": origin + "\t" + tail,
+    "def-lf-ghs": repo + "\n" + ghs,
+    "def-cr-ghp": repo + "\r" + ghp,
+    "def-tab-ghs": repo + "\t" + ghs,
+    "def-lf-pull": repo + "\n" + ghs + "/pull/3",
+    "def-cr-pull": repo + "\r" + ghp + "/pull/3",
+    "def-tab-pull": repo + "\t" + ghs + "/pull/3",
+    "host-tab": "https://api.gith" + "\t" + "ub.com",
+}
+for name, value in cases.items():
+    (root / name).write_text(value, encoding="utf-8")
+    evidence = root / (name + ".d")
+    evidence.mkdir()
+    (evidence / "dom-improvement.html").write_text(value, encoding="utf-8")
+PY
+  for name in origin-lf origin-cr origin-tab def-lf-ghs def-cr-ghp def-tab-ghs def-lf-pull def-cr-pull def-tab-pull host-tab; do
+    err="$dir/$name.err"
+    one=0
+    (
+      local value=""
+      IFS= read -r -d '' value <"$dir/$name" || true
+      # shellcheck disable=SC2030 # each case sets MODE in its own subshell
+      MODE=live
+      M6_TASK_GIT_URL="$value"
+      unset M6_TASK_GITHUB_API
+      export MODE M6_TASK_GIT_URL
+      EVIDENCE="$dir/$name.d"
+      export EVIDENCE
+      evidence_check_env
+      assert_evidence
+    ) >"$dir/$name.out" 2>"$err" || one=$?
+    if [[ "$one" -eq 0 ]]; then
+      printf 'spliced value was treated as public: %s\n' "$name" >&2
+      rm -rf "$dir"
+      return 1
+    fi
+    if ! grep -F 'planted secret' "$err" >/dev/null; then
+      printf 'spliced value did not report planted secret: %s\n' "$name" >&2
+      rm -rf "$dir"
+      return 1
+    fi
+    if grep -E 'ghs_|ghp_|cccccccc' "$err" >/dev/null; then
+      printf 'evidence check printed the planted value: %s\n' "$name" >&2
+      rm -rf "$dir"
+      return 1
+    fi
+  done
+  rm -rf "$dir"
+}
+
 case_token_probe_shape() {
   local dir="$ROOT/spike/m6/.work/token-probe-$$"
   mkdir -p "$dir"
@@ -995,6 +1202,12 @@ run_case forge-pulls case_forge_pulls
 run_case git-shallow case_git_shallow_sha
 expect_fail evidence-leak "planted secret" case_evidence_leak
 run_case evidence-clean case_evidence_clean
+run_case evidence-public-definition-url case_evidence_public_definition_url
+expect_fail evidence-public-url-keeps-planted-secret "planted secret" case_evidence_public_url_keeps_planted_secret
+expect_fail evidence-credentialed-url "planted secret" case_evidence_credentialed_url
+expect_fail evidence-query-url "planted secret" case_evidence_query_url
+expect_fail evidence-offline-task-url "planted secret" case_evidence_offline_task_url
+run_case evidence-control-splice case_evidence_control_splice
 run_case token-probe case_token_probe_shape
 run_case probe-401 case_probe_redacts_401
 run_case compose-config case_compose_config
