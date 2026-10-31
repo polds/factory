@@ -10,6 +10,39 @@ const mode = process.env.M6_MODE ?? "offline";
 const offline = mode === "offline";
 const axeFindings: string[] = [];
 
+// Live repetitions default to 10. Compare names a winner only when the
+// candidate's Wilson 95% lower bound is strictly above the baseline upper
+// bound (internal/benchmark/compare.go, z = 1.959963984540054).
+// At n=5 a 0/5 baseline upper bound is 0.4345 and a 4/5 lower bound is
+// 0.3755, so 4/5 never wins; only 5/5 (lower bound 0.5655) does.
+// At n=10 a 0/10 upper bound is 0.2775. 7/10 lower bound is 0.3968,
+// 8/10 is 0.4902, and 9/10 is 0.5958, so each clears a 0/10 baseline.
+// M6_BENCHMARK_REPETITIONS overrides the count. Offline stays at 5 when
+// that variable is unset.
+const OFFLINE_REPETITIONS = 5;
+const LIVE_REPETITIONS = 10;
+
+function repetitionCount(): number {
+  const raw = (process.env.M6_BENCHMARK_REPETITIONS ?? "").trim();
+  if (raw === "") return offline ? OFFLINE_REPETITIONS : LIVE_REPETITIONS;
+  if (!/^[1-9]\d*$/.test(raw)) {
+    throw new Error("M6_BENCHMARK_REPETITIONS must be an integer >= 1");
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error("M6_BENCHMARK_REPETITIONS must be an integer >= 1");
+  }
+  return parsed;
+}
+
+// The benchmarks screen refetches /benchmarks and /trials about once a
+// second while it is open. Reloading that page for the whole wait recorded
+// hundreds of copies of each response. Poll the trials API on this interval
+// and leave the app page so that refresh is not mounted. Offline stays at
+// one second so the stub result is not held for a long gap.
+const BENCHMARK_POLL_MS = offline ? 1_000 : 10_000;
+const BENCHMARK_WAIT_MS = 15 * 60 * 1000;
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -103,7 +136,7 @@ function matrixRow(page: Page, configuration: string): Locator {
   });
 }
 
-async function conventionReady(page: Page): Promise<boolean> {
+async function conventionReady(page: Page, reps: number): Promise<boolean> {
   const table = page.getByRole("table", { name: "Trial matrix" });
   if ((await table.count()) === 0) return false;
   const candidate = matrixRow(page, "Candidate");
@@ -112,7 +145,8 @@ async function conventionReady(page: Page): Promise<boolean> {
   const candidateHeader = ((await candidate.getByRole("rowheader").innerText()) ?? "").toLowerCase();
   const baselineHeader = ((await baseline.getByRole("rowheader").innerText()) ?? "").toLowerCase();
   if (!candidateHeader.includes("winner") || baselineHeader.includes("winner")) return false;
-  if ((await metricText(candidate, "n")) !== "5" || (await metricText(baseline, "n")) !== "5") return false;
+  const repsText = String(reps);
+  if ((await metricText(candidate, "n")) !== repsText || (await metricText(baseline, "n")) !== repsText) return false;
   if ((await metricText(candidate, "Errored")) !== "0" || (await metricText(baseline, "Errored")) !== "0") return false;
   const candidateRate = await metricText(candidate, "Pass rate");
   const baselineRate = await metricText(baseline, "Pass rate");
@@ -185,22 +219,96 @@ function loopBody(title: string): string {
   );
 }
 
-async function matrixState(page: Page): Promise<string> {
-  const candidate = matrixRow(page, "Candidate");
-  const baseline = matrixRow(page, "Baseline");
-  const header = async (row: Locator): Promise<string> => {
-    if ((await row.count()) !== 1) return "absent";
-    return ((await row.getByRole("rowheader").innerText()) ?? "").replace(/\s+/g, " ").trim();
-  };
-  const rate = async (row: Locator): Promise<string> => {
-    if ((await row.count()) !== 1) return "absent";
-    const value = await metricText(row, "Pass rate");
-    return value === "" ? "absent" : value;
-  };
-  return (
-    `candidate ${(await header(candidate))} pass ${(await rate(candidate))}; ` +
-    `baseline ${(await header(baseline))} pass ${(await rate(baseline))}`
+type TrialCell = {
+  configuration?: string;
+  n?: number;
+  pass?: number;
+  errored?: number;
+  ci_low?: number;
+  ci_high?: number;
+};
+
+type TrialsPayload = {
+  cells?: TrialCell[];
+  report?: { winner?: string; reason?: string };
+};
+
+function cellsFor(body: TrialsPayload, name: string): TrialCell[] {
+  return (body.cells ?? []).filter(
+    (cell) => (cell.configuration ?? "").toLowerCase() === name.toLowerCase(),
   );
+}
+
+function boundText(value: number | undefined): string {
+  if (typeof value !== "number" || Number.isNaN(value)) return "n/a";
+  return value.toFixed(4);
+}
+
+function describeTrials(body: TrialsPayload): string {
+  const arms = ["Candidate", "Baseline"].map((name) => {
+    const cells = cellsFor(body, name);
+    if (cells.length === 0) return `${name} missing`;
+    return cells
+      .map(
+        (cell) =>
+          `${name} ${cell.pass ?? 0}/${cell.n ?? 0} Wilson 95% ${boundText(cell.ci_low)}-${boundText(cell.ci_high)} errored ${cell.errored ?? 0}`,
+      )
+      .join(", ");
+  });
+  const winner = (body.report?.winner ?? "").trim();
+  const reason = (body.report?.reason ?? "").trim();
+  return `${arms.join("; ")}; winner ${winner === "" ? "(none)" : winner}; ${reason}`;
+}
+
+function trialsSettled(body: TrialsPayload, reps: number): boolean {
+  for (const name of ["Candidate", "Baseline"]) {
+    const cells = cellsFor(body, name);
+    if (cells.length === 0) return false;
+    const accounted = cells.reduce((sum, cell) => sum + (cell.n ?? 0) + (cell.errored ?? 0), 0);
+    if (accounted < reps) return false;
+  }
+  return true;
+}
+
+async function readTrials(page: Page, factoryId: string): Promise<TrialsPayload | null> {
+  // Absolute so the poll does not depend on the page address. The suite
+  // page is on about:blank while this runs.
+  const base = (process.env.FACTORY_URL ?? "http://factoryd-m6:8080").replace(/\/$/, "");
+  const response = await page.request.get(
+    `${base}/api/v1/factory/${encodeURIComponent(factoryId)}/benchmarks/convention/trials`,
+    {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      failOnStatusCode: false,
+    },
+  );
+  if (!response.ok()) return null;
+  return (await response.json()) as TrialsPayload;
+}
+
+async function waitForConventionVerdict(page: Page, factoryId: string, reps: number): Promise<TrialsPayload> {
+  const started = Date.now();
+  let last: TrialsPayload = { cells: [], report: { winner: "", reason: "" } };
+  for (;;) {
+    const body = await readTrials(page, factoryId);
+    if (body) last = body;
+    if (body && trialsSettled(body, reps)) {
+      if ((body.report?.winner ?? "").trim() === "") {
+        throw new Error(`convention benchmark finished with no winner (${describeTrials(body)})`);
+      }
+      return body;
+    }
+    if (Date.now() - started > BENCHMARK_WAIT_MS) {
+      throw new Error(`timed out waiting for convention benchmark (${describeTrials(last)})`);
+    }
+    await delay(BENCHMARK_POLL_MS);
+  }
+}
+
+function configuredReviewers(): string[] {
+  return (process.env.FACTORY_REVIEWERS_ADMINS ?? "")
+    .split(",")
+    .map((login) => login.trim())
+    .filter((login) => login !== "");
 }
 
 async function failedImprovement(page: Page): Promise<string> {
@@ -426,6 +534,7 @@ test("m6 exit loop", async ({ browser }) => {
         head?: string;
         base?: string;
         state?: string;
+        reviewers?: string[];
       };
       expect(remote.state).toBe("open");
       expect(remote.head).toBe("improve/" + batchId.trim());
@@ -433,6 +542,14 @@ test("m6 exit loop", async ({ browser }) => {
       expect(runBase.startsWith("m6-run/")).toBe(true);
       expect(remote.base).toBe(runBase);
       expect(remote.html_url ?? "").toMatch(/^https:/);
+      const wanted = configuredReviewers();
+      expect(wanted.length, "FACTORY_REVIEWERS_ADMINS is empty").toBeGreaterThan(0);
+      const got = remote.reviewers ?? [];
+      const hit = got.filter((login) => wanted.includes(login));
+      expect(
+        hit,
+        `pull reviewers ${JSON.stringify(got)} did not include ${wanted.join(",")}`,
+      ).not.toEqual([]);
     }
 
     // GET .../trials is 404 until a benchmark run exists, and the suite page
@@ -459,33 +576,49 @@ test("m6 exit loop", async ({ browser }) => {
     await expect(page.getByRole("heading", { name: "Benchmarks" }), "benchmarks heading").toBeVisible({
       timeout: 60_000,
     });
-    await expect(page.locator("#benchmark-repetitions")).toHaveValue("5");
+    const reps = repetitionCount();
+    const repsText = String(reps);
+    if (offline) {
+      await expect(page.locator("#benchmark-repetitions")).toHaveValue("5");
+    } else {
+      await page.locator("#benchmark-repetitions").fill(repsText);
+      await expect(page.locator("#benchmark-repetitions")).toHaveValue(repsText);
+    }
     await page.getByRole("button", { name: "Run benchmark" }).click();
     const confirm = page.getByRole("dialog", { name: "Run benchmark?" });
+    const runPosted = page.waitForRequest(
+      (request) => request.method() === "POST" && request.url().includes("/benchmarks/convention:run"),
+    );
     await confirm.getByRole("button", { name: "Run benchmark" }).click();
+    const posted = await runPosted;
+    const postedBody = posted.postDataJSON() as { repetitions?: number };
+    expect(postedBody.repetitions).toBe(reps);
     await expect(page.getByText(/Benchmark run .+ started/)).toBeVisible();
     const started = (await page.getByText(/Benchmark run .+ started/).textContent()) ?? "";
     trace.push("benchmark run: " + started.replace("Benchmark run ", "").replace(" started.", ""));
     trialsLive = true;
+    const factoryId = factoryFrom(page);
+    // Drop the benchmarks screen so its event refresh stops copying
+    // /benchmarks and /trials into the HAR while trials are still running.
+    await page.goto("about:blank");
+    const verdict = await waitForConventionVerdict(page, factoryId, reps);
+    await page.goto(`/f/${factoryId}/benchmarks/convention`);
+    await expect(page.getByRole("heading", { name: "Benchmarks" }), "benchmarks heading").toBeVisible({
+      timeout: 60_000,
+    });
     await reloadUntil(
       page,
-      async () => conventionReady(page),
-      15 * 60 * 1000,
-      "convention benchmark matrix",
-      async () => {
-        const state = await matrixState(page);
-        if (offline) {
-          return state + "; want candidate winner 100% and baseline 0%";
-        }
-        return state + "; want candidate and baseline pass rates";
-      },
+      async () => conventionReady(page, reps),
+      60_000,
+      "convention winner on the matrix",
+      async () => describeTrials((await readTrials(page, factoryId)) ?? verdict),
     );
     const candidate = matrixRow(page, "Candidate");
     const baseline = matrixRow(page, "Baseline");
     await expect(candidate.getByRole("rowheader")).toContainText("Winner");
     await expect(baseline.getByRole("rowheader")).not.toContainText("Winner");
-    await expect.poll(async () => metricText(candidate, "n")).toBe("5");
-    await expect.poll(async () => metricText(baseline, "n")).toBe("5");
+    await expect.poll(async () => metricText(candidate, "n")).toBe(repsText);
+    await expect.poll(async () => metricText(baseline, "n")).toBe(repsText);
     await expect.poll(async () => metricText(candidate, "Errored")).toBe("0");
     await expect.poll(async () => metricText(baseline, "Errored")).toBe("0");
     const candidateRate = await metricText(candidate, "Pass rate");
@@ -501,9 +634,13 @@ test("m6 exit loop", async ({ browser }) => {
     trace.push(
       "matrix: candidate " +
         candidateRate +
-        " n 5 errored 0 baseline " +
+        " n " +
+        repsText +
+        " errored 0 baseline " +
         baselineRate +
-        " n 5 errored 0",
+        " n " +
+        repsText +
+        " errored 0",
     );
     trace.push("d5: Candidate");
     await axe(page, "benchmarks");

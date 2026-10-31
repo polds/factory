@@ -25,9 +25,9 @@ Live-ci checks, in order: `M1_OPENAI_BASE_URL`, `M1_OPENAI_API_KEY`,
 only. Its header names the repository secrets `M1_OPENAI_BASE_URL`,
 `M1_OPENAI_API_KEY`, `M1_OPENAI_EXTRA_HEADERS`, `M6_GITHUB_APP_ID`, and
 `M6_GITHUB_APP_PRIVATE_KEY`, and the inputs `model`, `judge_model`,
-`definition_git_url`, `github_api_base`, and `reviewer`. This driver was not
-dispatched. With those variables unset, each live mode stops at its first
-missing name. That is as far as the commands below were run.
+`definition_git_url`, `github_api_base`, `reviewer`, and `repetitions`.
+This driver was not dispatched. With those variables unset, each live mode
+stops at its first missing name. That is as far as the commands below were run.
 
 ```bash
 bash spike/m6/run_test.sh

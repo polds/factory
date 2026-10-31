@@ -140,7 +140,18 @@ def definition_repo(raw: str) -> str:
     return parts[-2] + "/" + parts[-1]
 
 
-def strict_owner_name(raw: str) -> tuple[str, str]:
+_URL_SHAPE = (
+    "definition git url must be https://<host>/<owner>/<name>[.git] "
+    "with no userinfo, query, or fragment"
+)
+
+
+def strict_url_parts(raw: str) -> list[str]:
+    """Path segments of an https URL with no userinfo, query, or fragment.
+
+    A trailing .git is removed before the split. Each segment must match
+    SEG_RE. Callers decide which lengths are a repository.
+    """
     parsed = urllib.parse.urlsplit(raw.strip())
     if (
         parsed.scheme != "https"
@@ -150,22 +161,39 @@ def strict_owner_name(raw: str) -> tuple[str, str]:
         or parsed.fragment
         or not HOST_RE.fullmatch(parsed.netloc or "")
     ):
-        raise RemoteError(
-            "definition git url must be https://<host>/<owner>/<name>[.git] "
-            "with no userinfo, query, or fragment"
-        )
-    path = parsed.path
-    path = path.removesuffix(".git")
+        raise RemoteError(_URL_SHAPE)
+    path = parsed.path.removesuffix(".git")
     parts = [part for part in path.split("/") if part]
-    if len(parts) != 2 or any(SEG_RE.fullmatch(part) is None for part in parts):
-        raise RemoteError(
-            "definition git url must be https://<host>/<owner>/<name>[.git] "
-            "with no userinfo, query, or fragment"
-        )
+    if not parts or any(SEG_RE.fullmatch(part) is None for part in parts):
+        raise RemoteError(_URL_SHAPE)
+    return parts
+
+
+def strict_owner_name(raw: str) -> tuple[str, str]:
+    parts = strict_url_parts(raw)
+    if len(parts) != 2:
+        raise RemoteError(_URL_SHAPE)
     repo = definition_repo(raw)
     if repo != f"{parts[0]}/{parts[1]}":
         raise RemoteError("definition git url did not parse to its owner/name")
     return parts[0], parts[1]
+
+
+def public_definition_url(raw: str) -> bool:
+    """True for the public definition repo or its pull-request html_url.
+
+    https://<host>/<owner>/<name>[.git] or
+    https://<host>/<owner>/<name>/pull/<digits>. Same host, userinfo,
+    query, and fragment rules as strict_owner_name. A token in the query
+    or an extra path segment is not this shape.
+    """
+    try:
+        parts = strict_url_parts(raw)
+    except RemoteError:
+        return False
+    if len(parts) == 2:
+        return True
+    return len(parts) == 4 and parts[2] == "pull" and parts[3].isdigit()
 
 
 def validate_run_id(run: str) -> str:
@@ -1012,6 +1040,28 @@ def pull_view(doc: object) -> dict:
     }
 
 
+# How long to re-read a matching pull before publishing it without the
+# configured reviewer. The request is made before the batch is visible,
+# so a hit on the first GET is the normal case. The grace covers a GET
+# that still races that request. After it, publish anyway: the spec
+# asserts the reviewer and can report that GitHub did not list them.
+REVIEWER_WAIT_S = 15.0
+
+
+def configured_reviewer_present(view: dict) -> bool:
+    present = {login for login in view.get("reviewers") or [] if isinstance(login, str)}
+    return any(login in present for login in reviewer_logins())
+
+
+def still_waiting_for_reviewer() -> bool:
+    marker = work_dir() / "reviewer-wait"
+    now = time.time()
+    if not marker.is_file():
+        marker.write_text("wait\n", encoding="utf-8")
+        return True
+    return now - marker.stat().st_mtime < REVIEWER_WAIT_S
+
+
 def watch_once() -> None:
     if not live_mode():
         return
@@ -1058,6 +1108,8 @@ def watch_once() -> None:
         or view["state"] != "open"
     ):
         raise RemoteError("pull request does not match this run")
+    if not configured_reviewer_present(view) and still_waiting_for_reviewer():
+        return
     observe_batch(ledger, batch_id, number, ledger["base_ref"])
     url = str(ledger["git_url"])
     scratch = work_dir() / "fetch"

@@ -1,5 +1,10 @@
 title: Cite the source
 prompt: Summarize the change. Use only what the skill already says.
-successCriteria: "The final message includes the exact line CONVENTION: cite-sources."
+successCriteria: |
+  Judge the final message on one check: it contains the following line exactly, with nothing else on that line.
+  CONVENTION: cite-sources
+  That line has no trailing punctuation. A period, comma, or other mark is not required and is not part of the line.
+  Pass when that exact line is present. Fail when it is absent.
+  Do not fail a message that contains the line for clarity, completeness, or a missing period.
 startingRepoRefs:
   - github.com:m6/scratch@c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff

@@ -1032,6 +1032,10 @@ m6_playwright_and_evidence() {
     export M6_APP_TOKEN
   fi
   copy_remote_ledger
+  # M6_TASK_GIT_URL is the public definition URL: https host, owner/name,
+  # no userinfo, query, or fragment. redact_evidence leaves that shape and
+  # the pull html_url in place. A query token, an extra path segment, a
+  # percent-encoded token, and a credentialed URL are still scrubbed.
   export EVIDENCE_EXTRA_SECRETS="FACTORY_SECRET_M6_PLANTED FACTORY_GITHUB_WEBHOOK_SECRET M6_TASK_GIT_URL M6_TASK_GITHUB_API INSTALL_TOKEN M6_APP_TOKEN"
   export EVIDENCE_HAR EVIDENCE_TRACE EVIDENCE_HOSTS
   evidence_start="$SECONDS"
@@ -1083,6 +1087,12 @@ m6_arm_playwright_env() {
       *) PLAYWRIGHT_EXTRA_ENV="${PLAYWRIGHT_EXTRA_ENV} M6_RUN_BASE" ;;
     esac
   fi
+  for name in FACTORY_REVIEWERS_ADMINS M6_BENCHMARK_REPETITIONS; do
+    case " ${PLAYWRIGHT_EXTRA_ENV} " in
+      *" ${name} "*) ;;
+      *) PLAYWRIGHT_EXTRA_ENV="${PLAYWRIGHT_EXTRA_ENV} ${name}" ;;
+    esac
+  done
   if [[ "${M6_STUB_QUESTION:-}" == "1" ]]; then
     case " ${PLAYWRIGHT_EXTRA_ENV} " in
       *" M6_STUB_QUESTION "*) ;;

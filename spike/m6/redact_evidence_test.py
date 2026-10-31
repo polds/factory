@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -278,6 +279,110 @@ def plant_stateless_tree(root: Path) -> None:
     trace = root / "loop-trace.zip"
     with zipfile.ZipFile(trace, "w", compression=zipfile.ZIP_DEFLATED) as zout:
         zout.writestr("trace.network", f"member {token}\n")
+
+
+class PublicURLTest(unittest.TestCase):
+    def test_pull_request_url_survives_and_tokens_do_not(self) -> None:
+        repo = "https://github.com/polds/factory-m6-definition"
+        html = repo + "/pull/1"
+        token = "ghs_" + ("a" * 20)
+        credentialed = (
+            f"https://x-access-token:{token}@github.com/polds/factory-m6-definition.git"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "evidence"
+            root.mkdir()
+            (root / "remote-pr.json").write_text(
+                json.dumps(
+                    {
+                        "html_url": html,
+                        "clone": credentialed,
+                        "note": f"Authorization: Bearer {token}",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            saved = {
+                "M6_TASK_GIT_URL": os.environ.get("M6_TASK_GIT_URL"),
+                "M6_CLONED_URL": os.environ.get("M6_CLONED_URL"),
+                "EVIDENCE_EXTRA_SECRETS": os.environ.get("EVIDENCE_EXTRA_SECRETS"),
+            }
+            os.environ["M6_TASK_GIT_URL"] = repo
+            os.environ["M6_CLONED_URL"] = credentialed
+            os.environ["EVIDENCE_EXTRA_SECRETS"] = "M6_TASK_GIT_URL M6_CLONED_URL"
+            try:
+                self.assertNotEqual(
+                    redact_evidence.scan_tree(root, redact_evidence.load_secrets("")),
+                    [],
+                )
+                code = redact_evidence.main([str(root)])
+            finally:
+                for name, value in saved.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
+            self.assertEqual(code, 0)
+            self.assertTrue(root.is_dir())
+            text = (root / "remote-pr.json").read_text(encoding="utf-8")
+            self.assertIn(html, text)
+            self.assertNotIn("[REDACTED]/pull/", text)
+            self.assertNotIn(token, text)
+            self.assertNotIn(credentialed, text)
+            self.assertIn("[REDACTED]", text)
+            self.assertEqual(
+                redact_evidence.scan_tree(root, [repo, credentialed, token]), []
+            )
+            self.assertTrue(redact_evidence.public_https_url(repo))
+            self.assertTrue(redact_evidence.public_https_url(repo + ".git"))
+            self.assertTrue(redact_evidence.public_https_url(html))
+
+    def test_percent_encoded_ghs_in_query_is_redacted(self) -> None:
+        # Underscore and hyphen are percent-encoded. quote() leaves both
+        # raw characters alone, so the token regex has to see %5F and %2D.
+        token = "ghs%5F" + ("a" * 8) + "%2D" + ("b" * 8)
+        url = "https://github.com/polds/factory-m6-definition?token=" + token
+        encoded = quote(url, safe="")
+        self.assertFalse(redact_evidence.public_https_url(url))
+        # The token regex catches the encoding even when the URL is not a
+        # known secret. The quoted URL is a secret_forms copy of that secret.
+        self.assertNotEqual(redact_evidence.scan_text(url, []), [])
+        self.assertNotEqual(redact_evidence.scan_text(encoded, [url]), [])
+        bare = redact_evidence.redact_text(url, [])
+        self.assertNotIn(token, bare)
+        self.assertNotIn("%5F", bare)
+        self.assertNotIn("%2D", bare)
+        self.assertEqual(redact_evidence.scan_text(bare, []), [])
+        quoted = redact_evidence.redact_text(encoded, [url])
+        self.assertNotIn(encoded, quoted)
+        self.assertEqual(redact_evidence.scan_text(quoted, [url]), [])
+
+    def test_opaque_query_token_is_redacted(self) -> None:
+        opaque = "q" * 24
+        url = "https://github.com/polds/factory-m6-definition?access=" + opaque
+        encoded = quote(url, safe="")
+        self.assertFalse(redact_evidence.public_https_url(url))
+        self.assertNotEqual(redact_evidence.scan_text(url, [url]), [])
+        self.assertNotEqual(redact_evidence.scan_text(encoded, [url]), [])
+        for blob in (url, encoded):
+            redacted = redact_evidence.redact_text(blob, [url])
+            self.assertNotIn(opaque, redacted)
+            self.assertNotIn(url, redacted)
+            self.assertEqual(redact_evidence.scan_text(redacted, [url]), [])
+
+    def test_opaque_path_segment_is_redacted(self) -> None:
+        segment = "p" * 24
+        url = "https://github.com/polds/factory-m6-definition/" + segment
+        encoded = quote(url, safe="")
+        self.assertFalse(redact_evidence.public_https_url(url))
+        self.assertNotEqual(redact_evidence.scan_text(url, [url]), [])
+        self.assertNotEqual(redact_evidence.scan_text(encoded, [url]), [])
+        for blob in (url, encoded):
+            redacted = redact_evidence.redact_text(blob, [url])
+            self.assertNotIn(segment, redacted)
+            self.assertNotIn(url, redacted)
+            self.assertEqual(redact_evidence.scan_text(redacted, [url]), [])
 
 
 def leaked_stateless(text: str) -> bool:

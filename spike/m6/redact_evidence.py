@@ -24,6 +24,8 @@ import zipfile
 from pathlib import Path
 from urllib.parse import quote
 
+import remote
+
 PLACEHOLDER = "[REDACTED]"
 BEARER_PLACEHOLDER = "Bearer [REDACTED]"
 HEADER_OK = {PLACEHOLDER, BEARER_PLACEHOLDER, "REDACTED"}
@@ -31,10 +33,11 @@ MIN_SECRET = 8
 
 # GitHub's current tokens, including stateless installation tokens
 # ghs_<app id>_<JWT> (dots and base64url hyphens, since 2026-10-02).
-# %2E is a query-string dot. A class that stops at "." leaves the JWT tail
-# in the file after the prefix is replaced.
-_TOKEN_PREFIX = r"(?:github_pat_|ghs_|ghp_|gho_|ghu_|ghr_)"
-_TOKEN_BODY = r"(?:[A-Za-z0-9_\-]|%2[Ee]|\.)"
+# %2E is a query-string dot, %5F an underscore, %2D a hyphen. A class that
+# stops at "." leaves the JWT tail in the file after the prefix is replaced.
+_US = r"(?:_|%5[Ff])"
+_TOKEN_PREFIX = rf"(?:github{_US}pat{_US}|ghs{_US}|ghp{_US}|gho{_US}|ghu{_US}|ghr{_US})"
+_TOKEN_BODY = r"(?:[A-Za-z0-9_\-]|%2[EeDd]|%5[Ff]|\.)"
 GITHUB_TOKEN = re.compile(_TOKEN_PREFIX + _TOKEN_BODY + r"{16,}")
 _B64URL = r"[A-Za-z0-9_\-]"
 _DOT = r"(?:\.|%2[Ee])"
@@ -102,6 +105,21 @@ def read_key_file(path: str) -> str:
     return file.read_text(encoding="utf-8").strip()
 
 
+def public_https_url(value: str) -> bool:
+    """The public definition repo URL, or that repo's pull-request html_url.
+
+    Replacing the repo URL would blank an html_url that starts with it.
+    The shape is strict_owner_name's (https, owner/name[.git], no userinfo,
+    query, or fragment) plus owner/name/pull/<digits>. A query token, a
+    percent-encoded token, or an extra path segment stays on the scrub list.
+    """
+    return remote.public_definition_url(value)
+
+
+def secrets_to_scrub(secrets: list[str]) -> list[str]:
+    return [secret for secret in secrets if not public_https_url(secret)]
+
+
 def secret_forms(secret: str) -> list[str]:
     forms = [secret]
     quoted = quote(secret, safe="")
@@ -142,7 +160,7 @@ def apply_token_passes(text: str) -> str:
 
 
 def redact_text(text: str, secrets: list[str]) -> str:
-    for secret in secrets:
+    for secret in secrets_to_scrub(secrets):
         for form in secret_forms(secret):
             text = text.replace(form, PLACEHOLDER)
     text = apply_token_passes(text)
@@ -283,7 +301,8 @@ def header_values(text: str, header: str) -> list[str]:
 
 def scan_text(text: str, secrets: list[str]) -> list[str]:
     kinds: list[str] = []
-    if any(form in text for secret in secrets for form in secret_forms(secret)):
+    scrub = secrets_to_scrub(secrets)
+    if any(form in text for secret in scrub for form in secret_forms(secret)):
         kinds.append("known secret")
     if GITHUB_TOKEN.search(text):
         kinds.append("github token")
