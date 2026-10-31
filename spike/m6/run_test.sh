@@ -897,6 +897,90 @@ PY
   unset M6_COMPOSE_BACKUP
 }
 
+# case_forge_json_atomic reads forge.json while save_forge_snapshot rewrites
+# it. The stub curl pauses after the first byte of the temp file. Every
+# sample of the published path has to parse.
+case_forge_json_atomic() {
+  local dir="$ROOT/spike/m6/.work/forge-atomic-$$" dest="" errors="" seen=""
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  dest="$dir/forge.json"
+  printf '%s\n' '{"n":0}' >"$dest"
+  (
+    FORGE_DIR="$dir"
+    curl() {
+      local out="" spins=0
+      while [[ $# -gt 0 ]]; do
+        if [[ "$1" == -o ]]; then
+          out="$2"
+          shift 2
+          continue
+        fi
+        shift
+      done
+      [[ -n "$out" ]] || return 1
+      printf '{' >"$out"
+      printf '%s\n' "$FORGE_N" >"$FORGE_DIR/writing.tmp"
+      mv -f "$FORGE_DIR/writing.tmp" "$FORGE_DIR/writing"
+      while [[ ! -f "$FORGE_DIR/sampled-$FORGE_N" ]]; do
+        spins=$((spins + 1))
+        if [[ "$spins" -gt 500000 ]]; then
+          printf 'reader did not sample %s\n' "$FORGE_N" >&2
+          return 1
+        fi
+      done
+      printf '"n":%s}\n' "$FORGE_N" >>"$out"
+      rm -f "$FORGE_DIR/writing"
+    }
+    python3 - "$dest" "$dir" <<'PY' &
+import json
+import os
+import sys
+import time
+
+dest, directory = sys.argv[1], sys.argv[2]
+errors = 0
+seen = set()
+deadline = time.time() + 30
+while len(seen) < 200 and time.time() < deadline:
+    marker = os.path.join(directory, "writing")
+    if not os.path.exists(marker):
+        continue
+    try:
+        n = open(marker, encoding="utf-8").read().strip()
+    except OSError:
+        continue
+    if not n or n in seen:
+        continue
+    try:
+        with open(dest, encoding="utf-8") as fh:
+            json.load(fh)
+    except Exception:
+        errors += 1
+    open(os.path.join(directory, "sampled-" + n), "w", encoding="utf-8").close()
+    seen.add(n)
+open(os.path.join(directory, "errors"), "w", encoding="utf-8").write(str(errors) + "\n")
+open(os.path.join(directory, "seen"), "w", encoding="utf-8").write(str(len(seen)) + "\n")
+PY
+    local reader=$! i
+    for i in $(seq 1 200); do
+      if ! FORGE_N="$i" save_forge_snapshot "http://127.0.0.1/unused" "$dest"; then
+        kill "$reader" 2>/dev/null || true
+        wait "$reader" 2>/dev/null || true
+        return 1
+      fi
+    done
+    wait "$reader"
+  )
+  errors="$(tr -d '[:space:]' <"$dir/errors")"
+  seen="$(tr -d '[:space:]' <"$dir/seen")"
+  rm -rf "$dir"
+  if [[ "$errors" != 0 || "$seen" != 200 ]]; then
+    printf 'forge.json atomic reads errors=%s seen=%s\n' "$errors" "$seen" >&2
+    return 1
+  fi
+}
+
 expect_fail missing-live-url "missing FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL" case_missing_live_url
 expect_fail missing-live-model "missing M6_LIVE_MODEL" case_missing_live_model
 expect_fail missing-live-definition "missing M6_DEFINITION_GIT_URL" case_missing_live_definition
@@ -951,9 +1035,83 @@ for remote_mode in live live-ci; do
 done
 run_case offline-remote case_remote offline
 run_case forge-lookup case_remote forge-lookup
+run_case forge-json-atomic case_forge_json_atomic
 
 # shellcheck source=spike/m6/run_test_t76b.sh
 . "$ROOT/spike/m6/run_test_t76b.sh"
+
+# case_step_exit_line fails one previously silent step and requires the
+# ERR trap to name it. build_images uses a failing docker through spike_fg.
+# A fresh bash is required: expect_fail runs this function under if, and bash
+# ignores set -e for every command in that function, including a subshell.
+case_step_exit_line() {
+  local step="$1" scratch="" rc=0
+  scratch="$(mktemp -d)"
+  ROOT="$ROOT" bash -s -- "$step" "$scratch" <<'EOS'
+set -eEuo pipefail
+shopt -s inherit_errexit
+# shellcheck disable=SC1091
+source "$ROOT/spike/m6/run.sh"
+trap 'on_err $? $LINENO' ERR
+step="$1"
+scratch="$2"
+M6_STEP="$step"
+case "$step" in
+  build_images)
+    docker() { return 17; }
+    OCI_PLATFORM="${OCI_PLATFORM:-linux/amd64}"
+    GOARCH_TARGET="${GOARCH_TARGET:-amd64}"
+    spike_fg build_images
+    ;;
+  prepare_definition)
+    ROOT="$scratch/root"
+    WORK="$scratch/work"
+    mkdir -p "$ROOT" "$WORK"
+    MODE=offline
+    prepare_definition
+    ;;
+  seed_git)
+    WORK="$scratch/work"
+    mkdir -p "$WORK"
+    MODE=offline
+    seed_git
+    ;;
+  start_git)
+    GIT_PORT=9
+    spike_spawn() { return 19; }
+    start_git
+    ;;
+  start_router)
+    M6_TASK_GIT_URL="http://example.invalid/m6.git"
+    M6_TASK_GITHUB_API="http://example.invalid"
+    ROUTER_PORT=9
+    spike_spawn() { return 19; }
+    start_router
+    ;;
+  start_forge)
+    # Argument expansion runs $(go env) before spike_fg_dir. A PATH stub
+    # fails that substitution; inherit_errexit lets the ERR trap name it.
+    mkdir -p "$scratch/bin" "$WORK"
+    printf '%s\n' '#!/bin/sh' 'exit 19' >"$scratch/bin/go"
+    chmod +x "$scratch/bin/go"
+    PATH="$scratch/bin:${PATH}"
+    FORGE_PORT=9
+    start_forge
+    ;;
+  *)
+    printf 'unknown step %s\n' "$step" >&2
+    exit 2
+    ;;
+esac
+EOS
+  rc=$?
+  rm -rf "$scratch"
+  return "$rc"
+}
+
+for step in build_images prepare_definition seed_git start_git start_forge start_router; do
+  expect_fail "step-${step}" "M6 FAIL — ${step}: exit " case_step_exit_line "$step"
+done
 
 if [[ "$fails" -ne 0 ]]; then
   printf '%s failed\n' "$fails" >&2

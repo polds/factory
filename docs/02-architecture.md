@@ -108,8 +108,10 @@ scorers(id, factory_id, name, labels_json, passing_score, sampling_rate, model, 
 skills(id, factory_id, agent_id NULL, name, path, content_digest)
 
 work_items(id, factory_id, source, source_ref, title, stage, status, created_by, …)
-runs(id, work_item_id, agent_id, parent_run_id, conversation_id, status, worker_id,
-     harness_json, model_id, instance_shape_json, cost_cents, started_at, ended_at)
+runs(id, work_item_id, agent_id, parent_run_id, conversation_id, status, purpose,
+     worker_id, harness_json, model_id, instance_shape_json, cost_cents,
+     started_at, ended_at)
+     -- purpose is work, scorer, benchmark, or improvement, and cannot change after insert
 executions(id, run_id, attempt, worker_id, state, failure_reason, exit_code,
            failure_details_json)         -- run ≠ execution; see lifecycle below
 run_events(id, run_id, seq, ts, type, payload_json)   -- append-only, SSE source
@@ -118,9 +120,12 @@ approvals(id, work_item_id, gate, requested_at, decided_at, decided_by, decision
 workers(id, pool, labels_json, platform, last_heartbeat_at, max_concurrent, status)
 run_queue(run_id, factory_id, pool, priority, enqueued_at, lease_until, attempts)
 
-scorer_results(id, run_id, scorer_id, label, score, passed, reasoning, reviewed_at)
-improvement_batches(id, factory_id, agent_id, status, failure_run_ids[], pr_url)
-benchmark_suites / benchmark_tasks / benchmark_trials(…)
+scorer_results(id, factory_id, run_id, scorer_name, judge_run_id, label, score, passed,
+     reasoning, status, created_at, reviewed_at, reviewed_by_batch_id)
+     -- UNIQUE (run_id, scorer_name)
+improvement_batches(id, factory_id, agent_name, status, improvement_run_id, pr_url, …)
+improvement_batch_failures(batch_id, scorer_result_id)
+benchmark_runs(id, factory_id, suite, …) / benchmark_trials(…)
 
 secrets(id, scope, name, provider, provider_ref, version)       -- never the value
 identities(id, factory_id, agent_id, kind, subject, credentials_ref)

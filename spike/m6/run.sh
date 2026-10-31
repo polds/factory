@@ -30,7 +30,9 @@
 # M6_IMPROVER_OPENS_PR=1 is the live-only branch: the improver opens
 # the request first and factoryd's create is 422, then a lookup.
 
-set -euo pipefail
+# -E (errtrace) so the ERR trap below runs inside functions. Without it, a
+# failing command under set -e exits the script with no M6 FAIL line.
+set -eEuo pipefail
 # shellcheck source=spike/lib/common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
 # shellcheck source=spike/lib/driver.sh
@@ -59,8 +61,30 @@ EVIDENCE_TRACE="loop-trace.zip"
 EVIDENCE_HOSTS="factoryd-m6 127.0.0.1 localhost"
 
 die() {
+  trap - ERR
   printf 'M6 FAIL — %s\n' "$*" >&2
   exit 1
+}
+
+# M6_STEP is the name on_err prints. Empty means the trap names the line.
+M6_STEP=""
+
+# on_err names a set -e exit: "M6 FAIL — <step>: exit <n>".
+# spike_fg backgrounds a shell function, and that child inherits this trap.
+# The child exits with the status; the parent prints the line.
+on_err() {
+  local code="$1"
+  if [[ "${BASHPID:-}" != "$$" ]]; then
+    exit "$code"
+  fi
+  trap - ERR
+  set +e
+  if [[ -n "${M6_STEP:-}" ]]; then
+    printf 'M6 FAIL — %s: exit %s\n' "$M6_STEP" "$code" >&2
+  else
+    printf 'M6 FAIL — line %s: exit %s\n' "${2:-?}" "$code" >&2
+  fi
+  exit "$code"
 }
 
 say() {
@@ -392,8 +416,23 @@ start_router() {
   fi
 }
 
+# save_forge_snapshot writes dest by renaming a complete temp file in the
+# same directory. A reader never sees a truncated body. curl -o to dest
+# truncates dest first, which is how loop.spec.ts once parsed an empty file.
+save_forge_snapshot() {
+  local url="$1" dest="$2" tmp=""
+  tmp="${dest}.tmp"
+  mkdir -p "$(dirname "$dest")"
+  if curl -fsS --connect-timeout 2 -m 5 "$url" -o "$tmp"; then
+    mv -f "$tmp" "$dest"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
 watch_candidate_offline() {
-  local bare="$WORK/git/m6/factory.git" ref="" sha="" id="" cmd=""
+  local bare="$WORK/git/m6/factory.git" ref="" sha="" id="" cmd="" diff_tmp=""
   while [[ ! -f "$SIGNAL/stop" ]]; do
     # improve/<batch id> is refs/heads/improve/<id>, not refs/heads/improve.
     ref="$(git --git-dir="$bare" for-each-ref --format='%(refname)' 'refs/heads/improve/*' 2>/dev/null | head -n 1 || true)"
@@ -401,13 +440,18 @@ watch_candidate_offline() {
       sha="$(git --git-dir="$bare" rev-parse "$ref")"
       git --git-dir="$bare" update-ref refs/heads/candidate "$sha"
       mkdir -p "$EVIDENCE" "$SIGNAL"
-      git --git-dir="$bare" diff main "$ref" >"$EVIDENCE/skill.diff" || true
+      # Rewritten on every poll, including after candidate-ready, while the
+      # spec may be reading skill.diff. Same temp-and-rename as forge.json.
+      diff_tmp="$EVIDENCE/skill.diff.tmp"
+      if git --git-dir="$bare" diff main "$ref" >"$diff_tmp"; then
+        mv -f "$diff_tmp" "$EVIDENCE/skill.diff"
+      else
+        rm -f "$diff_tmp"
+      fi
       printf '%s\n' "$sha" >"$SIGNAL/candidate-ready"
     fi
     if [[ -n "${FORGE_PORT:-}" ]]; then
-      mkdir -p "$EVIDENCE"
-      curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:${FORGE_PORT}/_spike/m6" \
-        -o "$EVIDENCE/forge.json" || true
+      save_forge_snapshot "http://127.0.0.1:${FORGE_PORT}/_spike/m6" "$EVIDENCE/forge.json" || true
     fi
     # Benchmark trials put the pinned SHA on the task argv. The worker
     # removes the container when the trial exits, so poll while it runs.
@@ -1101,6 +1145,8 @@ if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
 fi
 
+trap 'on_err $? $LINENO' ERR
+
 CLEANUP_ONLY=0
 SUB=""
 while [[ $# -gt 0 ]]; do
@@ -1272,16 +1318,24 @@ trap 'cleanup EXIT' EXIT
 trap 'cleanup INT' INT
 trap 'cleanup TERM' TERM
 
+M6_STEP=prepare_definition
 prepare_definition
+M6_STEP=seed_git
 seed_git
+M6_STEP=seed_remote
 seed_remote
+M6_STEP=start_git
 start_git
+M6_STEP=start_forge
 start_forge
 if [[ "$MODE" == offline ]]; then
+  M6_STEP=start_router
   start_router
 fi
 
+M6_STEP=build_images
 spike_fg build_images
+M6_STEP=""
 stack_start="$SECONDS"
 spike_fg compose down -v --remove-orphans >/dev/null 2>&1 || true
 COMPOSE_STARTED=1
