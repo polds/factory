@@ -409,6 +409,21 @@ status, payload = chat(
 command = json.loads(payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])["command"]
 if "/repos/m6/factory/pulls" not in command or "Opened by the offline improver." not in command:
     raise SystemExit("forced improver did not open a pull request")
+status, payload = chat(
+    "m6-agent",
+    [{"role": "user", "content": "m6-ask-input. Ask which one-sentence summary to write, then stop."}],
+)
+message = payload["choices"][0]["message"]
+fn = message["tool_calls"][0]["function"]
+if status != 200 or fn["name"] != "ask_input" or "CONVENTION: cite-sources" in json.dumps(message):
+    raise SystemExit("stub did not ask without inventing the convention")
+status, payload = chat(
+    "m6-agent",
+    [{"role": "user", "content": "The repository is already in the desired state. Do not call ask_input."}],
+)
+message = payload["choices"][0]["message"]
+if message.get("tool_calls") or "CONVENTION: cite-sources" in (message.get("content") or ""):
+    raise SystemExit("concrete prompt asked or invented the convention")
 PY
 }
 
@@ -1271,6 +1286,86 @@ EOF
   rm -rf "$dir"
 }
 
+case_redact_evidence() {
+  python3 -m unittest discover -s "$ROOT/spike/m6" -p 'redact_evidence_test.py' -v
+}
+
+# A failed Playwright run still scrubs evidence before the process exits.
+case_playwright_failure_redacts() {
+  local dir="$ROOT/spike/m6/.work/playwright-redact"
+  local err="$dir/stderr" out="$dir/stdout"
+  local secret="c0ffeefakeconsolekey0123456789abcdef"
+  local jwt="eyJhbGciOiJub25lIn0.eyJzdWIiOiJmYWtlIn0.ZmFrZXNpZ25hdHVyZQ"
+  rm -rf "$dir"
+  mkdir -p "$dir/evidence"
+  printf 'Authorization: Bearer %s\n' "$secret" >"$dir/evidence/driver.log"
+  python3 - "$dir/evidence/loop-trace.zip" "$jwt" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as zout:
+    zout.writestr("trace.network", '{"name":"authorization","value":"Bearer ' + sys.argv[2] + '"}\n')
+PY
+  body=$(
+    cat <<'EOF'
+m6_arm_err
+m6_step=playwright
+WORK="$M6_CASE_WORK"
+EVIDENCE="$WORK/evidence"
+SIGNAL="$WORK/signal"
+MODE=offline
+export WORK EVIDENCE SIGNAL MODE
+mkdir -p "$EVIDENCE" "$SIGNAL"
+spike_run_init m6
+watch_candidate() {
+  while [[ ! -f "$SIGNAL/stop" ]]; do
+    sleep 0.05
+  done
+}
+run_playwright() {
+  exit 3
+}
+compose() {
+  printf '1\n' >>"$M6_SAVE_MARK"
+  printf '%s\n' "$PINNED_SHA"
+}
+m6_playwright_and_evidence
+EOF
+  )
+  set +e
+  m6_fresh "$body" \
+    M6_CASE_WORK="$dir" \
+    M6_SAVE_MARK="$dir/save-logs-called" \
+    SPIKE_REG="$dir/spike-run" \
+    FACTORY_API_KEY="$secret" \
+    >"$out" 2>"$err"
+  local rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || return 1
+  grep -F 'M6 FAIL — playwright exit 3' "$err" >/dev/null || return 1
+  [[ -f "$dir/evidence/driver.log" ]] || return 1
+  if grep -F "$secret" "$dir/evidence/driver.log" >/dev/null; then
+    printf 'console key survived driver.log\n' >&2
+    return 1
+  fi
+  if grep -F "$secret" "$err" >/dev/null || grep -F "$jwt" "$err" >/dev/null; then
+    printf 'redaction printed a secret\n' >&2
+    return 1
+  fi
+  python3 - "$dir/evidence" "$jwt" "$secret" <<'PY'
+import sys, zipfile
+from pathlib import Path
+root = Path(sys.argv[1])
+jwt, secret = sys.argv[2], sys.argv[3]
+blob = (root / "driver.log").read_text(encoding="utf-8")
+if "[REDACTED]" not in blob or secret in blob:
+    raise SystemExit("driver.log was not scrubbed")
+with zipfile.ZipFile(root / "loop-trace.zip") as zin:
+    text = zin.read("trace.network").decode("utf-8")
+if jwt in text or secret in text or "[REDACTED]" not in text:
+    raise SystemExit("trace was not scrubbed")
+PY
+  rm -rf "$dir"
+}
+
 expect_fail step-build-images "M6 FAIL — build_images: exit 7" case_step_build_images
 expect_fail step-prepare-definition "M6 FAIL — prepare_definition: exit 1" case_step_prepare_definition
 expect_fail step-seed-git "M6 FAIL — seed_git: exit 1" case_step_seed_git
@@ -1281,6 +1376,8 @@ run_case die-message case_die_message
 run_case forge-json-atomic case_forge_json_atomic
 run_case playwright-set-plus-e case_playwright_set_plus_e
 run_case playwright-failure-before-sha case_playwright_failure_before_sha
+run_case redact-evidence case_redact_evidence
+run_case playwright-failure-redacts case_playwright_failure_redacts
 
 if [[ "$fails" -ne 0 ]]; then
   printf '%s failed\n' "$fails" >&2

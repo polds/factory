@@ -988,6 +988,15 @@ m6_restart_offline_children() {
   fi
 }
 
+# m6_redact_evidence scrubs the evidence directory in place. A failed scan
+# removes the directory and returns non-zero. A missing directory is success.
+m6_redact_evidence() {
+  if [[ ! -d "$EVIDENCE" ]]; then
+    return 0
+  fi
+  python3 "$ROOT/spike/m6/redact_evidence.py" --key-file "$WORK/api-key" "$EVIDENCE"
+}
+
 m6_playwright_and_evidence() {
   local play_start=0 evidence_start=0 play_code=0 play_log=""
   say "Playwright"
@@ -1026,6 +1035,12 @@ m6_playwright_and_evidence() {
   export EVIDENCE_EXTRA_SECRETS="FACTORY_SECRET_M6_PLANTED FACTORY_GITHUB_WEBHOOK_SECRET M6_TASK_GIT_URL M6_TASK_GITHUB_API INSTALL_TOKEN M6_APP_TOKEN"
   export EVIDENCE_HAR EVIDENCE_TRACE EVIDENCE_HOSTS
   evidence_start="$SECONDS"
+  # Playwright can fail before assert_evidence. Scrub the HAR, trace, and
+  # logs first so a later upload cannot publish the console key or a token.
+  if ! m6_redact_evidence; then
+    phase_report "evidence" "$evidence_start"
+    die "evidence redaction"
+  fi
   # A Playwright failure is the run's error. Report it before the pinned
   # SHA check, which otherwise masks the excerpt with a different die().
   if [[ "$play_code" -ne 0 ]]; then
@@ -1066,6 +1081,12 @@ m6_arm_playwright_env() {
     case " ${PLAYWRIGHT_EXTRA_ENV} " in
       *" M6_RUN_BASE "*) ;;
       *) PLAYWRIGHT_EXTRA_ENV="${PLAYWRIGHT_EXTRA_ENV} M6_RUN_BASE" ;;
+    esac
+  fi
+  if [[ "${M6_STUB_QUESTION:-}" == "1" ]]; then
+    case " ${PLAYWRIGHT_EXTRA_ENV} " in
+      *" M6_STUB_QUESTION "*) ;;
+      *) PLAYWRIGHT_EXTRA_ENV="${PLAYWRIGHT_EXTRA_ENV} M6_STUB_QUESTION" ;;
     esac
   fi
   export PLAYWRIGHT_EXTRA_ENV

@@ -217,7 +217,25 @@ def judge(body: dict) -> dict:
     return completion(payload, None)
 
 
+def ask_call(question: str) -> dict:
+    return completion(
+        "",
+        {
+            "id": "call_m6_ask",
+            "type": "function",
+            "function": {
+                "name": "ask_input",
+                "arguments": json.dumps({"text": question}),
+            },
+        },
+    )
+
+
 def agent(body: dict) -> dict:
+    # m6-ask-input is the offline stub for a work item that parks. The
+    # loop spec's concrete prompts do not contain it.
+    if "m6-ask-input" in blob(body):
+        return ask_call("Which one-sentence summary should this item use?")
     if CONVENTION in system_text(body):
         return completion(f"Done.\n{CONVENTION}", None)
     return completion("Done.", None)

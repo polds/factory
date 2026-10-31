@@ -55,7 +55,9 @@ async function openSection(page: Page, name: string): Promise<void> {
 
 async function chooseFactory(page: Page, name: string): Promise<void> {
   const nav = page.getByRole("navigation", { name: "Factories" });
-  await expect(nav.getByRole("button", { name, exact: true })).toBeVisible({ timeout: 90_000 });
+  await expect(nav.getByRole("button", { name, exact: true }), `factory button ${name}`).toBeVisible({
+    timeout: 90_000,
+  });
   await nav.getByRole("button", { name, exact: true }).click();
 }
 
@@ -79,7 +81,7 @@ async function waitForFile(name: string): Promise<void> {
       return;
     } catch {
       if (Date.now() - started > 12 * 60 * 1000) {
-        throw new Error(`timed out waiting for ${name}`);
+        throw new Error(`timed out waiting for signal file ${name} (absent)`);
       }
       await delay(1000);
     }
@@ -122,17 +124,83 @@ async function reloadUntil(
   page: Page,
   ready: () => Promise<boolean>,
   timeoutMs: number,
-  timeoutMessage = "timed out waiting for the page",
+  label: string,
+  observed: () => Promise<string>,
 ): Promise<void> {
   const started = Date.now();
   for (;;) {
     if (await ready()) return;
     if (Date.now() - started > timeoutMs) {
-      throw new Error(timeoutMessage);
+      let detail = "";
+      try {
+        detail = await observed();
+      } catch (err) {
+        detail = err instanceof Error ? err.message : String(err);
+      }
+      throw new Error(`timed out waiting for ${label} (${detail})`);
     }
     await page.reload();
     await delay(2000);
   }
+}
+
+function factoryFrom(page: Page): string {
+  return new URL(page.url()).pathname.split("/")[2] ?? "";
+}
+
+type LoopItemState = {
+  title: string;
+  status: string;
+  runStatus: string;
+  failureClass: string;
+};
+
+function blockedLoopItem(items: LoopItemState[]): string {
+  for (const item of items) {
+    if (
+      item.status === "awaiting_input" ||
+      item.status === "awaiting_approval" ||
+      item.status === "cancelled"
+    ) {
+      return `loop work item ${item.title} is ${item.status}`;
+    }
+    if (item.status === "complete") continue;
+    if (item.runStatus === "cancelled") {
+      return `loop work item ${item.title} is cancelled`;
+    }
+    if (item.runStatus === "failed" && item.failureClass !== "agent") {
+      const extra = item.failureClass === "" ? "" : " " + item.failureClass;
+      return `loop work item ${item.title} is failed${extra}`;
+    }
+  }
+  return "";
+}
+
+function loopBody(title: string): string {
+  return (
+    "The repository is already in the desired state. Do not edit any file. " +
+    "Do not call ask_input. Do not ask a question. " +
+    `Finish with this one-sentence summary: ${title} left the repository unchanged. ` +
+    "Follow the skills already in your prompt, and do not invent a final line they do not contain."
+  );
+}
+
+async function matrixState(page: Page): Promise<string> {
+  const candidate = matrixRow(page, "Candidate");
+  const baseline = matrixRow(page, "Baseline");
+  const header = async (row: Locator): Promise<string> => {
+    if ((await row.count()) !== 1) return "absent";
+    return ((await row.getByRole("rowheader").innerText()) ?? "").replace(/\s+/g, " ").trim();
+  };
+  const rate = async (row: Locator): Promise<string> => {
+    if ((await row.count()) !== 1) return "absent";
+    const value = await metricText(row, "Pass rate");
+    return value === "" ? "absent" : value;
+  };
+  return (
+    `candidate ${(await header(candidate))} pass ${(await rate(candidate))}; ` +
+    `baseline ${(await header(baseline))} pass ${(await rate(baseline))}`
+  );
 }
 
 async function failedImprovement(page: Page): Promise<string> {
@@ -148,10 +216,10 @@ async function failedImprovement(page: Page): Promise<string> {
     const detail = ((await row.locator(".muted").first().innerText()) ?? "").trim();
     return `improvement run failed ${runID}: ${detail || text}`;
   }
-  const factoryId = new URL(page.url()).pathname.split("/")[2] ?? "";
-  if (factoryId === "") return "";
+  const factory = factoryFrom(page);
+  if (factory === "") return "";
   const response = await page.request.get(
-    `/api/v1/factory/${encodeURIComponent(factoryId)}/improvement-batches`,
+    `/api/v1/factory/${encodeURIComponent(factory)}/improvement-batches`,
     {
       headers: { Authorization: `Bearer ${apiKey}` },
       failOnStatusCode: false,
@@ -178,9 +246,9 @@ test("m6 exit loop", async ({ browser }) => {
   try {
     await signIn(page);
     await chooseFactory(page, "m6");
-    await createItem(page, scoped("cite one"), "Describe the change in one sentence.");
-    await createItem(page, scoped("cite two"), "Describe the change in one sentence.");
-    await createItem(page, scoped("cite three"), "Describe the change in one sentence.");
+    await createItem(page, scoped("cite one"), loopBody(scoped("cite one")));
+    await createItem(page, scoped("cite two"), loopBody(scoped("cite two")));
+    await createItem(page, scoped("cite three"), loopBody(scoped("cite three")));
     if (offline) {
       await createItem(page, scoped("m6-bad-label"), "m6-bad-label");
     }
@@ -189,13 +257,29 @@ test("m6 exit loop", async ({ browser }) => {
     await openSection(page, "Scorers");
     await page.getByRole("link", { name: "Results for cite-sources" }).click();
     await expect(page.getByRole("heading", { name: "Scorers" })).toBeVisible();
-    await reloadUntil(page, async () => (await missedIds(page)).length >= 3, 12 * 60 * 1000);
+    await reloadUntil(
+      page,
+      async () => {
+        const blocked = await blockedLoop(page);
+        if (blocked !== "") throw new Error(blocked);
+        return (await missedIds(page)).length >= 3;
+      },
+      12 * 60 * 1000,
+      "cite-sources missed results",
+      async () => {
+        const blocked = await blockedLoop(page);
+        const count = (await missedIds(page)).length;
+        return `missed ${count} of 3${blocked === "" ? "" : "; " + blocked}`;
+      },
+    );
     trace.push("scorer: cite-sources");
     const failingIds = await missedIds(page);
     trace.push("failing results: " + failingIds.join(" "));
     if (offline) {
       if (runNonce === "") {
-        await expect(page.getByText("Scorer invalid").first()).toBeVisible({ timeout: 180_000 });
+        await expect(page.getByText("Scorer invalid").first(), "scorer invalid label").toBeVisible({
+          timeout: 180_000,
+        });
       } else {
         const allow = await runsForNonce(page);
         await expect
@@ -229,6 +313,12 @@ test("m6 exit loop", async ({ browser }) => {
         return (await page.locator('[data-kind="improvement_pr"]').count()) >= 1;
       },
       12 * 60 * 1000,
+      "improvement pull request",
+      async () => {
+        const count = await page.locator('[data-kind="improvement_pr"]').count();
+        const failed = await failedImprovement(page);
+        return `improvement_pr ${count}${failed === "" ? "" : "; " + failed}`;
+      },
     );
     const inboxRow = page.locator("li.inbox-row").filter({ has: page.locator('[data-kind="improvement_pr"]') });
     await inboxRow.getByRole("button").first().click();
@@ -366,7 +456,9 @@ test("m6 exit loop", async ({ browser }) => {
 
     await openSection(page, "Benchmarks");
     await page.getByRole("link", { name: "convention", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Benchmarks" })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole("heading", { name: "Benchmarks" }), "benchmarks heading").toBeVisible({
+      timeout: 60_000,
+    });
     await expect(page.locator("#benchmark-repetitions")).toHaveValue("5");
     await page.getByRole("button", { name: "Run benchmark" }).click();
     const confirm = page.getByRole("dialog", { name: "Run benchmark?" });
@@ -379,9 +471,14 @@ test("m6 exit loop", async ({ browser }) => {
       page,
       async () => conventionReady(page),
       15 * 60 * 1000,
-      offline
-        ? "benchmark matrix never showed Candidate as the winner with pass rate 100% and Baseline at 0%. The candidate must print CONVENTION: cite-sources."
-        : "benchmark matrix never showed Candidate and Baseline pass rates. The candidate must print CONVENTION: cite-sources.",
+      "convention benchmark matrix",
+      async () => {
+        const state = await matrixState(page);
+        if (offline) {
+          return state + "; want candidate winner 100% and baseline 0%";
+        }
+        return state + "; want candidate and baseline pass rates";
+      },
     );
     const candidate = matrixRow(page, "Candidate");
     const baseline = matrixRow(page, "Baseline");
@@ -432,6 +529,8 @@ test("m6 exit loop", async ({ browser }) => {
         page,
         async () => (await page.getByText("Infrastructure").count()) >= 1,
         8 * 60 * 1000,
+        "fault benchmark infrastructure error",
+        async () => `infrastructure rows ${await page.getByText("Infrastructure").count()}`,
       );
       trace.push("fault errored: infrastructure");
       await axe(page, "fault");
@@ -477,6 +576,12 @@ test("m6 exit loop", async ({ browser }) => {
         return text.includes("followed") || text.includes("missed");
       },
       8 * 60 * 1000,
+      "cite-sources rescore",
+      async () => {
+        const row = page.getByRole("row").filter({ has: page.getByRole("rowheader", { name: "cite-sources" }) });
+        if ((await row.count()) === 0) return "cite-sources row absent";
+        return ((await row.innerText()) ?? "").replace(/\s+/g, " ").trim().slice(0, 180);
+      },
     );
     await expect(page.getByRole("log", { name: "Run transcript" })).toBeVisible();
     await axe(page, "run-detail");
@@ -484,7 +589,9 @@ test("m6 exit loop", async ({ browser }) => {
 
     await page.goto("/");
     await chooseFactory(page, "m6");
-    await expect(page.getByRole("heading", { name: "m6 · scorer cards" })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole("heading", { name: "m6 · scorer cards" }), "dashboard scorer cards").toBeVisible({
+      timeout: 60_000,
+    });
     await expect(page.getByRole("heading", { name: "m6 · improvement PRs" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Review PR" }).first()).toBeVisible();
     await axe(page, "dashboard-metrics");
@@ -542,4 +649,121 @@ async function missedIds(page: Page): Promise<string[]> {
     ids.push(id);
   }
   return ids;
+}
+
+function loopTitles(): string[] {
+  return [scoped("cite one"), scoped("cite two"), scoped("cite three")];
+}
+
+async function blockedLoop(page: Page): Promise<string> {
+  const titles = loopTitles();
+  const factory = factoryFrom(page);
+  if (factory === "") return "";
+  const response = await page.request.get(`/api/v1/factory/${encodeURIComponent(factory)}/tasks`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    failOnStatusCode: false,
+  });
+  if (!response.ok()) return "";
+  const tasks = (await response.json()) as { id?: string; title?: string; status?: string }[];
+  const wanted = new Map<string, LoopItemState>();
+  for (const task of tasks) {
+    const title = task.title ?? "";
+    if (!titles.includes(title)) continue;
+    const id = task.id ?? "";
+    if (id === "") continue;
+    wanted.set(id, { title, status: task.status ?? "", runStatus: "", failureClass: "" });
+  }
+  if (wanted.size === 0) return "";
+  const runs = await page.request.get("/api/v1/agent/runs", {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    failOnStatusCode: false,
+  });
+  if (runs.ok()) {
+    const rows = (await runs.json()) as {
+      status?: string;
+      failure_class?: string;
+      work_item_id?: string;
+    }[];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const id = row.work_item_id ?? "";
+      if (!wanted.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      const item = wanted.get(id);
+      if (!item) continue;
+      item.runStatus = row.status ?? "";
+      item.failureClass = row.failure_class ?? "";
+    }
+  }
+  return blockedLoopItem([...wanted.values()]);
+}
+
+test("names a loop work item that will not be scored", () => {
+  expect(
+    blockedLoopItem([{ title: "cite one", status: "awaiting_input", runStatus: "", failureClass: "" }]),
+  ).toBe("loop work item cite one is awaiting_input");
+  expect(
+    blockedLoopItem([{ title: "cite two", status: "awaiting_approval", runStatus: "", failureClass: "" }]),
+  ).toBe("loop work item cite two is awaiting_approval");
+  expect(
+    blockedLoopItem([{ title: "cite three", status: "cancelled", runStatus: "", failureClass: "" }]),
+  ).toBe("loop work item cite three is cancelled");
+  expect(
+    blockedLoopItem([
+      { title: "cite three", status: "open", runStatus: "failed", failureClass: "infrastructure" },
+    ]),
+  ).toBe("loop work item cite three is failed infrastructure");
+  expect(
+    blockedLoopItem([{ title: "cite one", status: "open", runStatus: "failed", failureClass: "" }]),
+  ).toBe("loop work item cite one is failed");
+  expect(
+    blockedLoopItem([{ title: "cite one", status: "open", runStatus: "failed", failureClass: "agent" }]),
+  ).toBe("");
+  expect(blockedLoopItem([{ title: "cite two", status: "open", runStatus: "", failureClass: "" }])).toBe("");
+  expect(loopBody("cite one")).not.toContain("CONVENTION: cite-sources");
+  expect(loopBody("cite one")).toContain("Do not call ask_input");
+  expect(loopBody("cite one")).toContain("cite one left the repository unchanged");
+});
+
+if (process.env.M6_STUB_QUESTION === "1") {
+  test("loop work item awaiting input fails fast", async ({ browser }) => {
+    if (apiKey === "") throw new Error("M6_API_KEY is empty");
+    const context = await browser.newContext({
+      baseURL: process.env.FACTORY_URL ?? "http://factoryd-m6:8080",
+    });
+    const page = await context.newPage();
+    try {
+      await signIn(page, "/", "stub-login");
+      await chooseFactory(page, "m6");
+      const title = scoped("cite three");
+      await createItem(
+        page,
+        title,
+        "m6-ask-input. Ask which one-sentence summary to write, then stop. Do not edit any file.",
+      );
+      await openSection(page, "Scorers");
+      await page.getByRole("link", { name: "Results for cite-sources" }).click();
+      let caught = "";
+      try {
+        await reloadUntil(
+          page,
+          async () => {
+            const blocked = await blockedLoop(page);
+            if (blocked !== "") throw new Error(blocked);
+            return false;
+          },
+          90_000,
+          "stub question to park",
+          async () => "still running",
+        );
+      } catch (err) {
+        caught = err instanceof Error ? err.message : String(err);
+      }
+      expect(caught).toContain(title);
+      expect(caught).toContain("awaiting_input");
+      expect(caught.includes("timed out")).toBe(false);
+    } finally {
+      await context.close().catch(() => undefined);
+    }
+  });
 }
