@@ -17,12 +17,14 @@ No claim in this design asserts that Warp's running system was *executed* or
 
 | Artifact | Identity | Class of evidence |
 | --- | --- | --- |
-| `warpdotdev/oz-agent-worker` | `main`, MIT, Go, 56 files / 19,782 lines | source (complete) |
+| `warpdotdev/oz-agent-worker` | `63dbb8ae8ccb3941392691f5c628e3365d8e248e` (`63dbb8a`), MIT, Go | source (complete) |
 | `docs.warp.dev/openapi.yaml` | OpenAPI 3.0.0, "Warp Platform API" v1.0.0, 246 KB, 40 paths | published contract |
 | `docs.warp.dev/_llms-txt/factories.txt` | 489 KB, complete Factories doc set | published documentation |
 | `docs.warp.dev/_llms-txt/automation-platform.txt` | 417 KB | published documentation |
 | `warpdotdev/warp-factory-examples` | `main`, 8 example trees, schema `v1alpha1` | source (complete) |
 | `Warp.app/Contents/MacOS/stable` | Mach-O 64-bit arm64, 458 MB, SHA-256 `fd156b28…95c4a1` | shipped binary (byte scan only) |
+
+The worker image checks out `63dbb8ae8ccb3941392691f5c628e3365d8e248e` (`deploy/worker/Dockerfile`, `ARG WORKER_REF`). It does not build upstream `main`.
 
 ### Tooling boundary on the binary
 

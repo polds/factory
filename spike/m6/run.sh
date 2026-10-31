@@ -63,6 +63,76 @@ die() {
   exit 1
 }
 
+# m6_on_err names the step in progress. exit does not fire ERR, so die
+# keeps its own line. A background step (spike_fg) and its parent both
+# enter this trap; the mark file is created once so the line is printed once.
+m6_on_err() {
+  local rc=$?
+  local mark="" printed=0
+  if [[ -n "${M6_STEP:-}" ]]; then
+    mark="${M6_ERR_MARK:-}"
+    if [[ -n "$mark" ]]; then
+      # The redirect runs with ERR disabled. A lost race must not re-enter
+      # this trap (set -E would otherwise treat the noclobber failure as fatal).
+      if (
+        set +E
+        trap - ERR
+        set -o noclobber
+        printf x >"$mark"
+      ) 2>/dev/null; then
+        printed=1
+      fi
+    else
+      printed=1
+    fi
+    if [[ "$printed" -eq 1 ]]; then
+      printf 'M6 FAIL — %s: exit %s\n' "$M6_STEP" "$rc" >&2
+    fi
+  fi
+  exit "$rc"
+}
+
+m6_install_err_trap() {
+  set -E
+  trap 'm6_on_err' ERR
+}
+
+# m6_run_step runs one set -e step. On failure the ERR trap prints
+# "M6 FAIL — <name>: exit <n>" and exits with that status.
+m6_run_step() {
+  local name="$1"
+  shift
+  local dir=""
+  M6_STEP="$name"
+  dir="${WORK:-${TMPDIR:-/tmp}}"
+  mkdir -p "$dir"
+  M6_ERR_MARK="$dir/.m6-err-$name"
+  rm -f "$M6_ERR_MARK"
+  "$@"
+  M6_STEP=""
+  unset M6_ERR_MARK
+}
+
+# m6_publish_stdout replaces dest with the command's stdout. The temp file
+# is in dest's directory, so the rename is atomic and a reader never sees
+# a prefix. Statuses above max_ok leave dest unchanged. git diff uses 1
+# because that status means the files differ.
+m6_publish_stdout() {
+  local dest="$1" max_ok="$2"
+  shift 2
+  local dir="" base="" tmp="" rc=0
+  dir="$(dirname -- "$dest")"
+  base="$(basename -- "$dest")"
+  mkdir -p "$dir"
+  tmp="$(mktemp "$dir/.$base.XXXXXX")"
+  "$@" >"$tmp" || rc=$?
+  if [[ "$rc" -gt "$max_ok" ]]; then
+    rm -f "$tmp"
+    return "$rc"
+  fi
+  mv -f -- "$tmp" "$dest"
+}
+
 say() {
   printf '%s\n' "$*"
 }
@@ -401,13 +471,14 @@ watch_candidate_offline() {
       sha="$(git --git-dir="$bare" rev-parse "$ref")"
       git --git-dir="$bare" update-ref refs/heads/candidate "$sha"
       mkdir -p "$EVIDENCE" "$SIGNAL"
-      git --git-dir="$bare" diff main "$ref" >"$EVIDENCE/skill.diff" || true
+      # The spec reads skill.diff after candidate-ready, and the next poll
+      # rewrites it. Publish via rename so that read never sees a prefix.
+      m6_publish_stdout "$EVIDENCE/skill.diff" 1 git --git-dir="$bare" diff main "$ref" || true
       printf '%s\n' "$sha" >"$SIGNAL/candidate-ready"
     fi
     if [[ -n "${FORGE_PORT:-}" ]]; then
-      mkdir -p "$EVIDENCE"
-      curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:${FORGE_PORT}/_spike/m6" \
-        -o "$EVIDENCE/forge.json" || true
+      m6_publish_stdout "$EVIDENCE/forge.json" 0 \
+        curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:${FORGE_PORT}/_spike/m6" || true
     fi
     # Benchmark trials put the pinned SHA on the task argv. The worker
     # removes the container when the trial exits, so poll while it runs.
@@ -1101,6 +1172,8 @@ if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
 fi
 
+m6_install_err_trap
+
 CLEANUP_ONLY=0
 SUB=""
 while [[ $# -gt 0 ]]; do
@@ -1272,16 +1345,16 @@ trap 'cleanup EXIT' EXIT
 trap 'cleanup INT' INT
 trap 'cleanup TERM' TERM
 
-prepare_definition
-seed_git
+m6_run_step prepare_definition prepare_definition
+m6_run_step seed_git seed_git
 seed_remote
-start_git
-start_forge
+m6_run_step start_git start_git
+m6_run_step start_forge start_forge
 if [[ "$MODE" == offline ]]; then
-  start_router
+  m6_run_step start_router start_router
 fi
 
-spike_fg build_images
+m6_run_step build_images spike_fg build_images
 stack_start="$SECONDS"
 spike_fg compose down -v --remove-orphans >/dev/null 2>&1 || true
 COMPOSE_STARTED=1
