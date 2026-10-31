@@ -15,8 +15,8 @@ const axeFindings: string[] = [];
 // bound (internal/benchmark/compare.go, z = 1.959963984540054).
 // At n=5 a 0/5 baseline upper bound is 0.4345 and a 4/5 lower bound is
 // 0.3755, so 4/5 never wins; only 5/5 (lower bound 0.5655) does.
-// At n=10 a 0/10 upper bound is 0.2775. 8/10 lower bound is 0.4902 and
-// 9/10 is 0.5958, so either clears a 0/10 baseline.
+// At n=10 a 0/10 upper bound is 0.2775. 7/10 lower bound is 0.3968,
+// 8/10 is 0.4902, and 9/10 is 0.5958, so each clears a 0/10 baseline.
 // M6_BENCHMARK_REPETITIONS overrides the count. Offline stays at 5 when
 // that variable is unset.
 const OFFLINE_REPETITIONS = 5;

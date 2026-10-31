@@ -334,6 +334,55 @@ class PublicURLTest(unittest.TestCase):
             self.assertEqual(
                 redact_evidence.scan_tree(root, [repo, credentialed, token]), []
             )
+            self.assertTrue(redact_evidence.public_https_url(repo))
+            self.assertTrue(redact_evidence.public_https_url(repo + ".git"))
+            self.assertTrue(redact_evidence.public_https_url(html))
+
+    def test_percent_encoded_ghs_in_query_is_redacted(self) -> None:
+        # Underscore and hyphen are percent-encoded. quote() leaves both
+        # raw characters alone, so the token regex has to see %5F and %2D.
+        token = "ghs%5F" + ("a" * 8) + "%2D" + ("b" * 8)
+        url = "https://github.com/polds/factory-m6-definition?token=" + token
+        encoded = quote(url, safe="")
+        self.assertFalse(redact_evidence.public_https_url(url))
+        # The token regex catches the encoding even when the URL is not a
+        # known secret. The quoted URL is a secret_forms copy of that secret.
+        self.assertNotEqual(redact_evidence.scan_text(url, []), [])
+        self.assertNotEqual(redact_evidence.scan_text(encoded, [url]), [])
+        bare = redact_evidence.redact_text(url, [])
+        self.assertNotIn(token, bare)
+        self.assertNotIn("%5F", bare)
+        self.assertNotIn("%2D", bare)
+        self.assertEqual(redact_evidence.scan_text(bare, []), [])
+        quoted = redact_evidence.redact_text(encoded, [url])
+        self.assertNotIn(encoded, quoted)
+        self.assertEqual(redact_evidence.scan_text(quoted, [url]), [])
+
+    def test_opaque_query_token_is_redacted(self) -> None:
+        opaque = "q" * 24
+        url = "https://github.com/polds/factory-m6-definition?access=" + opaque
+        encoded = quote(url, safe="")
+        self.assertFalse(redact_evidence.public_https_url(url))
+        self.assertNotEqual(redact_evidence.scan_text(url, [url]), [])
+        self.assertNotEqual(redact_evidence.scan_text(encoded, [url]), [])
+        for blob in (url, encoded):
+            redacted = redact_evidence.redact_text(blob, [url])
+            self.assertNotIn(opaque, redacted)
+            self.assertNotIn(url, redacted)
+            self.assertEqual(redact_evidence.scan_text(redacted, [url]), [])
+
+    def test_opaque_path_segment_is_redacted(self) -> None:
+        segment = "p" * 24
+        url = "https://github.com/polds/factory-m6-definition/" + segment
+        encoded = quote(url, safe="")
+        self.assertFalse(redact_evidence.public_https_url(url))
+        self.assertNotEqual(redact_evidence.scan_text(url, [url]), [])
+        self.assertNotEqual(redact_evidence.scan_text(encoded, [url]), [])
+        for blob in (url, encoded):
+            redacted = redact_evidence.redact_text(blob, [url])
+            self.assertNotIn(segment, redacted)
+            self.assertNotIn(url, redacted)
+            self.assertEqual(redact_evidence.scan_text(redacted, [url]), [])
 
 
 def leaked_stateless(text: str) -> bool:

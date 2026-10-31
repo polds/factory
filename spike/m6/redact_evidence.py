@@ -22,7 +22,9 @@ import shutil
 import sys
 import zipfile
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
+
+import remote
 
 PLACEHOLDER = "[REDACTED]"
 BEARER_PLACEHOLDER = "Bearer [REDACTED]"
@@ -31,10 +33,11 @@ MIN_SECRET = 8
 
 # GitHub's current tokens, including stateless installation tokens
 # ghs_<app id>_<JWT> (dots and base64url hyphens, since 2026-10-02).
-# %2E is a query-string dot. A class that stops at "." leaves the JWT tail
-# in the file after the prefix is replaced.
-_TOKEN_PREFIX = r"(?:github_pat_|ghs_|ghp_|gho_|ghu_|ghr_)"
-_TOKEN_BODY = r"(?:[A-Za-z0-9_\-]|%2[Ee]|\.)"
+# %2E is a query-string dot, %5F an underscore, %2D a hyphen. A class that
+# stops at "." leaves the JWT tail in the file after the prefix is replaced.
+_US = r"(?:_|%5[Ff])"
+_TOKEN_PREFIX = rf"(?:github{_US}pat{_US}|ghs{_US}|ghp{_US}|gho{_US}|ghu{_US}|ghr{_US})"
+_TOKEN_BODY = r"(?:[A-Za-z0-9_\-]|%2[EeDd]|%5[Ff]|\.)"
 GITHUB_TOKEN = re.compile(_TOKEN_PREFIX + _TOKEN_BODY + r"{16,}")
 _B64URL = r"[A-Za-z0-9_\-]"
 _DOT = r"(?:\.|%2[Ee])"
@@ -103,21 +106,14 @@ def read_key_file(path: str) -> str:
 
 
 def public_https_url(value: str) -> bool:
-    """A credential-free http(s) URL is not a secret.
+    """The public definition repo URL, or that repo's pull-request html_url.
 
-    The definition git URL is that shape. Replacing it blanks a pull
-    request html_url that starts with the same prefix. Userinfo and
-    token-shaped strings are still scrubbed.
+    Replacing the repo URL would blank an html_url that starts with it.
+    The shape is strict_owner_name's (https, owner/name[.git], no userinfo,
+    query, or fragment) plus owner/name/pull/<digits>. A query token, a
+    percent-encoded token, or an extra path segment stays on the scrub list.
     """
-    text = value.strip()
-    if text == "" or any(ch.isspace() for ch in text):
-        return False
-    parsed = urlsplit(text)
-    if parsed.scheme not in {"http", "https"}:
-        return False
-    if parsed.username is not None or parsed.password is not None:
-        return False
-    return parsed.hostname is not None
+    return remote.public_definition_url(value)
 
 
 def secrets_to_scrub(secrets: list[str]) -> list[str]:

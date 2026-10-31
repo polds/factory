@@ -1032,9 +1032,10 @@ m6_playwright_and_evidence() {
     export M6_APP_TOKEN
   fi
   copy_remote_ledger
-  # M6_TASK_GIT_URL is the public definition URL. redact_evidence leaves a
-  # credential-free https URL in place so the pull request html_url survives,
-  # and still scrubs a credentialed form and tokens.
+  # M6_TASK_GIT_URL is the public definition URL: https host, owner/name,
+  # no userinfo, query, or fragment. redact_evidence leaves that shape and
+  # the pull html_url in place. A query token, an extra path segment, a
+  # percent-encoded token, and a credentialed URL are still scrubbed.
   export EVIDENCE_EXTRA_SECRETS="FACTORY_SECRET_M6_PLANTED FACTORY_GITHUB_WEBHOOK_SECRET M6_TASK_GIT_URL M6_TASK_GITHUB_API INSTALL_TOKEN M6_APP_TOKEN"
   export EVIDENCE_HAR EVIDENCE_TRACE EVIDENCE_HOSTS
   evidence_start="$SECONDS"
