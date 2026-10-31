@@ -1145,7 +1145,10 @@ case_forge_json_atomic() {
   wait "$writer" || return 1
   writer=""
   [[ "$(cat "$dir/writes")" -ge 200 ]] || return 1
-  m6_publish_stdout "$dest" false || true
+  if m6_publish_stdout "$dest" false; then
+    printf 'failed publish returned 0\n' >&2
+    return 1
+  fi
   python3 -c 'import json,sys;json.load(open(sys.argv[1]))' "$dest" || return 1
   [[ ! -e "${dest}.tmp" ]] || return 1
   # shellcheck disable=SC2016 # literal writer call, not an expansion
@@ -1158,6 +1161,53 @@ case_forge_json_atomic() {
   rm -rf "$dir"
 }
 
+# set +e around spike_fg must not print an ERR line. Playwright's status
+# still reaches die() after save_logs.
+case_playwright_set_plus_e() {
+  local dir="$ROOT/spike/m6/.work/playwright-set-plus-e"
+  local err="$dir/stderr" out="$dir/stdout"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  body=$(
+    cat <<'EOF'
+m6_arm_err
+m6_step=playwright
+WORK="$M6_CASE_WORK"
+EVIDENCE="$WORK/evidence"
+SIGNAL="$WORK/signal"
+MODE=offline
+export WORK EVIDENCE SIGNAL MODE
+mkdir -p "$EVIDENCE" "$SIGNAL"
+spike_run_init m6
+watch_candidate() {
+  while [[ ! -f "$SIGNAL/stop" ]]; do
+    sleep 0.05
+  done
+}
+run_playwright() {
+  exit 3
+}
+compose() {
+  printf '1\n' >>"$M6_SAVE_MARK"
+  printf '%s\n' "$PINNED_SHA"
+}
+m6_playwright_and_evidence
+EOF
+  )
+  m6_fresh "$body" \
+    M6_CASE_WORK="$dir" \
+    M6_SAVE_MARK="$dir/save-logs-called" \
+    SPIKE_REG="$dir/spike-run" \
+    >"$out" 2>"$err"
+  local rc=$?
+  [[ "$rc" -ne 0 ]] || return 1
+  [[ "$(cat "$err")" == "M6 FAIL — playwright exit 3" ]] || return 1
+  [[ -s "$dir/save-logs-called" ]] || return 1
+  [[ -s "$dir/evidence/compose.log" ]] || return 1
+  grep -F "$PINNED_SHA" "$dir/evidence/compose.log" >/dev/null || return 1
+  rm -rf "$dir"
+}
+
 expect_fail step-build-images "M6 FAIL — build_images: exit 7" case_step_build_images
 expect_fail step-prepare-definition "M6 FAIL — prepare_definition: exit 1" case_step_prepare_definition
 expect_fail step-seed-git "M6 FAIL — seed_git: exit 1" case_step_seed_git
@@ -1166,6 +1216,7 @@ expect_fail step-start-forge "M6 FAIL — start_forge: exit 9" case_step_start_f
 expect_fail step-start-router "M6 FAIL — start_router: exit 3" case_step_start_router
 run_case die-message case_die_message
 run_case forge-json-atomic case_forge_json_atomic
+run_case playwright-set-plus-e case_playwright_set_plus_e
 
 if [[ "$fails" -ne 0 ]]; then
   printf '%s failed\n' "$fails" >&2

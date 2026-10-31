@@ -63,12 +63,17 @@ die() {
   exit 1
 }
 
-# m6_on_err names a set -e exit. A subshell exits without a line so the
-# shell that armed the trap reports the step once. die() is unchanged:
-# exit does not raise ERR.
+# m6_on_err names a set -e exit. The ERR trap also runs when errexit is
+# off; those regions (Playwright, specs) already record the status and
+# call die(). A subshell exits without a line so the shell that armed
+# the trap reports the step once. die() is unchanged: exit does not
+# raise ERR.
 # shellcheck disable=SC2317,SC2329 # invoked by the ERR trap
 m6_on_err() {
   local status="${1:-1}"
+  if [[ $- != *e* ]]; then
+    return 0
+  fi
   if [[ -z "${m6_main_bashpid:-}" || "$BASHPID" -ne "$m6_main_bashpid" ]]; then
     exit "$status"
   fi
@@ -95,8 +100,10 @@ m6_publish_stdout() {
   if "$@" >"$tmp"; then
     mv -f "$tmp" "$dest"
     return 0
+  else
+    # $? after fi is 0. The failing command's status is only visible here.
+    status=$?
   fi
-  status=$?
   rm -f "$tmp"
   return "$status"
 }
