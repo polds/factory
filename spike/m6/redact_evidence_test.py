@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import redact_evidence  # noqa: E402
+import redact_evidence
 
 KEY = "c0ffeefakeconsolekey0123456789abcdef"
 JWT = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJmYWtlIn0.ZmFrZXNpZ25hdHVyZQ"
@@ -46,7 +46,10 @@ def sample_tree(root: Path) -> None:
     )
     trace = root / "loop-trace.zip"
     with zipfile.ZipFile(trace, "w") as zout:
-        zout.writestr("trace.network", f'{{"name":"authorization","value":"Bearer {GHP}"}}\n{JWT}\n')
+        zout.writestr(
+            "trace.network",
+            f'{{"name":"authorization","value":"Bearer {GHP}"}}\n{JWT}\n',
+        )
         zout.writestr("notes.txt", f"token {GHS}\n")
 
 
@@ -105,7 +108,13 @@ class RedactorTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 1)
             self.assertFalse(root.exists())
             err = proc.stderr
-            for kind in ("bearer", "jwt", "github token", "x-litellm-api-key", "known secret"):
+            for kind in (
+                "bearer",
+                "jwt",
+                "github token",
+                "x-litellm-api-key",
+                "known secret",
+            ):
                 self.assertIn(kind, err)
             for secret in SECRETS:
                 self.assertNotIn(secret, err)

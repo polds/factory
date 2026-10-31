@@ -31,9 +31,7 @@ BEARER = re.compile(r"(?i)(Bearer\s+)(?!\[REDACTED\])([^\"'\s\\]{4,})")
 AUTH_LINE = re.compile(
     r"(?i)((?:^|[^A-Za-z0-9_\"]))authorization(\s*:\s*)(?!\[REDACTED\])([^\r\n]+)"
 )
-LITELLM_LINE = re.compile(
-    r"(?i)(x-litellm-api-key\s*:\s*)(?!\[REDACTED\])(\S+)"
-)
+LITELLM_LINE = re.compile(r"(?i)(x-litellm-api-key\s*:\s*)(?!\[REDACTED\])(\S+)")
 ENV_SECRET_NAMES = (
     "FACTORY_API_KEY",
     "M6_API_KEY",
