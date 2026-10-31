@@ -1037,8 +1037,9 @@ m6_playwright_and_evidence() {
   # still fail the evidence check. redact_evidence.public_https_url is the
   # shared rule: a public definition URL, its /pull/<digits> link, and a
   # bare https origin are not secrets. assert_evidence skips those values.
-  # A query token, an extra path segment, a percent-encoded token, and a
-  # credentialed URL are still scrubbed and still planted.
+  # A query token, an extra path segment, a percent-encoded token, a
+  # credentialed URL, and a value urlsplit would shorten by deleting a
+  # control character are still scrubbed and still planted.
   export EVIDENCE_EXTRA_SECRETS="FACTORY_SECRET_M6_PLANTED FACTORY_GITHUB_WEBHOOK_SECRET M6_TASK_GIT_URL M6_TASK_GITHUB_API INSTALL_TOKEN M6_APP_TOKEN"
   export EVIDENCE_HAR EVIDENCE_TRACE EVIDENCE_HOSTS
   evidence_start="$SECONDS"

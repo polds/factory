@@ -840,6 +840,77 @@ case_evidence_offline_task_url() {
   return "$code"
 }
 
+# case_evidence_control_splice plants URLs that urlsplit would shorten by
+# deleting tab, LF, or CR. The check must exit 1 and say planted secret.
+# Names are printed. Values are not.
+case_evidence_control_splice() {
+  local dir="$ROOT/spike/m6/.work/evidence-splice-$$"
+  local name="" err="" one=0
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  python3 - "$dir" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+origin = "https://api.github.com"
+repo = "https://github.com/polds/factory-m6-definition"
+ghs = "ghs_" + ("a" * 20)
+ghp = "ghp_" + ("b" * 20)
+tail = "c" * 24
+cases = {
+    "origin-lf": origin + "\n" + tail,
+    "origin-cr": origin + "\r" + tail,
+    "origin-tab": origin + "\t" + tail,
+    "def-lf-ghs": repo + "\n" + ghs,
+    "def-cr-ghp": repo + "\r" + ghp,
+    "def-tab-ghs": repo + "\t" + ghs,
+    "def-lf-pull": repo + "\n" + ghs + "/pull/3",
+    "def-cr-pull": repo + "\r" + ghp + "/pull/3",
+    "def-tab-pull": repo + "\t" + ghs + "/pull/3",
+    "host-tab": "https://api.gith" + "\t" + "ub.com",
+}
+for name, value in cases.items():
+    (root / name).write_text(value, encoding="utf-8")
+    evidence = root / (name + ".d")
+    evidence.mkdir()
+    (evidence / "dom-improvement.html").write_text(value, encoding="utf-8")
+PY
+  for name in origin-lf origin-cr origin-tab def-lf-ghs def-cr-ghp def-tab-ghs def-lf-pull def-cr-pull def-tab-pull host-tab; do
+    err="$dir/$name.err"
+    one=0
+    (
+      local value=""
+      IFS= read -r -d '' value <"$dir/$name" || true
+      # shellcheck disable=SC2030 # each case sets MODE in its own subshell
+      MODE=live
+      M6_TASK_GIT_URL="$value"
+      unset M6_TASK_GITHUB_API
+      export MODE M6_TASK_GIT_URL
+      EVIDENCE="$dir/$name.d"
+      export EVIDENCE
+      evidence_check_env
+      assert_evidence
+    ) >"$dir/$name.out" 2>"$err" || one=$?
+    if [[ "$one" -eq 0 ]]; then
+      printf 'spliced value was treated as public: %s\n' "$name" >&2
+      rm -rf "$dir"
+      return 1
+    fi
+    if ! grep -F 'planted secret' "$err" >/dev/null; then
+      printf 'spliced value did not report planted secret: %s\n' "$name" >&2
+      rm -rf "$dir"
+      return 1
+    fi
+    if grep -E 'ghs_|ghp_|cccccccc' "$err" >/dev/null; then
+      printf 'evidence check printed the planted value: %s\n' "$name" >&2
+      rm -rf "$dir"
+      return 1
+    fi
+  done
+  rm -rf "$dir"
+}
+
 case_token_probe_shape() {
   local dir="$ROOT/spike/m6/.work/token-probe-$$"
   mkdir -p "$dir"
@@ -1136,6 +1207,7 @@ expect_fail evidence-public-url-keeps-planted-secret "planted secret" case_evide
 expect_fail evidence-credentialed-url "planted secret" case_evidence_credentialed_url
 expect_fail evidence-query-url "planted secret" case_evidence_query_url
 expect_fail evidence-offline-task-url "planted secret" case_evidence_offline_task_url
+run_case evidence-control-splice case_evidence_control_splice
 run_case token-probe case_token_probe_shape
 run_case probe-401 case_probe_redacts_401
 run_case compose-config case_compose_config

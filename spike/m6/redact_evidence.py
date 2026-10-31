@@ -112,8 +112,9 @@ def public_https_url(value: str) -> bool:
     such as https://api.github.com. Replacing the repo URL would blank an
     html_url that starts with it, and replacing the origin would blank every
     API url that starts with it. No userinfo, query, or fragment. A query
-    token, a percent-encoded token, an extra path segment, and a URL with
-    embedded credentials stay on the scrub list. assert_evidence uses this
+    token, a percent-encoded token, an extra path segment, a URL with
+    embedded credentials, and a value urlsplit would shorten by deleting a
+    control character stay on the scrub list. assert_evidence uses this
     same predicate.
     """
     return remote.public_definition_url(value) or remote.public_https_origin(value)

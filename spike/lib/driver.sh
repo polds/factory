@@ -498,7 +498,8 @@ for name in (
 
 # public_https_url is redact_evidence's rule. Live M6_TASK_GIT_URL and
 # M6_TASK_GITHUB_API are public https values that the redactor keeps, so
-# they are not planted secrets. Offline git:// and http:// values, tokens,
+# they are not planted secrets. A control character urlsplit would delete
+# keeps the value on the list. Offline git:// and http:// values, tokens,
 # and URLs with userinfo or a query stay on the list. The fixed names above
 # are unchanged.
 for name in os.environ.get("EVIDENCE_EXTRA_SECRETS", "").split():

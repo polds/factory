@@ -406,6 +406,53 @@ class PublicURLTest(unittest.TestCase):
             [credentialed],
         )
 
+    def test_urlsplit_control_splice_stays_secret(self) -> None:
+        origin = "https://api.github.com"
+        repo = "https://github.com/polds/factory-m6-definition"
+        ghs = "ghs_" + ("a" * 20)
+        ghp = "ghp_" + ("b" * 20)
+        tail = "c" * 24
+        splices = [
+            origin + "\n" + tail,
+            origin + "\r" + tail,
+            origin + "\t" + tail,
+            "https://api.gith" + "\t" + "ub.com",
+            "\x00" + origin,
+            "\x00" + repo,
+        ]
+        for gap in ("\n", "\r", "\t"):
+            splices.append(repo + gap + ghs)
+            splices.append(repo + gap + ghp)
+            splices.append(repo + gap + ghs + "/pull/3")
+            splices.append(repo + "/pull/3" + gap + ghs)
+        for value in splices:
+            self.assertFalse(redact_evidence.public_https_url(value))
+            self.assertEqual(redact_evidence.secrets_to_scrub([value]), [value])
+        alnum = origin + "\n" + tail
+        self.assertNotIn(tail, redact_evidence.redact_text(alnum, [alnum]))
+        self.assertTrue(redact_evidence.public_https_url(origin))
+        self.assertTrue(redact_evidence.public_https_url(origin + "/"))
+        self.assertTrue(redact_evidence.public_https_url(origin + "\n"))
+        self.assertTrue(redact_evidence.public_https_url(repo))
+        self.assertTrue(redact_evidence.public_https_url(repo + ".git"))
+        self.assertTrue(redact_evidence.public_https_url(repo + "/pull/3"))
+        encoded = (
+            "https://x-access-token:ghs%5F"
+            + ("a" * 20)
+            + "@github.com/polds/factory-m6-definition.git"
+        )
+        for value in (
+            "https://x-access-token:"
+            + ghs
+            + "@github.com/polds/factory-m6-definition.git",
+            encoded,
+            origin + "?access=" + tail,
+            origin + "/repos/o/n",
+            "http://172.17.0.1:9419",
+        ):
+            self.assertFalse(redact_evidence.public_https_url(value))
+            self.assertEqual(redact_evidence.secrets_to_scrub([value]), [value])
+
 
 def leaked_stateless(text: str) -> bool:
     token = stateless_token()
