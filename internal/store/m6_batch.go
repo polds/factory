@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -19,6 +20,9 @@ const batchColumns = `
     id, factory_id, agent_name, status, pr_url, COALESCE(pr_number, 0),
     definition_repo, rejection_note, COALESCE(improvement_run_id, ''),
     created_at, closed_at`
+
+const batchFailureColumns = `
+    f.batch_id, sr.run_id, sr.id, sr.scorer_name, sr.label, sr.reasoning, sr.created_at`
 
 func constraintIs(err error, name string) bool {
 	var pgErr *pgconn.PgError
@@ -44,7 +48,7 @@ func scanBatch(row pgx.Row) (ImprovementBatch, error) {
 
 func scanBatchFailure(row pgx.Row) (batchFailure, error) {
 	var out batchFailure
-	err := row.Scan(&out.BatchID, &out.RunID, &out.ResultID, &out.Scorer, &out.Label)
+	err := row.Scan(&out.BatchID, &out.RunID, &out.ResultID, &out.Scorer, &out.Label, &out.Reasoning, &out.At)
 	if err != nil {
 		return batchFailure{}, err
 	}
@@ -52,11 +56,13 @@ func scanBatchFailure(row pgx.Row) (batchFailure, error) {
 }
 
 type batchFailure struct {
-	BatchID  string
-	RunID    string
-	ResultID string
-	Scorer   string
-	Label    string
+	BatchID   string
+	RunID     string
+	ResultID  string
+	Scorer    string
+	Label     string
+	Reasoning string
+	At        time.Time
 }
 
 func (s *Store) loadBatch(ctx context.Context, q rowQuery, id string) (ImprovementBatch, error) {
@@ -68,7 +74,7 @@ func (s *Store) loadBatch(ctx context.Context, q rowQuery, id string) (Improveme
 		return ImprovementBatch{}, fmt.Errorf("store: get batch: %w", err)
 	}
 	failRows, qerr := q.Query(ctx, `
-		SELECT f.batch_id, sr.run_id, sr.id, sr.scorer_name, sr.label
+		SELECT `+batchFailureColumns+`
 		FROM improvement_batch_failures AS f
 		JOIN scorer_results AS sr ON sr.id = f.scorer_result_id
 		WHERE f.batch_id = $1
@@ -80,6 +86,7 @@ func (s *Store) loadBatch(ctx context.Context, q rowQuery, id string) (Improveme
 	for _, failure := range failures {
 		batch.Failures = append(batch.Failures, ImprovementFailure{
 			RunID: failure.RunID, ResultID: failure.ResultID, Scorer: failure.Scorer, Label: failure.Label,
+			Reasoning: failure.Reasoning, At: failure.At,
 		})
 	}
 	return batch, nil
@@ -415,7 +422,7 @@ func (s *Store) ImprovementBatches(ctx context.Context, factoryID string) ([]Imp
 		return nil, err
 	}
 	failRows, qerr := s.pool.Query(ctx, `
-		SELECT f.batch_id, sr.run_id, sr.id, sr.scorer_name, sr.label
+		SELECT `+batchFailureColumns+`
 		FROM improvement_batch_failures AS f
 		JOIN improvement_batches AS b ON b.id = f.batch_id
 		JOIN scorer_results AS sr ON sr.id = f.scorer_result_id
@@ -429,6 +436,7 @@ func (s *Store) ImprovementBatches(ctx context.Context, factoryID string) ([]Imp
 	for _, failure := range failures {
 		byBatch[failure.BatchID] = append(byBatch[failure.BatchID], ImprovementFailure{
 			RunID: failure.RunID, ResultID: failure.ResultID, Scorer: failure.Scorer, Label: failure.Label,
+			Reasoning: failure.Reasoning, At: failure.At,
 		})
 	}
 	for i := range batches {

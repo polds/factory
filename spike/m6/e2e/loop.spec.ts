@@ -130,6 +130,37 @@ async function reloadUntil(page: Page, ready: () => Promise<boolean>, timeoutMs:
   }
 }
 
+async function failedImprovement(page: Page): Promise<string> {
+  const rows = page.locator("li.inbox-row").filter({
+    has: page.locator('[data-kind="failed_run"]'),
+  });
+  const count = await rows.count();
+  for (let i = 0; i < count; i += 1) {
+    const row = rows.nth(i);
+    const text = ((await row.innerText()) ?? "").replace(/\s+/g, " ").trim();
+    if (!text.includes("improve:")) continue;
+    const runID = ((await row.locator(".mono").last().innerText()) ?? "").trim();
+    const detail = ((await row.locator(".muted").first().innerText()) ?? "").trim();
+    return `improvement run failed ${runID}: ${detail || text}`;
+  }
+  const factoryId = new URL(page.url()).pathname.split("/")[2] ?? "";
+  if (factoryId === "") return "";
+  const response = await page.request.get(
+    `/api/v1/factory/${encodeURIComponent(factoryId)}/improvement-batches`,
+    {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      failOnStatusCode: false,
+    },
+  );
+  if (!response.ok()) return "";
+  const batches = (await response.json()) as { id?: string; status?: string; agent?: string }[];
+  for (const batch of batches) {
+    if (batch.status !== "failed") continue;
+    return `improvement batch failed ${batch.id ?? ""} agent ${batch.agent ?? ""}`;
+  }
+  return "";
+}
+
 test("m6 exit loop", async ({ browser }) => {
   if (apiKey === "") throw new Error("M6_API_KEY is empty");
   const context = await browser.newContext({
@@ -187,7 +218,11 @@ test("m6 exit loop", async ({ browser }) => {
     await openSection(page, "Inbox");
     await reloadUntil(
       page,
-      async () => (await page.locator('[data-kind="improvement_pr"]').count()) >= 1,
+      async () => {
+        const failed = await failedImprovement(page);
+        if (failed !== "") throw new Error(failed);
+        return (await page.locator('[data-kind="improvement_pr"]').count()) >= 1;
+      },
       12 * 60 * 1000,
     );
     const inboxRow = page.locator("li.inbox-row").filter({ has: page.locator('[data-kind="improvement_pr"]') });

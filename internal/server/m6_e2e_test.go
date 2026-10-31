@@ -83,11 +83,15 @@ const (
 )
 
 type m6Boot struct {
-	threshold int
-	cloner    defsync.Cloner
-	gh        *m6GitHub
-	git       bool
-	slots     int
+	threshold     int
+	cloner        defsync.Cloner
+	gh            *m6GitHub
+	git           bool
+	slots         int
+	agentBody     string
+	gitURL        string
+	productionRef string
+	secrets       map[string]string
 }
 
 func bootM6(t *testing.T, opt m6Boot) *env {
@@ -106,47 +110,63 @@ func bootM6(t *testing.T, opt m6Boot) *env {
 			opt.gh = newM6GitHub(t)
 		}
 		if opt.cloner == nil {
-			opt.cloner = &m6Cloner{threshold: opt.threshold, kindFor: func(int) m6TreeKind { return m6TreeSkillHead }}
+			opt.cloner = &m6Cloner{threshold: opt.threshold, kindFor: func(int) m6TreeKind { return m6TreeSkillHead }, body: opt.agentBody}
 		}
 		if row, ok := opt.cloner.(*m6Cloner); ok {
 			row.threshold = opt.threshold
+			if row.body == "" {
+				row.body = opt.agentBody
+			}
 		}
+	}
+	gitURL := map[bool]string{true: m6GitURL}[opt.git]
+	if opt.gitURL != "" {
+		gitURL = opt.gitURL
 	}
 	return boot(t, bootOpts{
 		definition: func(t *testing.T) string {
 			t.Helper()
-			return writeM6Definition(t, opt.threshold)
+			return writeM6Definition(t, opt.threshold, opt.agentBody)
 		},
-		gitURL:        map[bool]string{true: m6GitURL}[opt.git],
+		gitURL:        gitURL,
 		gitRef:        "main",
 		gitCloner:     opt.cloner,
 		maxConcurrent: opt.slots,
 		configure: func(cfg *Config) {
-			if !opt.git {
-				return
+			if opt.git {
+				cfg.GitHubAppID = 99
+				cfg.GitHubAppKey = key
+				cfg.GitHubTokenMode = tokenModeApp
+				cfg.GitHubAPIBase = opt.gh.URL
+				cfg.ReviewerAdmins = []string{"ada"}
+				cfg.DefinitionGitRef = "main"
 			}
-			cfg.GitHubAppID = 99
-			cfg.GitHubAppKey = key
-			cfg.GitHubTokenMode = tokenModeApp
-			cfg.GitHubAPIBase = opt.gh.URL
-			cfg.ReviewerAdmins = []string{"ada"}
-			cfg.DefinitionGitRef = "main"
+			if opt.productionRef != "" {
+				cfg.DefinitionGitProductionRef = opt.productionRef
+			}
+			for name, value := range opt.secrets {
+				cfg.Secrets[name] = value
+			}
 		},
 	})
 }
 
-func writeM6Definition(t *testing.T, threshold int) string {
+func writeM6Definition(t *testing.T, threshold int, agentBody string) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := writeM6Tree(root, m6TreeProd, threshold); err != nil {
+	if err := writeM6Tree(root, m6TreeProd, threshold, agentBody); err != nil {
 		t.Fatal(err)
 	}
 	return root
 }
 
-func writeM6Tree(dir string, kind m6TreeKind, threshold int) error {
+func writeM6Tree(dir string, kind m6TreeKind, threshold int, agentBody string) error {
 	if threshold <= 0 {
 		threshold = 2
+	}
+	instructions := "Do the task."
+	if strings.TrimSpace(agentBody) != "" {
+		instructions = strings.TrimSpace(agentBody)
 	}
 	required := "true"
 	if kind == m6TreeWeaken {
@@ -194,8 +214,7 @@ platform:
   linux:
     dockerImage: factory-m1-task:dev
 `,
-		"agents/implementer/agent.md": `
----
+		"agents/implementer/agent.md": `---
 description: Implements the requested change.
 agentType: IMPLEMENT
 model: test-model
@@ -204,8 +223,8 @@ secrets:
 maxTurns: 7
 ---
 
-Do the task.
-`,
+` + instructions,
+
 		"agents/implementer/skills/review/SKILL.md": skill,
 		"scorers/review/scorer.md": `
 ---
@@ -305,6 +324,7 @@ type m6Cloner struct {
 	improve     int
 	kindFor     func(n int) m6TreeKind
 	lastImprove string
+	body        string
 }
 
 func (c *m6Cloner) Clone(_ context.Context, _, ref, dest string) (string, error) {
@@ -336,7 +356,7 @@ func (c *m6Cloner) Clone(_ context.Context, _, ref, dest string) (string, error)
 	default:
 		return "", fmt.Errorf("unexpected ref %s", ref)
 	}
-	if err := writeM6Tree(dest, kind, c.threshold); err != nil {
+	if err := writeM6Tree(dest, kind, c.threshold, c.body); err != nil {
 		return "", err
 	}
 	return sha, nil
@@ -349,14 +369,16 @@ func (c *m6Cloner) improveDir() string {
 }
 
 type m6GitHub struct {
-	URL    string
-	mu     sync.Mutex
-	perms  []map[string]string
-	pulls  []m6PR
-	bad    int
-	revs   []string
-	labs   []string
-	checks []m6Check
+	URL        string
+	mu         sync.Mutex
+	perms      []map[string]string
+	pulls      []m6PR
+	bad        int
+	revs       []string
+	labs       []string
+	checks     []m6Check
+	existingPR bool
+	patched    []string
 }
 
 type m6PR struct {
@@ -431,6 +453,22 @@ func (f *m6GitHub) serve(w http.ResponseWriter, r *http.Request) {
 		id := len(f.checks)
 		f.mu.Unlock()
 		writeJSON(w, map[string]any{"id": id})
+	case r.Method == http.MethodPatch && strings.Contains(path, "/pulls/"):
+		var req struct {
+			Body string `json:"body"`
+		}
+		_ = json.Unmarshal(body, &req)
+		f.mu.Lock()
+		f.patched = append(f.patched, req.Body)
+		number := 41
+		prURL := "https://github.com/acme/factory/pull/41"
+		if len(f.pulls) > 0 {
+			f.pulls[0].Body = req.Body
+			number = f.pulls[0].Number
+			prURL = f.pulls[0].URL
+		}
+		f.mu.Unlock()
+		writeJSON(w, map[string]any{"number": number, "html_url": prURL})
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/pulls"):
 		var req struct {
 			Title string `json:"title"`
@@ -439,6 +477,21 @@ func (f *m6GitHub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.Unmarshal(body, &req)
 		f.mu.Lock()
+		if f.existingPR {
+			if len(f.pulls) == 0 {
+				f.pulls = append(f.pulls, m6PR{
+					Number: 41,
+					URL:    "https://github.com/acme/factory/pull/41",
+					Head:   req.Head,
+					Body:   "Opened by the improver.",
+					Title:  req.Title,
+				})
+			}
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"A pull request already exists"}`))
+			return
+		}
 		if len(f.pulls) > 0 {
 			f.bad++
 			f.mu.Unlock()

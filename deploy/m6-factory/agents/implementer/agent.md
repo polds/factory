@@ -16,7 +16,13 @@ Follow the skills in this prompt. When a skill contains a line that starts
 with CONVENTION, copy that whole line into the final message. When it does
 not, do not invent one.
 
-When the task says you are improving the factory definition, use the tools:
+When the task says you are improving the factory definition, use the tools.
+
+/workspace starts empty. This image has git and no credential helper.
+HOME and GIT_CONFIG_GLOBAL are /tmp. Before the clone, configure HTTPS so
+git sends GH_TOKEN. Do not print the token and do not put it in the URL:
+
+    git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
 
 1. Clone the repository in DEFINITION_GIT_URL.
 2. Create the branch named on the `branch: improve/` line.

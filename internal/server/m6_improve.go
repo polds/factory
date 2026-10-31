@@ -14,7 +14,9 @@ import (
 
 	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/definition"
+	"github.com/polds/factory/internal/failure"
 	ghclient "github.com/polds/factory/internal/forge/github"
+	"github.com/polds/factory/internal/handoff"
 	"github.com/polds/factory/internal/improve"
 	"github.com/polds/factory/internal/store"
 )
@@ -228,19 +230,23 @@ func (s *Server) startImprovementRun(ctx context.Context, batch store.Improvemen
 			return nil
 		}
 		snap := s.snapshot()
-		prompt := improve.RunPrompt(batchFailures(current), s.improvementTreeText(ctx, current.ID), s.priorRejections(ctx, current), s.secretMaterial())
 		pool := s.cfg.WorkerPool
 		agentID := ""
 		model := ""
+		agent := definition.Agent{}
+		includeAgent := false
 		if id, ok := snap.byName[current.Agent]; ok {
 			agentID = id
 			if bound, ok := snap.byID[id]; ok {
+				includeAgent = true
+				agent = bound.agent
 				if bound.agent.Pool != "" {
 					pool = bound.agent.Pool
 				}
 				model = bound.agent.Model
 			}
 		}
+		prompt := s.improvementPrompt(ctx, current, agent, includeAgent)
 		run, err := s.store.CreateRun(ctx, store.NewRun{
 			FactoryID: current.FactoryID,
 			AgentID:   agentID,
@@ -269,14 +275,67 @@ func batchFailures(batch store.ImprovementBatch) []improve.Failure {
 	out := make([]improve.Failure, 0, len(batch.Failures))
 	for _, row := range batch.Failures {
 		out = append(out, improve.Failure{
-			ResultID: row.ResultID,
-			RunID:    row.RunID,
-			Agent:    batch.Agent,
-			Scorer:   row.Scorer,
-			Label:    row.Label,
+			ResultID:  row.ResultID,
+			RunID:     row.RunID,
+			Agent:     batch.Agent,
+			Scorer:    row.Scorer,
+			Label:     row.Label,
+			Reasoning: row.Reasoning,
+			At:        row.At,
 		})
 	}
 	return out
+}
+
+// improvementPrompt packages the bound agent's instructions the same way a
+// stage run does. The definition URL is a secret, so the workspace section
+// names DEFINITION_GIT_URL and does not include the value.
+func (s *Server) improvementPrompt(ctx context.Context, batch store.ImprovementBatch, agent definition.Agent, includeAgent bool) string {
+	task := improve.RunPrompt(batchFailures(batch), s.improvementTreeText(ctx, batch.ID), s.priorRejections(ctx, batch), s.secretMaterial())
+	text := s.improvementWorkspace(batch, agent) + "\n" + task
+	if !includeAgent {
+		return text
+	}
+	return handoff.BuildPrompt(agent, handoff.Context{
+		Title: "improve:" + batch.Agent,
+		Body:  text,
+		Env:   s.redactEnv(),
+	})
+}
+
+func (s *Server) improvementWorkspace(batch store.ImprovementBatch, agent definition.Agent) string {
+	branch := improveBranchPrefix + batch.ID
+	var b strings.Builder
+	b.WriteString("## Workspace\n")
+	b.WriteString("/workspace starts empty.\n")
+	if s.definitionURLAllowed(agent) {
+		b.WriteString("The definition repository URL is in the environment variable DEFINITION_GIT_URL.\n")
+	}
+	fmt.Fprintf(&b, "Base ref: %s\n", s.productionRef())
+	fmt.Fprintf(&b, "Push the branch %s.\n", branch)
+	fmt.Fprintf(&b, "branch: %s\n", branch)
+	b.WriteString("GH_TOKEN is available for HTTPS push.\n")
+	return b.String()
+}
+
+func (s *Server) definitionURLAllowed(agent definition.Agent) bool {
+	if strings.TrimSpace(s.cfg.Secrets["DEFINITION_GIT_URL"]) != "" {
+		return true
+	}
+	if namedSecret(agent.Secrets, "DEFINITION_GIT_URL") {
+		return true
+	}
+	tree := s.snapshot().tree
+	return tree != nil && namedSecret(tree.Factory.Secrets, "DEFINITION_GIT_URL")
+}
+
+func namedSecret(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) improvementTreeText(ctx context.Context, batchID string) string {
@@ -316,6 +375,12 @@ func (s *Server) openImprovementPR(ctx context.Context, batch store.ImprovementB
 		if !terminalStatus(run.Status) {
 			return nil
 		}
+		// A failed improver, or a success that never pushed, used to leave
+		// the batch running. The in-flight row then blocked every later
+		// batch for this agent. Mark it failed once and do not clone again.
+		if run.Status != failure.StatusSucceeded {
+			return s.failImprovementBatch(ctx, current.ID, improvementRunNote(run))
+		}
 		baseSHA, baseDir, err := s.cloneRef(ctx, s.productionRef())
 		if err != nil {
 			return err
@@ -323,6 +388,9 @@ func (s *Server) openImprovementPR(ctx context.Context, batch store.ImprovementB
 		branch := improveBranchPrefix + current.ID
 		headSHA, headDir, err := s.cloneRef(ctx, branch)
 		if err != nil {
+			if missingRemoteRef(err) {
+				return s.failImprovementBatch(ctx, current.ID, "improvement branch missing: "+branch)
+			}
 			return err
 		}
 		_ = baseSHA
@@ -348,6 +416,14 @@ func (s *Server) openImprovementPR(ctx context.Context, batch store.ImprovementB
 			var status *ghclient.StatusError
 			if errors.As(err, &status) && status.StatusCode == http.StatusUnprocessableEntity {
 				number, prURL, err = s.lookupOpenPR(ctx, tok, repo, branch)
+				if err == nil {
+					// The improver may have opened the request first. Replace
+					// its body so the regressions section is still on the PR.
+					// A rejected patch is logged and does not retry the batch.
+					if patchErr := s.patchPullRequestBody(ctx, tok, repo, number, body); patchErr != nil {
+						s.log.Error("improvement pr body", "batch", current.ID, "err", s.redact(patchErr.Error()))
+					}
+				}
 			}
 		}
 		if err != nil {
@@ -466,16 +542,82 @@ func (s *Server) requestImprovementReview(ctx context.Context, client *ghclient.
 	}
 }
 
+func improvementRunNote(run store.Run) string {
+	note := "improvement run " + run.Status
+	reason := strings.TrimSpace(run.FailureReason)
+	if reason == "" {
+		reason = strings.TrimSpace(run.FailureCode)
+	}
+	if reason != "" {
+		note += ": " + reason
+	}
+	return note
+}
+
+func (s *Server) failImprovementBatch(ctx context.Context, batchID, note string) error {
+	note = strings.TrimSpace(s.redact(note))
+	if len(note) > 4000 {
+		note = note[:4000]
+	}
+	return s.store.SetBatchStatus(ctx, batchID, api.BatchFailed, note)
+}
+
+func missingRemoteRef(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "couldn't find remote ref")
+}
+
+func (s *Server) githubAPI() string {
+	base := strings.TrimRight(s.integ.githubBase, "/")
+	if base == "" {
+		return "https://api.github.com"
+	}
+	return base
+}
+
+func (s *Server) patchPullRequestBody(ctx context.Context, tok ghclient.Token, repo string, number int, body string) error {
+	owner, name, ok := splitOwnerName(repo)
+	if !ok {
+		return errors.New("server: pull request body: repository is invalid")
+	}
+	if number <= 0 {
+		return errors.New("server: pull request body: number is required")
+	}
+	raw, err := json.Marshal(struct {
+		Body string `json:"body"`
+	}{Body: body})
+	if err != nil {
+		return err
+	}
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", s.githubAPI(), url.PathEscape(owner), url.PathEscape(name), number)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, endpoint, strings.NewReader(string(raw)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok.Value())
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	client := s.cfg.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("server: pull request body: %w", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1<<20))
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("server: pull request body: HTTP %d", res.StatusCode)
+	}
+	return nil
+}
+
 func (s *Server) lookupOpenPR(ctx context.Context, tok ghclient.Token, repo, branch string) (int, string, error) {
 	owner, name, ok := splitOwnerName(repo)
 	if !ok {
 		return 0, "", errors.New("server: pull request lookup: repository is invalid")
 	}
-	base := strings.TrimRight(s.integ.githubBase, "/")
-	if base == "" {
-		base = "https://api.github.com"
-	}
-	endpoint := base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name) + "/pulls?state=open&head=" + url.QueryEscape(owner+":"+branch)
+	endpoint := s.githubAPI() + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name) + "/pulls?state=open&head=" + url.QueryEscape(owner+":"+branch)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return 0, "", err

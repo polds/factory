@@ -114,8 +114,32 @@ def shell_url(value: str) -> str:
     return text
 
 
+def factoryd_prompt(text: str) -> bool:
+    """A factoryd improvement prompt carries the definition-tree heading.
+
+    The driver unit test sends a short prompt that only names the branch.
+    That path stays on the old steps so those checks keep passing.
+    """
+    return "## Definition tree" in text or "# Instructions" in text
+
+
+def improve_instructions(text: str) -> bool:
+    return "DEFINITION_GIT_URL" in text and BRANCH_RE.search(text) is not None
+
+
+def failed_by_agent(summary: str) -> dict:
+    return completion(
+        json.dumps({"status": "failed_by_agent", "summary": summary}),
+        None,
+    )
+
+
 def improve(body: dict) -> dict:
     text = blob(body)
+    if factoryd_prompt(text) and not improve_instructions(text):
+        return failed_by_agent(
+            "improvement prompt is missing DEFINITION_GIT_URL or the improve branch"
+        )
     if "M6_PR_HTTP" in text:
         return completion("Improvement branch is pushed.", None)
     branch = ""
