@@ -954,6 +954,268 @@ done
 run_case offline-remote case_remote offline
 run_case forge-lookup case_remote forge-lookup
 
+# A failing step prints M6 FAIL — <step>: exit <n>. Each case is one step
+# class. build_images uses a docker that exits 7, the same failure as a
+# real `docker build` abort.
+# expect_fail runs the case inside if, which disables set -e for that whole
+# call tree. A fresh bash is the process that actually has set -e.
+m6_fail_in_bash() {
+  local rc=0
+  bash -c '
+    set -Eeuo pipefail
+    source "$1"
+    m6_install_err_trap
+    shift
+    eval "$1"
+  ' bash "$ROOT/spike/m6/run.sh" "$1" || rc=$?
+  return "$rc"
+}
+
+case_fail_prepare_definition() {
+  local root="" work="" rc=0
+  root="$(mktemp -d)"
+  work="$(mktemp -d)"
+  m6_fail_in_bash "
+    ROOT='$root'
+    WORK='$work'
+    MODE=offline
+    m6_run_step prepare_definition prepare_definition
+  " || rc=$?
+  rm -rf "$root" "$work"
+  return "$rc"
+}
+
+case_fail_seed_git() {
+  local work="" rc=0
+  work="$(mktemp -d)"
+  m6_fail_in_bash "
+    WORK='$work'
+    m6_run_step seed_git seed_git
+  " || rc=$?
+  rm -rf "$work"
+  return "$rc"
+}
+
+case_fail_start_git() {
+  local bin="" work="" rc=0
+  bin="$(mktemp -d)"
+  work="$(mktemp -d)"
+  cat >"$bin/git" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+  chmod 755 "$bin/git"
+  m6_fail_in_bash "
+    WORK='$work'
+    PATH=\"$bin:\$PATH\"
+    GIT_PORT=9
+    wait_port() { exit 4; }
+    openssl() { printf 'abcdef01\n'; }
+    spike_run_init m6
+    m6_run_step start_git start_git
+  " || rc=$?
+  rm -rf "$bin" "$work"
+  return "$rc"
+}
+
+case_fail_start_forge() {
+  local root="" work="" rc=0
+  root="$(mktemp -d)"
+  work="$(mktemp -d)"
+  m6_fail_in_bash "
+    ROOT='$root'
+    WORK='$work'
+    m6_run_step start_forge start_forge
+  " || rc=$?
+  rm -rf "$root" "$work"
+  return "$rc"
+}
+
+case_fail_start_router() {
+  local bin="" work="" rc=0
+  bin="$(mktemp -d)"
+  work="$(mktemp -d)"
+  cat >"$bin/python3" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+  chmod 755 "$bin/python3"
+  m6_fail_in_bash "
+    WORK='$work'
+    ROOT='$ROOT'
+    PATH=\"$bin:\$PATH\"
+    ROUTER_PORT=9
+    M6_TASK_GIT_URL='git://example.invalid/m6.git'
+    M6_TASK_GITHUB_API='http://example.invalid'
+    wait_http() { exit 6; }
+    openssl() { printf 'abcdef01\n'; }
+    spike_run_init m6
+    m6_run_step start_router start_router
+  " || rc=$?
+  rm -rf "$bin" "$work"
+  return "$rc"
+}
+
+case_fail_build_images() {
+  local bin="" work="" rc=0
+  bin="$(mktemp -d)"
+  work="$(mktemp -d)"
+  cat >"$bin/docker" <<'EOF'
+#!/bin/sh
+echo "fake docker build failed" >&2
+exit 7
+EOF
+  chmod 755 "$bin/docker"
+  m6_fail_in_bash "
+    WORK='$work'
+    PATH=\"$bin:\$PATH\"
+    OCI_PLATFORM='linux/amd64'
+    GOARCH_TARGET='amd64'
+    openssl() { printf 'abcdef01\n'; }
+    spike_run_init m6
+    m6_run_step build_images spike_fg build_images
+  " || rc=$?
+  rm -rf "$bin" "$work"
+  return "$rc"
+}
+
+case_die_unchanged() {
+  local err=""
+  err="$(mktemp)"
+  if (m6_install_err_trap && die "compose up failed") 2>"$err"; then
+    echo "die returned 0" >&2
+    rm -f "$err"
+    return 1
+  fi
+  if ! grep -F -x "M6 FAIL — compose up failed" "$err" >/dev/null; then
+    echo "die line changed" >&2
+    cat "$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
+}
+
+# Readers of forge.json must parse every copy they see while the poll
+# writer replaces it. An in-place curl -o truncates first and fails this.
+case_forge_json_atomic() {
+  local dir="" dest="" pid="" ok=0 bad=0
+  dir="$(mktemp -d)"
+  dest="$dir/forge.json"
+  printf '%s\n' '{"n":0,"pad":"seed"}' >"$dest"
+  (
+    local i
+    for i in $(seq 1 200); do
+      m6_publish_stdout "$dest" 0 python3 -c '
+import sys, time
+n = sys.argv[1]
+sys.stdout.write("{\"n\":%s,\"pad\":\"" % n)
+sys.stdout.flush()
+time.sleep(0.005)
+sys.stdout.write(("x" * 200000) + "\"}\n")
+sys.stdout.flush()
+' "$i" || exit 1
+    done
+  ) &
+  pid=$!
+  while [[ "$ok" -lt 200 ]]; do
+    if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$dest" 2>/dev/null; then
+      ok=$((ok + 1))
+    else
+      bad=$((bad + 1))
+      break
+    fi
+  done
+  if ! wait "$pid"; then
+    bad=$((bad + 1))
+  fi
+  rm -rf "$dir"
+  if [[ "$bad" -ne 0 || "$ok" -lt 200 ]]; then
+    printf 'forge.json reads ok=%s bad=%s\n' "$ok" "$bad" >&2
+    return 1
+  fi
+}
+
+case_skill_diff_publish() {
+  local dir="" dest=""
+  dir="$(mktemp -d)"
+  dest="$dir/skill.diff"
+  git -C "$dir" init -q -b main
+  printf 'old\n' >"$dir/f"
+  git -C "$dir" add f
+  git -C "$dir" -c user.email=factory@example.com -c user.name=factory commit -q -m init
+  printf 'new\n' >"$dir/f"
+  git -C "$dir" add f
+  git -C "$dir" -c user.email=factory@example.com -c user.name=factory commit -q -m next
+  if ! m6_publish_stdout "$dest" 1 git -C "$dir" diff HEAD~1 HEAD; then
+    echo "git diff status 1 was treated as a failed publish" >&2
+    rm -rf "$dir"
+    return 1
+  fi
+  if ! grep -F '+new' "$dest" >/dev/null; then
+    echo "diff was not published" >&2
+    rm -rf "$dir"
+    return 1
+  fi
+  rm -rf "$dir"
+}
+
+expect_fail fail-prepare-definition "M6 FAIL — prepare_definition: exit 1" case_fail_prepare_definition
+expect_fail fail-seed-git "M6 FAIL — seed_git: exit 1" case_fail_seed_git
+expect_fail fail-start-git "M6 FAIL — start_git: exit 4" case_fail_start_git
+expect_fail fail-start-forge "M6 FAIL — start_forge: exit" case_fail_start_forge
+expect_fail fail-start-router "M6 FAIL — start_router: exit 1" case_fail_start_router
+expect_fail fail-build-images "M6 FAIL — build_images: exit 7" case_fail_build_images
+# A failure with no step name still exits, and does not invent a FAIL line.
+# The trap must not exit by itself: set -e does, and an exit in the trap
+# aborts command substitutions.
+case_err_unset_step() {
+  local err=""
+  err="$(mktemp)"
+  if m6_fail_in_bash 'false' 2>"$err"; then
+    echo "unset step returned 0" >&2
+    rm -f "$err"
+    return 1
+  fi
+  if grep -F 'M6 FAIL —' "$err" >/dev/null; then
+    echo "unset step printed a FAIL line" >&2
+    cat "$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
+}
+
+# The pinned SHA is taken from the docker ps command column. inspect is
+# not part of this path: the stub fails if anything else calls docker.
+case_task_argv_snapshot() {
+  local dir=""
+  dir="$(mktemp -d)"
+  (
+    EVIDENCE="$dir"
+    rm -f "$EVIDENCE/head-override.txt"
+    docker() {
+      if [[ "$1" == ps ]]; then
+        printf '%s\n' "\"factory-task\" \"${PINNED_SHA}\""
+        return 0
+      fi
+      echo "unexpected docker $*" >&2
+      return 9
+    }
+    m6_note_task_argv
+    grep -F "task argv contains ${PINNED_SHA}" "$EVIDENCE/head-override.txt"
+  )
+  local rc=$?
+  rm -rf "$dir"
+  return "$rc"
+}
+
+run_case die-unchanged case_die_unchanged
+run_case err-unset-step case_err_unset_step
+run_case task-argv-snapshot case_task_argv_snapshot
+run_case skill-diff-publish case_skill_diff_publish
+run_case forge-json-atomic case_forge_json_atomic
+
 # shellcheck source=spike/m6/run_test_t76b.sh
 . "$ROOT/spike/m6/run_test_t76b.sh"
 

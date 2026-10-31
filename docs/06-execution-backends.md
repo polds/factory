@@ -211,6 +211,11 @@ The dispatch command's job is to hand the payload to a runtime and return quickl
 - **Head overrides.** For benchmark trials, the control plane freezes commit SHAs and may
   substitute a clone source while keeping the original repo identity (`clone_from` +
   `preserve_origin` — O7).
+  **M6 applied.** factoryd stores that frozen SHA on the assignment
+  (`repository_head_overrides` in `internal/server/assign.go`). The worker forwards
+  it as `--repository-head-override-json`. The in-repo harness accepts the flag
+  (`internal/harness/argv.go`) and does not check the SHA out (`internal/harness/run.go`
+  never reads it).
 - **Origin stripping.** `--remove-repository-origins` removes remotes after clone, so an
   agent cannot push to a repository the run was not meant to touch. Cheap, effective, and
   the right default for untrusted intake.
