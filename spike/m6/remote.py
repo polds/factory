@@ -1012,6 +1012,28 @@ def pull_view(doc: object) -> dict:
     }
 
 
+# How long to re-read a matching pull before publishing it without the
+# configured reviewer. The request is made before the batch is visible,
+# so a hit on the first GET is the normal case. The grace covers a GET
+# that still races that request. After it, publish anyway: the spec
+# asserts the reviewer and can report that GitHub did not list them.
+REVIEWER_WAIT_S = 15.0
+
+
+def configured_reviewer_present(view: dict) -> bool:
+    present = {login for login in view.get("reviewers") or [] if isinstance(login, str)}
+    return any(login in present for login in reviewer_logins())
+
+
+def still_waiting_for_reviewer() -> bool:
+    marker = work_dir() / "reviewer-wait"
+    now = time.time()
+    if not marker.is_file():
+        marker.write_text("wait\n", encoding="utf-8")
+        return True
+    return now - marker.stat().st_mtime < REVIEWER_WAIT_S
+
+
 def watch_once() -> None:
     if not live_mode():
         return
@@ -1058,6 +1080,8 @@ def watch_once() -> None:
         or view["state"] != "open"
     ):
         raise RemoteError("pull request does not match this run")
+    if not configured_reviewer_present(view) and still_waiting_for_reviewer():
+        return
     observe_batch(ledger, batch_id, number, ledger["base_ref"])
     url = str(ledger["git_url"])
     scratch = work_dir() / "fetch"

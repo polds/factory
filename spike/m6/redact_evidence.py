@@ -22,7 +22,7 @@ import shutil
 import sys
 import zipfile
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 PLACEHOLDER = "[REDACTED]"
 BEARER_PLACEHOLDER = "Bearer [REDACTED]"
@@ -102,6 +102,28 @@ def read_key_file(path: str) -> str:
     return file.read_text(encoding="utf-8").strip()
 
 
+def public_https_url(value: str) -> bool:
+    """A credential-free http(s) URL is not a secret.
+
+    The definition git URL is that shape. Replacing it blanks a pull
+    request html_url that starts with the same prefix. Userinfo and
+    token-shaped strings are still scrubbed.
+    """
+    text = value.strip()
+    if text == "" or any(ch.isspace() for ch in text):
+        return False
+    parsed = urlsplit(text)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    return parsed.hostname is not None
+
+
+def secrets_to_scrub(secrets: list[str]) -> list[str]:
+    return [secret for secret in secrets if not public_https_url(secret)]
+
+
 def secret_forms(secret: str) -> list[str]:
     forms = [secret]
     quoted = quote(secret, safe="")
@@ -142,7 +164,7 @@ def apply_token_passes(text: str) -> str:
 
 
 def redact_text(text: str, secrets: list[str]) -> str:
-    for secret in secrets:
+    for secret in secrets_to_scrub(secrets):
         for form in secret_forms(secret):
             text = text.replace(form, PLACEHOLDER)
     text = apply_token_passes(text)
@@ -283,7 +305,8 @@ def header_values(text: str, header: str) -> list[str]:
 
 def scan_text(text: str, secrets: list[str]) -> list[str]:
     kinds: list[str] = []
-    if any(form in text for secret in secrets for form in secret_forms(secret)):
+    scrub = secrets_to_scrub(secrets)
+    if any(form in text for secret in scrub for form in secret_forms(secret)):
         kinds.append("known secret")
     if GITHUB_TOKEN.search(text):
         kinds.append("github token")

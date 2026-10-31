@@ -46,6 +46,9 @@
 #                       (default https://api.github.com)
 #   reviewer            FACTORY_REVIEWERS_ADMINS (required collaborator
 #                       on the definition repo)
+#   repetitions         M6_BENCHMARK_REPETITIONS (default 10). Wilson 95%
+#                       at n=5 clears only 5/5 vs 0/5. 8/10 and 9/10 vs
+#                       0/10 clear. Offline stays at 5.
 name: m6-live
 
 on:
@@ -73,6 +76,11 @@ on:
       reviewer:
         description: Collaborator login (FACTORY_REVIEWERS_ADMINS). Required.
         required: true
+        type: string
+      repetitions:
+        description: Convention benchmark repetitions (M6_BENCHMARK_REPETITIONS).
+        required: false
+        default: "10"
         type: string
 
 permissions:
@@ -165,6 +173,7 @@ jobs:
           FACTORY_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
           FACTORY_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/m6-github-app.pem
           FACTORY_REVIEWERS_ADMINS: ${{ inputs.reviewer }}
+          M6_BENCHMARK_REPETITIONS: ${{ inputs.repetitions }}
         run: MODE=live-ci exec ./spike/m6/run.sh
       - name: Clean up remote state after cancel
         if: cancelled()

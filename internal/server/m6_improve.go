@@ -451,6 +451,10 @@ func (s *Server) openImprovementPR(ctx context.Context, batch store.ImprovementB
 			return s.cappedImproveFailure(ctx, current.ID, "improvement pr: "+err.Error())
 		}
 		s.clearImproveRetry(current.ID)
+		// Request reviewers before SetBatchPR. That call is what makes the
+		// pull visible to the live watcher. A GET in the gap stored an
+		// empty reviewer list after GitHub had accepted the request.
+		s.requestImprovementReview(ctx, client, tok, repo, number, headSHA, current, warnings, headDir, baseDir)
 		if s.m6SkipSetBatchPR != nil && s.m6SkipSetBatchPR() {
 			return nil
 		}
@@ -460,7 +464,6 @@ func (s *Server) openImprovementPR(ctx context.Context, batch store.ImprovementB
 			}
 			return err
 		}
-		s.requestImprovementReview(ctx, client, tok, repo, number, headSHA, current, warnings, headDir, baseDir)
 		return nil
 	})
 }

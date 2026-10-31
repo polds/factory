@@ -731,13 +731,6 @@ def case_watch(mode: str, stale: bool) -> None:
             },
             token,
         )
-        forge_call(
-            base,
-            "POST",
-            "/repos/acme/widgets/pulls/1/requested_reviewers",
-            {"reviewers": ["m6-reviewer"]},
-            token,
-        )
         env["M6_GITHUB_API_BASE"] = base
         env["M6_FACTORY_URL"] = f"http://127.0.0.1:{factory_port}"
         ledger_path = work / "remote-ledger.json"
@@ -745,6 +738,19 @@ def case_watch(mode: str, stale: bool) -> None:
         ledger["api_base"] = base
         ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
         apply_env(env)
+        if remote.main(["remote.py", "watch-once"]) != 0:
+            fail("watch failed before reviewers")
+        if (work / "signal" / "candidate-ready").is_file() or (
+            work / "evidence" / "remote-pr.json"
+        ).is_file():
+            fail("watch published before the reviewer was requested")
+        forge_call(
+            base,
+            "POST",
+            "/repos/acme/widgets/pulls/1/requested_reviewers",
+            {"reviewers": ["m6-reviewer"]},
+            token,
+        )
         if remote.main(["remote.py", "watch-once"]) != 0:
             fail("watch failed")
         watch_log = work / "watch.log"
