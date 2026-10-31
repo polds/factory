@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -411,8 +412,18 @@ def case_mint(mode: str, deny: str) -> None:
             fail("mint success line was not the permission names")
         if not token_file.is_file() or token_file.stat().st_mode & 0o077:
             fail("token file was not mode 600")
-        if not minted.startswith("ghs_"):
-            fail("mint did not stay in the token file")
+        if not stateless_shape(minted):
+            fail(f"minted token was not stateless-shaped (length {len(minted)})")
+        for label in (
+            "url",
+            "ls-remote",
+            "mint",
+            "token",
+            "reviewers",
+            "collaborator m6-reviewer",
+        ):
+            if f"remote preflight: {label} PASS" not in stderr:
+                fail(f"preflight missing PASS for {label}")
     finally:
         stop_proc(forge)
         stop_proc(fake)
@@ -1741,6 +1752,189 @@ def case_cleanup_bound_mint(mode: str) -> None:
         stall.stop()
 
 
+def stateless_shape(token: str) -> bool:
+    if len(token) < 480 or token.count(".") != 2:
+        return False
+    if not token.startswith("ghs_") or "-" not in token:
+        return False
+    return not any(ch.isspace() for ch in token)
+
+
+def sample_stateless() -> str:
+    header = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+    payload = "".join(alphabet[i % len(alphabet)] for i in range(200))
+    sig = ("A" * 100) + "_" + ("B" * 100) + "-" + ("C" * 70)
+    return f"ghs_1234567_{header}.{payload}.{sig}"
+
+
+LEGACY_TOKEN = "ghs_" + ("Ab" * 18)
+
+
+class EchoBearer(BaseHTTPRequestHandler):
+    got = ""
+
+    def do_GET(self) -> None:
+        if self.path == "/healthz":
+            body = b"ok\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        EchoBearer.got = self.headers.get("Authorization", "")
+        self.send_response(204)
+        self.end_headers()
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        del fmt, args
+
+
+def assert_round_trip(path: Path, token: str) -> None:
+    remote.write_secret(path, token)
+    if remote.read_secret(path) != token:
+        fail("token did not round-trip")
+    if path.stat().st_mode & 0o777 != 0o600:
+        fail("token file was not mode 600")
+    raw = path.read_bytes()
+    if raw != (token + "\n").encode() or raw.count(b"\n") != 1 or b" " in raw:
+        fail("token file was not the token plus one newline")
+
+
+def assert_rejected(path: Path, token: str) -> None:
+    if path.exists():
+        path.unlink()
+    try:
+        remote.write_secret(path, token)
+    except remote.RemoteError as exc:
+        if exc.reason != "token file is invalid":
+            fail("rejected token used the wrong reason")
+    else:
+        fail("invalid token was accepted")
+    if path.exists():
+        fail("rejected token was written")
+
+
+def case_opaque_token(mode: str) -> None:
+    require_mode(mode)
+    work = Path(os.environ["M6_CASE_WORK"])
+    env = base_env(mode, work)
+    apply_env(env)
+    stateless = sample_stateless()
+    if not stateless_shape(stateless) or len(stateless) < 500:
+        fail(f"stateless fixture length {len(stateless)}")
+    if len(LEGACY_TOKEN) != 40:
+        fail(f"legacy fixture length {len(LEGACY_TOKEN)}")
+    assert_round_trip(work / "stateless", stateless)
+    assert_round_trip(work / "legacy", LEGACY_TOKEN)
+    wide = "b" * 2048
+    assert_round_trip(work / "wide", wide)
+    for bad in (
+        "has space",
+        "has\nline",
+        "has\r",
+        "has\t",
+        "",
+        "\n",
+        "abc\x00def",
+        "abc\x7fdef",
+        "a" * 8193,
+    ):
+        assert_rejected(work / "rejected", bad)
+    embedded = work / "embedded"
+    embedded.write_text("ab\ncd\n", encoding="utf-8")
+    embedded.chmod(0o600)
+    try:
+        remote.read_secret(embedded)
+    except remote.RemoteError as exc:
+        if exc.reason != "token file is invalid":
+            fail("newline token used the wrong reason")
+    else:
+        fail("newline token was read")
+    remote.write_secret(remote.token_path(), stateless)
+    basic = base64.b64encode(f"x-access-token:{stateless}".encode()).decode()
+    covered = remote.redact(f"see {stateless} and {basic} end")
+    if stateless in covered or basic in covered or "[REDACTED]" not in covered:
+        fail("redact left the token or its basic-auth form")
+    secret_absent(covered, stateless)
+    port = free_port()
+    server = ThreadingHTTPServer(("127.0.0.1", port), EchoBearer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        wait_http(f"http://127.0.0.1:{port}/healthz")
+        quoted = 'ghs_quo"te\\and.dot_-'
+        for token in (stateless, LEGACY_TOKEN, wide, quoted):
+            EchoBearer.got = ""
+            status, _body = remote.request("GET", f"http://127.0.0.1:{port}/use", token)
+            if status != 204 or EchoBearer.got != f"Bearer {token}":
+                fail("request did not present the token")
+        EchoBearer.got = ""
+        try:
+            remote.request("GET", f"http://127.0.0.1:{port}/use", "has\nline")
+        except remote.RemoteError as exc:
+            if exc.reason != "token file is invalid":
+                fail("request accepted a newline token")
+        else:
+            fail("request accepted a newline token")
+        if EchoBearer.got:
+            fail("rejected request reached the server")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def case_preflight_all(mode: str) -> None:
+    require_mode(mode)
+    work = Path(os.environ["M6_CASE_WORK"])
+    stub = work / "bin"
+    stub.mkdir()
+    log = work / "argv"
+    env = base_env(mode, work)
+    env["M6_ARGV_LOG"] = str(log)
+    env["PATH"] = f"{stub}:{env['PATH']}"
+    env["M6_DEFINITION_GIT_URL"] = "https://user:token@github.com/acme/widgets.git"
+    env["M6_GITHUB_API_BASE"] = "https://api.example.invalid"
+    env["FACTORY_REVIEWERS_ADMINS"] = ""
+    write_stub(stub, "git", real_binary("git"))
+    write_stub(stub, "curl", real_binary("curl"))
+    apply_env(env)
+    code = call_captured(work, lambda: remote.main(["remote.py", "preflight"]))
+    stdout = (work / "captured.out").read_text(encoding="utf-8")
+    stderr = (work / "captured.err").read_text(encoding="utf-8")
+    secret_absent(stdout + stderr, "")
+    assert_token_absent(stdout + stderr)
+    fails = [
+        line
+        for line in stderr.splitlines()
+        if line.startswith("remote preflight:") and " FAIL " in line
+    ]
+    if code == 0 or len(fails) != 2:
+        fail(f"expected 2 FAIL lines and a non-zero exit, got {len(fails)} and {code}")
+    if not any(line.startswith("remote preflight: url FAIL") for line in fails):
+        fail("url check did not FAIL")
+    if not any(line.startswith("remote preflight: reviewers FAIL") for line in fails):
+        fail("reviewers check did not FAIL")
+    for skip in (
+        "remote preflight: ls-remote SKIP (needs url)",
+        "remote preflight: mint SKIP (needs url)",
+        "remote preflight: token SKIP (needs mint)",
+        "remote preflight: collaborators SKIP (needs token)",
+    ):
+        if skip not in stderr:
+            fail(f"missing {skip}")
+    if log.exists() and log.read_text(encoding="utf-8").strip():
+        fail("preflight called git or curl")
+    if stdout.strip():
+        fail("preflight wrote stdout")
+    text = (work / "remote-fail").read_text(encoding="utf-8")
+    if "userinfo" not in text and "https://" not in text:
+        fail("remote-fail missed the url")
+    if "FACTORY_REVIEWERS_ADMINS" not in text:
+        fail("remote-fail missed reviewers")
+    secret_absent(text, "")
+
+
 def main() -> None:
     name = sys.argv[1]
     mode = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -1779,6 +1973,10 @@ def main() -> None:
         case_cleanup_bound_git(mode)
     elif name == "cleanup-bound-mint":
         case_cleanup_bound_mint(mode)
+    elif name == "opaque-token":
+        case_opaque_token(mode)
+    elif name == "preflight-all":
+        case_preflight_all(mode)
     elif name == "offline":
         case_offline()
     elif name == "forge-lookup":

@@ -125,6 +125,85 @@ func TestGitHubFakeLifecycle(t *testing.T) {
 	}
 }
 
+func TestStatelessInstallToken(t *testing.T) {
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	srv, err := newServer("", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertStatelessToken(t, srv.token)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	status, body := doJSON(t, ts, http.MethodPost, "/app/installations/7/access_tokens", "jwt-shaped", map[string]any{
+		"repositories": []string{"factory"},
+		"permissions":  map[string]string{"contents": "write"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("mint status %d", status)
+	}
+	var minted struct {
+		Token string `json:"token"`
+	}
+	decode(t, body, &minted)
+	if minted.Token != srv.token {
+		t.Fatal("mint did not return the installation token")
+	}
+	assertStatelessToken(t, minted.Token)
+
+	stateReq, err := http.NewRequest(http.MethodGet, ts.URL+"/_spike/state", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateRes, err := http.DefaultClient.Do(stateReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(stateRes.Body)
+	_ = stateRes.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), minted.Token) || strings.Contains(logs.String(), minted.Token) {
+		t.Fatal("state or log contains the installation token")
+	}
+}
+
+func assertStatelessToken(t *testing.T, token string) {
+	t.Helper()
+	if strings.ContainsAny(token, " \t\r\n") {
+		t.Fatal("installation token contains whitespace")
+	}
+	if strings.Count(token, ".") != 2 {
+		t.Fatalf("installation token dots %d", strings.Count(token, "."))
+	}
+	if len(token) < 500 || len(token) > 560 {
+		t.Fatalf("installation token length %d", len(token))
+	}
+	rest, ok := strings.CutPrefix(token, "ghs_")
+	if !ok {
+		t.Fatal("installation token prefix")
+	}
+	appID, jwt, ok := strings.Cut(rest, "_")
+	if !ok || appID == "" || jwt == "" {
+		t.Fatal("installation token shape")
+	}
+	for _, ch := range appID {
+		if ch < '0' || ch > '9' {
+			t.Fatal("installation token app id")
+		}
+	}
+	if !strings.Contains(token, "-") {
+		t.Fatal("installation token is missing -")
+	}
+	for _, part := range strings.Split(jwt, ".") {
+		if part == "" {
+			t.Fatal("installation token jwt part")
+		}
+	}
+}
+
 func TestGitHubFakeConcurrentCommits(t *testing.T) {
 	srv, err := newServer("ghs_concurrenttokenvalue0123456789", slog.New(slog.DiscardHandler))
 	if err != nil {
