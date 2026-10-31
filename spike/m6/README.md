@@ -106,6 +106,11 @@ cancelled at 14:37:47 PT after
 [factory-m6-definition#5](https://github.com/polds/factory-m6-definition/pull/5)
 opened; the driver's SIGINT trap closed that pull request 3 s later; the
 `if: cancelled()` step succeeded; all 4 ledger entries are `cleaned`; no
-leftover refs or pull requests. `m1-live`, `m2-live`,
-`m3-live`, `m4-live`, and `m5-live` do not exec their drivers, so a cancel
-on those workflows does not reach the driver trap.
+leftover refs or pull requests. At `fd046e8`, `m1-live`, `m2-live`,
+`m3-live`, `m4-live`, and `m5-live` exec their drivers, so an Actions cancel
+reaches the trap: `m1-live.yml` line 56 (`MODE=live exec ./spike/m1/run.sh`),
+`m2-live.yml` line 61 (`MODE=live exec ./spike/m2/run.sh`), `m3-live.yml`
+line 85 (`MODE=live exec ./spike/m3/run.sh`), `m4-live.yml` line 87
+(`MODE=live-ci exec ./spike/m4/run.sh`), and `m5-live.yml` line 66
+(`MODE=live-ci exec ./spike/m5/run.sh`). T77 (`953c887`) added that `exec`.
+None of those five has an `if: cancelled()` cleanup step.

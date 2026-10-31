@@ -25,7 +25,9 @@ on 2026-10-19, `main` at `dd186bd`
 [`docs/12-build-sequence.md`](docs/12-build-sequence.md). `m5-live.yml` is
 still open. M6 code is merged. The measure and improve section is in
 [`docs/12`](docs/12-build-sequence.md#m6--measure-and-improve-weeks), and the
-driver is [`spike/m6`](spike/m6/README.md). The M6 live exit has not been run.
+driver is [`spike/m6`](spike/m6/README.md). The CI (`live-ci`) exit was met
+([run 41243409323](https://github.com/polds/factory/actions/runs/41243409323)).
+No laptop `MODE=live` run was done.
 The `claude-code` adapter is not in this build.
 
 ## Quickstart
