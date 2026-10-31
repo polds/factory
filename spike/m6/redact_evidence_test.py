@@ -286,7 +286,9 @@ class PublicURLTest(unittest.TestCase):
         repo = "https://github.com/polds/factory-m6-definition"
         html = repo + "/pull/1"
         token = "ghs_" + ("a" * 20)
-        credentialed = f"https://x-access-token:{token}@github.com/polds/factory-m6-definition.git"
+        credentialed = (
+            f"https://x-access-token:{token}@github.com/polds/factory-m6-definition.git"
+        )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "evidence"
             root.mkdir()
@@ -310,7 +312,10 @@ class PublicURLTest(unittest.TestCase):
             os.environ["M6_CLONED_URL"] = credentialed
             os.environ["EVIDENCE_EXTRA_SECRETS"] = "M6_TASK_GIT_URL M6_CLONED_URL"
             try:
-                self.assertNotEqual(redact_evidence.scan_tree(root, redact_evidence.load_secrets("")), [])
+                self.assertNotEqual(
+                    redact_evidence.scan_tree(root, redact_evidence.load_secrets("")),
+                    [],
+                )
                 code = redact_evidence.main([str(root)])
             finally:
                 for name, value in saved.items():
@@ -326,7 +331,9 @@ class PublicURLTest(unittest.TestCase):
             self.assertNotIn(token, text)
             self.assertNotIn(credentialed, text)
             self.assertIn("[REDACTED]", text)
-            self.assertEqual(redact_evidence.scan_tree(root, [repo, credentialed, token]), [])
+            self.assertEqual(
+                redact_evidence.scan_tree(root, [repo, credentialed, token]), []
+            )
 
 
 def leaked_stateless(text: str) -> bool:
