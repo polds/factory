@@ -1366,6 +1366,116 @@ PY
   rm -rf "$dir"
 }
 
+# Mirrors the "Upload M6 evidence" step in .github/workflows/m6-live.yml.
+# A stateless installation token that is still in the tree must fail the
+# step before it can write ready=true. The redact path may write ready=true
+# only after that token's payload is gone.
+case_stateless_publish_gate() {
+  local dir="$ROOT/spike/m6/.work/stateless-publish"
+  local err="$dir/stderr" out="$dir/stdout" output="$dir/github_output"
+  rm -rf "$dir"
+  mkdir -p "$dir/scan/evidence" "$dir/full/evidence"
+  python3 - "$dir" "$ROOT/spike/m6" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[2])
+import redact_evidence_test as tests
+
+base = Path(sys.argv[1])
+tests.plant_stateless_tree(base / "scan" / "evidence")
+tests.plant_stateless_tree(base / "full" / "evidence")
+(base / "full" / "github-app-token").write_text(tests.stateless_token() + "\n", encoding="utf-8")
+PY
+  # A fresh bash, not this function. run_case invokes the function from
+  # if, which turns errexit off for the whole call, including subshells.
+  # GitHub Actions runs the step as its own shell, where set -e sticks.
+  set +e
+  bash -c '
+set -euo pipefail
+export GITHUB_OUTPUT="$3"
+python3 "$1" --scan-only "$2"
+if [[ -d "$2" ]]; then
+  echo "ready=true" >> "$GITHUB_OUTPUT"
+else
+  echo "ready=false" >> "$GITHUB_OUTPUT"
+fi
+' bash "$ROOT/spike/m6/redact_evidence.py" "$dir/scan/evidence" "$output" >"$out" 2>"$err"
+  local rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || {
+    printf 'scan gate exited 0\n' >&2
+    return 1
+  }
+  if [[ -f "$output" ]] && grep -q 'ready=true' "$output"; then
+    printf 'scan gate wrote ready=true\n' >&2
+    return 1
+  fi
+  if [[ -d "$dir/scan/evidence" ]]; then
+    printf 'scan gate left the evidence directory\n' >&2
+    return 1
+  fi
+  python3 - "$err" "$ROOT/spike/m6" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[2])
+import redact_evidence_test as tests
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+if tests.leaked_stateless(text):
+    raise SystemExit("scan gate printed the token")
+PY
+  output="$dir/full_output"
+  err="$dir/full_stderr"
+  set +e
+  bash -c '
+set -euo pipefail
+export GITHUB_OUTPUT="$4"
+work="$3"
+if [[ -f "$work/github-app-token" ]]; then
+  M6_APP_TOKEN="$(tr -d "[:space:]" < "$work/github-app-token")"
+  export M6_APP_TOKEN
+fi
+if [[ -f "$work/install-token" ]]; then
+  INSTALL_TOKEN="$(tr -d "[:space:]" < "$work/install-token")"
+  export INSTALL_TOKEN
+fi
+export EVIDENCE_EXTRA_SECRETS="INSTALL_TOKEN M6_APP_TOKEN"
+python3 "$1" --key-file "$work/missing-api-key" "$2"
+if [[ -d "$2" ]]; then
+  echo "ready=true" >> "$GITHUB_OUTPUT"
+else
+  echo "ready=false" >> "$GITHUB_OUTPUT"
+fi
+' bash "$ROOT/spike/m6/redact_evidence.py" "$dir/full/evidence" "$dir/full" "$output" >"$dir/full_stdout" 2>"$err"
+  rc=$?
+  set -e
+  [[ "$rc" -eq 0 ]] || {
+    printf 'redact step exited %s\n' "$rc" >&2
+    return 1
+  }
+  grep -q 'ready=true' "$output" || {
+    printf 'redact step did not write ready=true\n' >&2
+    return 1
+  }
+  python3 - "$dir/full/evidence" "$err" "$ROOT/spike/m6" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[3])
+import redact_evidence_test as tests
+
+root = Path(sys.argv[1])
+if tests.leaked_stateless(tests.evidence_text(root)):
+    raise SystemExit("redacted evidence still holds the installation token")
+err = Path(sys.argv[2]).read_text(encoding="utf-8")
+if tests.leaked_stateless(err):
+    raise SystemExit("redact step printed the token")
+PY
+  rm -rf "$dir"
+}
+
 expect_fail step-build-images "M6 FAIL — build_images: exit 7" case_step_build_images
 expect_fail step-prepare-definition "M6 FAIL — prepare_definition: exit 1" case_step_prepare_definition
 expect_fail step-seed-git "M6 FAIL — seed_git: exit 1" case_step_seed_git
@@ -1378,6 +1488,7 @@ run_case playwright-set-plus-e case_playwright_set_plus_e
 run_case playwright-failure-before-sha case_playwright_failure_before_sha
 run_case redact-evidence case_redact_evidence
 run_case playwright-failure-redacts case_playwright_failure_redacts
+run_case stateless-publish-gate case_stateless_publish_gate
 
 if [[ "$fails" -ne 0 ]]; then
   printf '%s failed\n' "$fails" >&2

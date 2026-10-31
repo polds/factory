@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
 import sys
@@ -9,6 +10,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -123,6 +125,178 @@ class RedactorTest(unittest.TestCase):
     def test_missing_directory_is_success(self) -> None:
         missing = Path(tempfile.mkdtemp()) / "absent"
         self.assertEqual(redact_evidence.main([str(missing)]), 0)
+
+    def test_stateless_installation_token_is_removed(self) -> None:
+        token = stateless_token()
+        encoded = quote(token, safe="")
+        marker = PAYLOAD_MARKER
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "evidence"
+            plant_stateless_tree(root)
+            untouched = Path(tmp) / "unredacted"
+            untouched.mkdir()
+            plant_stateless_tree(untouched)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(redact_evidence.__file__)),
+                    "--scan-only",
+                    str(untouched),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertFalse(untouched.exists())
+            self.assertIn("github token", proc.stderr)
+            self.assertIn("jwt", proc.stderr)
+            self.assertNotIn(token, proc.stderr)
+            self.assertNotIn(marker, proc.stderr)
+            self.assertNotIn(token, proc.stdout)
+            redact_evidence.redact_tree(root, [])
+            blob = evidence_text(root)
+            self.assertNotIn(token, blob)
+            self.assertNotIn(encoded, blob)
+            self.assertNotIn(marker, blob)
+            self.assertNotIn(PAYLOAD, blob)
+            self.assertNotIn(SIG, blob)
+            for other in OTHER_TOKENS:
+                self.assertNotIn(other, blob)
+            self.assertEqual(redact_evidence.scan_tree(root, []), [])
+            har = json.loads((root / "loop.har").read_text(encoding="utf-8"))
+            header = har["log"]["entries"][0]["request"]["headers"][0]
+            self.assertEqual(header["value"], "[REDACTED]")
+
+    def test_base64_har_body_is_decoded(self) -> None:
+        token = stateless_token()
+        plain = json.dumps({"apiKey": KEY, "note": JWT, "installation": token})
+        encoded = base64.b64encode(plain.encode("utf-8")).decode("ascii")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            har = {
+                "log": {
+                    "entries": [
+                        {
+                            "request": {
+                                "postData": {
+                                    "mimeType": "application/octet-stream",
+                                    "encoding": "base64",
+                                    "text": encoded,
+                                }
+                            },
+                            "response": {
+                                "content": {
+                                    "mimeType": "application/octet-stream",
+                                    "encoding": "base64",
+                                    "text": encoded,
+                                }
+                            },
+                        },
+                        {
+                            "request": {
+                                "postData": {
+                                    "mimeType": "application/octet-stream",
+                                    "encoding": "base64",
+                                    "text": "@@@@",
+                                }
+                            }
+                        },
+                    ]
+                }
+            }
+            (root / "loop.har").write_text(json.dumps(har), encoding="utf-8")
+            self.assertNotEqual(redact_evidence.scan_tree(root, [KEY]), [])
+            redact_evidence.redact_tree(root, [KEY])
+            doc = json.loads((root / "loop.har").read_text(encoding="utf-8"))
+            bodies = [
+                doc["log"]["entries"][0]["request"]["postData"]["text"],
+                doc["log"]["entries"][0]["response"]["content"]["text"],
+            ]
+            for body in bodies:
+                decoded = base64.b64decode(body).decode("utf-8")
+                self.assertNotIn(KEY, decoded)
+                self.assertNotIn(JWT, decoded)
+                self.assertNotIn(token, decoded)
+                self.assertNotIn(PAYLOAD_MARKER, decoded)
+                self.assertIn("[REDACTED]", decoded)
+            dropped = doc["log"]["entries"][1]["request"]["postData"]
+            self.assertEqual(dropped.get("text", ""), "")
+            self.assertNotIn("encoding", dropped)
+            self.assertEqual(redact_evidence.scan_tree(root, [KEY]), [])
+
+
+HEADER = "eyJhbGciOiJub25lIn0"
+PAYLOAD_MARKER = "QQVlMT0FETUFSS0VS"
+PAYLOAD = f"eyJzdWIiOiJ{PAYLOAD_MARKER}In0"
+SIG = "c2lnbmF0dXJlTUFSSy0xMjM0NTY"
+
+
+def stateless_token() -> str:
+    return f"ghs_12345_{HEADER}.{PAYLOAD}.{SIG}"
+
+
+OTHER_TOKENS = (
+    "gho_" + ("A" * 20) + "." + ("B" * 20),
+    "ghu_" + ("C" * 20) + "." + ("D" * 20),
+    "ghr_" + ("E" * 20) + "-" + ("F" * 20),
+    "github_pat_" + ("G" * 20) + "." + ("H" * 20),
+    "ghs_1234567_" + ("A" * 40) + "." + ("B" * 40) + "." + ("C" * 40),
+)
+
+
+def plant_stateless_tree(root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    token = stateless_token()
+    encoded = quote(token, safe="")
+    har = {
+        "log": {
+            "entries": [
+                {
+                    "request": {
+                        "url": f"https://api.github.com/installation?access_token={token}&x=1",
+                        "queryString": [{"name": "access_token", "value": token}],
+                        "headers": [
+                            {"name": "X-Installation-Token", "value": token},
+                        ],
+                        "postData": {
+                            "mimeType": "application/json",
+                            "text": json.dumps({"token": token}),
+                        },
+                    }
+                }
+            ]
+        }
+    }
+    (root / "loop.har").write_text(json.dumps(har), encoding="utf-8")
+    (root / "driver.log").write_text(
+        f"installed {token}\nurl https://example.test/cb?token={encoded}\n"
+        + "\n".join(OTHER_TOKENS)
+        + "\n",
+        encoding="utf-8",
+    )
+    trace = root / "loop-trace.zip"
+    with zipfile.ZipFile(trace, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        zout.writestr("trace.network", f"member {token}\n")
+
+
+def leaked_stateless(text: str) -> bool:
+    token = stateless_token()
+    return token in text or PAYLOAD_MARKER in text or quote(token, safe="") in text
+
+
+def evidence_text(root: Path) -> str:
+    blob = b""
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix == ".zip":
+            continue
+        blob += path.read_bytes()
+    zip_path = root / "loop-trace.zip"
+    if zip_path.is_file():
+        with zipfile.ZipFile(zip_path) as zin:
+            for info in zin.infolist():
+                blob += zin.read(info.filename)
+    return blob.decode("utf-8")
 
 
 if __name__ == "__main__":

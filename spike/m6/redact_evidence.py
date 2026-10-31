@@ -2,15 +2,19 @@
 """Scrub M6 evidence before it is uploaded.
 
 Replaces Authorization and Bearer values, the console API key, x-litellm-api-key
-values, GitHub tokens, and JWT-shaped strings in the HAR, the trace zip, and
-every other file in the evidence directory. A later scan exits 1 when any of
-those remain, and removes the directory so an upload cannot publish them.
-The script prints pattern classes and file names, never the secret text.
+values, GitHub tokens (including stateless ghs_<app id>_<JWT>), and JWT-shaped
+strings in the HAR, the trace zip, and every other file in the evidence
+directory. Base64 HAR bodies are decoded, scrubbed, and re-encoded. A later
+scan exits 1 when any of those remain, and removes the directory so an upload
+cannot publish them. The script prints pattern classes and file names, never
+the secret text.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import re
@@ -25,8 +29,21 @@ BEARER_PLACEHOLDER = "Bearer [REDACTED]"
 HEADER_OK = {PLACEHOLDER, BEARER_PLACEHOLDER, "REDACTED"}
 MIN_SECRET = 8
 
-GITHUB_TOKEN = re.compile(r"(?:ghs_|ghp_|github_pat_)[A-Za-z0-9_]{16,}")
-JWT = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
+# GitHub's current tokens, including stateless installation tokens
+# ghs_<app id>_<JWT> (dots and base64url hyphens, since 2026-10-02).
+# %2E is a query-string dot. A class that stops at "." leaves the JWT tail
+# in the file after the prefix is replaced.
+_TOKEN_PREFIX = r"(?:github_pat_|ghs_|ghp_|gho_|ghu_|ghr_)"
+_TOKEN_BODY = r"(?:[A-Za-z0-9_\-]|%2[Ee]|\.)"
+GITHUB_TOKEN = re.compile(_TOKEN_PREFIX + _TOKEN_BODY + r"{16,}")
+_B64URL = r"[A-Za-z0-9_\-]"
+_DOT = r"(?:\.|%2[Ee])"
+_JWT_CORE = rf"eyJ{_B64URL}{{10,}}{_DOT}{_B64URL}{{10,}}{_DOT}{_B64URL}{{10,}}"
+# Optional vendor prefix so ghs_<appid>_<jwt> is one match, not a head
+# that consumes "eyJ" and hides ".payload.sig" from a later pass.
+JWT = re.compile(rf"(?:{_TOKEN_PREFIX}{_B64URL}*)?{_JWT_CORE}")
+# A dotted tail sitting on a placeholder is the split-token failure mode.
+JWT_TAIL = re.compile(rf"(?<=\[REDACTED\]){_DOT}{_B64URL}{{10,}}{_DOT}{_B64URL}{{10,}}")
 BEARER = re.compile(r"(?i)(Bearer\s+)(?!\[REDACTED\])([^\"'\s\\]{4,})")
 AUTH_LINE = re.compile(
     r"(?i)((?:^|[^A-Za-z0-9_\"]))authorization(\s*:\s*)(?!\[REDACTED\])([^\r\n]+)"
@@ -39,6 +56,8 @@ ENV_SECRET_NAMES = (
     "FACTORY_INFERENCE_OPENAI_API_KEY",
     "FACTORY_WORKER_API_KEY",
     "S3_SECRET_KEY",
+    "INSTALL_TOKEN",
+    "M6_APP_TOKEN",
 )
 EXTRA_HEADER_NAMES = (
     "FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS",
@@ -109,12 +128,24 @@ def scrub_named_header(text: str, header: str) -> str:
     return text
 
 
+def apply_token_passes(text: str) -> str:
+    # JWT (with its prefix) runs before the vendor-token pass, then again,
+    # so a match cannot stop at the first dot and leave a payload behind.
+    for _ in range(4):
+        updated = JWT.sub(PLACEHOLDER, text)
+        updated = GITHUB_TOKEN.sub(PLACEHOLDER, updated)
+        updated = JWT_TAIL.sub(PLACEHOLDER, updated)
+        if updated == text:
+            return text
+        text = updated
+    return text
+
+
 def redact_text(text: str, secrets: list[str]) -> str:
     for secret in secrets:
         for form in secret_forms(secret):
             text = text.replace(form, PLACEHOLDER)
-    text = GITHUB_TOKEN.sub(PLACEHOLDER, text)
-    text = JWT.sub(PLACEHOLDER, text)
+    text = apply_token_passes(text)
     text = scrub_named_header(text, "authorization")
     text = scrub_named_header(text, "x-litellm-api-key")
     text = LITELLM_LINE.sub(rf"\1{PLACEHOLDER}", text)
@@ -123,10 +154,70 @@ def redact_text(text: str, secrets: list[str]) -> str:
     return text
 
 
+def decode_base64_body(raw: str) -> bytes:
+    compact = "".join(raw.split())
+    pad = "=" * (-len(compact) % 4)
+    return base64.b64decode(compact + pad, validate=True)
+
+
+def _is_base64_text(node: dict[str, object]) -> bool:
+    encoding = node.get("encoding")
+    return (
+        isinstance(encoding, str)
+        and encoding.lower() == "base64"
+        and isinstance(node.get("text"), str)
+    )
+
+
+def scrub_base64_tree(node: object, secrets: list[str]) -> bool:
+    changed = False
+    if isinstance(node, dict):
+        if _is_base64_text(node):
+            raw = node["text"]
+            assert isinstance(raw, str)
+            try:
+                decoded = decode_base64_body(raw)
+            except (binascii.Error, ValueError):
+                node["text"] = ""
+                node.pop("encoding", None)
+                changed = True
+            else:
+                plain = decoded.decode("latin-1")
+                cleaned = redact_text(plain, secrets)
+                if cleaned != plain:
+                    node["text"] = base64.b64encode(cleaned.encode("latin-1")).decode(
+                        "ascii"
+                    )
+                    changed = True
+        for key, child in node.items():
+            if key == "text" and _is_base64_text(node):
+                continue
+            if scrub_base64_tree(child, secrets):
+                changed = True
+    elif isinstance(node, list):
+        for child in node:
+            if scrub_base64_tree(child, secrets):
+                changed = True
+    return changed
+
+
+def scrub_base64_document(text: str, secrets: list[str]) -> str:
+    if "base64" not in text.lower():
+        return text
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    if not scrub_base64_tree(doc, secrets):
+        return text
+    return json.dumps(doc, separators=(",", ":"))
+
+
 def redact_bytes(data: bytes, secrets: list[str]) -> bytes:
-    text = data.decode("latin-1")
+    original = data.decode("latin-1")
+    text = scrub_base64_document(original, secrets)
     cleaned = redact_text(text, secrets)
-    if cleaned == text:
+    if cleaned == original:
         return data
     return cleaned.encode("latin-1")
 
@@ -196,7 +287,7 @@ def scan_text(text: str, secrets: list[str]) -> list[str]:
         kinds.append("known secret")
     if GITHUB_TOKEN.search(text):
         kinds.append("github token")
-    if JWT.search(text):
+    if JWT.search(text) or JWT_TAIL.search(text):
         kinds.append("jwt")
     if BEARER.search(text):
         kinds.append("bearer")
@@ -220,8 +311,44 @@ def scan_text(text: str, secrets: list[str]) -> list[str]:
     return kinds
 
 
+def scan_base64_tree(node: object, secrets: list[str], kinds: list[str]) -> None:
+    if isinstance(node, dict):
+        if _is_base64_text(node):
+            raw = node["text"]
+            assert isinstance(raw, str)
+            try:
+                decoded = decode_base64_body(raw)
+            except (binascii.Error, ValueError):
+                pass
+            else:
+                kinds.extend(scan_text(decoded.decode("latin-1"), secrets))
+        for key, child in node.items():
+            if key == "text" and _is_base64_text(node):
+                continue
+            scan_base64_tree(child, secrets, kinds)
+    elif isinstance(node, list):
+        for child in node:
+            scan_base64_tree(child, secrets, kinds)
+
+
 def scan_bytes(data: bytes, secrets: list[str]) -> list[str]:
-    return scan_text(data.decode("latin-1"), secrets)
+    text = data.decode("latin-1")
+    kinds = scan_text(text, secrets)
+    if "base64" in text.lower():
+        try:
+            doc = json.loads(text)
+        except json.JSONDecodeError:
+            doc = None
+        if doc is not None:
+            scan_base64_tree(doc, secrets, kinds)
+    unique: list[str] = []
+    seen: set[str] = set()
+    for kind in kinds:
+        if kind in seen:
+            continue
+        seen.add(kind)
+        unique.append(kind)
+    return unique
 
 
 def scan_tree(root: Path, secrets: list[str]) -> list[str]:

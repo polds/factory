@@ -195,6 +195,17 @@ jobs:
           M1_OPENAI_EXTRA_HEADERS: ${{ secrets.M1_OPENAI_EXTRA_HEADERS }}
         run: |
           set -euo pipefail
+          # Names only. The values are the minted App token and the
+          # installation token, read from the run's files. Do not echo them.
+          if [[ -f spike/m6/.work/github-app-token ]]; then
+            M6_APP_TOKEN="$(tr -d '[:space:]' < spike/m6/.work/github-app-token)"
+            export M6_APP_TOKEN
+          fi
+          if [[ -f spike/m6/.work/install-token ]]; then
+            INSTALL_TOKEN="$(tr -d '[:space:]' < spike/m6/.work/install-token)"
+            export INSTALL_TOKEN
+          fi
+          export EVIDENCE_EXTRA_SECRETS="INSTALL_TOKEN M6_APP_TOKEN"
           python3 spike/m6/redact_evidence.py \
             --key-file spike/m6/.work/api-key \
             spike/m6/.work/evidence
