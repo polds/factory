@@ -6,8 +6,10 @@ creates the seeded work items, waits for scorer results, opens the improvement
 pull request from the inbox, checks the batch and the skill diff, and runs the
 `convention` benchmark. Live and live-ci use that same spec with structural
 assertions and a real model. They also push a run-scoped base, watch this
-run's improvement pull request, and delete only this run's remote state. No
-live or live-ci result is claimed here. The live exit has not been run.
+run's improvement pull request, and delete only this run's remote state. The
+CI (`live-ci`) exit is recorded in
+[docs/12](../../docs/12-build-sequence.md). No laptop `MODE=live` run is
+claimed here.
 
 `MODE` is `offline`, `live`, or `live-ci`. Offline needs none of the live
 variables. A missing live variable prints `missing <NAME>` and exits 1 before
@@ -26,8 +28,10 @@ only. Its header names the repository secrets `M1_OPENAI_BASE_URL`,
 `M1_OPENAI_API_KEY`, `M1_OPENAI_EXTRA_HEADERS`, `M6_GITHUB_APP_ID`, and
 `M6_GITHUB_APP_PRIVATE_KEY`, and the inputs `model`, `judge_model`,
 `definition_git_url`, `github_api_base`, `reviewer`, and `repetitions`.
-This driver was not dispatched. With those variables unset, each live mode
-stops at its first missing name. That is as far as the commands below were run.
+The CI dispatch is the live-ci exit in
+[docs/12](../../docs/12-build-sequence.md). With those variables unset, each
+live mode stops at its first missing name. That is as far as the commands
+below were run.
 
 ```bash
 bash spike/m6/run_test.sh
@@ -90,8 +94,23 @@ Task containers labelled `oz-task-id` are outside this trap.
 If the job is cancelled, an `if: cancelled()` step runs
 `MODE=live-ci ./spike/m6/run.sh --cleanup-remote` with the same env
 ([`m6-live.yml`](../../.github/workflows/m6-live.yml), the step "Clean up
-remote state after cancel"). That step is wired
-(`m6-live.yml` lines 169-182). It has not yet run on a real cancel. The
-live exit, including that cancel, is pending (T69b). `m1-live`, `m2-live`,
-`m3-live`, `m4-live`, and `m5-live` do not exec their drivers, so a cancel
-on those workflows does not reach the driver trap.
+remote state after cancel"). The driver `exec` is the comment at line 7 and
+`MODE=live-ci exec ./spike/m6/run.sh` at line 177. `if: cancelled()` is line
+179. The local SIGINT/SIGTERM cancel-window test is `case_cancel_window` in
+`spike/m6/t76b_cases.sh` (line 451), run by `spike/m6/run_test.sh` in CI.
+Normal-exit cleanup is
+[run 41243409323](https://github.com/polds/factory/actions/runs/41243409323)
+(ledger all `cleaned`). Actions cancel is
+[run 41244172690](https://github.com/polds/factory/actions/runs/41244172690):
+cancelled at 14:37:47 PT after
+[factory-m6-definition#5](https://github.com/polds/factory-m6-definition/pull/5)
+opened; the driver's SIGINT trap closed that pull request 3 s later; the
+`if: cancelled()` step succeeded; all 4 ledger entries are `cleaned`; no
+leftover refs or pull requests. At `fd046e8`, `m1-live`, `m2-live`,
+`m3-live`, `m4-live`, and `m5-live` exec their drivers, so an Actions cancel
+reaches the trap: `m1-live.yml` line 56 (`MODE=live exec ./spike/m1/run.sh`),
+`m2-live.yml` line 61 (`MODE=live exec ./spike/m2/run.sh`), `m3-live.yml`
+line 85 (`MODE=live exec ./spike/m3/run.sh`), `m4-live.yml` line 87
+(`MODE=live-ci exec ./spike/m4/run.sh`), and `m5-live.yml` line 66
+(`MODE=live-ci exec ./spike/m5/run.sh`). T77 (`953c887`) added that `exec`.
+None of those five has an `if: cancelled()` cleanup step.
