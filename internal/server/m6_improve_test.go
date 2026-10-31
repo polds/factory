@@ -35,7 +35,7 @@ func TestImprovementPromptCarriesInstructions(t *testing.T) {
 		secrets:       map[string]string{"DEFINITION_GIT_URL": t81SecretURL},
 	})
 
-	_, batch := m6SeedImprovement(t, env, t81Reasoning)
+	_, batch := m6SeedImprovementOutput(t, env, t81Reasoning, "HEADMARKER "+t81SecretURL+" TAILMARKER")
 	if batch.ImprovementRunID == "" {
 		t.Fatal("improvement run was not started")
 	}
@@ -64,6 +64,14 @@ func TestImprovementPromptCarriesInstructions(t *testing.T) {
 		"/workspace starts empty.",
 		"A prose reply is not success",
 		"commit, and push the branch",
+		"explicit, imperative instruction",
+		"Remove or rewrite any existing instruction",
+		"bare appended marker line",
+		"## Scorer rubrics",
+		"- scorer review",
+		"Return fail when the transcript contains the marker.",
+		"## Failing examples",
+		"assistant output: HEADMARKER [REDACTED] TAILMARKER",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q", want)
@@ -509,6 +517,11 @@ func m6SucceededRun(t *testing.T, env *env, runID string) store.Run {
 
 func m6SeedImprovement(t *testing.T, env *env, reasoning string) (string, store.ImprovementBatch) {
 	t.Helper()
+	return m6SeedImprovementOutput(t, env, reasoning, "")
+}
+
+func m6SeedImprovementOutput(t *testing.T, env *env, reasoning, output string) (string, store.ImprovementBatch) {
+	t.Helper()
 	ctx := context.Background()
 	fac, agent := env.factoryAgent(t)
 	work, err := env.srv.store.CreateRun(ctx, store.NewRun{
@@ -522,6 +535,22 @@ func m6SeedImprovement(t *testing.T, env *env, reasoning string) (string, store.
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if output != "" {
+		execID := "exec_prompt_" + work.ID
+		token := make([]byte, 32)
+		if _, err := env.raw.Exec(ctx, `
+			INSERT INTO executions (id, run_id, attempt, worker_id, state, run_token_sha256)
+			VALUES ($1, $2, 1, 'worker-prompt', 'completed', $3)`, execID, work.ID, token); err != nil {
+			t.Fatal(err)
+		}
+		payload := fmt.Sprintf(`{"type":"message.delta","role":"assistant","text":%q}`, output)
+		if _, err := env.raw.Exec(ctx, `
+			INSERT INTO run_events (run_id, seq, execution_id, idx, ts, type, payload_json)
+			VALUES ($1, 1, $2, 0, clock_timestamp(), 'message.delta', $3::jsonb)`,
+			work.ID, execID, payload); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := env.srv.store.UpsertScorerResult(ctx, store.ScorerResult{
 		FactoryID:  fac,

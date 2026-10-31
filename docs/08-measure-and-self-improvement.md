@@ -260,13 +260,20 @@ why the definition lives in Git.
 **M6 applied.** The prompt is the bound agent's instructions, built with
 the same `handoff.BuildPrompt` a stage run uses, then the failure list.
 Each failure line includes the run id, scorer, label, time, and reasoning.
-It adds a Workspace section, a file listing of the definition tree, the
-layer table above, and prior rejection notes from closed batches for the
-same agent. The Workspace section says `/workspace` starts empty, names
-the `DEFINITION_GIT_URL` environment variable and not the URL value, names
-the base ref, names the `improve/<batch>` branch to push, and says
-`GH_TOKEN` is available for HTTPS push. It does not include the work
-item, the transcript, or the diff. When the improvement run does not
+It quotes each named scorer's rubric and up to three failing examples.
+An example is that result's scorer reasoning and the tail of the run's
+assistant output. Rubric text, reasoning, and the output tail are
+size-capped. The whole prompt is redacted. The prompt requires the edit
+to state the missing behaviour as an explicit imperative instruction in
+the skill or instruction file, and to remove or rewrite any instruction
+in the edited files that contradicts it. A bare appended marker line is
+not enough. It adds a Workspace section, a file listing of the definition
+tree, the layer table above, and prior rejection notes from closed batches
+for the same agent. The Workspace section says `/workspace` starts empty,
+names the `DEFINITION_GIT_URL` environment variable and not the URL value,
+names the base ref, names the `improve/<batch>` branch to push, and says
+`GH_TOKEN` is available for HTTPS push. It does not include the work item
+or the diff. When the improvement run does not
 succeed, the batch is marked `failed` once and the improve branch is not
 cloned. When the run succeeds and the improve branch or the production
 base ref is not advertised yet, factoryd records a 45 second deadline and

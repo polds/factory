@@ -529,6 +529,11 @@ test("m6 exit loop", async ({ browser }) => {
       }
       trace.push("guard: factory/config passed");
     } else {
+      const removed = removedHunkLines(diff);
+      expect(
+        removed.length,
+        "improver diff must remove or rewrite at least one skill line, not only append\n" + diff,
+      ).toBeGreaterThan(0);
       const remote = JSON.parse(await fs.readFile(path.join(evidence, "remote-pr.json"), "utf8")) as {
         html_url?: string;
         head?: string;
@@ -834,6 +839,35 @@ async function blockedLoop(page: Page): Promise<string> {
   }
   return blockedLoopItem([...wanted.values()]);
 }
+
+function removedHunkLines(diff: string): string[] {
+  return diff.split("\n").filter((line) => {
+    if (!line.startsWith("-") || line.startsWith("--- ") || line === "---") return false;
+    return line.slice(1).trim() !== "";
+  });
+}
+
+test("an append-only skill diff does not count as a rewrite", () => {
+  const appendOnly = [
+    "diff --git a/skills/example/SKILL.md b/skills/example/SKILL.md",
+    "--- a/skills/example/SKILL.md",
+    "+++ b/skills/example/SKILL.md",
+    "@@ -1,3 +1,4 @@",
+    " keep this instruction",
+    "-",
+    "+marker",
+  ].join("\n");
+  expect(removedHunkLines(appendOnly)).toEqual([]);
+  const rewrite = [
+    "diff --git a/skills/example/SKILL.md b/skills/example/SKILL.md",
+    "--- a/skills/example/SKILL.md",
+    "+++ b/skills/example/SKILL.md",
+    "@@ -1,3 +1,4 @@",
+    "-keep this instruction",
+    "+State the required behaviour.",
+  ].join("\n");
+  expect(removedHunkLines(rewrite)).toEqual(["-keep this instruction"]);
+});
 
 test("names a loop work item that will not be scored", () => {
   expect(

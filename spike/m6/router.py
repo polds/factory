@@ -22,6 +22,18 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CONVENTION = "CONVENTION: cite-sources"
+CONTRADICTION_LINE = (
+    "Do not invent a required final line that this skill does not contain."
+)
+INSTRUCTION = (
+    "Include the following line exactly, on its own line, in the final message:"
+)
+RULE_PARTS = (
+    "explicit, imperative instruction",
+    "Remove or rewrite any existing instruction",
+    "contradicts",
+    "bare appended marker line",
+)
 BRANCH_RE = re.compile(r"branch: (improve/[A-Za-z0-9_-]+)")
 UNSAFE_URL = re.compile(r"[\s'\"$`\\]")
 MODELS = ("m6-agent", "m6-judge")
@@ -127,10 +139,59 @@ def improve_instructions(text: str) -> bool:
     return "DEFINITION_GIT_URL" in text and BRANCH_RE.search(text) is not None
 
 
+def contradiction_rule(text: str) -> bool:
+    return all(part in text for part in RULE_PARTS)
+
+
+def failing_evidence(text: str) -> bool:
+    """The prompt quotes a scorer rubric and at least one assistant tail."""
+    rubrics = section(text, "Scorer rubrics")
+    examples = section(text, "Failing examples")
+    if "scorer " not in rubrics or "rubric:" not in rubrics:
+        return False
+    body = rubrics.split("rubric:", 1)[1].strip()
+    if body == "" or body == "(none)":
+        return False
+    if "reasoning:" not in examples:
+        return False
+    marker = "assistant output:"
+    for line in examples.splitlines():
+        at = line.find(marker)
+        if at < 0:
+            continue
+        tail = line[at + len(marker) :].strip()
+        if tail and tail != "(none)":
+            return True
+    return False
+
+
+def grounded(text: str) -> bool:
+    return contradiction_rule(text) and failing_evidence(text)
+
+
 def failed_by_agent(summary: str) -> dict:
     return completion(
         json.dumps({"status": "failed_by_agent", "summary": summary}),
         None,
+    )
+
+
+def shell_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def skill_edit(branch: str) -> str:
+    """Rewrite the skill. Deleting the contradicting line is the point:
+    appending a marker beside it leaves the agent on the old instruction.
+    """
+    path = "skills/cite-sources/SKILL.md"
+    return (
+        f"cd /workspace && git checkout -b {branch} && "
+        f"grep -v -F -x {shell_quote(CONTRADICTION_LINE)} {path} > /tmp/m6-skill.md && "
+        f"mv /tmp/m6-skill.md {path} && "
+        "printf '%s\\n' '' "
+        f"{shell_quote(INSTRUCTION)} '' {shell_quote(CONVENTION)} >> {path} && "
+        "echo M6_EDITED"
     )
 
 
@@ -139,6 +200,10 @@ def improve(body: dict) -> dict:
     if factoryd_prompt(text) and not improve_instructions(text):
         return failed_by_agent(
             "improvement prompt is missing DEFINITION_GIT_URL or the improve branch"
+        )
+    if factoryd_prompt(text) and not grounded(text):
+        return failed_by_agent(
+            "improvement prompt is missing failing evidence or the contradiction rule"
         )
     if "M6_PR_HTTP" in text:
         return completion("Improvement branch is pushed.", None)
@@ -178,14 +243,7 @@ def improve(body: dict) -> dict:
         )
         return bash_call(command)
     if "M6_CLONED" in text:
-        command = (
-            f"cd /workspace && git checkout -b {branch} && "
-            "cat >> skills/cite-sources/SKILL.md <<'EOF'\n"
-            "\n## Required line\n\n"
-            f"{CONVENTION}\n"
-            "EOF\necho M6_EDITED"
-        )
-        return bash_call(command)
+        return bash_call(skill_edit(branch))
     # /workspace is the task directory and starts empty. Clone into that
     # exact path with full history: a shallow or single-branch clone cannot
     # check out the live base m6-run/<id>/main.

@@ -391,6 +391,54 @@ if (
     or "/workspace" not in command
 ):
     raise SystemExit("first improve step was not a full clone into /workspace")
+
+def grounded_prompt(extra=""):
+    return (
+        "You are improving the factory definition.\n"
+        "# Instructions\n"
+        "DEFINITION_GIT_URL\n"
+        "## Scorer rubrics\n"
+        "- scorer review\n"
+        "  rubric:\n"
+        "    Return fail when the marker is absent.\n"
+        "## Failing examples\n"
+        "- run run_1 scorer review label fail\n"
+        "  reasoning: the skill omitted the required line\n"
+        "  assistant output: Done.\n"
+        "## Definition tree\n"
+        "branch: improve/batch1\n"
+        "State the required behaviour as an explicit, imperative instruction "
+        "in the skill or instruction file you edit. Remove or rewrite any "
+        "existing instruction in the edited files that contradicts it. "
+        "A bare appended marker line is not enough.\n"
+        + extra
+    )
+
+status, payload = chat("m6-agent", [{"role": "user", "content": grounded_prompt()}])
+command = json.loads(payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])["command"]
+if "git clone" not in command or "M6_CLONED" not in command:
+    raise SystemExit("grounded improver prompt was not a clone")
+ungrounded = grounded_prompt().replace(
+    "State the required behaviour as an explicit, imperative instruction ",
+    "",
+).replace("assistant output: Done.", "assistant output: (none)")
+status, payload = chat("m6-agent", [{"role": "user", "content": ungrounded}])
+body = json.loads(payload["choices"][0]["message"]["content"])
+if body.get("status") != "failed_by_agent" or "failing evidence" not in body.get("summary", ""):
+    raise SystemExit("ungrounded improver prompt was accepted")
+status, payload = chat(
+    "m6-agent",
+    [{"role": "user", "content": "You are improving the factory definition.\nbranch: improve/batch1\nM6_CLONED\n"}],
+)
+command = json.loads(payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])["command"]
+if (
+    "grep -v -F -x" not in command
+    or "Do not invent a required final line that this skill does not contain." not in command
+    or "Include the following line exactly, on its own line, in the final message:" not in command
+    or "CONVENTION: cite-sources" not in command
+    or "cat >>" in command
+):
+    raise SystemExit("improver edit did not remove the contradicting line")
 os.environ.pop("M6_IMPROVER_OPENS_PR", None)
 status, payload = chat(
     "m6-agent",
