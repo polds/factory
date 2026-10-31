@@ -259,6 +259,11 @@ exclude bundled IDs, and count a path as team-owned only when it sits under a ro
 manage. A path alone does not identify an owner — a point worth encoding in the metric
 rather than discovering later when the dashboard reports suspiciously high adoption.
 
+**M6 applied.** The shipped self-improvement path does not emit `skill.read` for
+definition skills. factoryd sets `FACTORY_SKILL_TEXT` on the assignment and the
+harness appends that text to the system prompt. `skill_spec` on the assignment is
+not consumed ([05](05-harness-contract.md#invocation)).
+
 Skills participate in self-improvement: a recurring scored failure can produce a PR editing
 the responsible skill, the same way it would edit application code
 ([08](08-measure-and-self-improvement.md)).

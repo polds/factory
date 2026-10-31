@@ -63,6 +63,34 @@ die() {
   exit 1
 }
 
+# m6_step runs one startup step under set -e and names the exit in M6 FAIL form.
+m6_step() {
+  local name="$1" ec=0
+  shift
+  set +e
+  (
+    set -e
+    "$@"
+  )
+  ec=$?
+  if [[ "$ec" -ne 0 ]]; then
+    printf 'M6 FAIL — %s: exit %s\n' "$name" "$ec" >&2
+    return 1
+  fi
+  set -e
+}
+
+m6_write_forge_json() {
+  local tmp="$EVIDENCE/forge.json.tmp"
+  mkdir -p "$EVIDENCE"
+  if ! curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:${FORGE_PORT}/_spike/m6" \
+    -o "$tmp"; then
+    rm -f "$tmp"
+    return 0
+  fi
+  mv -f "$tmp" "$EVIDENCE/forge.json"
+}
+
 say() {
   printf '%s\n' "$*"
 }
@@ -366,8 +394,7 @@ start_forge() {
   spike_spawn --class stack fake --out "$WORK/fake-github.log" --err "$WORK/fake-github.log" \
     "$WORK/fake-github" -addr "127.0.0.1:${FAKE_PORT}"
   if ! spike_fg wait_http "http://127.0.0.1:${FAKE_PORT}/healthz"; then
-    echo "fake-github did not become reachable" >&2
-    return 1
+    die "fake-github did not become reachable"
   fi
   spike_spawn --class stack forge --out "$WORK/forge.log" --err "$WORK/forge.log" \
     env \
@@ -375,8 +402,7 @@ start_forge() {
     M6_TOKEN_FILE="$WORK/install-token" \
     python3 "$ROOT/spike/m6/forge.py" --addr "0.0.0.0:${FORGE_PORT}"
   if ! spike_fg wait_http "http://127.0.0.1:${FORGE_PORT}/_spike/m6"; then
-    echo "forge did not become reachable" >&2
-    return 1
+    die "forge did not become reachable"
   fi
 }
 
@@ -387,8 +413,7 @@ start_router() {
     M6_GITHUB_API_BASE="$M6_TASK_GITHUB_API" \
     python3 "$ROOT/spike/m6/router.py" --addr "0.0.0.0:${ROUTER_PORT}"
   if ! spike_fg wait_http "http://127.0.0.1:${ROUTER_PORT}/healthz"; then
-    echo "model router did not become reachable" >&2
-    return 1
+    die "model router did not become reachable"
   fi
 }
 
@@ -405,9 +430,7 @@ watch_candidate_offline() {
       printf '%s\n' "$sha" >"$SIGNAL/candidate-ready"
     fi
     if [[ -n "${FORGE_PORT:-}" ]]; then
-      mkdir -p "$EVIDENCE"
-      curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:${FORGE_PORT}/_spike/m6" \
-        -o "$EVIDENCE/forge.json" || true
+      m6_write_forge_json || true
     fi
     # Benchmark trials put the pinned SHA on the task argv. The worker
     # removes the container when the trial exits, so poll while it runs.
@@ -928,15 +951,13 @@ m6_restart_offline_children() {
   if [[ -n "$forge_index" ]]; then
     forge_pid="$(m6_respawn_named forge)"
     if ! m6_wait_listener "http://127.0.0.1:${FORGE_PORT}/_spike/m6" "$forge_pid" forge; then
-      echo "forge did not become reachable" >&2
-      return 1
+      die "forge did not become reachable"
     fi
   fi
   if [[ -n "$router_index" ]]; then
     router_pid="$(m6_respawn_named router)"
     if ! m6_wait_listener "http://127.0.0.1:${ROUTER_PORT}/healthz" "$router_pid" router; then
-      echo "model router did not become reachable" >&2
-      return 1
+      die "model router did not become reachable"
     fi
   fi
 }
@@ -1272,16 +1293,16 @@ trap 'cleanup EXIT' EXIT
 trap 'cleanup INT' INT
 trap 'cleanup TERM' TERM
 
-prepare_definition
-seed_git
-seed_remote
-start_git
-start_forge
+m6_step prepare_definition prepare_definition || exit 1
+m6_step seed_git seed_git || exit 1
+m6_step seed_remote seed_remote || exit 1
+m6_step start_git start_git || exit 1
+m6_step start_forge start_forge || exit 1
 if [[ "$MODE" == offline ]]; then
-  start_router
+  m6_step start_router start_router || exit 1
 fi
 
-spike_fg build_images
+m6_step build_images spike_fg build_images || exit 1
 stack_start="$SECONDS"
 spike_fg compose down -v --remove-orphans >/dev/null 2>&1 || true
 COMPOSE_STARTED=1

@@ -17,7 +17,7 @@ No claim in this design asserts that Warp's running system was *executed* or
 
 | Artifact | Identity | Class of evidence |
 | --- | --- | --- |
-| `warpdotdev/oz-agent-worker` | `main`, MIT, Go, 56 files / 19,782 lines | source (complete) |
+| `warpdotdev/oz-agent-worker` | upstream `main` (MIT, Go, 56 files / 19,782 lines); this repo builds the worker image at `63dbb8ae8ccb3941392691f5c628e3365d8e248e` (`deploy/worker/Dockerfile`) | source (complete) |
 | `docs.warp.dev/openapi.yaml` | OpenAPI 3.0.0, "Warp Platform API" v1.0.0, 246 KB, 40 paths | published contract |
 | `docs.warp.dev/_llms-txt/factories.txt` | 489 KB, complete Factories doc set | published documentation |
 | `docs.warp.dev/_llms-txt/automation-platform.txt` | 417 KB | published documentation |

@@ -897,6 +897,125 @@ PY
   unset M6_COMPOSE_BACKUP
 }
 
+case_build_images_fail_line() {
+  ROOT="$ROOT" bash <<'EOS'
+set -euo pipefail
+# shellcheck source=spike/m6/run.sh
+source "$ROOT/spike/m6/run.sh"
+dir="$ROOT/spike/m6/.work/build-fail-helper-$$"
+mkdir -p "$dir/bin"
+cat >"$dir/bin/docker" <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == build ]]; then
+  echo "stub docker build failure" >&2
+  exit 1
+fi
+exec /usr/bin/docker "$@"
+EOF
+chmod +x "$dir/bin/docker"
+err="$dir/err"
+PATH="$dir/bin:$PATH"
+export OCI_PLATFORM="${OCI_PLATFORM:-linux/amd64}"
+export GOARCH_TARGET="${GOARCH_TARGET:-amd64}"
+set +e
+m6_step build_images build_images >"$dir/out" 2>"$err"
+ec=$?
+set -e
+[[ "$ec" -eq 1 ]] || { echo "expected exit 1, got ${ec}" >&2; exit 1; }
+grep -F 'M6 FAIL — build_images: exit 1' "$err" >/dev/null
+rm -rf "$dir"
+EOS
+}
+
+case_forge_json_atomic() {
+  local dir="$ROOT/spike/m6/.work/forge-atomic-$$"
+  mkdir -p "$dir/evidence"
+  python3 - "$dir" <<'PY'
+import json
+import os
+import socket
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+work = sys.argv[1]
+root = os.environ["ROOT"]
+evidence = os.path.join(work, "evidence")
+os.makedirs(evidence, exist_ok=True)
+
+payload = json.dumps({"pulls": [], "checks": [], "lookups": []}).encode()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/_spike/m6":
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+def pick_port():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+port = pick_port()
+server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+time.sleep(0.05)
+
+env = os.environ.copy()
+env["EVIDENCE"] = evidence
+env["FORGE_PORT"] = str(port)
+env["ROOT"] = root
+
+script = (
+    "set -euo pipefail\n"
+    f'. "{root}/spike/m6/run.sh"\n'
+    "for _ in $(seq 1 200); do\n"
+    "  m6_write_forge_json || true\n"
+    "done\n"
+)
+writer = subprocess.Popen(["bash", "-c", script], env=env)
+
+errors = []
+for _ in range(200):
+    path = os.path.join(evidence, "forge.json")
+    if not os.path.isfile(path):
+        continue
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+        if data == b"":
+            errors.append("empty forge.json")
+            break
+        json.loads(data.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        errors.append(f"invalid json: {exc}")
+        break
+
+writer.wait(timeout=30)
+server.shutdown()
+thread.join(timeout=5)
+
+if writer.returncode not in (0, None):
+    raise SystemExit(f"writer exit {writer.returncode}")
+if errors:
+    raise SystemExit(errors[0])
+PY
+  rm -rf "$dir"
+}
+
 expect_fail missing-live-url "missing FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL" case_missing_live_url
 expect_fail missing-live-model "missing M6_LIVE_MODEL" case_missing_live_model
 expect_fail missing-live-definition "missing M6_DEFINITION_GIT_URL" case_missing_live_definition
@@ -931,6 +1050,8 @@ run_case compose-config case_compose_config
 run_case shell-offline-noop case_shell_offline_noop
 expect_fail cleanup-remote-offline "cleanup-remote is for live" case_cleanup_remote_offline
 run_case compose-definition-ref case_compose_definition_ref
+run_case build-images-fail-line case_build_images_fail_line
+run_case forge-json-atomic case_forge_json_atomic
 for remote_mode in live live-ci; do
   run_case "opaque-token-${remote_mode}" case_remote opaque-token "$remote_mode"
   run_case "preflight-all-${remote_mode}" case_remote preflight-all "$remote_mode"
