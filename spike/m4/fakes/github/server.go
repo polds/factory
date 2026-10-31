@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -82,12 +83,48 @@ func newServer(token string, log *slog.Logger) (*server, error) {
 	return &server{log: log, token: token, nextComment: 1}, nil
 }
 
+// newInstallToken returns the stateless installation-token shape GitHub
+// has minted since 2026-10-02: ghs_<app id>_<header>.<payload>.<sig>.
+// The value is about 520 characters and contains '.', '_', and '-'.
+// A token passed to newServer is used as-is.
 func newInstallToken() (string, error) {
-	var buf [16]byte
+	const header = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
+	appID, err := statelessAppID()
+	if err != nil {
+		return "", err
+	}
+	payload, err := statelessPart(150)
+	if err != nil {
+		return "", err
+	}
+	sig, err := statelessPart(204)
+	if err != nil {
+		return "", err
+	}
+	return "ghs_" + appID + "_" + header + "." + payload + "." + sig, nil
+}
+
+func statelessAppID() (string, error) {
+	var buf [3]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return "", err
 	}
-	return "ghs_" + hex.EncodeToString(buf[:]), nil
+	n := int(buf[0])<<16 | int(buf[1])<<8 | int(buf[2])
+	n = n%9000000 + 1000000
+	return strconv.Itoa(n), nil
+}
+
+func statelessPart(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	part := []byte(base64.RawURLEncoding.EncodeToString(buf))
+	if len(part) >= 2 {
+		part[0] = '_'
+		part[1] = '-'
+	}
+	return string(part), nil
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

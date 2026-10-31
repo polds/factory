@@ -21,13 +21,18 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.parse
 from pathlib import Path
 
 PERMISSION_NAMES = "checks contents issues metadata pull_requests"
 RUN_ID_RE = re.compile(r"^[a-z0-9-]{1,80}$")
 BATCH_RE = re.compile(r"^ibt_[0-9A-Za-z]+$")
-SECRET_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# Opaque secret: non-empty, no whitespace or controls, ceiling 8 KiB.
+# Stateless GitHub App tokens (ghs_<app id>_<jwt>, ~520 chars, two dots)
+# and factory API keys both pass through here. A ghs_ prefix is not
+# required. The ceiling stays above the ~2 KiB floor.
+SECRET_MAX = 8192
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+(?::[0-9]+)?$")
 SEG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 LOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
@@ -51,6 +56,24 @@ class RemoteError(Exception):
         self.status = status
         self.body = body
         self.headers = headers or []
+
+
+class PreflightFailed(RemoteError):
+    """Preflight already printed its lines and wrote remote-fail."""
+
+
+def valid_secret(token: str) -> bool:
+    if token == "" or len(token) > SECRET_MAX:
+        return False
+    for ch in token:
+        if ch.isspace() or unicodedata.category(ch).startswith("C"):
+            return False
+    return True
+
+
+def curl_quoted(value: str) -> str:
+    """Escape a value for a double-quoted curl -K parameter."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def live_mode() -> bool:
@@ -269,13 +292,13 @@ def read_secret(path: Path) -> str:
     if not path.is_file():
         raise RemoteError("token file is missing")
     token = path.read_text(encoding="utf-8").strip()
-    if not SECRET_RE.fullmatch(token):
+    if not valid_secret(token):
         raise RemoteError("token file is invalid")
     return token
 
 
 def write_secret(path: Path, token: str) -> None:
-    if not SECRET_RE.fullmatch(token):
+    if not valid_secret(token):
         raise RemoteError("token file is invalid")
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -449,16 +472,17 @@ def git_url() -> str:
 def request(
     method: str, url: str, secret: str, payload: dict | None = None
 ) -> tuple[int, bytes]:
-    if not SECRET_RE.fullmatch(secret):
+    if not valid_secret(secret):
         raise RemoteError("token file is invalid")
     work_dir().mkdir(parents=True, exist_ok=True)
     body_file = work_dir() / f".curl-{secrets.token_hex(4)}.body"
     data_file: Path | None = None
     # The bearer header stays in memory and is passed on stdin. It is not
-    # written to a config file.
+    # written to a config file. Quotes and backslashes are escaped so a
+    # dotted token cannot break out of the curl -K line.
     config = "\n".join(
         [
-            f'header = "Authorization: Bearer {secret}"',
+            f'header = "Authorization: Bearer {curl_quoted(secret)}"',
             'header = "Accept: application/vnd.github+json"',
             'header = "Content-Type: application/json"',
         ]
@@ -605,9 +629,8 @@ def status_from_text(text: str) -> str:
     return "mint"
 
 
-def mint_token(
-    owner: str, repo: str, dest: Path, *, timeout: float | None = None
-) -> None:
+def mint_token(owner: str, repo: str, *, timeout: float | None = None) -> str:
+    """Run apptoken and return its stdout. The caller stores the token."""
     binary = build_apptoken()
     env = os.environ.copy()
     env["FACTORY_GITHUB_API_BASE"] = api_base()
@@ -635,9 +658,35 @@ def mint_token(
                 "X-GitHub-Api-Version",
             ],
         )
-    token = proc.stdout.decode("utf-8", "replace").strip()
+    return proc.stdout.decode("utf-8", "replace").strip()
+
+
+def persist_mint(owner: str, repo: str, dest: Path, token: str) -> None:
     write_secret(dest, token)
     print(f"app token: ok repo {owner}/{repo} permissions {PERMISSION_NAMES}")
+    sys.stdout.flush()
+
+
+def emit_preflight(name: str, status: str, detail: str) -> None:
+    text = redact(detail).replace("\n", " ").replace("\r", " ").strip()
+    if status == "SKIP":
+        line = f"remote preflight: {name} SKIP (needs {text})"
+    elif text:
+        line = f"remote preflight: {name} {status} {text}"
+    else:
+        line = f"remote preflight: {name} {status}"
+    sys.stderr.write(line + "\n")
+    sys.stderr.flush()
+
+
+def note_preflight_failure(name: str, err: RemoteError, failures: list[str]) -> None:
+    if err.status or err.body:
+        probe_report(err.reason, err.status or "error", err.body, err.headers)
+    detail = err.reason
+    if err.status and err.status not in detail:
+        detail = f"{detail} status {err.status}"
+    emit_preflight(name, "FAIL", detail)
+    failures.append(redact(err.reason).replace("\n", " ").replace("\r", " ").strip())
 
 
 def reviewer_logins() -> list[str]:
@@ -653,20 +702,98 @@ def reviewer_logins() -> list[str]:
 def preflight() -> None:
     if not live_mode():
         return
+    failures: list[str] = []
+    owner: str | None = None
+    repo: str | None = None
     raw = os.environ.get("M6_DEFINITION_GIT_URL", "")
-    owner, repo = strict_owner_name(raw)
-    anonymous_ls_remote(raw.strip())
-    mint_token(owner, repo, token_path())
-    secret = read_secret(token_path())
-    base = api_base()
-    for login in reviewer_logins():
-        status, body = request(
-            "GET",
-            f"{base}/repos/{owner}/{repo}/collaborators/{login}",
-            secret,
-        )
-        if status != 204:
-            raise http_error(f"collaborator {login} was not accepted", status, body)
+    try:
+        owner, repo = strict_owner_name(raw)
+    except RemoteError as err:
+        note_preflight_failure("url", err, failures)
+    else:
+        emit_preflight("url", "PASS", "")
+
+    if owner is None or repo is None:
+        emit_preflight("ls-remote", "SKIP", "url")
+    else:
+        try:
+            anonymous_ls_remote(raw.strip())
+        except RemoteError as err:
+            note_preflight_failure("ls-remote", err, failures)
+        else:
+            emit_preflight("ls-remote", "PASS", "")
+
+    minted: str | None = None
+    if owner is None or repo is None:
+        emit_preflight("mint", "SKIP", "url")
+    else:
+        try:
+            minted = mint_token(owner, repo)
+        except RemoteError as err:
+            note_preflight_failure("mint", err, failures)
+        else:
+            emit_preflight("mint", "PASS", "")
+
+    stored = False
+    if minted is None or owner is None or repo is None:
+        emit_preflight("token", "SKIP", "mint")
+    else:
+        try:
+            persist_mint(owner, repo, token_path(), minted)
+        except RemoteError as err:
+            note_preflight_failure("token", err, failures)
+        else:
+            stored = True
+            emit_preflight("token", "PASS", "")
+
+    logins: list[str] | None = None
+    try:
+        logins = reviewer_logins()
+    except RemoteError as err:
+        note_preflight_failure("reviewers", err, failures)
+    else:
+        emit_preflight("reviewers", "PASS", "")
+
+    if not stored:
+        emit_preflight("collaborators", "SKIP", "token")
+    elif logins is None:
+        emit_preflight("collaborators", "SKIP", "reviewers")
+    elif owner is None or repo is None:
+        emit_preflight("collaborators", "SKIP", "url")
+    else:
+        try:
+            secret = read_secret(token_path())
+            base = api_base()
+        except RemoteError as err:
+            note_preflight_failure("collaborators", err, failures)
+        else:
+            for login in logins:
+                try:
+                    status, body = request(
+                        "GET",
+                        f"{base}/repos/{owner}/{repo}/collaborators/{login}",
+                        secret,
+                    )
+                    if status != 204:
+                        raise http_error(
+                            f"collaborator {login} was not accepted",
+                            status,
+                            body,
+                        )
+                except RemoteError as err:
+                    note_preflight_failure(f"collaborator {login}", err, failures)
+                else:
+                    emit_preflight(f"collaborator {login}", "PASS", "")
+
+    sys.stderr.flush()
+    path = work_dir() / "remote-fail"
+    if not failures:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f"{reason}\n" for reason in failures), encoding="utf-8")
+    os.chmod(path, 0o600)
+    raise PreflightFailed(failures[0])
 
 
 def rewrite_pushed_copy(dest: Path, base_ref: str, candidate_ref: str) -> None:
@@ -1049,7 +1176,8 @@ def ensure_cleanup_token(ledger: dict) -> None:
     if binary.is_file():
         os.environ["M6_APPTOKEN_BIN"] = str(binary)
         limit, _connect = call_limits()
-        mint_token(str(ledger["owner"]), str(ledger["repo"]), path, timeout=limit)
+        token = mint_token(str(ledger["owner"]), str(ledger["repo"]), timeout=limit)
+        persist_mint(str(ledger["owner"]), str(ledger["repo"]), path, token)
         return
     raise RemoteError("remote cleanup incomplete")
 
@@ -1161,7 +1289,8 @@ def remint(ledger: dict) -> None:
     if os.environ.get("M6_REUSE_TOKEN") == "1" and token_path().is_file():
         read_secret(token_path())
         return
-    mint_token(str(ledger["owner"]), str(ledger["repo"]), token_path(), timeout=5)
+    token = mint_token(str(ledger["owner"]), str(ledger["repo"]), timeout=5)
+    persist_mint(str(ledger["owner"]), str(ledger["repo"]), token_path(), token)
 
 
 def cleanup() -> None:
@@ -1243,6 +1372,8 @@ def main(argv: list[str]) -> int:
         else:
             sys.stderr.write(f"unknown command {command}\n")
             return 2
+    except PreflightFailed:
+        return 1
     except RemoteError as err:
         record_error(err)
         return 1

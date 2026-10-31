@@ -932,6 +932,8 @@ run_case shell-offline-noop case_shell_offline_noop
 expect_fail cleanup-remote-offline "cleanup-remote is for live" case_cleanup_remote_offline
 run_case compose-definition-ref case_compose_definition_ref
 for remote_mode in live live-ci; do
+  run_case "opaque-token-${remote_mode}" case_remote opaque-token "$remote_mode"
+  run_case "preflight-all-${remote_mode}" case_remote preflight-all "$remote_mode"
   run_case "url-shape-${remote_mode}" case_remote url-shape "$remote_mode"
   run_case "ls-remote-${remote_mode}" case_remote ls-remote "$remote_mode"
   run_case "mint-ok-${remote_mode}" case_remote mint-ok "$remote_mode"
