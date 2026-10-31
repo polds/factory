@@ -63,6 +63,44 @@ die() {
   exit 1
 }
 
+# m6_on_err names a set -e exit. A subshell exits without a line so the
+# shell that armed the trap reports the step once. die() is unchanged:
+# exit does not raise ERR.
+# shellcheck disable=SC2317,SC2329 # invoked by the ERR trap
+m6_on_err() {
+  local status="${1:-1}"
+  if [[ -z "${m6_main_bashpid:-}" || "$BASHPID" -ne "$m6_main_bashpid" ]]; then
+    exit "$status"
+  fi
+  trap - ERR
+  printf 'M6 FAIL — %s: exit %s\n' "${m6_step:-run}" "$status" >&2
+  exit "$status"
+}
+
+m6_arm_err() {
+  m6_main_bashpid=$BASHPID
+  m6_step="${m6_step:-startup}"
+  set -E
+  trap 'm6_on_err $?' ERR
+}
+
+# m6_publish_stdout replaces dest only after the command has finished
+# writing. The temp file sits in the same directory, so the rename is
+# atomic. A non-zero status leaves the previous body in place.
+m6_publish_stdout() {
+  local dest="$1"
+  shift
+  local tmp="${dest}.tmp" status=0
+  mkdir -p "$(dirname "$dest")"
+  if "$@" >"$tmp"; then
+    mv -f "$tmp" "$dest"
+    return 0
+  fi
+  status=$?
+  rm -f "$tmp"
+  return "$status"
+}
+
 say() {
   printf '%s\n' "$*"
 }
@@ -401,13 +439,15 @@ watch_candidate_offline() {
       sha="$(git --git-dir="$bare" rev-parse "$ref")"
       git --git-dir="$bare" update-ref refs/heads/candidate "$sha"
       mkdir -p "$EVIDENCE" "$SIGNAL"
-      git --git-dir="$bare" diff main "$ref" >"$EVIDENCE/skill.diff" || true
+      # skill.diff is rewritten on later polls, after candidate-ready.
+      # Publish the finished diff so a reader never sees a torn file.
+      m6_publish_stdout "$EVIDENCE/skill.diff" \
+        git --git-dir="$bare" diff main "$ref" || true
       printf '%s\n' "$sha" >"$SIGNAL/candidate-ready"
     fi
     if [[ -n "${FORGE_PORT:-}" ]]; then
-      mkdir -p "$EVIDENCE"
-      curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:${FORGE_PORT}/_spike/m6" \
-        -o "$EVIDENCE/forge.json" || true
+      m6_publish_stdout "$EVIDENCE/forge.json" \
+        curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:${FORGE_PORT}/_spike/m6" || true
     fi
     # Benchmark trials put the pinned SHA on the task argv. The worker
     # removes the container when the trial exits, so poll while it runs.
@@ -1091,6 +1131,7 @@ m6_specs() {
   esac
   export PLAYWRIGHT_EXTRA_ENV
   m6_arm_playwright_env
+  m6_step=playwright
   m6_playwright_and_evidence
   mode_name="$(printf '%s' "$MODE" | tr '[:lower:]' '[:upper:]')"
   printf 'M6 %s PASS\n' "$mode_name"
@@ -1100,6 +1141,8 @@ m6_specs() {
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
 fi
+
+m6_arm_err
 
 CLEANUP_ONLY=0
 SUB=""
@@ -1272,16 +1315,24 @@ trap 'cleanup EXIT' EXIT
 trap 'cleanup INT' INT
 trap 'cleanup TERM' TERM
 
+m6_step=prepare_definition
 prepare_definition
+m6_step=seed_git
 seed_git
+m6_step=seed_remote
 seed_remote
+m6_step=start_git
 start_git
+m6_step=start_forge
 start_forge
 if [[ "$MODE" == offline ]]; then
+  m6_step=start_router
   start_router
 fi
 
+m6_step=build_images
 spike_fg build_images
+m6_step=compose
 stack_start="$SECONDS"
 spike_fg compose down -v --remove-orphans >/dev/null 2>&1 || true
 COMPOSE_STARTED=1
@@ -1307,6 +1358,7 @@ if [[ "$MANUAL" == 1 ]]; then
   exit 0
 fi
 
+m6_step=playwright
 m6_playwright_and_evidence
 if [[ "${KEEP_UP:-}" == 1 ]]; then
   printf 'console: http://127.0.0.1:%s\n' "$CONSOLE_PORT"
