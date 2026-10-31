@@ -2,6 +2,7 @@ package improve
 
 import (
 	"math/rand"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -100,7 +101,7 @@ func TestRunPromptAndPRBody(t *testing.T) {
 		Reasoning: "saw " + secret,
 		At:        when,
 	}}
-	prompt := RunPrompt(failures, "factory.yaml\n", nil, []string{secret})
+	prompt := RunPrompt(failures, "factory.yaml\n", nil, []string{secret}, Evidence{})
 	if strings.Contains(prompt, secret) {
 		t.Fatalf("prompt leaked\n%s", prompt)
 	}
@@ -117,12 +118,17 @@ func TestRunPromptAndPRBody(t *testing.T) {
 		"[REDACTED]",
 		"A prose reply is not success",
 		"commit, and push the branch",
+		"explicit, imperative instruction",
+		"Remove or rewrite any existing instruction",
+		"bare appended marker line",
+		"## Scorer rubrics",
+		"## Failing examples",
 	} {
 		if !strings.Contains(prompt, part) {
 			t.Fatalf("prompt missing %q\n%s", part, prompt)
 		}
 	}
-	withPrior := RunPrompt(nil, "tree", []string{"declined the skill change"}, nil)
+	withPrior := RunPrompt(nil, "tree", []string{"declined the skill change"}, nil, Evidence{})
 	if strings.Contains(withPrior, "None.") || !strings.Contains(withPrior, "declined the skill change") {
 		t.Fatalf("%s", withPrior)
 	}
@@ -165,6 +171,96 @@ Opened by the factory self-improvement loop. Merging marks these failures review
 	}
 	if !strings.HasPrefix(redacted, "## Regressions addressed\n") {
 		t.Fatal(redacted)
+	}
+}
+
+func TestRunPromptEvidence(t *testing.T) {
+	src, err := os.ReadFile("prompt.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, banned := range []string{
+		"cite-sources",
+		"CONVENTION:",
+		"Do not invent a required final line",
+	} {
+		if strings.Contains(string(src), banned) {
+			t.Fatalf("prompt.go hardcodes %q", banned)
+		}
+	}
+
+	const secret = "planted-secret-value"
+	head := "HEADMARKER"
+	tail := "TAILMARKER"
+	output := head + strings.Repeat("x", exampleCap) + secret + tail
+	reason := "REASONHEAD" + strings.Repeat("y", exampleCap) + "REASONTAIL"
+	longRubric := "RUBRICHEAD" + strings.Repeat("z", rubricCap) + "RUBRICTAIL" + secret
+	prompt := RunPrompt(
+		[]Failure{{RunID: "run_1", Scorer: "review", Label: "fail", Reasoning: "short reason"}},
+		"factory.yaml",
+		nil,
+		[]string{secret},
+		Evidence{
+			Rubrics: []Rubric{
+				{
+					Name:         "review",
+					Description:  "Did the change miss the marker?",
+					Body:         "kept rubric " + secret,
+					PassingScore: 1,
+					Labels: []RubricLabel{{
+						Value:       "fail",
+						Description: "missed the marker",
+						Score:       0,
+					}},
+				},
+				{Name: "other", Body: longRubric, PassingScore: 0},
+			},
+			Examples: []Example{
+				{RunID: "run_1", Scorer: "review", Label: "fail", Reasoning: reason, Output: output},
+				{RunID: "run_2", Scorer: "review", Label: "fail", Reasoning: "second reason", Output: "second out"},
+				{RunID: "run_3", Scorer: "review", Label: "fail", Reasoning: "third reason", Output: "third out"},
+				{RunID: "run_4", Scorer: "review", Label: "fail", Reasoning: "fourth reason", Output: "fourth out"},
+			},
+		},
+	)
+	if strings.Contains(prompt, secret) {
+		t.Fatalf("prompt leaked\n%s", prompt)
+	}
+	for _, banned := range []string{"cite-sources", "CONVENTION:", "Do not invent a required final line"} {
+		if strings.Contains(prompt, banned) {
+			t.Fatalf("prompt hardcodes %q\n%s", banned, prompt)
+		}
+	}
+	for _, dropped := range []string{"HEADMARKER", "REASONTAIL", "RUBRICTAIL", "run_4", "fourth out", "fourth reason"} {
+		if strings.Contains(prompt, dropped) {
+			t.Fatalf("uncapped %q\n%s", dropped, prompt)
+		}
+	}
+	for _, want := range []string{
+		"explicit, imperative instruction",
+		"Remove or rewrite any existing instruction",
+		"contradicts",
+		"bare appended marker line",
+		"- scorer review",
+		"description: Did the change miss the marker?",
+		"label fail (score 0): missed the marker",
+		"passing score: 1",
+		"kept rubric [REDACTED]",
+		"RUBRICHEAD",
+		"REASONHEAD",
+		"TAILMARKER",
+		"[REDACTED]",
+		"assistant output: ",
+		"run_3",
+		"third out",
+		"reasoning: short reason",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q\n%s", want, prompt)
+		}
+	}
+	if strings.Count(prompt, "assistant output:") != exampleLimit {
+		t.Fatalf("example count\n%s", prompt)
 	}
 }
 

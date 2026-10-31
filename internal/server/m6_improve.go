@@ -292,6 +292,60 @@ func (s *Server) startImprovementRun(ctx context.Context, batch store.Improvemen
 	})
 }
 
+func (s *Server) improvementEvidence(ctx context.Context, failures []improve.Failure) improve.Evidence {
+	return improve.Evidence{
+		Rubrics:  s.improvementRubrics(failures),
+		Examples: s.improvementExamples(ctx, failures),
+	}
+}
+
+func (s *Server) improvementRubrics(failures []improve.Failure) []improve.Rubric {
+	seen := map[string]bool{}
+	var out []improve.Rubric
+	for _, row := range failures {
+		name := strings.TrimSpace(row.Scorer)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		sc, ok := s.scorerByName(name)
+		if !ok {
+			out = append(out, improve.Rubric{Name: name})
+			continue
+		}
+		labels := make([]improve.RubricLabel, 0, len(sc.Labels))
+		for _, label := range sc.Labels {
+			labels = append(labels, improve.RubricLabel{
+				Value:       label.Value,
+				Description: label.Description,
+				Score:       label.Score,
+			})
+		}
+		out = append(out, improve.Rubric{
+			Name:         sc.Name,
+			Description:  sc.Description,
+			Body:         sc.Body,
+			PassingScore: sc.PassingScore,
+			Labels:       labels,
+		})
+	}
+	return out
+}
+
+func (s *Server) improvementExamples(ctx context.Context, failures []improve.Failure) []improve.Example {
+	out := make([]improve.Example, 0, len(failures))
+	for _, row := range failures {
+		out = append(out, improve.Example{
+			RunID:     row.RunID,
+			Scorer:    row.Scorer,
+			Label:     row.Label,
+			Reasoning: row.Reasoning,
+			Output:    s.assistantTranscript(ctx, row.RunID),
+		})
+	}
+	return out
+}
+
 func batchFailures(batch store.ImprovementBatch) []improve.Failure {
 	out := make([]improve.Failure, 0, len(batch.Failures))
 	for _, row := range batch.Failures {
@@ -312,7 +366,14 @@ func batchFailures(batch store.ImprovementBatch) []improve.Failure {
 // stage run does. The definition URL is a secret, so the workspace section
 // names DEFINITION_GIT_URL and does not include the value.
 func (s *Server) improvementPrompt(ctx context.Context, batch store.ImprovementBatch, agent definition.Agent, includeAgent bool) string {
-	task := improve.RunPrompt(batchFailures(batch), s.improvementTreeText(ctx, batch.ID), s.priorRejections(ctx, batch), s.secretMaterial())
+	failures := batchFailures(batch)
+	task := improve.RunPrompt(
+		failures,
+		s.improvementTreeText(ctx, batch.ID),
+		s.priorRejections(ctx, batch),
+		s.secretMaterial(),
+		s.improvementEvidence(ctx, failures),
+	)
 	text := s.improvementWorkspace(batch, agent) + "\n" + task
 	if !includeAgent {
 		return text

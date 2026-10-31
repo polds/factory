@@ -29,8 +29,10 @@ sends GH_TOKEN. Do not print the token and do not put it in the URL:
 1. Clone the repository in DEFINITION_GIT_URL.
    Put the clone in the empty directory /workspace. Do not pass --depth 1 or --single-branch.
 2. Create the branch named on the `branch: improve/` line.
-3. Read the cite-sources scorer and add the line it requires to
-   skills/cite-sources/SKILL.md.
+3. Read the scorer rubric in the task. State the required behaviour as an
+   explicit, imperative instruction in the skill or instruction file you
+   edit. Remove or rewrite any existing instruction in the edited files
+   that contradicts it. A bare appended marker line is not enough.
 4. Commit and push that branch.
 5. Open a pull request against main at GITHUB_API_BASE using GH_TOKEN.
    HTTP 422 means the request already exists. Stop there.
