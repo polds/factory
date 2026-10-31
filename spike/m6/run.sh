@@ -69,25 +69,29 @@ die() {
 m6_on_err() {
   local rc=$?
   local mark="" printed=0
-  if [[ -n "${M6_STEP:-}" ]]; then
-    mark="${M6_ERR_MARK:-}"
-    if [[ -n "$mark" ]]; then
-      # The redirect runs with ERR disabled. A lost race must not re-enter
-      # this trap (set -E would otherwise treat the noclobber failure as fatal).
-      if (
-        set +E
-        trap - ERR
-        set -o noclobber
-        printf x >"$mark"
-      ) 2>/dev/null; then
-        printed=1
-      fi
-    else
+  # No named step is in progress. set -e still exits this shell. exit in
+  # the trap would abort a command substitution that inherited it (set -E)
+  # and drop that substitution's stdout.
+  if [[ -z "${M6_STEP:-}" ]]; then
+    return 0
+  fi
+  mark="${M6_ERR_MARK:-}"
+  if [[ -n "$mark" ]]; then
+    # The redirect runs with ERR disabled. A lost race must not re-enter
+    # this trap (set -E would otherwise treat the noclobber failure as fatal).
+    if (
+      set +E
+      trap - ERR
+      set -o noclobber
+      printf x >"$mark"
+    ) 2>/dev/null; then
       printed=1
     fi
-    if [[ "$printed" -eq 1 ]]; then
-      printf 'M6 FAIL — %s: exit %s\n' "$M6_STEP" "$rc" >&2
-    fi
+  else
+    printed=1
+  fi
+  if [[ "$printed" -eq 1 ]]; then
+    printf 'M6 FAIL — %s: exit %s\n' "$M6_STEP" "$rc" >&2
   fi
   exit "$rc"
 }
@@ -462,9 +466,29 @@ start_router() {
   fi
 }
 
+# m6_note_task_argv records the pinned SHA from one docker ps snapshot.
+# The worker removes the task container when the trial exits. A later
+# inspect of an id from that snapshot then fails with an empty command,
+# so the command has to come from the same ps line.
+m6_note_task_argv() {
+  local cmd=""
+  if [[ -z "${PINNED_SHA:-}" || -f "$EVIDENCE/head-override.txt" ]]; then
+    return 0
+  fi
+  while IFS= read -r cmd; do
+    if [[ "$cmd" == *"$PINNED_SHA"* ]]; then
+      mkdir -p "$EVIDENCE"
+      printf 'task argv contains %s\n' "$PINNED_SHA" >"$EVIDENCE/head-override.txt"
+      return 0
+    fi
+  done < <(docker ps --no-trunc --filter ancestor=factory-m1-task:dev --format '{{.Command}}' 2>/dev/null || true)
+}
+
 watch_candidate_offline() {
-  local bare="$WORK/git/m6/factory.git" ref="" sha="" id="" cmd=""
+  local bare="$WORK/git/m6/factory.git" ref="" sha=""
   while [[ ! -f "$SIGNAL/stop" ]]; do
+    # Sample before the git and curl work. A trial can exit during that work.
+    m6_note_task_argv
     # improve/<batch id> is refs/heads/improve/<id>, not refs/heads/improve.
     ref="$(git --git-dir="$bare" for-each-ref --format='%(refname)' 'refs/heads/improve/*' 2>/dev/null | head -n 1 || true)"
     if [[ -n "$ref" ]]; then
@@ -480,19 +504,7 @@ watch_candidate_offline() {
       m6_publish_stdout "$EVIDENCE/forge.json" 0 \
         curl -fsS --connect-timeout 2 -m 5 "http://127.0.0.1:${FORGE_PORT}/_spike/m6" || true
     fi
-    # Benchmark trials put the pinned SHA on the task argv. The worker
-    # removes the container when the trial exits, so poll while it runs.
-    if [[ -n "${PINNED_SHA:-}" && ! -f "$EVIDENCE/head-override.txt" ]]; then
-      while read -r id; do
-        [[ -n "$id" ]] || continue
-        cmd="$(docker inspect --format '{{json .Config.Cmd}}' "$id" 2>/dev/null || true)"
-        if [[ "$cmd" == *"$PINNED_SHA"* ]]; then
-          mkdir -p "$EVIDENCE"
-          printf 'task argv contains %s\n' "$PINNED_SHA" >"$EVIDENCE/head-override.txt"
-          break
-        fi
-      done < <(docker ps -q --filter ancestor=factory-m1-task:dev 2>/dev/null || true)
-    fi
+    m6_note_task_argv
     sleep 0.2
   done
 }

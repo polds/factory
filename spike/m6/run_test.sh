@@ -1164,7 +1164,53 @@ expect_fail fail-start-git "M6 FAIL — start_git: exit 4" case_fail_start_git
 expect_fail fail-start-forge "M6 FAIL — start_forge: exit" case_fail_start_forge
 expect_fail fail-start-router "M6 FAIL — start_router: exit 1" case_fail_start_router
 expect_fail fail-build-images "M6 FAIL — build_images: exit 7" case_fail_build_images
+# A failure with no step name still exits, and does not invent a FAIL line.
+# The trap must not exit by itself: set -e does, and an exit in the trap
+# aborts command substitutions.
+case_err_unset_step() {
+  local err=""
+  err="$(mktemp)"
+  if m6_fail_in_bash 'false' 2>"$err"; then
+    echo "unset step returned 0" >&2
+    rm -f "$err"
+    return 1
+  fi
+  if grep -F 'M6 FAIL —' "$err" >/dev/null; then
+    echo "unset step printed a FAIL line" >&2
+    cat "$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
+}
+
+# The pinned SHA is taken from the docker ps command column. inspect is
+# not part of this path: the stub fails if anything else calls docker.
+case_task_argv_snapshot() {
+  local dir=""
+  dir="$(mktemp -d)"
+  (
+    EVIDENCE="$dir"
+    rm -f "$EVIDENCE/head-override.txt"
+    docker() {
+      if [[ "$1" == ps ]]; then
+        printf '%s\n' "\"factory-task\" \"${PINNED_SHA}\""
+        return 0
+      fi
+      echo "unexpected docker $*" >&2
+      return 9
+    }
+    m6_note_task_argv
+    grep -F "task argv contains ${PINNED_SHA}" "$EVIDENCE/head-override.txt"
+  )
+  local rc=$?
+  rm -rf "$dir"
+  return "$rc"
+}
+
 run_case die-unchanged case_die_unchanged
+run_case err-unset-step case_err_unset_step
+run_case task-argv-snapshot case_task_argv_snapshot
 run_case skill-diff-publish case_skill_diff_publish
 run_case forge-json-atomic case_forge_json_atomic
 
