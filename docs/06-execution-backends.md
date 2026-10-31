@@ -208,9 +208,11 @@ The dispatch command's job is to hand the payload to a runtime and return quickl
 - **Checkout.** The control plane resolves `repositories` + `required_repos` into a
   prepared checkout list, mints a scoped forge token, and the harness clones into
   `/workspace/<repo>`. `deferred: true` repos are skipped unless required.
-- **Head overrides.** For benchmark trials, the control plane freezes commit SHAs and may
-  substitute a clone source while keeping the original repo identity (`clone_from` +
-  `preserve_origin` — O7).
+- **Head overrides.** A benchmark trial puts frozen SHAs on the assignment
+  (`repository_head_overrides`, including `clone_from` and `preserve_origin`).
+  The worker forwards that JSON as `--repository-head-override-json`. The in-repo
+  harness accepts the flag and does not check the pinned SHA out
+  (`internal/harness/argv.go`).
 - **Origin stripping.** `--remove-repository-origins` removes remotes after clone, so an
   agent cannot push to a repository the run was not meant to touch. Cheap, effective, and
   the right default for untrusted intake.

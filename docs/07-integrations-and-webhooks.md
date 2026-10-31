@@ -253,11 +253,11 @@ have *no* baseline skills, so a custom agent with no skill is an agent with only
 
 ### Attribution
 
-Skill loads surface as `skill.read` events with either `bundled_skill_id` (a platform
-skill) or `skill_path` (a file). When measuring whether your team's skills are being used,
-exclude bundled IDs, and count a path as team-owned only when it sits under a root you
-manage. A path alone does not identify an owner — a point worth encoding in the metric
-rather than discovering later when the dashboard reports suspiciously high adoption.
+The in-repo harness does not emit `skill.read`. factoryd passes the skill body in
+`FACTORY_SKILL_TEXT`, and the harness appends that text to the system prompt. The
+harness contract still names `skill.read` with `bundled_skill_id` or `skill_path`
+for a loader that records the file it opened. This harness writes neither field,
+so a usage count cannot use that event.
 
 Skills participate in self-improvement: a recurring scored failure can produce a PR editing
 the responsible skill, the same way it would edit application code

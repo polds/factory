@@ -957,6 +957,267 @@ run_case forge-lookup case_remote forge-lookup
 # shellcheck source=spike/m6/run_test_t76b.sh
 . "$ROOT/spike/m6/run_test_t76b.sh"
 
+# expect_fail calls the case from an if, which suppresses set -e in this
+# process and in subshells it starts. A new bash is the run.sh context.
+m6_fresh() {
+  local body="$1"
+  shift
+  # shellcheck disable=SC2016 # $1 and $2 are the child bash's arguments
+  env "$@" bash -c '
+    set -euo pipefail
+    source "$1"
+    eval "$2"
+  ' bash "$ROOT/spike/m6/run.sh" "$body"
+}
+
+# Each set -e step prints M6 FAIL — <step>: exit <n> and returns non-zero.
+case_step_build_images() {
+  local dir="$ROOT/spike/m6/.work/step-build"
+  rm -rf "$dir"
+  mkdir -p "$dir/bin"
+  cat >"$dir/bin/docker" <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == build ]]; then
+  exit 7
+fi
+exit 0
+EOF
+  chmod 755 "$dir/bin/docker"
+  body=$(
+    cat <<'EOF'
+export PATH="${M6_STUB_BIN}:${PATH}"
+m6_arm_err
+m6_step=build_images
+spike_run_init m6
+spike_fg build_images
+EOF
+  )
+  m6_fresh "$body" M6_STUB_BIN="$dir/bin" OCI_PLATFORM=linux/amd64 GOARCH_TARGET=amd64 SPIKE_REG="$dir/spike-run"
+}
+
+case_step_prepare_definition() {
+  local dir="$ROOT/spike/m6/.work/step-prepare"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  : >"$dir/notdir"
+  body=$(
+    cat <<'EOF'
+m6_arm_err
+m6_step=prepare_definition
+WORK="$M6_CASE_WORK"
+prepare_definition
+EOF
+  )
+  m6_fresh "$body" M6_CASE_WORK="$dir/notdir"
+}
+
+case_step_seed_git() {
+  local dir="$ROOT/spike/m6/.work/step-seed"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  body=$(
+    cat <<'EOF'
+m6_arm_err
+m6_step=seed_git
+WORK="$M6_CASE_WORK"
+seed_git
+EOF
+  )
+  m6_fresh "$body" M6_CASE_WORK="$dir"
+}
+
+case_step_start_git() {
+  local dir="$ROOT/spike/m6/.work/step-start-git"
+  rm -rf "$dir"
+  mkdir -p "$dir/bin"
+  cat >"$dir/bin/openssl" <<'EOF'
+#!/bin/bash
+exit 3
+EOF
+  chmod 755 "$dir/bin/openssl"
+  body=$(
+    cat <<'EOF'
+export PATH="${M6_STUB_BIN}:${PATH}"
+m6_arm_err
+m6_step=start_git
+WORK="$M6_CASE_WORK"
+GIT_PORT=9
+unset SPIKE_REG
+start_git
+EOF
+  )
+  m6_fresh "$body" M6_STUB_BIN="$dir/bin" M6_CASE_WORK="$dir"
+}
+
+case_step_start_forge() {
+  local dir="$ROOT/spike/m6/.work/step-start-forge"
+  rm -rf "$dir"
+  mkdir -p "$dir/bin"
+  cat >"$dir/bin/python3" <<'EOF'
+#!/bin/bash
+exit 9
+EOF
+  chmod 755 "$dir/bin/python3"
+  body=$(
+    cat <<'EOF'
+export PATH="${M6_STUB_BIN}:${PATH}"
+m6_arm_err
+m6_step=start_forge
+start_forge
+EOF
+  )
+  m6_fresh "$body" M6_STUB_BIN="$dir/bin"
+}
+
+case_step_start_router() {
+  local dir="$ROOT/spike/m6/.work/step-start-router"
+  rm -rf "$dir"
+  mkdir -p "$dir/bin"
+  cat >"$dir/bin/openssl" <<'EOF'
+#!/bin/bash
+exit 3
+EOF
+  chmod 755 "$dir/bin/openssl"
+  body=$(
+    cat <<'EOF'
+export PATH="${M6_STUB_BIN}:${PATH}"
+m6_arm_err
+m6_step=start_router
+WORK="$M6_CASE_WORK"
+ROUTER_PORT=9
+M6_TASK_GIT_URL="git://example.invalid/m6/factory.git"
+M6_TASK_GITHUB_API="http://example.invalid"
+unset SPIKE_REG
+start_router
+EOF
+  )
+  m6_fresh "$body" M6_STUB_BIN="$dir/bin" M6_CASE_WORK="$dir"
+}
+
+case_die_message() {
+  local err="$ROOT/spike/m6/.work/die-message.err"
+  mkdir -p "$ROOT/spike/m6/.work"
+  if (
+    m6_arm_err
+    m6_step=should-not-appear
+    die "live preflight failed"
+  ) >"$ROOT/spike/m6/.work/die-message.out" 2>"$err"; then
+    printf 'die returned 0\n' >&2
+    return 1
+  fi
+  [[ "$(cat "$err")" == "M6 FAIL — live preflight failed" ]]
+}
+
+case_forge_json_atomic() {
+  local dir="$ROOT/spike/m6/.work/forge-atomic"
+  local dest="$dir/forge.json"
+  local writer=""
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  printf '%s\n' '{"n":0}' >"$dest"
+  # shellcheck disable=SC2317,SC2329 # RETURN trap reap
+  stop_writer() {
+    if [[ -n "${writer:-}" ]]; then
+      kill "$writer" 2>/dev/null || true
+      wait "$writer" 2>/dev/null || true
+      writer=""
+    fi
+  }
+  trap stop_writer RETURN
+  (
+    i=0
+    while true; do
+      i=$((i + 1))
+      m6_publish_stdout "$dest" printf '%s\n' "{\"n\":${i}}"
+      if [[ "$i" -ge 200 && -f "$dir/reader.done" ]]; then
+        printf '%s\n' "$i" >"$dir/writes"
+        break
+      fi
+    done
+  ) &
+  writer=$!
+  i=0
+  while [[ "$i" -lt 200 ]]; do
+    i=$((i + 1))
+    python3 -c 'import json,sys;json.load(open(sys.argv[1]))' "$dest" || return 1
+  done
+  touch "$dir/reader.done"
+  wait "$writer" || return 1
+  writer=""
+  [[ "$(cat "$dir/writes")" -ge 200 ]] || return 1
+  if m6_publish_stdout "$dest" false; then
+    printf 'failed publish returned 0\n' >&2
+    return 1
+  fi
+  python3 -c 'import json,sys;json.load(open(sys.argv[1]))' "$dest" || return 1
+  [[ ! -e "${dest}.tmp" ]] || return 1
+  # shellcheck disable=SC2016 # literal writer call, not an expansion
+  forge_needle='m6_publish_stdout "$EVIDENCE/forge.json"'
+  # shellcheck disable=SC2016 # literal writer call, not an expansion
+  skill_needle='m6_publish_stdout "$EVIDENCE/skill.diff"'
+  grep -F "$forge_needle" "$ROOT/spike/m6/run.sh" >/dev/null || return 1
+  grep -F "$skill_needle" "$ROOT/spike/m6/run.sh" >/dev/null || return 1
+  trap - RETURN
+  rm -rf "$dir"
+}
+
+# set +e around spike_fg must not print an ERR line. Playwright's status
+# still reaches die() after save_logs.
+case_playwright_set_plus_e() {
+  local dir="$ROOT/spike/m6/.work/playwright-set-plus-e"
+  local err="$dir/stderr" out="$dir/stdout"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  body=$(
+    cat <<'EOF'
+m6_arm_err
+m6_step=playwright
+WORK="$M6_CASE_WORK"
+EVIDENCE="$WORK/evidence"
+SIGNAL="$WORK/signal"
+MODE=offline
+export WORK EVIDENCE SIGNAL MODE
+mkdir -p "$EVIDENCE" "$SIGNAL"
+spike_run_init m6
+watch_candidate() {
+  while [[ ! -f "$SIGNAL/stop" ]]; do
+    sleep 0.05
+  done
+}
+run_playwright() {
+  exit 3
+}
+compose() {
+  printf '1\n' >>"$M6_SAVE_MARK"
+  printf '%s\n' "$PINNED_SHA"
+}
+m6_playwright_and_evidence
+EOF
+  )
+  m6_fresh "$body" \
+    M6_CASE_WORK="$dir" \
+    M6_SAVE_MARK="$dir/save-logs-called" \
+    SPIKE_REG="$dir/spike-run" \
+    >"$out" 2>"$err"
+  local rc=$?
+  [[ "$rc" -ne 0 ]] || return 1
+  [[ "$(cat "$err")" == "M6 FAIL — playwright exit 3" ]] || return 1
+  [[ -s "$dir/save-logs-called" ]] || return 1
+  [[ -s "$dir/evidence/compose.log" ]] || return 1
+  grep -F "$PINNED_SHA" "$dir/evidence/compose.log" >/dev/null || return 1
+  rm -rf "$dir"
+}
+
+expect_fail step-build-images "M6 FAIL — build_images: exit 7" case_step_build_images
+expect_fail step-prepare-definition "M6 FAIL — prepare_definition: exit 1" case_step_prepare_definition
+expect_fail step-seed-git "M6 FAIL — seed_git: exit 1" case_step_seed_git
+expect_fail step-start-git "M6 FAIL — start_git: exit 3" case_step_start_git
+expect_fail step-start-forge "M6 FAIL — start_forge: exit 9" case_step_start_forge
+expect_fail step-start-router "M6 FAIL — start_router: exit 3" case_step_start_router
+run_case die-message case_die_message
+run_case forge-json-atomic case_forge_json_atomic
+run_case playwright-set-plus-e case_playwright_set_plus_e
+
 if [[ "$fails" -ne 0 ]]; then
   printf '%s failed\n' "$fails" >&2
   exit 1
