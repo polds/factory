@@ -296,7 +296,10 @@ An `Authorization` line replaces the default bearer header.
 
 ## M6 — Measure and improve (weeks)
 
-- Scorers: eligibility (including the `failure_reason == null` rule), deterministic
+- Scorers: eligibility (terminal `purpose` work only; class `agent` is
+  eligible, and an empty class only when the run did not fail or cancel;
+  infrastructure and configuration are not, and cancelled runs never are —
+  [08](08-measure-and-self-improvement.md#eligibility-and-sampling)), deterministic
   sampling, judge runs, on-demand scoring.
 - Benchmarks: suites, tasks, head-override replay, repo substitution, trial matrix,
   confidence intervals, the minimum-repetition refusal.
@@ -308,6 +311,55 @@ An `Authorization` line replaces the default bearer header.
 
 **Exit criterion:** a scorer flags a recurring failure, the loop opens a PR editing a skill,
 and a benchmark shows the fix improves the pass rate.
+
+**CI live exit met.** GitHub-hosted runner (`m6-live.yml`, `workflow_dispatch`,
+`MODE=live-ci`). `main` at `fd046e8`. Push CI for that commit is green:
+[run 41242934272](https://github.com/polds/factory/actions/runs/41242934272).
+[Live-ci run 41243409323](https://github.com/polds/factory/actions/runs/41243409323)
+(2026-10-31, about 14:24–14:30 PT) printed `M6 LIVE-CI PASS`. Inputs: model
+`nous/claude-sonnet-5.5` (judge the same), definition
+<https://github.com/polds/factory-m6-definition>, reviewer `polds`, repetitions
+10. Remote preflight (url, ls-remote, mint, token, reviewers, collaborator)
+passed. Scorer `cite-sources` flagged 3 `missed` results:
+`run_01M69XRQJMC31YQH6YJ7EWJKGG`, `run_01M69XRQ5RNXJQ58XK8JT2Q8C6`,
+`run_01M69XRR179TQZ540Y8DQYQVF7`. Improvement batch
+`ibt_01M69XS2P50T17DC41KTMXYM8Y`, improvement run
+`run_01M69XS2VBXV8FSJTX76F84V4T` (`improve:implementer`). The loop opened
+<https://github.com/polds/factory-m6-definition/pull/4>
+(head `improve/ibt_01M69XS2P50T17DC41KTMXYM8Y`, base
+`m6-run/ci-41243409323-1/main`, reviewer `polds` requested). It edits
+`skills/cite-sources/SKILL.md`, replacing "Do not invent a required final
+line…" with an instruction to end the final message with the exact line
+`CONVENTION: cite-sources`. The `factory/config` check run completed on that
+pull request (check run id 124662710759). No `pipeline.approvals` change.
+Benchmark `bmr_01M69XSRZSHWW1D3E2W6PHMENT` (suite `convention`, task `cite`):
+candidate `10/10` pass, 0 errored, Wilson 95% 0.7225–1.0000; baseline `0/10`
+pass, 0 errored, Wilson 95% 0.0000–0.2775. D5 verdict: winner `Candidate`
+("Candidate Wilson 95% lower bound 0.7225 is above baseline Baseline upper
+bound 0.2775"). The remote ledger shows `m6-run/ci-41243409323-1/main`,
+`.../candidate`, PR #4, and the `improve/` branch all `cleaned`. Trace
+artifact `m6-evidence` (redacted before upload; an independent token scan was
+clean). This is the CI (`live-ci`) exit. No laptop `MODE=live` run was done.
+Earlier failed live attempts:
+[41190302974](https://github.com/polds/factory/actions/runs/41190302974),
+[41206299043](https://github.com/polds/factory/actions/runs/41206299043),
+[41219012187](https://github.com/polds/factory/actions/runs/41219012187),
+[41229523981](https://github.com/polds/factory/actions/runs/41229523981),
+[41236919878](https://github.com/polds/factory/actions/runs/41236919878).
+
+**Cancel cleanup.** [`m6-live.yml`](../.github/workflows/m6-live.yml) runs the
+driver with `exec`, so an Actions cancel reaches it (line 7; the step is
+`MODE=live-ci exec ./spike/m6/run.sh` at line 177). `if: cancelled()` runs
+`--cleanup-remote` at line 179. The local SIGINT/SIGTERM cancel-window test
+is `case_cancel_window` in [`t76b_cases.sh`](../spike/m6/t76b_cases.sh) (line
+451), run by `spike/m6/run_test.sh` in CI. Normal-exit cleanup is run
+41243409323's ledger (all `cleaned`). Actions cancel:
+[run 41244172690](https://github.com/polds/factory/actions/runs/41244172690),
+cancelled at 14:37:47 PT, after improver PR
+<https://github.com/polds/factory-m6-definition/pull/5> opened. The driver's
+SIGINT trap closed PR #5 3 s later. The `if: cancelled()` step "Clean up
+remote state after cancel" succeeded. `remote-ledger.json` shows all 4
+entries cleaned. There are no leftover refs or PRs.
 
 ## M7 — Kubernetes (weeks)
 
