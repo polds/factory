@@ -88,7 +88,7 @@ func (c *refMover) Clone(_ context.Context, _, ref, dest string) (string, error)
 	if sha != c.prodSHA {
 		kind = m6TreeCandidate
 	}
-	if err := writeM6Tree(dest, kind, c.threshold); err != nil {
+	if err := writeM6Tree(dest, kind, c.threshold, ""); err != nil {
 		return "", err
 	}
 	path := filepath.Join(dest, "agents", "implementer", "skills", "review", "SKILL.md")

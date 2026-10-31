@@ -600,11 +600,15 @@ type NewImprovementBatch struct {
 }
 
 // ImprovementFailure is one scored run linked to a batch.
+// Reasoning and At come from the scorer result so the improvement prompt
+// can show why the run failed and when.
 type ImprovementFailure struct {
-	RunID    string
-	ResultID string
-	Scorer   string
-	Label    string
+	RunID     string
+	ResultID  string
+	Scorer    string
+	Label     string
+	Reasoning string
+	At        time.Time
 }
 
 // ImprovementBatch is one self-improvement batch and its failures.

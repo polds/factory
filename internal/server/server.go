@@ -182,10 +182,18 @@ type Server struct {
 	// pull request up. Tests use it for the restart window.
 	m6SkipSetBatchPR func() bool
 
-	m6CloneMu    sync.Mutex
-	m6Clones     map[string]m6Clone
-	m6SampledAt  time.Time
-	m6ImprovedAt time.Time
+	// m6BranchAdvertiseFor and m6CloneAttempts override the improvement
+	// retry bounds. Zero uses the named constants. Tests set a short
+	// window so a missing ref does not wait out the production delay.
+	m6BranchAdvertiseFor time.Duration
+	m6CloneAttempts      int
+
+	m6CloneMu      sync.Mutex
+	m6Clones       map[string]m6Clone
+	m6ImproveMu    sync.Mutex
+	m6ImproveRetry map[string]improveRetryState
+	m6SampledAt    time.Time
+	m6ImprovedAt   time.Time
 }
 
 var (

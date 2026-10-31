@@ -114,8 +114,32 @@ def shell_url(value: str) -> str:
     return text
 
 
+def factoryd_prompt(text: str) -> bool:
+    """A factoryd improvement prompt carries the definition-tree heading.
+
+    The driver unit test sends a short prompt that only names the branch.
+    That path stays on the old steps so those checks keep passing.
+    """
+    return "## Definition tree" in text or "# Instructions" in text
+
+
+def improve_instructions(text: str) -> bool:
+    return "DEFINITION_GIT_URL" in text and BRANCH_RE.search(text) is not None
+
+
+def failed_by_agent(summary: str) -> dict:
+    return completion(
+        json.dumps({"status": "failed_by_agent", "summary": summary}),
+        None,
+    )
+
+
 def improve(body: dict) -> dict:
     text = blob(body)
+    if factoryd_prompt(text) and not improve_instructions(text):
+        return failed_by_agent(
+            "improvement prompt is missing DEFINITION_GIT_URL or the improve branch"
+        )
     if "M6_PR_HTTP" in text:
         return completion("Improvement branch is pushed.", None)
     branch = ""
@@ -148,23 +172,27 @@ def improve(body: dict) -> dict:
         return bash_call(command)
     if "M6_EDITED" in text:
         command = (
-            "cd /tmp/def && git add skills/cite-sources/SKILL.md && "
+            "cd /workspace && git add skills/cite-sources/SKILL.md && "
             "git commit -m 'cite sources' && "
             f"git push origin HEAD:refs/heads/{branch} && echo M6_PUSHED"
         )
         return bash_call(command)
     if "M6_CLONED" in text:
         command = (
-            f"cd /tmp/def && git checkout -b {branch} && "
+            f"cd /workspace && git checkout -b {branch} && "
             "cat >> skills/cite-sources/SKILL.md <<'EOF'\n"
             "\n## Required line\n\n"
             f"{CONVENTION}\n"
             "EOF\necho M6_EDITED"
         )
         return bash_call(command)
+    # /workspace is the task directory and starts empty. Clone into that
+    # exact path with full history: a shallow or single-branch clone cannot
+    # check out the live base m6-run/<id>/main.
     command = (
-        "rm -rf /tmp/def && GIT_TERMINAL_PROMPT=0 "
-        f"git clone --depth 1 '{git_url}' /tmp/def && echo M6_CLONED"
+        "cd /tmp && git config --global --add safe.directory /workspace && "
+        "GIT_TERMINAL_PROMPT=0 "
+        f"git clone '{git_url}' /workspace && echo M6_CLONED"
     )
     return bash_call(command)
 

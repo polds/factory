@@ -115,6 +115,8 @@ func TestRunPromptAndPRBody(t *testing.T) {
 		"application code",
 		"None.",
 		"[REDACTED]",
+		"A prose reply is not success",
+		"commit, and push the branch",
 	} {
 		if !strings.Contains(prompt, part) {
 			t.Fatalf("prompt missing %q\n%s", part, prompt)

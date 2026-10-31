@@ -81,8 +81,17 @@ func (s *Server) gatedSample(ctx context.Context, now time.Time) error {
 }
 
 func (s *Server) gatedImprove(ctx context.Context, now time.Time) error {
-	if !s.measureDue(&s.m6ImprovedAt, s.cfg.ImprovementInterval, now) {
+	// The leader loop wakes every RenewInterval (5s). A branch that
+	// appears a few seconds after the push has to be cloned again inside
+	// the advertise window, which is shorter than ImprovementInterval.
+	// Only that waiting sweep runs on the fast tick. The interval still
+	// gates scheduling new batches.
+	due := s.measureDue(&s.m6ImprovedAt, s.cfg.ImprovementInterval, now)
+	if !due && !s.improveRefPending() {
 		return nil
+	}
+	if !due {
+		return s.sweepFactoryImprovements(ctx)
 	}
 	return s.improvePass(ctx)
 }

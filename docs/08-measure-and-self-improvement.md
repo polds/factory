@@ -257,12 +257,26 @@ Output is a pull request when the factory has a definition git URL. Nothing is
 applied directly, including to the factory's own definition — which is exactly
 why the definition lives in Git.
 
-**M6 applied.** The prompt lists each failure's run id, scorer, label, time,
-and reasoning. It does not include the work item, the transcript, or the
-diff. It adds a file listing of the definition tree, the layer table above,
-and prior rejection notes from closed batches for the same agent. It does
-not include the definition repo URL, and it says "Open a pull request" even
-though factoryd opens the request. That is a current limit. A factory with an empty `FACTORY_DEFINITION_GIT_URL` skips
+**M6 applied.** The prompt is the bound agent's instructions, built with
+the same `handoff.BuildPrompt` a stage run uses, then the failure list.
+Each failure line includes the run id, scorer, label, time, and reasoning.
+It adds a Workspace section, a file listing of the definition tree, the
+layer table above, and prior rejection notes from closed batches for the
+same agent. The Workspace section says `/workspace` starts empty, names
+the `DEFINITION_GIT_URL` environment variable and not the URL value, names
+the base ref, names the `improve/<batch>` branch to push, and says
+`GH_TOKEN` is available for HTTPS push. It does not include the work
+item, the transcript, or the diff. When the improvement run does not
+succeed, the batch is marked `failed` once and the improve branch is not
+cloned. When the run succeeds and the improve branch or the production
+base ref is not advertised yet, factoryd records a 45 second deadline and
+returns. It does not sleep on the worker read loop or under the settle
+lock. The improvement leader retries that clone on its 5 second tick,
+inside the deadline, and marks the batch `failed` once if the ref is still
+missing. A factoryd restart starts a new deadline. Any other clone error,
+and a pull-request create error other than HTTP 422, is retried up to 3
+times and then the batch is marked `failed` once with the redacted error,
+so a later batch for the agent can be scheduled. A factory with an empty `FACTORY_DEFINITION_GIT_URL` skips
 self-improvement: the pass and run-now log that the factory has no definition
 git URL and return no batches. They do not open a pull request. Benchmark
 resolution of an empty git URL returns an empty SHA and uses the published
@@ -293,10 +307,12 @@ the pull request unassigned. `improve.Route` requests one login. The review
 request is capped at 3. Rails 1 and 6 are in
 [Guard rails](#guard-rails). A merged pull request marks the batch `merged`.
 A close without merge marks it `closed` and stores the rejection note (or
-`closed without merge` when the event has no text). `lookupOpenPR` does not
-patch the body. When the improver opens the pull request first, factoryd's
-create is a 422 and the lookup keeps the opener's body, so that pull request
-lacks *Regressions addressed* on the forge. That is a current limit.
+`closed without merge` when the event has no text). When the improver opens
+the pull request first, factoryd's create is a 422. `lookupOpenPR` finds
+that request and factoryd PATCHes the body to the *Regressions addressed*
+text. A patch error is logged and the batch still moves to `pr_open`, so a
+rejected patch is not retried forever. The offline forge accepts a patch
+only when `state` is `closed`, so that path keeps the opener's body.
 
 ### Guard rails
 

@@ -184,3 +184,45 @@ func TestBatchRunAndPR(t *testing.T) {
 		t.Fatalf("batch %+v %v", got, err)
 	}
 }
+
+func TestBatchFailuresCarryReasoningAndAt(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	factoryID, agentID := h.seed(t)
+	run := h.createRun(t, factoryID, agentID, "batch-reasoning", store.PriorityBatch)
+	const reasoning = "the skill omitted the required convention"
+	row, err := h.st.UpsertScorerResult(ctx, store.ScorerResult{
+		FactoryID:  factoryID,
+		RunID:      run.ID,
+		ScorerName: "cite-sources",
+		Label:      "missed",
+		Passed:     false,
+		Reasoning:  reasoning,
+		Status:     api.ScorerStatusOK,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.CreatedAt.IsZero() {
+		t.Fatal("scorer result has no time")
+	}
+	batch, err := h.st.CreateBatch(ctx, store.NewImprovementBatch{
+		FactoryID:  factoryID,
+		Agent:      "implementer",
+		FailureIDs: []string{row.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Failures) != 1 || batch.Failures[0].Reasoning != reasoning || batch.Failures[0].At.IsZero() || !batch.Failures[0].At.Equal(row.CreatedAt) {
+		t.Fatalf("create reasoning %q at %s", batch.Failures[0].Reasoning, batch.Failures[0].At)
+	}
+	listed, err := h.st.ImprovementBatches(ctx, factoryID)
+	if err != nil || len(listed) != 1 || len(listed[0].Failures) != 1 {
+		t.Fatalf("list %+v %v", listed, err)
+	}
+	got := listed[0].Failures[0]
+	if got.Reasoning != reasoning || got.At.IsZero() || !got.At.Equal(row.CreatedAt) {
+		t.Fatalf("listed reasoning %q at %s", got.Reasoning, got.At)
+	}
+}
