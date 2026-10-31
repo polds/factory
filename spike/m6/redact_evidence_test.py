@@ -384,6 +384,24 @@ class PublicURLTest(unittest.TestCase):
             self.assertNotIn(url, redacted)
             self.assertEqual(redact_evidence.scan_text(redacted, [url]), [])
 
+    def test_public_api_origin_is_not_a_secret(self) -> None:
+        origin = "https://api.github.com"
+        repo = "https://github.com/polds/factory-m6-definition"
+        credentialed = (
+            "https://x-access-token:ghs_"
+            + ("a" * 20)
+            + "@github.com/polds/factory-m6-definition.git"
+        )
+        self.assertTrue(redact_evidence.public_https_url(origin))
+        self.assertTrue(redact_evidence.public_https_url(origin + "/"))
+        self.assertFalse(redact_evidence.public_https_url(origin + "/repos/o/n"))
+        self.assertFalse(redact_evidence.public_https_url(origin + "?access=" + ("q" * 24)))
+        self.assertFalse(redact_evidence.public_https_url(credentialed))
+        self.assertEqual(
+            redact_evidence.secrets_to_scrub([origin, repo, repo + "/pull/7", credentialed]),
+            [credentialed],
+        )
+
 
 def leaked_stateless(text: str) -> bool:
     token = stateless_token()

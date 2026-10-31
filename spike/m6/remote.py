@@ -196,6 +196,25 @@ def public_definition_url(raw: str) -> bool:
     return len(parts) == 4 and parts[2] == "pull" and parts[3].isdigit()
 
 
+def public_https_origin(raw: str) -> bool:
+    """https://<host>[:port][/] with no userinfo, path, query, or fragment.
+
+    The live GitHub API base is this shape. A path, query, or embedded
+    credential is not.
+    """
+    parsed = urllib.parse.urlsplit(raw.strip())
+    if (
+        parsed.scheme != "https"
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or not HOST_RE.fullmatch(parsed.netloc or "")
+    ):
+        return False
+    return parsed.path in ("", "/")
+
+
 def validate_run_id(run: str) -> str:
     if not RUN_ID_RE.fullmatch(run):
         raise RemoteError("run id is invalid")

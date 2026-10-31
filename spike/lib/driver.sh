@@ -476,10 +476,12 @@ save_logs() {
 }
 
 assert_evidence() {
-  python3 - "$EVIDENCE" <<'PY'
+  PYTHONPATH="${ROOT}/spike/m6${PYTHONPATH:+:$PYTHONPATH}" python3 - "$EVIDENCE" <<'PY'
 import json, os, sys, zipfile
 from pathlib import Path
 from urllib.parse import urlparse
+
+from redact_evidence import public_https_url
 
 root = Path(sys.argv[1])
 planted = []
@@ -494,9 +496,14 @@ for name in (
     if len(value) >= 8:
         planted.append(value.encode())
 
+# public_https_url is redact_evidence's rule. Live M6_TASK_GIT_URL and
+# M6_TASK_GITHUB_API are public https values that the redactor keeps, so
+# they are not planted secrets. Offline git:// and http:// values, tokens,
+# and URLs with userinfo or a query stay on the list. The fixed names above
+# are unchanged.
 for name in os.environ.get("EVIDENCE_EXTRA_SECRETS", "").split():
     value = os.environ.get(name, "")
-    if len(value) >= 8:
+    if len(value) >= 8 and not public_https_url(value):
         planted.append(value.encode())
 
 def add_planted(value):
