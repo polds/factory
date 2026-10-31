@@ -395,10 +395,14 @@ class PublicURLTest(unittest.TestCase):
         self.assertTrue(redact_evidence.public_https_url(origin))
         self.assertTrue(redact_evidence.public_https_url(origin + "/"))
         self.assertFalse(redact_evidence.public_https_url(origin + "/repos/o/n"))
-        self.assertFalse(redact_evidence.public_https_url(origin + "?access=" + ("q" * 24)))
+        self.assertFalse(
+            redact_evidence.public_https_url(origin + "?access=" + ("q" * 24))
+        )
         self.assertFalse(redact_evidence.public_https_url(credentialed))
         self.assertEqual(
-            redact_evidence.secrets_to_scrub([origin, repo, repo + "/pull/7", credentialed]),
+            redact_evidence.secrets_to_scrub(
+                [origin, repo, repo + "/pull/7", credentialed]
+            ),
             [credentialed],
         )
 
