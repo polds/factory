@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://factory.polds.dev/sitemap.txt

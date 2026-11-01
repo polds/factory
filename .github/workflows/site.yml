@@ -1,0 +1,88 @@
+# Public website: factory.polds.dev
+#
+# Builds web/site (Vite SPA: home page plus the design docs rendered from
+# docs/*.md and README.md) and publishes it to GitHub Pages.
+#
+#   pull_request   build only, so a broken site fails the PR
+#   push to main   build and deploy
+#   dispatch       build and deploy
+#
+# One-time repository settings, not expressible here:
+#   Settings > Pages > Source: GitHub Actions
+#   Settings > Pages > Custom domain: factory.polds.dev (DNS: CNAME factory -> polds.github.io)
+# The build also writes dist/CNAME so the domain survives a settings reset.
+name: site
+
+on:
+  pull_request:
+    paths:
+      - web/site/**
+      - docs/**
+      - README.md
+      - .github/workflows/site.yml
+  push:
+    branches: [main]
+    paths:
+      - web/site/**
+      - docs/**
+      - README.md
+      - .github/workflows/site.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/site/package-lock.json
+      - name: Install, typecheck, and build
+        working-directory: web/site
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run lint
+          npm run build
+          test -f dist/index.html
+          test -f dist/404.html
+          test "$(cat dist/CNAME)" = factory.polds.dev
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: web/site/dist
+
+  deploy:
+    name: deploy to github pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+        with:
+          enablement: true
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
