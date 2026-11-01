@@ -3,16 +3,14 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: "Space Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
-  --radius-sm: 1px;
-  --radius-md: 2px;
-  --radius-lg: 2px;
+  --font-sans: "IBM Plex Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
+  --color-link: var(--link);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-destructive: var(--destructive);
@@ -22,50 +20,29 @@
 }
 
 :root {
-  --background: oklch(0.98 0.003 250);
-  --foreground: oklch(0.2 0.01 250);
-  --card: oklch(1 0 0);
-  --primary: oklch(0.72 0.17 70);
-  --primary-foreground: oklch(0.18 0.02 60);
-  --muted: oklch(0.94 0.005 250);
-  --muted-foreground: oklch(0.48 0.012 250);
-  --destructive: oklch(0.58 0.22 27);
-  --border: oklch(0.87 0.006 250);
-  --code: oklch(0.95 0.004 250);
-  --success: oklch(0.55 0.14 150);
-  --grid-line: oklch(0.2 0.01 250 / 5%);
+  --background: #fcfcfb;
+  --foreground: #1c1c1a;
+  --link: #9a5b00;
+  --muted: #f1f0ec;
+  --muted-foreground: #6b6a64;
+  --destructive: #b3261e;
+  --border: #dcdad3;
+  --code: #f5f4f0;
+  --success: #2f6f3e;
   color-scheme: light;
 }
 
 .dark {
-  --background: oklch(0.15 0.004 250);
-  --foreground: oklch(0.93 0.004 250);
-  --card: oklch(0.18 0.005 250);
-  --primary: oklch(0.8 0.16 75);
-  --primary-foreground: oklch(0.16 0.02 60);
-  --muted: oklch(0.21 0.005 250);
-  --muted-foreground: oklch(0.65 0.01 250);
-  --destructive: oklch(0.65 0.2 25);
-  --border: oklch(0.28 0.006 250);
-  --code: oklch(0.12 0.004 250);
-  --success: oklch(0.75 0.15 150);
-  --grid-line: oklch(1 0 0 / 4%);
+  --background: #161616;
+  --foreground: #e6e4de;
+  --link: #e3a83c;
+  --muted: #202020;
+  --muted-foreground: #9b998f;
+  --destructive: #e5736a;
+  --border: #2e2e2c;
+  --code: #111111;
+  --success: #7fc48f;
   color-scheme: dark;
-}
-
-@utility bg-grid {
-  background-image:
-    linear-gradient(var(--grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
-  background-size: 32px 32px;
-}
-
-@utility label-mono {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
 }
 
 @layer base {
@@ -73,7 +50,7 @@
     border-color: var(--color-border);
   }
   html {
-    scroll-padding-top: 5rem;
+    scroll-padding-top: 4rem;
   }
   body {
     background-color: var(--color-background);
@@ -86,35 +63,31 @@
   kbd {
     font-family: var(--font-mono);
   }
-  ::selection {
-    background: color-mix(in oklab, var(--primary) 35%, transparent);
-  }
 }
 
-/* Markdown prose */
+/* Prose, shared by the home page and the rendered docs */
 .prose-doc {
-  line-height: 1.7;
-  font-size: 0.975rem;
+  line-height: 1.65;
+  font-size: 1rem;
 }
 .prose-doc > * + * {
   margin-top: 1rem;
 }
 .prose-doc h1 {
-  font-size: 2rem;
-  font-weight: 600;
-  letter-spacing: -0.02em;
+  font-size: 1.9rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
   line-height: 1.2;
 }
 .prose-doc h2 {
-  font-size: 1.4rem;
-  font-weight: 600;
-  margin-top: 2.5rem;
-  padding-top: 1rem;
+  font-size: 1.3rem;
+  font-weight: 500;
+  margin-top: 2.75rem;
+  padding-top: 1.25rem;
   border-top: 1px solid var(--border);
-  letter-spacing: -0.01em;
 }
 .prose-doc h3 {
-  font-size: 1.1rem;
+  font-size: 1.05rem;
   font-weight: 600;
   margin-top: 1.75rem;
 }
@@ -124,85 +97,71 @@
   margin-top: 1.5rem;
 }
 .prose-doc a {
-  color: var(--primary);
+  color: var(--link);
   text-decoration: underline;
   text-underline-offset: 3px;
   text-decoration-thickness: 1px;
   overflow-wrap: anywhere;
 }
 .prose-doc ul {
-  list-style: square;
-  padding-left: 1.25rem;
+  list-style: disc;
+  padding-left: 1.4rem;
 }
 .prose-doc ol {
   list-style: decimal;
-  padding-left: 1.25rem;
+  padding-left: 1.4rem;
 }
 .prose-doc li + li {
-  margin-top: 0.25rem;
+  margin-top: 0.3rem;
 }
 .prose-doc li > ul,
 .prose-doc li > ol {
-  margin-top: 0.25rem;
-}
-.prose-doc li::marker {
-  color: var(--muted-foreground);
+  margin-top: 0.3rem;
 }
 .prose-doc blockquote {
-  border-left: 2px solid var(--primary);
+  border-left: 3px solid var(--border);
   padding-left: 1rem;
   color: var(--muted-foreground);
 }
 .prose-doc :not(pre) > code {
   background: var(--muted);
-  border: 1px solid var(--border);
-  padding: 0.1em 0.35em;
-  font-size: 0.85em;
-  border-radius: 2px;
+  padding: 0.1em 0.3em;
+  font-size: 0.875em;
   overflow-wrap: anywhere;
 }
 .prose-doc pre {
   background: var(--code);
   border: 1px solid var(--border);
-  padding: 1rem;
+  padding: 0.9rem 1rem;
   overflow-x: auto;
-  font-size: 0.82rem;
-  line-height: 1.6;
-  border-radius: 2px;
+  font-size: 0.8125rem;
+  line-height: 1.55;
 }
 .prose-doc pre code {
   background: none;
   padding: 0;
-  border: 0;
   font-size: inherit;
 }
 .prose-doc .table-wrap {
   overflow-x: auto;
-  border: 1px solid var(--border);
 }
 .prose-doc table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.875rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 .prose-doc th {
   text-align: left;
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted-foreground);
-  background: var(--muted);
+  font-weight: 600;
+  border-bottom: 2px solid var(--border);
   white-space: nowrap;
 }
 .prose-doc th,
 .prose-doc td {
-  padding: 0.55rem 0.8rem;
+  padding: 0.5rem 0.75rem 0.5rem 0;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
-}
-.prose-doc tr:last-child td {
-  border-bottom: 0;
 }
 .prose-doc hr {
   border-color: var(--border);
@@ -214,12 +173,12 @@
   margin-top: 0;
 }
 
-/* highlight.js tokens via theme vars */
+/* highlight.js tokens */
 .hljs-keyword,
 .hljs-selector-tag,
 .hljs-built_in,
 .hljs-attr {
-  color: var(--primary);
+  color: var(--link);
 }
 .hljs-string,
 .hljs-regexp {
@@ -228,11 +187,10 @@
 .hljs-comment,
 .hljs-quote {
   color: var(--muted-foreground);
-  font-style: italic;
 }
 .hljs-number,
 .hljs-literal,
 .hljs-variable,
 .hljs-title {
-  color: oklch(0.72 0.1 230);
+  color: var(--foreground);
 }
