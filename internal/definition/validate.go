@@ -260,6 +260,13 @@ func validateSelfImprovement(raw map[string]any, si *SelfImprovement, lines map[
 		rt = ReviewerAdmins
 	}
 	if rt != ReviewerCustom {
+		for _, email := range si.ReviewerEmails {
+			if strings.TrimSpace(email) == "" {
+				continue
+			}
+			addDiag(diags, file, lineAt(lines, "selfImprovement.reviewerEmails"), SeverityError, "reviewerEmails is only valid when reviewerType is custom")
+			return
+		}
 		return
 	}
 	for _, email := range si.ReviewerEmails {

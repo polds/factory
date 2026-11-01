@@ -9,6 +9,13 @@ import (
 	"path/filepath"
 )
 
+// Publish replaces dest with a complete copy of src. The directory rename
+// is the same swap Sync uses, so a reader of dest sees the previous tree
+// or the new tree.
+func Publish(src, dest string) error {
+	return publish(src, dest)
+}
+
 func publish(src, dest string) error {
 	parent := filepath.Dir(dest)
 	stage, err := os.MkdirTemp(parent, ".defsync-publish-*")

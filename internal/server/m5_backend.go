@@ -28,6 +28,12 @@ func (s *Server) Definition(ctx context.Context, factory string) (api.Definition
 		Editable: true,
 		Files:    []api.DefinitionFile{},
 	}
+	if s.apiBacked() {
+		view.Source = api.DefinitionSourceAPI
+		view.Editable = false
+		view.Files = s.apiDefinitionFiles()
+		return view, nil
+	}
 	if strings.TrimSpace(s.cfg.DefinitionGitURL) != "" {
 		view.Source = api.DefinitionGit
 		view.Editable = false

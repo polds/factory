@@ -56,6 +56,9 @@ type Config struct {
 	// searches upward from the working directory and the executable.
 	// When that search misses, the handler serves the embedded schemas.
 	SchemasPath string
+	// DefinitionSource is path, git, or api. Empty is path. api serves
+	// PUT /definition. A git URL forces the git source even when this is api.
+	DefinitionSource string
 	// DefinitionGitURL enables the defsync poller. The local
 	// DefinitionPath is still loaded at boot and remains the published tree.
 	DefinitionGitURL           string
@@ -132,15 +135,23 @@ type Server struct {
 	wg     sync.WaitGroup
 	once   sync.Once
 
-	pings      chan beat
-	wake       chan struct{}
-	steerWake  chan struct{}
-	gitSHA     string
-	mu         sync.Mutex
-	leaseMu    sync.Mutex
-	scheduleMu sync.Mutex
-	countersMu sync.Mutex
-	counters   scheduler.Counters
+	pings     chan beat
+	wake      chan struct{}
+	steerWake chan struct{}
+	gitSHA    string
+	mu        sync.Mutex
+	publishMu sync.Mutex
+	// apiServed is the last complete definition tree an API-backed factory
+	// is serving. Readers take the pointer under mu and do not mutate it.
+	apiServed *apiServed
+	// beforeAPISwap, when set, runs after the new tree is durable and
+	// before apiServed moves. Tests hold it so a concurrent GET still
+	// observes the previous complete tree.
+	beforeAPISwap func()
+	leaseMu       sync.Mutex
+	scheduleMu    sync.Mutex
+	countersMu    sync.Mutex
+	counters      scheduler.Counters
 
 	loaded    loaded
 	live      map[string]execRec
@@ -351,6 +362,12 @@ func normalize(cfg Config) (Config, error) {
 	}
 	if strings.TrimSpace(cfg.DefinitionPath) == "" {
 		return Config{}, errors.New("server: FACTORY_DEFINITION_PATH is required")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.DefinitionSource)) {
+	case "", "path", "git", "api":
+		cfg.DefinitionSource = strings.ToLower(strings.TrimSpace(cfg.DefinitionSource))
+	default:
+		return Config{}, fmt.Errorf("server: FACTORY_DEFINITION_SOURCE %q is invalid", cfg.DefinitionSource)
 	}
 	if strings.TrimSpace(cfg.TaskServerURL) == "" {
 		cfg.TaskServerURL = DefaultTaskServerURL

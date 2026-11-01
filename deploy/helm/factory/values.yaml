@@ -124,7 +124,16 @@ minio:
 operator:
   enabled: false
   installCRDs: false
+  replicas: 1
+  image:
+    repository: factory-operator
   watchNamespaces: []
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
   admissionWebhook:
     enabled: true
     certManager: false

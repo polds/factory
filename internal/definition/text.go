@@ -262,6 +262,12 @@ func lineAt(lines map[string]int, path string) int {
 	return 1
 }
 
+// InlineCredential reports whether v contains an inline credential.
+// A {{SECRET_NAME}} reference is not a credential.
+func InlineCredential(v string) bool {
+	return inlineCredential(v)
+}
+
 func inlineCredential(v string) bool {
 	if m := bearerValue.FindStringSubmatch(v); m != nil && !secretRefExact.MatchString(m[1]) {
 		return true
@@ -271,6 +277,28 @@ func inlineCredential(v string) bool {
 	}
 	stripped := secretRefAny.ReplaceAllString(v, "")
 	return tokenPrefix.MatchString(stripped)
+}
+
+var inlineToken = regexp.MustCompile(`(?:sk-[A-Za-z0-9][A-Za-z0-9_/+.=-]*|ghp_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|gho_[A-Za-z0-9_]+|glpat-[A-Za-z0-9_\-]+|xox[baprs]-[A-Za-z0-9\-]+|AKIA[0-9A-Z]{16})`)
+
+// RedactInline replaces bearer, basic, and token-prefix credentials.
+// {{SECRET_NAME}} references are left in place.
+func RedactInline(s string) string {
+	s = bearerValue.ReplaceAllStringFunc(s, func(match string) string {
+		parts := bearerValue.FindStringSubmatch(match)
+		if len(parts) == 2 && secretRefExact.MatchString(parts[1]) {
+			return match
+		}
+		return "Bearer [REDACTED]"
+	})
+	s = basicValue.ReplaceAllStringFunc(s, func(match string) string {
+		parts := basicValue.FindStringSubmatch(match)
+		if len(parts) == 2 && secretRefExact.MatchString(parts[1]) {
+			return match
+		}
+		return "Basic [REDACTED]"
+	})
+	return inlineToken.ReplaceAllString(s, "[REDACTED]")
 }
 
 func scanMCPCredentials(file, prefix string, raw map[string]any, lines map[string]int, diags *[]Diagnostic) {

@@ -1,0 +1,12 @@
+{
+  "errors": [
+    {
+      "file": "factory.yaml",
+      "line": 3,
+      "message": "pipeline.stages is required",
+      "severity": "error"
+    }
+  ],
+  "published_generation": 4,
+  "valid": false
+}

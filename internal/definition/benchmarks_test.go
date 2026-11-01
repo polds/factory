@@ -154,7 +154,11 @@ func TestSelfImprovementValidation(t *testing.T) {
 		{name: "custom missing", block: "selfImprovement:\n  reviewerType: custom\n", want: "reviewerEmails is required when reviewerType is custom"},
 		{name: "custom blank", block: "selfImprovement:\n  reviewerType: custom\n  reviewerEmails: [\" \"]\n", want: "reviewerEmails is required when reviewerType is custom"},
 		{name: "custom ok", block: "selfImprovement:\n  reviewerType: custom\n  reviewerEmails: [a@acme.example]\n"},
-		{name: "admins with emails", block: "selfImprovement:\n  reviewerType: admins\n  reviewerEmails: [a@acme.example]\n"},
+		{name: "admins with emails", block: "selfImprovement:\n  reviewerType: admins\n  reviewerEmails: [a@acme.example]\n", want: "reviewerEmails is only valid when reviewerType is custom"},
+		{name: "team with emails", block: "selfImprovement:\n  reviewerType: team\n  reviewerEmails: [a@acme.example]\n", want: "reviewerEmails is only valid when reviewerType is custom"},
+		{name: "none with emails", block: "selfImprovement:\n  reviewerType: none\n  reviewerEmails: [a@acme.example]\n", want: "reviewerEmails is only valid when reviewerType is custom"},
+		{name: "defaulted admins with emails", block: "selfImprovement:\n  reviewerEmails: [a@acme.example]\n", want: "reviewerEmails is only valid when reviewerType is custom"},
+		{name: "admins blank emails", block: "selfImprovement:\n  reviewerType: admins\n  reviewerEmails: [\" \", \"\"]\n"},
 		{name: "none", block: "selfImprovement:\n  reviewerType: none\n"},
 	}
 	for _, tc := range cases {
