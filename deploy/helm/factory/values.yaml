@@ -127,7 +127,7 @@ operator:
   watchNamespaces: []
   admissionWebhook:
     enabled: true
-    certManager: true
+    certManager: false
 
 worker:
   image:
