@@ -6,3 +6,4 @@
 {{- include "factory.controlplane" . }}
 {{- include "factory.workers" . }}
 {{- include "factory.migrations" . }}
+{{ include "factory.operator" . -}}

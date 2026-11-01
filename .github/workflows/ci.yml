@@ -186,6 +186,16 @@ jobs:
               mc --config-dir /tmp/mc mb --ignore-existing local/factory
               mc --config-dir /tmp/mc anonymous set none local/factory
             '
+      - name: Install envtest assets
+        run: |
+          set -euo pipefail
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2
+          # 1.37.0 is the newest asset setup-envtest v0.25.2 publishes. 1.37.2 is not in that index.
+          assets="$(setup-envtest use 1.37.0 -p path --arch amd64)"
+          echo "KUBEBUILDER_ASSETS=${assets}" >> "$GITHUB_ENV"
+          echo "envtest assets ${assets}"
+      - name: Check CRD drift
+        run: bash scripts/ci/crd-drift.sh
       - name: Test with the race detector
         run: go test -race -count=1 -cover -v ./...
 
