@@ -7,7 +7,7 @@ toolchain go1.26.10
 require (
 	github.com/go-logr/logr v1.4.3
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
-	github.com/jackc/pgx/v5 v5.9.2
+	github.com/jackc/pgx/v5 v5.11.0
 	go.yaml.in/yaml/v3 v3.0.5
 	k8s.io/api v0.37.2
 	k8s.io/apiextensions-apiserver v0.37.2
