@@ -30,6 +30,10 @@ func execute(args []string, stdout, stderr io.Writer, getenv func(string) string
 		return cmdCancel(args[1:], stdout, stderr, getenv)
 	case "validate":
 		return cmdValidate(args[1:], stdout, stderr)
+	case "convert":
+		return cmdConvert(args[1:], stdout, stderr)
+	case "crds":
+		return cmdCRDs(args[1:], stdout, stderr)
 	case "task":
 		return cmdTask(args[1:], stdout, stderr, getenv)
 	case "approvals":
@@ -77,6 +81,11 @@ Commands:
   watch RUN_ID [--from-seq N]
   cancel RUN_ID
   validate [--base DIR] PATH
+  convert DIR [--instructions-configmap]
+  convert --from-manifests FILE|- DIR
+  convert --from-cluster -n NS DIR
+  crds print
+  crds apply [--dry-run]
   task create --factory NAME --title TEXT [--body TEXT] [--source issue|manual|api] [--ref REF]
   task list --factory NAME [--stage STAGE] [--status STATUS]
   task get --factory NAME TASK_ID
@@ -111,6 +120,7 @@ Commands:
   automations resume --factory NAME AUTOMATION
   secrets list --factory NAME
   definition show --factory NAME
+  definition push --factory NAME DIR
 
 Environment:
   FACTORY_URL       control plane base URL (default http://localhost:8080)

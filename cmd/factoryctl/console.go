@@ -303,11 +303,25 @@ func cmdSecrets(args []string, stdout, stderr io.Writer, getenv func(string) str
 }
 
 func cmdDefinition(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
-	if len(args) == 0 || args[0] != "show" {
+	if len(args) == 0 {
 		say(stderr, "usage: factoryctl definition show --factory NAME")
+		say(stderr, "       factoryctl definition push --factory NAME DIR")
 		return 2
 	}
-	factoryName, ok := factoryFlag("definition show", args[1:], stderr)
+	switch args[0] {
+	case "show":
+		return cmdDefinitionShow(args[1:], stdout, stderr, getenv)
+	case "push":
+		return cmdDefinitionPush(args[1:], stdout, stderr, getenv)
+	default:
+		say(stderr, "usage: factoryctl definition show --factory NAME")
+		say(stderr, "       factoryctl definition push --factory NAME DIR")
+		return 2
+	}
+}
+
+func cmdDefinitionShow(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	factoryName, ok := factoryFlag("definition show", args, stderr)
 	if !ok {
 		return 2
 	}

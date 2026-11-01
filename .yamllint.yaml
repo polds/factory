@@ -6,6 +6,8 @@ extends: default
 ignore: |
   .git/
   **/.work/
+  deploy/helm/factory/crds/
+  internal/convert/crds/
 
 rules:
   document-start: disable

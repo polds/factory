@@ -27,6 +27,12 @@ func TestHelpListsConsoleCommands(t *testing.T) {
 		"automations resume --factory NAME AUTOMATION",
 		"secrets list --factory NAME",
 		"definition show --factory NAME",
+		"definition push --factory NAME DIR",
+		"convert DIR [--instructions-configmap]",
+		"convert --from-manifests FILE|- DIR",
+		"convert --from-cluster -n NS DIR",
+		"crds print",
+		"crds apply [--dry-run]",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("help missing %q\n%s", want, text)
