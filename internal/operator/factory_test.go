@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -165,7 +166,7 @@ func applyManifests(t *testing.T, ctx context.Context, ns string, raw []byte) {
 	for {
 		var obj unstructured.Unstructured
 		err := dec.Decode(&obj)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return
 		}
 		if err != nil {

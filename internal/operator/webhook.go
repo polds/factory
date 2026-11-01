@@ -26,35 +26,34 @@ type Validator struct {
 // SetupWithManager registers validating webhooks for the factory.dev kinds
 // the cross-resource rules inspect.
 func (v *Validator) SetupWithManager(mgr ctrl.Manager) error {
-	if err := builder.WebhookManagedBy(mgr, &factoryv1.Factory{}).WithCustomValidator(v).Complete(); err != nil {
+	if err := builder.WebhookManagedBy(mgr, &factoryv1.Factory{}).WithValidator(kindValidator[*factoryv1.Factory]{v}).Complete(); err != nil {
 		return err
 	}
-	if err := registerFactoryAgent(mgr, v); err != nil {
+	if err := builder.WebhookManagedBy(mgr, &factoryv1.FactoryAgent{}).WithValidator(kindValidator[*factoryv1.FactoryAgent]{v}).Complete(); err != nil {
 		return err
 	}
-	if err := registerAutomation(mgr, v); err != nil {
+	if err := builder.WebhookManagedBy(mgr, &factoryv1.Automation{}).WithValidator(kindValidator[*factoryv1.Automation]{v}).Complete(); err != nil {
 		return err
 	}
-	if err := registerRunner(mgr, v); err != nil {
+	if err := builder.WebhookManagedBy(mgr, &factoryv1.Runner{}).WithValidator(kindValidator[*factoryv1.Runner]{v}).Complete(); err != nil {
 		return err
 	}
-	return registerScorer(mgr, v)
+	return builder.WebhookManagedBy(mgr, &factoryv1.Scorer{}).WithValidator(kindValidator[*factoryv1.Scorer]{v}).Complete()
 }
 
-func registerFactoryAgent(mgr ctrl.Manager, v *Validator) error {
-	return builder.WebhookManagedBy(mgr, &factoryv1.FactoryAgent{}).WithCustomValidator(v).Complete()
+// kindValidator adapts Validator to the typed admission.Validator interface.
+type kindValidator[T runtime.Object] struct{ v *Validator }
+
+func (k kindValidator[T]) ValidateCreate(ctx context.Context, obj T) (admission.Warnings, error) {
+	return k.v.ValidateCreate(ctx, obj)
 }
 
-func registerAutomation(mgr ctrl.Manager, v *Validator) error {
-	return builder.WebhookManagedBy(mgr, &factoryv1.Automation{}).WithCustomValidator(v).Complete()
+func (k kindValidator[T]) ValidateUpdate(ctx context.Context, oldObj, newObj T) (admission.Warnings, error) {
+	return k.v.ValidateUpdate(ctx, oldObj, newObj)
 }
 
-func registerRunner(mgr ctrl.Manager, v *Validator) error {
-	return builder.WebhookManagedBy(mgr, &factoryv1.Runner{}).WithCustomValidator(v).Complete()
-}
-
-func registerScorer(mgr ctrl.Manager, v *Validator) error {
-	return builder.WebhookManagedBy(mgr, &factoryv1.Scorer{}).WithCustomValidator(v).Complete()
+func (k kindValidator[T]) ValidateDelete(ctx context.Context, obj T) (admission.Warnings, error) {
+	return k.v.ValidateDelete(ctx, obj)
 }
 
 // ValidateCreate admits a new object.

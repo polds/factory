@@ -145,18 +145,22 @@ func agentHTTP(starts, cancels, gets *atomic.Int32, hold bool) http.Handler {
 		n := gets.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		if hold {
-			fmt.Fprint(w, "id: 1\nevent: run.status\ndata: {\"status\":\"running\"}\n\n")
+			if _, err := fmt.Fprint(w, "id: 1\nevent: run.status\ndata: {\"status\":\"running\"}\n\n"); err != nil {
+				return
+			}
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
 			<-r.Context().Done()
 			return
 		}
-		if n == 1 {
-			fmt.Fprint(w, "id: 1\nevent: run.status\ndata: {\"status\":\"running\"}\n\n")
+		body := "id: 1\nevent: run.status\ndata: {\"status\":\"running\"}\n\n"
+		if n != 1 {
+			body = "id: 2\nevent: run.terminal\ndata: {\"status\":\"succeeded\",\"executions\":[{\"id\":\"e1\",\"attempt\":1,\"state\":\"succeeded\"}],\"usage\":{\"inputTokens\":2,\"outputTokens\":3,\"costCents\":4},\"prUrls\":[\"https://example.invalid/pr/1\"]}\n\n"
+		}
+		if _, err := fmt.Fprint(w, body); err != nil {
 			return
 		}
-		fmt.Fprint(w, "id: 2\nevent: run.terminal\ndata: {\"status\":\"succeeded\",\"executions\":[{\"id\":\"e1\",\"attempt\":1,\"state\":\"succeeded\"}],\"usage\":{\"inputTokens\":2,\"outputTokens\":3,\"costCents\":4},\"prUrls\":[\"https://example.invalid/pr/1\"]}\n\n")
 	})
 	return mux
 }

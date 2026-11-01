@@ -124,7 +124,7 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			started, err := r.API.StartRun(ctx, runRequest(&run))
 			if err != nil {
 				msg := clip(err.Error(), maxMessage)
-				r.log().Info("run start failed", "agentrun", req.NamespacedName.String(), "message", msg)
+				r.log().Info("run start failed", "agentrun", req.String(), "message", msg)
 				r.event(&run, corev1.EventTypeWarning, "StartFailed", msg)
 				return ctrl.Result{}, err
 			}
@@ -133,7 +133,7 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			if err := r.writeRunID(ctx, req.NamespacedName, started.ID, phase); err != nil {
 				return ctrl.Result{}, err
 			}
-			r.log().Info("run started", "agentrun", req.NamespacedName.String(), "phase", phase)
+			r.log().Info("run started", "agentrun", req.String(), "phase", phase)
 			r.event(&run, corev1.EventTypeNormal, "Started", "run started")
 		}
 	}
@@ -195,7 +195,7 @@ func (r *AgentRunReconciler) reconcileDelete(ctx context.Context, key types.Name
 				return ctrl.Result{}, err
 			}
 			r.event(run, corev1.EventTypeWarning, "CancelTimedOut", "cancel grace elapsed")
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 		}
 		r.stopWatch(key)
 		return ctrl.Result{}, r.removeFinalizer(ctx, key)
