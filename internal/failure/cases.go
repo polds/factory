@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 )
 
-//go:embed testdata/oom.json testdata/evicted.json
+//go:embed testdata/oom.json testdata/evicted.json testdata/unschedulable.json testdata/image_pull.json testdata/active_deadline.json testdata/job_create.json testdata/container_exit.json
 var fixtures embed.FS
 
 func mustFixture(name string) json.RawMessage {
@@ -26,7 +26,7 @@ func codePtr(n int) *int {
 func Cases() []Rule {
 	oom := mustFixture("testdata/oom.json")
 	evicted := mustFixture("testdata/evicted.json")
-	return []Rule{
+	rules := []Rule{
 		{
 			Name:  "harness_failed_by_agent",
 			Input: Input{HarnessStatus: ReasonFailedByAgent},
@@ -540,4 +540,5 @@ func Cases() []Rule {
 			Result: Result{},
 		},
 	}
+	return append(rules, kubernetesCases()...)
 }

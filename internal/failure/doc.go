@@ -81,6 +81,23 @@
 // reason, so classifying that run row yields an empty class. Pass the
 // execution state as RunStatus or FailureReason orphaned to classify the attempt.
 //
+// # Kubernetes reasons
+//
+// The upstream worker's Kubernetes backend reports a failure_reason from its
+// metric list (unschedulable, image_pull, job_create, active_deadline, and
+// the other kubernetes.go reasons) and a failure_details.kubernetes snapshot.
+// Exit 10 stays agent even when that snapshot is present. OOMKilled and
+// Evicted keep their own rows. Any other non-zero container exit keeps
+// container_exit, unless the exit is 20, 21, 30, or 128+signal. Every
+// remaining Kubernetes reason is infrastructure with code unknown, and the
+// summary is that reason. Configuration stays exit 20 or config_invalid.
+// infrastructure and configuration are the classes eligibility already
+// excludes.
+//
+// A startup preflight or RBAC denial does not arrive as its own reason. It
+// either stops the worker before a task exists, or task Job creation fails
+// and the reason is job_create.
+//
 // Cases is the whole table. The T47 parity check compares its SQL CASE to
-// these inputs.
+// these inputs. Kubernetes rows use the same codes as that CASE.
 package failure
