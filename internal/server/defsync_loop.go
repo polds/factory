@@ -59,16 +59,15 @@ func (s *Server) onDefinitionSync(sha string, changed bool, diags []definition.D
 	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
-	tree, loaded, loadErr := loadTree(s.cfg.DefinitionPath)
-	if loadErr != nil || tree == nil || len(errorTexts(loaded)) > 0 {
-		s.log.Error("definition sync apply skipped", "sha", sha)
+	if err := s.publishDirectory(ctx, s.cfg.DefinitionPath); err != nil {
+		if errors.Is(err, errDefinitionRejected) {
+			s.log.Error("definition sync apply skipped", "sha", sha)
+			return
+		}
+		s.log.Error("definition sync apply", "sha", sha, "err", s.redact(err.Error()))
 		return
 	}
-	if _, applyErr := s.applyTree(ctx, tree); applyErr != nil {
-		s.log.Error("definition sync apply", "sha", sha, "err", s.redact(applyErr.Error()))
-		return
-	}
-	s.log.Info("definition sync applied", "sha", sha, "factory", tree.Factory.Name)
+	s.log.Info("definition sync applied", "sha", sha)
 }
 
 func (s *Server) redact(text string) string {

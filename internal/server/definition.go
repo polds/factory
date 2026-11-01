@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -30,15 +31,23 @@ type loaded struct {
 }
 
 func (s *Server) applyBoot(ctx context.Context) error {
-	tree, diags, err := loadTree(s.cfg.DefinitionPath)
-	if err != nil {
+	if s.apiBacked() {
+		if _, err := os.Stat(filepath.Join(s.cfg.DefinitionPath, "factory.yaml")); err != nil {
+			if os.IsNotExist(err) {
+				s.setAPIServed(readAPIGeneration(s.cfg.DefinitionPath), nil)
+				return nil
+			}
+		}
+	}
+	if err := s.publishDirectory(ctx, s.cfg.DefinitionPath); err != nil {
 		return err
 	}
-	if msgs := errorTexts(diags); len(msgs) > 0 {
-		return fmt.Errorf("server: definition: %s", strings.Join(msgs, "; "))
-	}
-	if _, err := s.applyTree(ctx, tree); err != nil {
-		return err
+	if s.apiBacked() {
+		files, err := definitionFiles(s.cfg.DefinitionPath)
+		if err != nil {
+			return err
+		}
+		s.setAPIServed(readAPIGeneration(s.cfg.DefinitionPath), files)
 	}
 	return nil
 }

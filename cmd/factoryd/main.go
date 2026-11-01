@@ -174,6 +174,10 @@ Environment:
   FACTORY_DEFINITION_GIT_SUBDIR
   FACTORY_DEFINITION_GIT_PRODUCTION_REF
   FACTORY_DEFINITION_GIT_INTERVAL (default 1m)
+  FACTORY_DEFINITION_SOURCE
+      path (default), git, or api. api accepts PUT /api/v1/factory/{name}/definition.
+      A git URL, or any source other than api, answers that route with 409
+      and writes nothing.
   FACTORY_EXTERNAL_URL
   FACTORY_TASK_SERVER_URL
       Base URL task containers use to push events. Task containers are on

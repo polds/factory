@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -9,10 +11,22 @@ import (
 // definitionPushMaxBytes is the largest definition bundle this route reads.
 const definitionPushMaxBytes = 8 << 20
 
-// definitionPushUnwiredDetail is the 501 problem detail until T89 implements
-// the route. A git-backed factory returns 409 once that implementation lands;
-// this handler does not.
+// definitionPushUnwiredDetail is the 501 problem detail when the Backend
+// does not implement DefinitionPublisher.
 const definitionPushUnwiredDetail = "definition push is not implemented"
+
+// DefinitionSourceAPI is the GET /definition source of an API-backed factory.
+const DefinitionSourceAPI = "api"
+
+// ErrGitBackedDefinition is the 409 from PUT definition. A git URL or a
+// path source both return it, and nothing is written.
+var ErrGitBackedDefinition = errors.New("factory definition is git-backed")
+
+// DefinitionPublisher is the Backend extension that publishes a definition
+// bundle. Handlers type-assert Backend to it.
+type DefinitionPublisher interface {
+	PublishDefinition(ctx context.Context, name string, req DefinitionPushRequest) (DefinitionPushResponse, error)
+}
 
 // DefinitionPushRequest is the body of PUT /api/v1/factory/{name}/definition.
 // Generation is the Factory metadata.generation the operator observed.
@@ -68,6 +82,22 @@ func (h *handler) handlePutDefinition(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// T89 publishes the bundle. Until then the route is an explicit 501.
-	writeProblem(w, http.StatusNotImplemented, definitionPushUnwiredDetail)
+	pub, ok := h.backend.(DefinitionPublisher)
+	if !ok {
+		writeProblem(w, http.StatusNotImplemented, definitionPushUnwiredDetail)
+		return
+	}
+	resp, err := pub.PublishDefinition(r.Context(), strings.TrimSpace(r.PathValue("name")), req)
+	if err != nil {
+		if errors.Is(err, ErrGitBackedDefinition) {
+			writeProblem(w, http.StatusConflict, "factory definition is git-backed")
+			return
+		}
+		h.writeBackendErr(w, err)
+		return
+	}
+	if resp.Errors == nil {
+		resp.Errors = []Diagnostic{}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

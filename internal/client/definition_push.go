@@ -24,6 +24,14 @@ type (
 	DefinitionPushResponse = api.DefinitionPushResponse
 )
 
+// GetDefinition calls GET /api/v1/factory/{name}/definition.
+func (c *Client) GetDefinition(ctx context.Context, factory string) (api.DefinitionView, error) {
+	var view api.DefinitionView
+	path := "/api/v1/factory/" + url.PathEscape(factory) + "/definition"
+	err := c.doJSON(ctx, http.MethodGet, path, nil, &view, http.StatusOK)
+	return view, err
+}
+
 // PushDefinition calls PUT /api/v1/factory/{name}/definition.
 // A 409 from a git-backed factory is ErrGitBackedFactory. The request
 // body is not included in the error.
