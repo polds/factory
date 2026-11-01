@@ -1,0 +1,16 @@
+{
+  "kubernetes": {
+    "schema_version": 1,
+    "observation_source": "pod_watch",
+    "pod": {
+      "phase": "Pending",
+      "conditions": [
+        {
+          "type": "PodScheduled",
+          "status": "False",
+          "reason": "Unschedulable"
+        }
+      ]
+    }
+  }
+}

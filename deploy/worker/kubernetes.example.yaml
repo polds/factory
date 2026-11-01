@@ -1,0 +1,56 @@
+# Kubernetes-backend worker config. The image stays the unmodified worker
+# pinned by WORKER_REF in the Dockerfile. This file is not copied into the
+# image. It has no secret values: pull secrets and env credentials are names.
+worker_id: k8s-prod
+max_concurrent_tasks: 8
+backend:
+  kubernetes:
+    namespace: factory-runs
+    default_image: ghcr.io/acme/ci-base:2026-10
+    image_pull_policy: IfNotPresent
+    use_image_volumes: false
+    preflight_image: busybox:1.36
+    preflight_resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+    sidecar_image: ghcr.io/acme/factory-harness-claude:1.4.0
+    coding_cli_sidecars:
+      claude-code: ghcr.io/acme/claude-cli:1.9.0
+      codex: ghcr.io/acme/codex-cli:0.7.2
+    setup_command: /opt/scripts/pre-task.sh
+    teardown_command: /opt/scripts/post-task.sh
+    active_deadline_seconds: 28800
+    ttl_seconds_after_finished: 86400
+    workspace_size_limit: 20Gi
+    unschedulable_timeout: 10m
+    extra_labels:
+      app.kubernetes.io/part-of: factory
+    extra_annotations:
+      karpenter.sh/do-not-disrupt: "true"
+    pod_template:
+      serviceAccountName: factory-task
+      imagePullSecrets:
+        - name: ghcr-pull
+      nodeSelector:
+        kubernetes.io/os: linux
+        factory.dev/pool: standard
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: agents
+          effect: NoSchedule
+      containers:
+        - name: task
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+            limits:
+              memory: 8Gi
+          env:
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: forge-creds
+                  key: github-token

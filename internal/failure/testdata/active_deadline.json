@@ -1,0 +1,19 @@
+{
+  "kubernetes": {
+    "schema_version": 1,
+    "observation_source": "job_watch",
+    "pod": {
+      "phase": "Failed",
+      "reason": "DeadlineExceeded"
+    },
+    "job": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "DeadlineExceeded"
+        }
+      ]
+    }
+  }
+}

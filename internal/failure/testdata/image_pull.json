@@ -1,0 +1,20 @@
+{
+  "kubernetes": {
+    "schema_version": 1,
+    "observation_source": "pod_watch",
+    "pod": {
+      "phase": "Pending"
+    },
+    "container": {
+      "state": "waiting",
+      "waiting_reason": "ImagePullBackOff"
+    },
+    "events": [
+      {
+        "type": "Warning",
+        "reason": "Failed",
+        "count": 2
+      }
+    ]
+  }
+}

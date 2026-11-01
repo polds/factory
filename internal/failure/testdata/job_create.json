@@ -1,0 +1,14 @@
+{
+  "kubernetes": {
+    "schema_version": 1,
+    "job": {
+      "conditions": [
+        {
+          "type": "Failed",
+          "status": "True",
+          "reason": "FailedCreate"
+        }
+      ]
+    }
+  }
+}
