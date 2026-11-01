@@ -138,10 +138,13 @@ func testReviewerEmailsCEL(t *testing.T, ctx context.Context, cl client.Client) 
 	t.Helper()
 	ns := "cel-review"
 	mustCreate(t, ctx, cl, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
-	mustCreate(t, ctx, cl, &Factory{ObjectMeta: metav1.ObjectMeta{Name: "admins", Namespace: ns}, Spec: FactorySpec{SelfImprovement: &SelfImprovementSpec{ReviewerType: "admins"}}})
 	mustCreate(t, ctx, cl, &Factory{ObjectMeta: metav1.ObjectMeta{Name: "custom", Namespace: ns}, Spec: FactorySpec{SelfImprovement: &SelfImprovementSpec{ReviewerType: "custom", ReviewerEmails: []string{"a@acme.example"}}}})
 	mustReject(t, ctx, cl, &Factory{ObjectMeta: metav1.ObjectMeta{Name: "custom-empty", Namespace: ns}, Spec: FactorySpec{SelfImprovement: &SelfImprovementSpec{ReviewerType: "custom"}}})
+	mustReject(t, ctx, cl, &Factory{ObjectMeta: metav1.ObjectMeta{Name: "custom-blank", Namespace: ns}, Spec: FactorySpec{SelfImprovement: &SelfImprovementSpec{ReviewerType: "custom", ReviewerEmails: []string{" "}}}})
+	mustCreate(t, ctx, cl, &Factory{ObjectMeta: metav1.ObjectMeta{Name: "custom-mixed", Namespace: ns}, Spec: FactorySpec{SelfImprovement: &SelfImprovementSpec{ReviewerType: "custom", ReviewerEmails: []string{" ", "a@acme.example"}}}})
 	mustReject(t, ctx, cl, &Factory{ObjectMeta: metav1.ObjectMeta{Name: "admins-mail", Namespace: ns}, Spec: FactorySpec{SelfImprovement: &SelfImprovementSpec{ReviewerType: "admins", ReviewerEmails: []string{"a@acme.example"}}}})
+	mustCreate(t, ctx, cl, &Factory{ObjectMeta: metav1.ObjectMeta{Name: "admins-blank", Namespace: ns}, Spec: FactorySpec{SelfImprovement: &SelfImprovementSpec{ReviewerType: "admins", ReviewerEmails: []string{" "}}}})
+	mustCreate(t, ctx, cl, &Factory{ObjectMeta: metav1.ObjectMeta{Name: "admins", Namespace: ns}, Spec: FactorySpec{SelfImprovement: &SelfImprovementSpec{ReviewerType: "admins"}}})
 }
 
 func testScorerCEL(t *testing.T, ctx context.Context, cl client.Client) {

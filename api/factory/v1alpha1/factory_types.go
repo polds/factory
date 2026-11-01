@@ -91,7 +91,7 @@ type ApprovalSpec struct {
 // SelfImprovementSpec is factory.spec.selfImprovement.
 // reviewerEmails is non-empty if and only if reviewerType is custom.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.reviewerType) && self.reviewerType == 'custom') == (has(self.reviewerEmails) && size(self.reviewerEmails) > 0)",message="reviewerEmails must be non-empty if and only if reviewerType is custom"
+// +kubebuilder:validation:XValidation:rule="(has(self.reviewerType) && self.reviewerType == 'custom') == (has(self.reviewerEmails) && self.reviewerEmails.exists(e, size(e.trim()) > 0))",message="reviewerEmails must be non-empty if and only if reviewerType is custom"
 type SelfImprovementSpec struct {
 	FailedRunThreshold int32 `json:"failedRunThreshold,omitempty"`
 	StaleFailureDays   int32 `json:"staleFailureDays,omitempty"`

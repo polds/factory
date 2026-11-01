@@ -321,7 +321,8 @@ spec:
                 - message: reviewerEmails must be non-empty if and only if reviewerType
                     is custom
                   rule: (has(self.reviewerType) && self.reviewerType == 'custom')
-                    == (has(self.reviewerEmails) && size(self.reviewerEmails) > 0)
+                    == (has(self.reviewerEmails) && self.reviewerEmails.exists(e,
+                    size(e.trim()) > 0))
             type: object
           status:
             description: FactoryStatus is the operator's view of a Factory.
