@@ -69,6 +69,9 @@ func (h *handler) route() {
 	m.HandleFunc("GET /api/v1/factory/{uid}", h.withAPIKey(h.handleGetFactory))
 	m.HandleFunc("POST /api/v1/factory/{uid}/definition:validate", h.withAPIKey(h.handleValidate))
 	m.HandleFunc("POST /api/v1/factory/{uid}/definition:apply", h.withAPIKey(h.handleApply))
+	// D1. T89 implements publish. Until then the handler returns 501.
+	// A git-backed factory is 409 once that implementation lands.
+	m.HandleFunc("PUT /api/v1/factory/{name}/definition", h.withAPIKey(h.handlePutDefinition))
 	m.HandleFunc("GET /api/v1/factory/{uid}/agents", h.withAPIKey(h.handleListAgents))
 	m.HandleFunc("GET /api/v1/factory/{uid}/runs", h.withAPIKey(h.handleListFactoryRuns))
 	m.HandleFunc("POST /api/v1/agent/run", h.withAPIKey(h.handleStartRun))
