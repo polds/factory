@@ -92,7 +92,7 @@ if [[ -f deploy/helm/factory/Chart.yaml ]]; then
     install -m 0755 "/tmp/linux-${helm_arch}/helm" "${HOME}/.local/bin/helm"
   fi
   helm lint deploy/helm/factory
-  helm template factory deploy/helm/factory >/dev/null
+  helm template factory deploy/helm/factory --set global.image.tag=ci >/dev/null
 else
   echo "  no deploy/helm/factory/Chart.yaml"
 fi

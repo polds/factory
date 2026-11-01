@@ -1,0 +1,86 @@
+# Two worker pools. global.image.tag is pinned for rendering.
+global:
+  image:
+    tag: test
+
+workers:
+  - name: standard
+    enabled: true
+    backend: kubernetes
+    replicas: 2
+    workerId: k8s-standard
+    pool: standard
+    maxConcurrentTasks: 8
+    logLevel: info
+    cleanup: true
+    terminationGracePeriodSeconds: 600
+    apiKeySecret:
+      name: factory-worker
+      key: FACTORY_API_KEY
+      create: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    metrics:
+      enabled: true
+      exporter: prometheus
+      port: 9464
+    kubernetesBackend:
+      namespace: factory-runs
+      defaultImage: ubuntu:22.04
+      imagePullPolicy: IfNotPresent
+      useImageVolumes: false
+      preflightImage: busybox:1.36
+      activeDeadlineSeconds: 28800
+      ttlSecondsAfterFinished: 86400
+      workspaceSizeLimit: 20Gi
+      unschedulableTimeout: 10m
+      extraAnnotations:
+        karpenter.sh/do-not-disrupt: "true"
+      extraLabels: {}
+      podTemplate: {}
+      preflightResources: {}
+  - name: batch
+    enabled: true
+    backend: kubernetes
+    replicas: 1
+    workerId: k8s-batch
+    pool: batch
+    maxConcurrentTasks: 2
+    logLevel: info
+    cleanup: true
+    terminationGracePeriodSeconds: 600
+    apiKeySecret:
+      name: factory-worker-batch
+      key: FACTORY_API_KEY
+      create: false
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    metrics:
+      enabled: false
+      exporter: prometheus
+      port: 9464
+    kubernetesBackend:
+      namespace: factory-runs
+      defaultImage: ubuntu:22.04
+      imagePullPolicy: IfNotPresent
+      useImageVolumes: false
+      preflightImage: busybox:1.36
+      activeDeadlineSeconds: 28800
+      ttlSecondsAfterFinished: 86400
+      workspaceSizeLimit: 20Gi
+      unschedulableTimeout: 10m
+      extraAnnotations:
+        karpenter.sh/do-not-disrupt: "true"
+      extraLabels: {}
+      podTemplate: {}
+      preflightResources: {}
