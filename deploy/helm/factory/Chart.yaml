@@ -1,0 +1,6 @@
+apiVersion: v2
+name: factory
+description: Namespace-scoped factory control plane and workers (chart-only mode)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

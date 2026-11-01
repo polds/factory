@@ -1,0 +1,25 @@
+Chart-only factory is installed in namespace {{ .Release.Namespace }}.
+
+The task namespace is separate from this one. Create it before install
+(the default worker pool uses factory-runs). This chart does not render
+a Namespace, ClusterRole, ClusterRoleBinding, or CRD.
+
+Set global.image.tag to a pinned tag. An empty tag or "latest" fails rendering.
+
+Create these Secrets before install when the matching in-chart store is off
+(names only; do not commit the values):
+
+  controlPlane.database.existingSecret key {{ .Values.controlPlane.database.urlKey | default "url" }}
+  controlPlane.objectStore.existingSecret keys {{ .Values.controlPlane.objectStore.accessKeyKey }} and {{ .Values.controlPlane.objectStore.secretKeyKey }}
+  controlPlane.api.existingSecret keys {{ .Values.controlPlane.api.apiKeyKey }} and {{ .Values.controlPlane.api.workerKeyKey }}
+  workers[].apiKeySecret (the worker reads that key as WARP_API_KEY)
+
+In-chart Postgres and MinIO are dev/eval only. They are off unless
+postgresql.enabled and minio.enabled are true, and those pods carry
+factory.dev/dev-eval=true.
+
+Migrations run as a pre-install/pre-upgrade hook: factoryd migrate up.
+Each worker pool runs a pre-install/pre-upgrade hook that executes the
+worker binary's own Kubernetes startup preflight.
+
+operator.enabled and operator.installCRDs are accepted and render nothing.

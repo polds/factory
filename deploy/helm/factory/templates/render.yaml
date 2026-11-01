@@ -1,0 +1,8 @@
+# yamllint disable-file
+{{- /* Always evaluated. An empty or "latest" tag fails rendering. */ -}}
+{{- include "factory.validate" . }}
+{{- include "factory.apiSecret" . }}
+{{- include "factory.dev" . }}
+{{- include "factory.controlplane" . }}
+{{- include "factory.workers" . }}
+{{- include "factory.migrations" . }}
