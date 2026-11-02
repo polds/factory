@@ -64,12 +64,69 @@ require_mode_secrets() {
 }
 
 m7_run_remote() {
+  export M7_WORK="$WORK"
+  export M7_DEFINITION="${M7_DEFINITION:-$WORK/definition}"
+  if [[ -z "${FACTORY_GITHUB_APP_ID:-}" && -n "${M6_GITHUB_APP_ID:-}" ]]; then
+    export FACTORY_GITHUB_APP_ID="${M6_GITHUB_APP_ID}"
+  fi
   if [[ -n "${M7_REMOTE_STUB:-}" ]]; then
     "$M7_REMOTE_STUB" "$@"
     return
   fi
   SPIKE_ENV_PREFIX=M7 SPIKE_RUN_REF_PREFIX=m7-run \
     python3 "$ROOT/spike/lib/remote.py" "$@"
+}
+
+# Live and live-ci preflight, then seed m7-run/<run-id>/main, before the
+# definition is applied. Offline returns without touching the network.
+m7_prepare_remote() {
+  local reason=""
+  if [[ "$MODE" == "offline" ]]; then
+    return 0
+  fi
+  if ! m7_run_remote preflight; then
+    reason="remote preflight failed"
+    if [[ -f "$WORK/remote-fail" ]]; then
+      IFS= read -r reason <"$WORK/remote-fail" || true
+    fi
+    die "$reason"
+  fi
+  if ! m7_run_remote seed; then
+    reason="remote seed failed"
+    if [[ -f "$WORK/remote-fail" ]]; then
+      IFS= read -r reason <"$WORK/remote-fail" || true
+    fi
+    die "$reason"
+  fi
+}
+
+# Preflight and seed run before convert and apply. Live seed rewrites the
+# copied definition onto m7-run/<run-id>/main and leaves it in remote-seed.
+m7_apply_definition() {
+  local def="$1"
+  local manifest
+  m7_prepare_remote
+  if [[ -d "$WORK/remote-seed" ]]; then
+    def="$WORK/remote-seed"
+  fi
+  (cd "$ROOT" && go build -o "$WORK/factoryctl" ./cmd/factoryctl)
+  "$WORK/factoryctl" convert "$def" >"$WORK/manifests.yaml"
+  rm -rf "$WORK/apply"
+  python3 "$ROOT/spike/m7/apply_order.py" "$WORK/apply" <"$WORK/manifests.yaml"
+  for manifest in "$WORK"/apply/*.yaml; do
+    echo "apply $(basename "$manifest")"
+    k apply -n "${NAMESPACE}" -f "$manifest"
+  done
+}
+
+m7_cleanup_remote() {
+  if [[ "${MODE:-}" == "offline" ]]; then
+    return 0
+  fi
+  if ! m7_run_remote cleanup; then
+    printf 'remote cleanup incomplete; ledger %s\n' "$WORK/remote-ledger.json" >&2
+  fi
+  m7_cleanup_summary
 }
 
 m7_cleanup_summary() {
@@ -134,6 +191,8 @@ cleanup() {
   local why="${1:-EXIT}"
   if [[ "$why" == "INT" || "$why" == "TERM" ]]; then
     m7_budgeted_remote_cleanup || true
+  else
+    m7_cleanup_remote || true
   fi
   if [[ -n "${pf_pid}" ]]; then
     kill "${pf_pid}" >/dev/null 2>&1 || true
@@ -156,27 +215,6 @@ cleanup() {
 
 k() {
   "${KUBECTL}" --kubeconfig "${kubeconfig}" "$@"
-}
-
-# Status updates do not requeue AgentRun (internal/operator/agentrun.go
-# agentRunPredicate). The reconcile that writes runId can observe a stale
-# cache and never start the event watch, so status.phase stays queued.
-# Spec is immutable, so the driver restarts the operator. The new process
-# lists the AgentRun with status.runId set and starts the watch, which
-# replays the terminal event.
-restart_operator() {
-  echo "restart operator so the run watch starts"
-  k -n "${NAMESPACE}" delete pod -l app.kubernetes.io/component=operator --wait=true --timeout=90s
-  k -n "${NAMESPACE}" rollout status deploy/factory-operator --timeout=180s
-  local ready=""
-  for _ in $(seq 1 30); do
-    ready="$(k -n "${NAMESPACE}" get endpoints factory-operator-webhook -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)"
-    if [[ -n "${ready}" ]]; then
-      return 0
-    fi
-    sleep 2
-  done
-  die "webhook endpoint not Ready after operator restart"
 }
 
 phase() {
@@ -315,18 +353,31 @@ phase kind "$step_start"
 
 step_start=$SECONDS
 k create namespace "${NAMESPACE}" --dry-run=client -o yaml | k apply -f -
-k -n "${NAMESPACE}" create secret generic m7-runtime \
-  --from-file=FACTORY_INFERENCE_OPENAI_API_KEY="$WORK/worker-key" \
-  --from-file=FACTORY_SECRET_GH_TOKEN="$WORK/gh-token" \
-  --dry-run=client -o yaml | k apply -f -
-if [[ "$MODE" != "offline" ]]; then
+if [[ "$MODE" == "offline" ]]; then
+  write_key_file "$WORK/definition-git-url" "git://m7-git.factory.svc.cluster.local/target.git"
+  write_key_file "$WORK/github-api-base" "http://m7-forge.factory.svc.cluster.local:8080"
+else
+  write_key_file "$WORK/definition-git-url" "${M7_DEFINITION_GIT_URL}"
+  write_key_file "$WORK/github-api-base" "${M7_GITHUB_API_BASE}"
   write_key_file "$WORK/openai-key" "${M1_OPENAI_API_KEY}"
   write_key_file "$WORK/openai-base" "${M1_OPENAI_BASE_URL}"
   write_key_file "$WORK/app-id" "${M6_GITHUB_APP_ID}"
+  write_key_file "$WORK/gh-token" "app-mint"
+fi
+k -n "${NAMESPACE}" create secret generic m7-runtime \
+  --from-file=FACTORY_INFERENCE_OPENAI_API_KEY="$WORK/worker-key" \
+  --from-file=FACTORY_SECRET_GH_TOKEN="$WORK/gh-token" \
+  --from-file=FACTORY_SECRET_DEFINITION_GIT_URL="$WORK/definition-git-url" \
+  --from-file=FACTORY_SECRET_GITHUB_API_BASE="$WORK/github-api-base" \
+  --dry-run=client -o yaml | k apply -f -
+if [[ "$MODE" != "offline" ]]; then
   k -n "${NAMESPACE}" create secret generic m7-runtime \
     --from-file=FACTORY_INFERENCE_OPENAI_API_KEY="$WORK/openai-key" \
     --from-file=FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$WORK/openai-base" \
     --from-file=FACTORY_GITHUB_APP_ID="$WORK/app-id" \
+    --from-file=FACTORY_SECRET_GH_TOKEN="$WORK/gh-token" \
+    --from-file=FACTORY_SECRET_DEFINITION_GIT_URL="$WORK/definition-git-url" \
+    --from-file=FACTORY_SECRET_GITHUB_API_BASE="$WORK/github-api-base" \
     --dry-run=client -o yaml | k apply -f -
   k -n "${NAMESPACE}" create secret generic m7-github-app \
     --from-file=key.pem="${FACTORY_GITHUB_APP_PRIVATE_KEY_FILE}" \
@@ -334,10 +385,14 @@ if [[ "$MODE" != "offline" ]]; then
 fi
 
 echo "helm install"
+values_file="$ROOT/spike/m7/values-offline.yaml"
+if [[ "$MODE" != "offline" ]]; then
+  values_file="$ROOT/spike/m7/values-live.yaml"
+fi
 "${HELM}" upgrade --install "${RELEASE}" "$ROOT/deploy/helm/factory" \
   --namespace "${NAMESPACE}" \
   --create-namespace \
-  -f "$ROOT/spike/m7/values-${MODE}.yaml" \
+  -f "${values_file}" \
   -f "$WORK/values-secrets.yaml" \
   --set operator.enabled=true \
   --set operator.installCRDs=true \
@@ -569,7 +624,7 @@ def="$WORK/definition"
 rm -rf "$def"
 cp -a "$ROOT/deploy/m7-factory" "$def"
 if [[ "$MODE" != "offline" ]]; then
-  model="${M7_LIVE_MODEL:-claude-sonnet-5-5}"
+  model="${M7_LIVE_MODEL:-nous/claude-sonnet-5.5}"
   python3 - "$def" "$model" <<'PY'
 import pathlib, sys
 root, model = pathlib.Path(sys.argv[1]), sys.argv[2]
@@ -579,14 +634,7 @@ for path in root.rglob("*"):
     path.write_text(path.read_text(encoding="utf-8").replace("m7-agent", model), encoding="utf-8")
 PY
 fi
-(cd "$ROOT" && go build -o "$WORK/factoryctl" ./cmd/factoryctl)
-"$WORK/factoryctl" convert "$def" >"$WORK/manifests.yaml"
-rm -rf "$WORK/apply"
-python3 "$ROOT/spike/m7/apply_order.py" "$WORK/apply" <"$WORK/manifests.yaml"
-for manifest in "$WORK"/apply/*.yaml; do
-  echo "apply $(basename "$manifest")"
-  k apply -n "${NAMESPACE}" -f "$manifest"
-done
+m7_apply_definition "$def"
 echo "Factory DefinitionValid"
 ok=""
 for _ in $(seq 1 60); do
@@ -610,16 +658,11 @@ k apply -f "$ROOT/spike/m7/agentrun-pr.yaml"
 echo "waiting for m7-pr"
 pr_phase=""
 run_id=""
-restarted=""
 for _ in $(seq 1 90); do
   pr_phase="$(k -n "${NAMESPACE}" get agentrun m7-pr -o jsonpath='{.status.phase}' 2>/dev/null || true)"
   run_id="$(k -n "${NAMESPACE}" get agentrun m7-pr -o jsonpath='{.status.runId}' 2>/dev/null || true)"
   if [[ "$pr_phase" == "succeeded" || "$pr_phase" == "failed" || "$pr_phase" == "cancelled" ]]; then
     break
-  fi
-  if [[ -n "$run_id" && -z "$restarted" ]]; then
-    restart_operator
-    restarted=1
   fi
   sleep 2
 done
@@ -643,6 +686,12 @@ if [[ "$MODE" == "offline" ]]; then
   wait "${pf_pid}" >/dev/null 2>&1 || true
   pf_pid=""
   html="$(python3 -c 'import json,sys; doc=json.load(open(sys.argv[1], encoding="utf-8")); pulls=doc.get("pulls") or []; print(pulls[0]["html_url"] if pulls else "")' "$WORK/forge-snapshot.json")"
+else
+  if ! m7_run_remote record-prs; then
+    collect_evidence || true
+    die "remote pull request was not recorded"
+  fi
+  html="$(tr -d '[:space:]' <"$WORK/opened-pr-url")"
 fi
 if [[ -z "$html" ]]; then
   collect_evidence || true
@@ -650,8 +699,14 @@ if [[ -z "$html" ]]; then
 fi
 printf 'm7 pr assertion: forge=%s runId=%s phase=%s status.prUrls=%s\n' \
   "$html" "$run_id" "$pr_phase" "${pr_urls:-[]}"
-if [[ -z "$pr_urls" || "$pr_urls" == "[]" ]]; then
-  echo "m7 prUrls empty: internal/server/terminal.go terminalPayload has no prUrls; internal/operator/agentrun.go parseRunEvent copies only that field" >&2
+pr_first="$(k -n "${NAMESPACE}" get agentrun m7-pr -o jsonpath='{.status.prUrls[0]}' 2>/dev/null || true)"
+if [[ -z "$pr_first" ]]; then
+  collect_evidence || true
+  die "status.prUrls is empty"
+fi
+if [[ "$pr_first" != "$html" ]]; then
+  collect_evidence || true
+  die "status.prUrls does not match the forge pull request"
 fi
 phase pr "$step_start"
 
@@ -665,7 +720,6 @@ for _ in $(seq 1 30); do
 done
 k apply -f "$ROOT/spike/m7/agentrun-hold.yaml"
 echo "waiting for hold pod"
-hold_restarted=""
 for _ in $(seq 1 30); do
   hold_id="$(k -n "${NAMESPACE}" get agentrun m7-hold -o jsonpath='{.status.runId}' 2>/dev/null || true)"
   if [[ -n "$hold_id" ]]; then
@@ -673,10 +727,6 @@ for _ in $(seq 1 30); do
   fi
   sleep 2
 done
-if [[ -n "${hold_id:-}" && -z "$hold_restarted" ]]; then
-  restart_operator
-  hold_restarted=1
-fi
 hold_pod=""
 for _ in $(seq 1 60); do
   hold_pod="$(k get pods -n "${TASK_NAMESPACE}" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
@@ -734,6 +784,10 @@ if [[ -n "$later" ]]; then
   die "new claim after cancel"
 fi
 printf 'm7 delete-to-cancel %ss\n' "$cancel_s"
+if [[ "$cancel_s" -gt 120 ]]; then
+  collect_evidence || true
+  die "delete-to-cancel ${cancel_s}s exceeds 120s"
+fi
 if [[ -n "$hold_run" ]]; then
   k -n "${NAMESPACE}" port-forward svc/factory-factoryd 18081:8080 >/tmp/m7-factoryd-pf.log 2>&1 &
   pf_pid=$!

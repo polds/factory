@@ -519,6 +519,14 @@ func (c *conversation) oneTurn(ctx context.Context, turn int, messages []chatMes
 				output = "interrupted"
 			}
 		}
+		var prs []string
+		for _, raw := range PullURLs(output) {
+			cleaned := Redact(raw, c.secrets)
+			if cleaned == "" || cleaned == redacted {
+				continue
+			}
+			prs = append(prs, cleaned)
+		}
 		_ = c.log.Emit(Event{
 			Type:         "tool.result",
 			Turn:         turn,
@@ -526,6 +534,7 @@ func (c *conversation) oneTurn(ctx context.Context, turn int, messages []chatMes
 			OK:           &ok,
 			DurationMS:   &ms,
 			OutputDigest: Digest(output),
+			PRURLs:       prs,
 		})
 		if result.Changed && !c.turnInterrupted(ctx, turnCtx) {
 			_ = c.log.Emit(Event{

@@ -4,9 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"regexp"
 	"sync"
 	"time"
 )
+
+// pullURLRe matches an https pull request URL. The harness copies matches
+// from tool output onto the tool result so factoryd can put them on
+// run.terminal. Query strings are not part of the match.
+var pullURLRe = regexp.MustCompile(`https://[^\s"'<>]+/pull/[0-9]+`)
 
 // Event is one NDJSON record from Harness Contract v1.
 type Event struct {
@@ -36,6 +42,27 @@ type Event struct {
 	// interrupt or follow-up. Text on those events is already redacted.
 	Steer   bool   `json:"steer,omitempty"`
 	SteerID string `json:"steer_id,omitempty"`
+	// PRURLs are pull request URLs found in tool output. Empty stays omitted
+	// so events that have no URL keep their previous JSON shape.
+	PRURLs []string `json:"prUrls,omitempty"`
+}
+
+// PullURLs returns the distinct https pull request URLs in text, in order.
+func PullURLs(text string) []string {
+	found := pullURLRe.FindAllString(text, -1)
+	if len(found) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(found))
+	seen := map[string]struct{}{}
+	for _, raw := range found {
+		if _, ok := seen[raw]; ok {
+			continue
+		}
+		seen[raw] = struct{}{}
+		out = append(out, raw)
+	}
+	return out
 }
 
 // Log writes events with strictly increasing timestamps and at most one terminal.

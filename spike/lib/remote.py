@@ -888,12 +888,27 @@ def rewrite_agent_steps(agent: Path, base_ref: str) -> None:
     new_clone = (
         f"1. Clone the repository in DEFINITION_GIT_URL and check out {base_ref}.\n"
     )
-    old_pr = "5. Open a pull request against main at GITHUB_API_BASE using GH_TOKEN.\n"
-    new_pr = f"5. Open a pull request against {base_ref} at GITHUB_API_BASE using GH_TOKEN.\n"
-    if old_clone not in agent_text or old_pr not in agent_text:
+    m6_pr = "5. Open a pull request against main at GITHUB_API_BASE using GH_TOKEN.\n"
+    m7_pr = "5. Open a pull request against the run base ref at GITHUB_API_BASE using GH_TOKEN.\n"
+    if old_clone not in agent_text or (
+        m6_pr not in agent_text and m7_pr not in agent_text
+    ):
         raise RemoteError("implementer steps did not name main")
-    agent_text = agent_text.replace(old_clone, new_clone, 1).replace(old_pr, new_pr, 1)
-    if "against main" in agent_text:
+    agent_text = agent_text.replace(old_clone, new_clone, 1)
+    if m7_pr in agent_text:
+        if not base_ref.endswith("/main"):
+            raise RemoteError("run base ref is not main")
+        head_ref = base_ref[: -len("main")] + "change"
+        new_pr = (
+            f"5. Push the branch {head_ref} and open a pull request against {base_ref} "
+            "at GITHUB_API_BASE using GH_TOKEN.\n"
+            "   Print the pull request html_url.\n"
+        )
+        agent_text = agent_text.replace(m7_pr, new_pr, 1)
+    else:
+        new_pr = f"5. Open a pull request against {base_ref} at GITHUB_API_BASE using GH_TOKEN.\n"
+        agent_text = agent_text.replace(m6_pr, new_pr, 1)
+    if "against main" in agent_text or "run base ref" in agent_text:
         raise RemoteError("implementer steps still open a pull request against main")
     agent.write_text(agent_text, encoding="utf-8")
 
@@ -1125,6 +1140,77 @@ def still_waiting_for_reviewer() -> bool:
         marker.write_text("wait\n", encoding="utf-8")
         return True
     return now - marker.stat().st_mtime < REVIEWER_WAIT_S
+
+
+def note_opened_pr(ledger: dict, number: int, head: str, base_ref: str) -> None:
+    run_id = accepted_run_id(str(ledger.get("run_id") or ""))
+    if not ref_allowed(head, run_id, str(ledger.get("batch_id") or "")):
+        refuse(head)
+        raise RemoteError(f"remote ref refused: {head}: allow-list")
+    numbers = {
+        entry.get("number") for entry in ledger["entries"] if entry.get("kind") == "pr"
+    }
+    if number not in numbers:
+        ledger["entries"].append(
+            {
+                "kind": "pr",
+                "number": number,
+                "head": head,
+                "base": base_ref,
+                "phase": "created",
+            }
+        )
+    note_ref(ledger, head, "created")
+    save_ledger(ledger)
+
+
+def record_prs() -> None:
+    """Record open pull requests whose base is this run's seeded ref."""
+    if not live_mode():
+        return
+    ledger = load_ledger()
+    if ledger is None:
+        raise RemoteError("remote ledger is missing")
+    base_ref = str(ledger.get("base_ref") or "")
+    if not ref_allowed(base_ref, str(ledger.get("run_id") or ""), ""):
+        raise RemoteError("run base ref is not in the allow-list")
+    token = read_secret(token_path())
+    quoted = urllib.parse.quote(base_ref, safe="")
+    status, body = request(
+        "GET",
+        f"{ledger['api_base']}/repos/{ledger['owner']}/{ledger['repo']}/pulls?state=open&base={quoted}",
+        token,
+    )
+    if status != 200:
+        raise http_error("pull request list failed", status, body)
+    try:
+        rows = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RemoteError("pull request list failed") from exc
+    if not isinstance(rows, list):
+        raise RemoteError("pull request list failed")
+    html = ""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        base = row.get("base")
+        head = row.get("head")
+        if not isinstance(base, dict) or base.get("ref") != base_ref:
+            continue
+        if not isinstance(head, dict) or not isinstance(head.get("ref"), str):
+            continue
+        number = row.get("number")
+        href = str(row.get("html_url") or "")
+        if not isinstance(number, int) or not href.startswith("https://"):
+            continue
+        note_opened_pr(ledger, number, head["ref"], base_ref)
+        if html == "":
+            html = href
+    if html == "":
+        raise RemoteError("pull request was not opened against the run base")
+    dest = work_dir() / "opened-pr-url"
+    dest.write_text(html + "\n", encoding="utf-8")
+    os.chmod(dest, 0o600)
 
 
 def watch_once() -> None:
@@ -1499,7 +1585,9 @@ def remember_watch_error(err: RemoteError) -> None:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
-        sys.stderr.write("usage: remote.py preflight|seed|watch-once|cleanup\n")
+        sys.stderr.write(
+            "usage: remote.py preflight|seed|record-prs|watch-once|cleanup\n"
+        )
         return 2
     command = argv[1]
     if not live_mode():
@@ -1509,6 +1597,8 @@ def main(argv: list[str]) -> int:
             preflight()
         elif command == "seed":
             seed()
+        elif command == "record-prs":
+            record_prs()
         elif command == "watch-once":
             try:
                 watch_once()

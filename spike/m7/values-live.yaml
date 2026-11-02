@@ -1,5 +1,5 @@
-# Live overlay. The driver fills API keys and the inference URL from the
-# process environment into mode-600 files. Nothing here is a credential.
+# Live and live-ci overlay. The driver fills API keys and the inference URL
+# from the process environment into mode-600 files. Nothing here is a credential.
 global:
   image:
     registry: ""

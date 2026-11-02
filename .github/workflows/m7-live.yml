@@ -27,9 +27,9 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: Model id. Default matches m6-live.
+        description: LiteLLM model id.
         required: false
-        default: claude-sonnet-5-5
+        default: nous/claude-sonnet-5.5
         type: string
       target_git_url:
         description: Target git URL.

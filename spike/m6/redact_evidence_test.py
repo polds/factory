@@ -3,18 +3,11 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
+import runpy
 from pathlib import Path
 
-_LIB = Path(__file__).resolve().parents[1] / "lib" / "redact_evidence_test.py"
-_spec = importlib.util.spec_from_file_location("spike_lib_redact_evidence_test", _LIB)
-if _spec is None or _spec.loader is None:
-    raise ImportError(f"cannot load {_LIB}")
-_mod = importlib.util.module_from_spec(_spec)
-sys.modules["spike_lib_redact_evidence_test"] = _mod
-_spec.loader.exec_module(_mod)
-globals().update({k: getattr(_mod, k) for k in dir(_mod) if not k.startswith("__")})
+_SHIM = Path(__file__).resolve().parents[1] / "lib" / "shim.py"
+_mod = runpy.run_path(str(_SHIM))["install"]("redact_evidence_test", globals())
 
 if __name__ == "__main__":
     raise SystemExit("run via unittest")

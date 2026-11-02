@@ -153,7 +153,103 @@ case_remote() {
   work="$(mktemp -d "$ROOT/spike/m7/.work/remote.XXXXXX")"
   M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" preflight
   M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" ledger
+  M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" rewrite
   rm -rf "$work"
+}
+
+case_live_before_apply() {
+  local dir
+  dir="$(mktemp -d "$ROOT/spike/m7/.work/order.XXXXXX")"
+  mkdir -p "$dir/bin" "$dir/definition"
+  cat >"$dir/bin/go" <<'EOF'
+#!/bin/bash
+dest=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "-o" ]]; then
+    dest="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+if [[ -z "$dest" ]]; then
+  exit 0
+fi
+cat >"$dest" <<'CTL'
+#!/bin/bash
+printf 'convert %s\n' "$2" >> "$M7_ORDER_LOG"
+printf '%s\n' 'apiVersion: factory.dev/v1alpha1' 'kind: Factory' 'metadata:' '  name: m7'
+CTL
+chmod 755 "$dest"
+EOF
+  cat >"$dir/bin/kubectl" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+  if [[ "$arg" == "apply" ]]; then
+    printf 'apply\n' >> "$M7_ORDER_LOG"
+  fi
+done
+exit 0
+EOF
+  cat >"$dir/remote" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$1" >> "$M7_ORDER_LOG"
+if [[ "$1" == "seed" ]]; then
+  mkdir -p "$M7_WORK/remote-seed"
+fi
+exit 0
+EOF
+  chmod 755 "$dir/bin/go" "$dir/bin/kubectl" "$dir/remote"
+  : >"$dir/order.log"
+  PATH="$dir/bin:${PATH}" \
+    MODE=live-ci \
+    M7_WORK="$dir" \
+    M7_REMOTE_STUB="$dir/remote" \
+    M7_ORDER_LOG="$dir/order.log" \
+    KUBECTL="$dir/bin/kubectl" \
+    bash -c 'source "$1"; m7_apply_definition "$WORK/definition"' _ "$ROOT/spike/m7/run.sh"
+  python3 - "$dir/order.log" <<'PY'
+import sys
+from pathlib import Path
+
+lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+want = ["preflight", "seed"]
+if lines[:2] != want:
+    raise SystemExit(f"preflight and seed were not first: {lines}")
+converts = [line for line in lines if line.startswith("convert ")]
+if len(converts) != 1 or not converts[0].endswith("/remote-seed"):
+    raise SystemExit(f"convert did not use the seeded definition: {lines}")
+if lines[2:] != [converts[0], "apply"]:
+    raise SystemExit(f"apply did not follow seed: {lines}")
+PY
+  rm -rf "$dir"
+}
+
+case_cleanup_on_exit() {
+  local dir code
+  dir="$(mktemp -d "$ROOT/spike/m7/.work/exit.XXXXXX")"
+  cat >"$dir/remote" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$M7_REMOTE_LOG"
+exit 0
+EOF
+  chmod 755 "$dir/remote"
+  : >"$dir/remote.log"
+  set +e
+  MODE=live-ci \
+    M7_WORK="$dir" \
+    M7_REMOTE_STUB="$dir/remote" \
+    M7_REMOTE_LOG="$dir/remote.log" \
+    bash -c 'source "$1"; cluster_up=0; trap "cleanup EXIT" EXIT; die boom' _ "$ROOT/spike/m7/run.sh"
+  code=$?
+  set -e
+  if [[ "$code" -eq 0 ]]; then
+    fail "die did not fail the driver"
+  fi
+  if ! grep -qx 'cleanup' "$dir/remote.log"; then
+    fail "EXIT did not run remote cleanup"
+  fi
+  rm -rf "$dir"
 }
 
 mkdir -p "$ROOT/spike/m7/.work"
@@ -163,4 +259,6 @@ case_cancel_window
 case_apply_order
 case_planted_token
 case_remote
+case_live_before_apply
+case_cleanup_on_exit
 echo "m7 run_test ok"

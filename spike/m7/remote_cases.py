@@ -336,6 +336,24 @@ def case_ledger(work: Path) -> None:
         proc.wait(timeout=5)
 
 
+def case_rewrite(work: Path) -> None:
+    import remote
+
+    src = ROOT / "deploy" / "m7-factory" / "agents" / "implementer" / "agent.md"
+    dest = work / "agent.md"
+    original = src.read_text(encoding="utf-8")
+    dest.write_text(original, encoding="utf-8")
+    remote.rewrite_agent_steps(dest, "m7-run/local-s1/main")
+    text = dest.read_text(encoding="utf-8")
+    for needle in ("m7-run/local-s1/main", "m7-run/local-s1/change", "html_url"):
+        if needle not in text:
+            fail(f"rewrite missed {needle}")
+    if "against main" in text or "run base ref" in text:
+        fail("rewrite left the pull request pointed at main")
+    if src.read_text(encoding="utf-8") != original:
+        fail("rewrite changed the source agent")
+
+
 def main() -> None:
     work = Path(os.environ["M7_CASE_WORK"])
     name = sys.argv[1]
@@ -343,6 +361,8 @@ def main() -> None:
         case_preflight(work)
     elif name == "ledger":
         case_ledger(work)
+    elif name == "rewrite":
+        case_rewrite(work)
     else:
         fail(f"unknown case {name}")
 

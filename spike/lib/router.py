@@ -335,7 +335,9 @@ def m7_turn(body: dict) -> dict:
             f"'{api}/repos/polds/factory-m7-target/pulls' "
             '-H "Authorization: Bearer $GH_TOKEN" '
             "-H 'Content-Type: application/json' "
-            f"-d '{payload}') && echo \"M7_PR_HTTP $code\""
+            f"-d '{payload}') && "
+            """awk -F'"' '{for(i=1;i<=NF;i++) if($i=="html_url") print $(i+2)}' /tmp/pr.json && """
+            'echo "M7_PR_HTTP $code"'
         )
         return bash_call(command)
     if "M7_CLONED" in text:
