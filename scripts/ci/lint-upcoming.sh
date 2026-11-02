@@ -21,7 +21,6 @@ export PATH="${HOME}/.local/bin:${PATH}"
 RUFF_VERSION="0.17.0"
 SQLFLUFF_VERSION="4.4.0"
 CHECK_JSONSCHEMA_VERSION="0.38.2"
-HELM_VERSION="3.22.0"
 
 found_any() {
   local name="$1"
@@ -76,23 +75,13 @@ fi
 
 echo "helm"
 if [[ -f deploy/helm/factory/Chart.yaml ]]; then
-  if ! command -v helm >/dev/null 2>&1 || [[ "$(helm version --template '{{.Version}}')" != "v${HELM_VERSION}" ]]; then
-    case "$(uname -m)" in
-      x86_64) helm_arch="amd64" ;;
-      aarch64 | arm64) helm_arch="arm64" ;;
-      *)
-        echo "unsupported architecture for helm: $(uname -m)"
-        exit 1
-        ;;
-    esac
-    archive="helm-v${HELM_VERSION}-linux-${helm_arch}.tar.gz"
-    curl -fsSL -o "/tmp/${archive}" "https://get.helm.sh/${archive}"
-    tar -C /tmp -xzf "/tmp/${archive}" "linux-${helm_arch}/helm"
-    mkdir -p "${HOME}/.local/bin"
-    install -m 0755 "/tmp/linux-${helm_arch}/helm" "${HOME}/.local/bin/helm"
-  fi
-  helm lint deploy/helm/factory
-  helm template factory deploy/helm/factory --set global.image.tag=ci >/dev/null
+  # One pin: HELM_VERSION and HELM_SHA256 live in helm-lib.sh (3.22.1, linux-amd64).
+  # shellcheck source-path=SCRIPTDIR
+  # shellcheck source=helm-lib.sh
+  source "${root}/scripts/ci/helm-lib.sh"
+  install_helm
+  "${HELM}" lint deploy/helm/factory
+  "${HELM}" template factory deploy/helm/factory --set global.image.tag=ci >/dev/null
 else
   echo "  no deploy/helm/factory/Chart.yaml"
 fi

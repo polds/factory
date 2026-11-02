@@ -80,6 +80,12 @@ controlPlane:
     minReplicas: 2
     maxReplicas: 5
     targetCPUUtilizationPercentage: 80
+  # Generic pod knobs. Empty lists render nothing, so the default, dev, and
+  # multi-pool manifests stay byte-identical. No credential-shaped keys.
+  extraEnv: []
+  extraEnvFrom: []
+  extraVolumes: []
+  extraVolumeMounts: []
 
 # In-chart Postgres is dev/eval only. Off by default.
 postgresql:

@@ -122,3 +122,31 @@ install_kubeconform() {
   KUBECONFORM="${dest}"
   export KUBECONFORM
 }
+
+# kind_cluster_config prints a one-node kind Cluster using KIND_NODE_IMAGE.
+kind_cluster_config() {
+  cat <<EOF
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  kubeProxyMode: nftables
+nodes:
+  - role: control-plane
+    image: ${KIND_NODE_IMAGE}
+EOF
+}
+
+# retag_kind_import_layers retags kind's import-* layers inside the node
+# container ($1) as docker.io/library/import-*. kubelet 1.34 looks up that name.
+retag_kind_import_layers() {
+  local node="$1"
+  docker exec "${node}" sh -c '
+    ctr -n k8s.io images ls -q | while read -r img; do
+      case "$img" in
+        import-*)
+          ctr -n k8s.io images tag "$img" "docker.io/library/${img}" >/dev/null
+          ;;
+      esac
+    done
+  '
+}

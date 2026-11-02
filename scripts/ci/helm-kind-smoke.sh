@@ -75,15 +75,7 @@ docker tag "${BUSYBOX_IMAGE}" busybox:1.36
 
 echo "creating kind cluster ${CLUSTER_NAME}"
 kind_config="$(mktemp)"
-cat >"${kind_config}" <<EOF
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-networking:
-  kubeProxyMode: nftables
-nodes:
-  - role: control-plane
-    image: ${KIND_NODE_IMAGE}
-EOF
+kind_cluster_config >"${kind_config}"
 "${KIND}" create cluster --name "${CLUSTER_NAME}" --config "${kind_config}"
 rm -f "${kind_config}"
 cluster_up=1
@@ -104,15 +96,7 @@ echo "loading images into kind"
 # kubelet 1.34 looks those up as docker.io/library/import-... and refuses to
 # start the container when that name is missing.
 node="$("${KIND}" get nodes --name "${CLUSTER_NAME}")"
-docker exec "${node}" sh -c '
-  ctr -n k8s.io images ls -q | while read -r img; do
-    case "$img" in
-      import-*)
-        ctr -n k8s.io images tag "$img" "docker.io/library/${img}" >/dev/null
-        ;;
-    esac
-  done
-'
+retag_kind_import_layers "${node}"
 
 "${KUBECTL}" create namespace "${TASK_NAMESPACE}"
 
