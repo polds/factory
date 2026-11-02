@@ -1,4 +1,7 @@
 # Overrides operator.workerPools to nil. operator.enabled is set on the
 # helm command. The render must keep the factory-runs default.
+# operator.enabled refuses the chart default controlPlane.replicas=2.
+controlPlane:
+  replicas: 1
 operator:
   workerPools: null
