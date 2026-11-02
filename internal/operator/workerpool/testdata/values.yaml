@@ -1,0 +1,49 @@
+# Parity fixture for the WorkerPool builder. Merged over the chart values.
+# workers[].name, .pool and .workerId are the WorkerPool metadata.name.
+# Fields the chart renders that WorkerPool does not have are fixed in the
+# builder (cleanup, logLevel, metrics, useImageVolumes) and set here to match.
+global:
+  image:
+    tag: test
+
+workers:
+  - name: standard
+    enabled: true
+    backend: kubernetes
+    replicas: 2
+    workerId: standard
+    pool: standard
+    maxConcurrentTasks: 8
+    logLevel: info
+    cleanup: true
+    terminationGracePeriodSeconds: 600
+    apiKeySecret:
+      name: factory-worker
+      key: FACTORY_API_KEY
+      create: false
+    metrics:
+      enabled: false
+    kubernetesBackend:
+      namespace: factory-runs
+      defaultImage: ubuntu:22.04
+      imagePullPolicy: IfNotPresent
+      useImageVolumes: false
+      activeDeadlineSeconds: 28800
+      ttlSecondsAfterFinished: 86400
+      workspaceSizeLimit: 20Gi
+      unschedulableTimeout: 10m
+      extraAnnotations:
+        example.com/keep: keep
+        karpenter.sh/do-not-disrupt: "true"
+      podTemplate:
+        serviceAccountName: factory-task
+        nodeSelector:
+          factory.dev/pool: standard
+        containers:
+          - name: task
+            resources:
+              requests:
+                cpu: "1"
+                memory: 2Gi
+              limits:
+                memory: 4Gi

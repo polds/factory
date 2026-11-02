@@ -20,6 +20,7 @@ import (
 
 	fclient "github.com/polds/factory/internal/client"
 	"github.com/polds/factory/internal/operator"
+	"github.com/polds/factory/internal/operator/workerpool"
 )
 
 func main() {
@@ -107,6 +108,7 @@ func run(ctx context.Context, log *slog.Logger, metricsAddr, probeAddr string) e
 	reconcilers := []interface{ SetupWithManager(ctrl.Manager) error }{
 		&operator.FactoryReconciler{Client: mgr.GetClient(), API: api},
 		&operator.AgentRunReconciler{Client: mgr.GetClient(), API: api, Base: ctx},
+		&workerpool.Reconciler{Client: mgr.GetClient(), Live: mgr.GetAPIReader(), Config: workerPoolConfig()},
 	}
 	for _, reconciler := range reconcilers {
 		if err := reconciler.SetupWithManager(mgr); err != nil {
@@ -167,6 +169,33 @@ func dnsNames(service, namespace string) []string {
 		service + "." + namespace + ".svc",
 		service + "." + namespace + ".svc.cluster.local",
 	}
+}
+
+func workerPoolConfig() workerpool.Config {
+	return workerpool.Config{
+		Image:            os.Getenv("WORKER_IMAGE"),
+		ImagePullPolicy:  envOr("WORKER_IMAGE_PULL_POLICY", "IfNotPresent"),
+		WebSocketURL:     os.Getenv("WORKER_WEBSOCKET_URL"),
+		ServerRootURL:    os.Getenv("WORKER_SERVER_ROOT_URL"),
+		APIKeySecretName: envOr("WORKER_API_KEY_SECRET_NAME", "factory-worker"),
+		APIKeySecretKey:  envOr("WORKER_API_KEY_SECRET_KEY", "FACTORY_API_KEY"),
+		TaskNamespaces:   splitList(envOr("WORKERPOOL_TASK_NAMESPACES", "factory-runs")),
+		FullName:         os.Getenv("WORKER_FULLNAME"),
+		AppName:          envOr("WORKER_APP_NAME", "factory"),
+		ReleaseName:      envOr("WORKER_RELEASE_NAME", "factory"),
+		ImagePullSecrets: splitList(os.Getenv("WORKER_IMAGE_PULL_SECRETS")),
+	}
+}
+
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func envOr(name, fallback string) string {

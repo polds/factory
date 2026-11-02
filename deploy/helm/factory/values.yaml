@@ -137,6 +137,12 @@ operator:
   admissionWebhook:
     enabled: true
     certManager: false
+  workerPools:
+    taskNamespaces:
+      - factory-runs
+    apiKeySecret:
+      name: factory-worker
+      key: FACTORY_API_KEY
 
 worker:
   image:

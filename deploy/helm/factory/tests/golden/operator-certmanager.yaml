@@ -98,6 +98,51 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
+  - apiGroups: ["factory.dev"]
+    resources: ["workerpools"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["factory.dev"]
+    resources: ["workerpools/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["factory.dev"]
+    resources: ["workerpools/finalizers"]
+    verbs: ["update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps", "serviceaccounts"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+---
+# Source: factory/templates/render.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factory-operator-workerpool
+  namespace: factory-runs
+  labels:
+    helm.sh/chart: factory-0.1.0
+    app.kubernetes.io/name: factory
+    app.kubernetes.io/instance: factory
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: factory
+    app.kubernetes.io/component: operator
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
 ---
 # Source: factory/templates/render.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -116,6 +161,28 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: factory-operator
+subjects:
+  - kind: ServiceAccount
+    name: factory-operator
+    namespace: factory
+---
+# Source: factory/templates/render.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factory-operator-workerpool
+  namespace: factory-runs
+  labels:
+    helm.sh/chart: factory-0.1.0
+    app.kubernetes.io/name: factory
+    app.kubernetes.io/instance: factory
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: factory
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factory-operator-workerpool
 subjects:
   - kind: ServiceAccount
     name: factory-operator
@@ -511,6 +578,28 @@ spec:
               value: "factory-operator-webhook"
             - name: WEBHOOK_CERT_DIR
               value: /tmp/k8s-webhook-server/serving-certs
+            - name: WORKER_IMAGE
+              value: "ghcr.io/acme/oz-agent-worker:test"
+            - name: WORKER_IMAGE_PULL_POLICY
+              value: "IfNotPresent"
+            - name: WORKER_WEBSOCKET_URL
+              value: "ws://factory-factoryd.factory.svc:8080/api/v1/selfhosted/worker/ws"
+            - name: WORKER_SERVER_ROOT_URL
+              value: "http://factory-factoryd.factory.svc:8080"
+            - name: WORKER_API_KEY_SECRET_NAME
+              value: "factory-worker"
+            - name: WORKER_API_KEY_SECRET_KEY
+              value: "FACTORY_API_KEY"
+            - name: WORKERPOOL_TASK_NAMESPACES
+              value: "factory-runs"
+            - name: WORKER_FULLNAME
+              value: "factory"
+            - name: WORKER_APP_NAME
+              value: "factory"
+            - name: WORKER_RELEASE_NAME
+              value: "factory"
+            - name: WORKER_IMAGE_PULL_SECRETS
+              value: "ghcr-pull"
           readinessProbe:
             httpGet:
               path: /readyz
