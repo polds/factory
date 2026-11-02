@@ -1,0 +1,215 @@
+---
+# Source: factory/templates/render.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factory-worker-standard
+  namespace: factory
+  labels:
+    helm.sh/chart: factory-0.1.0
+    app.kubernetes.io/name: factory
+    app.kubernetes.io/instance: factory
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: factory
+    app.kubernetes.io/component: worker
+    factory.dev/pool: "standard"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: factory
+      app.kubernetes.io/instance: factory
+      app.kubernetes.io/component: worker
+      factory.dev/pool: "standard"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: factory
+        app.kubernetes.io/instance: factory
+        app.kubernetes.io/component: worker
+        factory.dev/pool: "standard"
+      annotations:
+        checksum/config: 62382cee63c551dc6a42de1540a22f41363e0c23cf834b76ebfda56b93dfd505
+    spec:
+      terminationGracePeriodSeconds: 600
+      serviceAccountName: factory-worker-standard
+      automountServiceAccountToken: true
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: oz-agent-worker
+          image: "ghcr.io/acme/oz-agent-worker:test"
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config-file
+            - /etc/oz-agent-worker/config.yaml
+            - --backend
+            - kubernetes
+            - --log-level
+            - "info"
+            - --web-socket-url
+            - "ws://factory-factoryd.factory.svc:8080/api/v1/selfhosted/worker/ws"
+            - --server-root-url
+            - "http://factory-factoryd.factory.svc:8080"
+          env:
+            - name: WARP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: factory-worker
+                  key: FACTORY_API_KEY
+            - name: OTEL_METRICS_EXPORTER
+              value: "none"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/oz-agent-worker
+              readOnly: true
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "kill -0 1"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: config
+          configMap:
+            name: factory-worker-standard-config
+---
+# Source: factory/templates/render.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: factory-worker-standard
+  namespace: factory
+  labels:
+    helm.sh/chart: factory-0.1.0
+    app.kubernetes.io/name: factory
+    app.kubernetes.io/instance: factory
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: factory
+    app.kubernetes.io/component: worker
+    factory.dev/pool: "standard"
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+---
+# Source: factory/templates/render.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: factory-worker-standard-config
+  namespace: factory
+  labels:
+    helm.sh/chart: factory-0.1.0
+    app.kubernetes.io/name: factory
+    app.kubernetes.io/instance: factory
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: factory
+    app.kubernetes.io/component: worker
+    factory.dev/pool: "standard"
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  config.yaml: |
+    worker_id: "standard"
+    cleanup: true
+    max_concurrent_tasks: 8
+    collect_task_logs: true
+    backend:
+      kubernetes:
+        namespace: "factory-runs"
+        image_pull_policy: "IfNotPresent"
+        use_image_volumes: false
+        unschedulable_timeout: "10m"
+        default_image: "ubuntu:22.04"
+        extra_annotations:
+          example.com/keep: keep
+          karpenter.sh/do-not-disrupt: "true"
+        active_deadline_seconds: 28800
+        ttl_seconds_after_finished: 86400
+        workspace_size_limit: "20Gi"
+        pod_template:
+          containers:
+          - name: task
+            resources:
+              limits:
+                memory: 4Gi
+              requests:
+                cpu: "1"
+                memory: 2Gi
+          nodeSelector:
+            factory.dev/pool: standard
+          serviceAccountName: factory-task
+---
+# Source: factory/templates/render.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factory-worker-standard
+  namespace: factory-runs
+  labels:
+    helm.sh/chart: factory-0.1.0
+    app.kubernetes.io/name: factory
+    app.kubernetes.io/instance: factory
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: factory
+    app.kubernetes.io/component: worker
+    factory.dev/pool: "standard"
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+    factory.dev/rbac-provenance: warpdotdev/oz-agent-worker/charts/oz-agent-worker/templates/role.yaml@63dbb8ae8ccb3941392691f5c628e3365d8e248e
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+---
+# Source: factory/templates/render.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factory-worker-standard
+  namespace: factory-runs
+  labels:
+    helm.sh/chart: factory-0.1.0
+    app.kubernetes.io/name: factory
+    app.kubernetes.io/instance: factory
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: factory
+    app.kubernetes.io/component: worker
+    factory.dev/pool: "standard"
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+subjects:
+  - kind: ServiceAccount
+    name: factory-worker-standard
+    namespace: factory
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factory-worker-standard

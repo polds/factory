@@ -190,6 +190,11 @@ func metaSet(conds *[]metav1.Condition, typ string, status metav1.ConditionStatu
 	setCondition(conds, c)
 }
 
+// SetCondition records c on conds. An unchanged condition keeps its transition time.
+func SetCondition(conds *[]metav1.Condition, c metav1.Condition) {
+	setCondition(conds, c)
+}
+
 func setCondition(conds *[]metav1.Condition, c metav1.Condition) {
 	now := metav1.Now()
 	for i := range *conds {

@@ -18,6 +18,25 @@
 {{- end }}
 {{- end -}}
 
+{{- define "factory.operatorTaskNamespaces" -}}
+{{- $ns := list -}}
+{{- if .Values.operator.workerPools -}}
+{{- $ns = .Values.operator.workerPools.taskNamespaces -}}
+{{- end -}}
+{{- if not $ns -}}
+{{- $ns = list "factory-runs" -}}
+{{- end -}}
+{{- join "," $ns -}}
+{{- end -}}
+
+{{- define "factory.operatorPullSecrets" -}}
+{{- $names := list -}}
+{{- range .Values.global.imagePullSecrets -}}
+{{- $names = append $names .name -}}
+{{- end -}}
+{{- join "," $names -}}
+{{- end -}}
+
 {{- define "factory.operatorRules" -}}
 rules:
   - apiGroups: ["factory.dev"]
@@ -56,6 +75,21 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
+  - apiGroups: ["factory.dev"]
+    resources: ["workerpools"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["factory.dev"]
+    resources: ["workerpools/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["factory.dev"]
+    resources: ["workerpools/finalizers"]
+    verbs: ["update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps", "serviceaccounts"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
 {{- end -}}
 
 {{/*
@@ -101,6 +135,57 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ include "factory.operatorName" $ }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "factory.operatorName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- $taskNamespaces := list }}
+{{- if .Values.operator.workerPools }}
+{{- $taskNamespaces = .Values.operator.workerPools.taskNamespaces }}
+{{- end }}
+{{- if not $taskNamespaces }}
+{{- $taskNamespaces = list "factory-runs" }}
+{{- end }}
+{{- range $ns := $taskNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ printf "%s-workerpool" (include "factory.operatorName" $) | trunc 63 | trimSuffix "-" }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: operator
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ printf "%s-workerpool" (include "factory.operatorName" $) | trunc 63 | trimSuffix "-" }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ printf "%s-workerpool" (include "factory.operatorName" $) | trunc 63 | trimSuffix "-" }}
 subjects:
   - kind: ServiceAccount
     name: {{ include "factory.operatorName" $ }}
@@ -258,6 +343,34 @@ spec:
               value: {{ include "factory.operatorWebhookName" . | quote }}
             - name: WEBHOOK_CERT_DIR
               value: /tmp/k8s-webhook-server/serving-certs
+            - name: WORKER_IMAGE
+              value: {{ include "factory.image" (list . .Values.worker.image.repository) | quote }}
+            - name: WORKER_IMAGE_PULL_POLICY
+              value: {{ .Values.global.image.pullPolicy | quote }}
+            - name: WORKER_WEBSOCKET_URL
+              value: {{ printf "ws://%s.%s.svc:8080/api/v1/selfhosted/worker/ws" (include "factory.factorydName" .) .Release.Namespace | quote }}
+            - name: WORKER_SERVER_ROOT_URL
+              value: {{ printf "http://%s.%s.svc:8080" (include "factory.factorydName" .) .Release.Namespace | quote }}
+            {{- $apiSecret := dict "name" "factory-worker" "key" "FACTORY_API_KEY" -}}
+            {{- if .Values.operator.workerPools -}}
+            {{- if .Values.operator.workerPools.apiKeySecret -}}
+            {{- $apiSecret = .Values.operator.workerPools.apiKeySecret -}}
+            {{- end -}}
+            {{- end }}
+            - name: WORKER_API_KEY_SECRET_NAME
+              value: {{ include "factory.workerApiSecretName" (list . (dict "apiKeySecret" $apiSecret)) | quote }}
+            - name: WORKER_API_KEY_SECRET_KEY
+              value: {{ include "factory.workerApiSecretKey" (list . (dict "apiKeySecret" $apiSecret)) | quote }}
+            - name: WORKERPOOL_TASK_NAMESPACES
+              value: {{ include "factory.operatorTaskNamespaces" . | quote }}
+            - name: WORKER_FULLNAME
+              value: {{ include "factory.fullname" . | quote }}
+            - name: WORKER_APP_NAME
+              value: {{ include "factory.name" . | quote }}
+            - name: WORKER_RELEASE_NAME
+              value: {{ .Release.Name | quote }}
+            - name: WORKER_IMAGE_PULL_SECRETS
+              value: {{ include "factory.operatorPullSecrets" . | quote }}
           readinessProbe:
             httpGet:
               path: /readyz

@@ -1,0 +1,4 @@
+# Overrides operator.workerPools to nil. operator.enabled is set on the
+# helm command. The render must keep the factory-runs default.
+operator:
+  workerPools: null
