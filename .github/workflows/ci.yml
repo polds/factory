@@ -28,6 +28,8 @@
 #   m4 offline e2e         MODE=offline ./spike/m4/run.sh
 #   m5 offline e2e         MODE=offline ./spike/m5/run.sh
 #   m6 offline e2e         MODE=offline ./spike/m6/run.sh
+#   m7 offline e2e         MODE=offline ./spike/m7/run.sh
+#   helm                   chart goldens, operator render, kubeconform
 #   task image platform    task and harness images built for linux/arm64
 #   upcoming languages     TypeScript, Python, SQL, Helm, JSON Schema
 #   console                web/console lint, typecheck, test, build, audit,
@@ -49,6 +51,7 @@
 #   m4 live                .github/workflows/m4-live.yml (workflow_dispatch)
 #   m5 live                .github/workflows/m5-live.yml (workflow_dispatch)
 #   m6 live                .github/workflows/m6-live.yml (workflow_dispatch)
+#   m7 live                .github/workflows/m7-live.yml (workflow_dispatch)
 name: ci
 
 on:
@@ -294,7 +297,8 @@ jobs:
           files=()
           while IFS= read -r -d '' file; do
             files+=("${file}")
-          done < <(find . \( -path './.git' -o -path '*/.work' \) -prune -o -name 'Dockerfile' -print0)
+          done < <(find . \( -path './.git' -o -path '*/.work' \) -prune \
+            -o \( -name 'Dockerfile' -o -name '*.Dockerfile' \) -print0)
           if [[ ${#files[@]} -eq 0 ]]; then
             echo "no Dockerfiles found"
             exit 1
@@ -569,6 +573,90 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
 
+  m7-offline:
+    name: m7 offline e2e
+    runs-on: ubuntu-latest
+    # No needs: this job runs in parallel with the other required jobs.
+    # Kind plus the factoryd image build is the long pole. Helm goldens
+    # are the separate helm job so this wall time is the cluster e2e.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run m7 no-network tests
+        run: |
+          set -euo pipefail
+          start="${SECONDS}"
+          set +e
+          bash spike/m7/run_test.sh
+          code=$?
+          set -e
+          printf 'spike/m7/run_test.sh %ss\n' "$((SECONDS - start))" | tee -a "${GITHUB_STEP_SUMMARY}"
+          exit "${code}"
+      - name: Run the offline M7 driver
+        run: MODE=offline ./spike/m7/run.sh 2>&1 | tee "${RUNNER_TEMP}/m7-offline.log"
+      - name: Record m7 wall time
+        if: always()
+        run: |
+          set -euo pipefail
+          log="${RUNNER_TEMP}/m7-offline.log"
+          if [[ -f "${log}" ]] && grep -E 'M7 OFFLINE PASS wall|m7 delete-to-cancel|m7 pr assertion' "${log}"; then
+            grep -E 'M7 OFFLINE PASS wall|m7 delete-to-cancel|m7 pr assertion' "${log}" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "no m7 pass line" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+      - name: Redact M7 evidence
+        id: redact
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f spike/m7/.work/gh-token ]]; then
+            M7_GH_TOKEN="$(tr -d '[:space:]' < spike/m7/.work/gh-token)"
+            export M7_GH_TOKEN
+          fi
+          if [[ -f spike/m7/.work/api-key ]]; then
+            M7_API_KEY="$(tr -d '[:space:]' < spike/m7/.work/api-key)"
+            export M7_API_KEY
+          fi
+          export EVIDENCE_EXTRA_SECRETS="M7_GH_TOKEN M7_API_KEY"
+          python3 spike/lib/redact_evidence.py \
+            --key-file spike/m7/.work/api-key \
+            spike/m7/.work/evidence
+          if [[ -d spike/m7/.work/evidence ]]; then
+            echo "ready=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Upload M7 evidence
+        if: always() && steps.redact.outputs.ready == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: m7-offline-evidence
+          path: spike/m7/.work/evidence/
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  helm:
+    name: helm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Chart goldens and kubeconform
+        run: |
+          set -euo pipefail
+          start="${SECONDS}"
+          bash scripts/ci/helm-check.sh
+          printf 'helm-check %ss\n' "$((SECONDS - start))" | tee -a "${GITHUB_STEP_SUMMARY}"
+
   task-image-arch:
     name: task image platform
     runs-on: ubuntu-latest
@@ -779,6 +867,8 @@ jobs:
       - m4-offline
       - m5-offline
       - m6-offline
+      - m7-offline
+      - helm
       - task-image-arch
       - upcoming-languages
       - console
@@ -807,6 +897,8 @@ jobs:
           M4_OFFLINE: ${{ needs.m4-offline.result }}
           M5_OFFLINE: ${{ needs.m5-offline.result }}
           M6_OFFLINE: ${{ needs.m6-offline.result }}
+          M7_OFFLINE: ${{ needs.m7-offline.result }}
+          HELM: ${{ needs.helm.result }}
           TASK_IMAGE_ARCH: ${{ needs.task-image-arch.result }}
           UPCOMING: ${{ needs.upcoming-languages.result }}
           CONSOLE: ${{ needs.console.result }}
@@ -845,6 +937,8 @@ jobs:
           report "m4 offline e2e" "${M4_OFFLINE}"
           report "m5 offline e2e" "${M5_OFFLINE}"
           report "m6 offline e2e" "${M6_OFFLINE}"
+          report "m7 offline e2e" "${M7_OFFLINE}"
+          report "helm" "${HELM}"
           report "task image platform" "${TASK_IMAGE_ARCH}"
           report "upcoming languages" "${UPCOMING}"
           report "console" "${CONSOLE}"

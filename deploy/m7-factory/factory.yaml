@@ -1,0 +1,12 @@
+# M7 exit factory. The driver copies this tree and, in live modes, rewrites
+# the model id. Offline keeps m7-agent, which the in-cluster router answers.
+schemaVersion: v1alpha1
+name: m7
+description: Operator-mode exit factory for one pull request and one cancel.
+secrets:
+  - GH_TOKEN
+agentDefaults:
+  model: m7-agent
+  runner: local
+  pool: standard
+  maxTurns: 8
