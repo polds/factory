@@ -225,6 +225,31 @@ PY
   rm -rf "$dir"
 }
 
+case_reviewer_stamp() {
+  local dir text
+  dir="$(mktemp -d "$ROOT/spike/m7/.work/reviewer.XXXXXX")"
+  mkdir -p "$dir/agents/implementer"
+  cp "$ROOT/deploy/m7-factory/agents/implementer/agent.md" "$dir/agents/implementer/agent.md"
+  if FACTORY_REVIEWERS_ADMINS='not a login' m7_stamp_reviewer "$dir" 2>"$dir/err"; then
+    fail "rejected login was accepted"
+  fi
+  if [[ "$(cat "$dir/err")" != "reviewer was not accepted" ]]; then
+    fail "rejected login did not fail closed"
+  fi
+  if grep -q 'not a login' "$dir/agents/implementer/agent.md" "$dir/err"; then
+    fail "rejected login was written"
+  fi
+  FACTORY_REVIEWERS_ADMINS='polds' m7_stamp_reviewer "$dir"
+  text="$(cat "$dir/agents/implementer/agent.md")"
+  if [[ "$text" == *'{{M7_REVIEWER}}'* ]]; then
+    fail "reviewer placeholder was left in place"
+  fi
+  if [[ "$text" != *'{"reviewers":["polds"]}'* ]]; then
+    fail "reviewer login was not stamped"
+  fi
+  rm -rf "$dir"
+}
+
 case_cleanup_on_exit() {
   local dir code
   dir="$(mktemp -d "$ROOT/spike/m7/.work/exit.XXXXXX")"
@@ -260,5 +285,6 @@ case_apply_order
 case_planted_token
 case_remote
 case_live_before_apply
+case_reviewer_stamp
 case_cleanup_on_exit
 echo "m7 run_test ok"

@@ -1,8 +1,10 @@
 package operator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,11 +30,13 @@ func TestAgentRunLifecycle(t *testing.T) {
 	ctx := testContext(t)
 	ns := newNamespace(t, ctx)
 	var starts, cancels, gets atomic.Int32
-	httpSrv := httptest.NewServer(agentHTTP(&starts, &cancels, &gets, false))
+	var started startedRun
+	httpSrv := httptest.NewServer(agentHTTP(&starts, &cancels, &gets, false, &started))
 	t.Cleanup(httpSrv.Close)
 	api := &fclient.Client{BaseURL: httpSrv.URL, APIKey: "test-api-key", Backoff: func(int) time.Duration { return 0 }}
 	rec := record.NewFakeRecorder(16)
 	reconciler := &AgentRunReconciler{Client: k8sClient, API: api, Recorder: rec, Base: ctx}
+	createRepoFactory(t, ctx, ns, "acme-payments")
 	run := &factoryv1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "pay"},
 		Spec: factoryv1.AgentRunSpec{
@@ -54,6 +58,9 @@ func TestAgentRunLifecycle(t *testing.T) {
 	}
 	if starts.Load() != 1 {
 		t.Fatalf("starts %d", starts.Load())
+	}
+	if started.repo() != "polds/factory-m7-target" {
+		t.Fatalf("run repository %q", started.repo())
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	var got factoryv1.AgentRun
@@ -91,14 +98,18 @@ func TestAgentRunCancelGrace(t *testing.T) {
 	ctx := testContext(t)
 	ns := newNamespace(t, ctx)
 	var starts, cancels, gets atomic.Int32
-	httpSrv := httptest.NewServer(agentHTTP(&starts, &cancels, &gets, true))
+	httpSrv := httptest.NewServer(agentHTTP(&starts, &cancels, &gets, true, nil))
 	t.Cleanup(httpSrv.Close)
 	api := &fclient.Client{BaseURL: httpSrv.URL, APIKey: "test-api-key", Backoff: func(int) time.Duration { return 0 }}
 	clock := NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	reconciler := &AgentRunReconciler{Client: k8sClient, API: api, Base: ctx, Clock: clock}
+	createRepoFactory(t, ctx, ns, "acme-payments")
 	run := &factoryv1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "stuck"},
-		Spec:       factoryv1.AgentRunSpec{Prompt: "wait"},
+		Spec: factoryv1.AgentRunSpec{
+			FactoryRef: &factoryv1.LocalRef{Name: "acme-payments"},
+			Prompt:     "wait",
+		},
 	}
 	if err := k8sClient.Create(ctx, run); err != nil {
 		t.Fatal(err)
@@ -230,9 +241,13 @@ func TestAgentRunTerminalPhaseDropsFinalizer(t *testing.T) {
 	if !mgr.GetCache().WaitForCacheSync(ctx) {
 		t.Fatal("cache did not sync")
 	}
+	createRepoFactory(t, ctx, ns, "acme-payments")
 	run := &factoryv1.AgentRun{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "hold"},
-		Spec:       factoryv1.AgentRunSpec{Prompt: "wait"},
+		Spec: factoryv1.AgentRunSpec{
+			FactoryRef: &factoryv1.LocalRef{Name: "acme-payments"},
+			Prompt:     "wait",
+		},
 	}
 	if err := k8sClient.Create(ctx, run); err != nil {
 		t.Fatal(err)
@@ -278,10 +293,127 @@ func TestAgentRunTerminalPhaseDropsFinalizer(t *testing.T) {
 	}
 }
 
-func agentHTTP(starts, cancels, gets *atomic.Int32, hold bool) http.Handler {
+type startedRun struct {
+	mu  sync.Mutex
+	req fclient.RunRequest
+}
+
+func (s *startedRun) set(req fclient.RunRequest) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.req = req
+	s.mu.Unlock()
+}
+
+func (s *startedRun) repo() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.req.Repo
+}
+
+func TestFirstGitHubRepo(t *testing.T) {
+	if got := firstGitHubRepo([]factoryv1.RepositoryRef{
+		{CodeForge: "GITLAB", Owner: "acme", Name: "other"},
+		{CodeForge: "GITHUB", Owner: "polds", Name: "deferred", Deferred: true},
+		{CodeForge: "github", Owner: "polds", Name: "factory-m7-target"},
+	}); got != "polds/factory-m7-target" {
+		t.Fatalf("repo %q", got)
+	}
+	if got := firstGitHubRepo(nil); got != "" {
+		t.Fatalf("empty %q", got)
+	}
+	if got := firstGitHubRepo([]factoryv1.RepositoryRef{{Owner: "m7-run", Name: "ci-1/main"}}); got != "" {
+		t.Fatalf("ref %q", got)
+	}
+}
+
+func TestAgentRunRefusesMissingRepository(t *testing.T) {
+	requireEnvtest(t)
+	ctx := testContext(t)
+	ns := newNamespace(t, ctx)
+	var starts atomic.Int32
+	httpSrv := httptest.NewServer(agentHTTP(&starts, nil, nil, false, nil))
+	t.Cleanup(httpSrv.Close)
+	api := &fclient.Client{BaseURL: httpSrv.URL, APIKey: "test-api-key", Backoff: func(int) time.Duration { return 0 }}
+	rec := record.NewFakeRecorder(8)
+	reconciler := &AgentRunReconciler{Client: k8sClient, API: api, Recorder: rec, Base: ctx}
+	if err := k8sClient.Create(ctx, &factoryv1.Factory{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "m7"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := &factoryv1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "pay"},
+		Spec: factoryv1.AgentRunSpec{
+			FactoryRef: &factoryv1.LocalRef{Name: "m7"},
+			Prompt:     "open a pull request",
+		},
+	}
+	if err := k8sClient.Create(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	key := client.ObjectKey{Namespace: ns, Name: run.Name}
+	if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatal(err)
+	}
+	if starts.Load() != 0 {
+		t.Fatalf("starts %d", starts.Load())
+	}
+	var got factoryv1.AgentRun
+	if err := k8sClient.Get(ctx, key, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != "failed" || got.Status.RunID != "" {
+		t.Fatalf("phase %q run %q", got.Status.Phase, got.Status.RunID)
+	}
+	select {
+	case ev := <-rec.Events:
+		if !strings.Contains(ev, "no repository") {
+			t.Fatalf("event %q", ev)
+		}
+	default:
+		t.Fatal("missing refusal event")
+	}
+}
+
+func createRepoFactory(t *testing.T, ctx context.Context, ns, name string) {
+	t.Helper()
+	if err := k8sClient.Create(ctx, &factoryv1.Factory{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
+		Spec: factoryv1.FactorySpec{
+			Repositories: []factoryv1.RepositoryRef{{
+				CodeForge: "GITHUB",
+				Owner:     "polds",
+				Name:      "factory-m7-target",
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func agentHTTP(starts, cancels, gets *atomic.Int32, hold bool, started *startedRun) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/agent/run", func(w http.ResponseWriter, r *http.Request) {
-		starts.Add(1)
+		raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		var req fclient.RunRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		started.set(req)
+		if starts != nil {
+			starts.Add(1)
+		}
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": "run-1", "status": "queued"})
 	})

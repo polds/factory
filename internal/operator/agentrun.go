@@ -42,11 +42,14 @@ type RunAPI interface {
 // AgentRunReconciler starts a run, mirrors its event stream, and cancels it on delete.
 type AgentRunReconciler struct {
 	client.Client
-	API      RunAPI
-	Recorder record.EventRecorder
-	Log      logr.Logger
-	Clock    Clock
-	Grace    time.Duration
+	// APIReader reads the Factory. The manager cache does not list Factory
+	// for this controller. Nil uses Client, which tests set to a direct client.
+	APIReader client.Reader
+	API       RunAPI
+	Recorder  record.EventRecorder
+	Log       logr.Logger
+	Clock     Clock
+	Grace     time.Duration
 	// Base is the parent context for event watches. It outlives a single reconcile.
 	Base context.Context
 
@@ -57,6 +60,9 @@ type AgentRunReconciler struct {
 
 // SetupWithManager registers the AgentRun reconciler.
 func (r *AgentRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&factoryv1.AgentRun{}, builder.WithPredicates(agentRunPredicate())).
 		Complete(r)
@@ -130,12 +136,28 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 	if run.Status.RunID == "" {
+		if terminalPhase(run.Status.Phase) {
+			return ctrl.Result{}, nil
+		}
 		if id := r.remembered(req.NamespacedName); id != "" {
 			if err := r.writeRunID(ctx, req.NamespacedName, id, ""); err != nil {
 				return ctrl.Result{}, err
 			}
 		} else {
-			started, err := r.API.StartRun(ctx, runRequest(&run))
+			repo, err := r.runRepository(ctx, &run)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if repo == "" {
+				const msg = "server: github token: no repository"
+				r.log().Info("run start refused", "agentrun", req.String(), "message", msg)
+				r.event(&run, corev1.EventTypeWarning, "StartFailed", msg)
+				if err := r.writePhase(ctx, req.NamespacedName, "failed"); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, nil
+			}
+			started, err := r.API.StartRun(ctx, runRequest(&run, repo))
 			if err != nil {
 				msg := clip(err.Error(), maxMessage)
 				r.log().Info("run start failed", "agentrun", req.String(), "message", msg)
@@ -159,8 +181,8 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return ctrl.Result{}, nil
 }
 
-func runRequest(run *factoryv1.AgentRun) fclient.RunRequest {
-	req := fclient.RunRequest{Prompt: run.Spec.Prompt, Priority: run.Spec.Priority}
+func runRequest(run *factoryv1.AgentRun, repo string) fclient.RunRequest {
+	req := fclient.RunRequest{Prompt: run.Spec.Prompt, Priority: run.Spec.Priority, Repo: repo}
 	if run.Spec.FactoryRef != nil {
 		req.Factory = run.Spec.FactoryRef.Name
 	}
@@ -168,6 +190,58 @@ func runRequest(run *factoryv1.AgentRun) fclient.RunRequest {
 		req.Agent = run.Spec.AgentRef.Name
 	}
 	return req
+}
+
+// runRepository is owner/name for the installation token. A missing Factory
+// is retried. A Factory with no GitHub repository fails closed.
+func (r *AgentRunReconciler) runRepository(ctx context.Context, run *factoryv1.AgentRun) (string, error) {
+	if run.Spec.FactoryRef == nil || strings.TrimSpace(run.Spec.FactoryRef.Name) == "" {
+		return "", nil
+	}
+	var factory factoryv1.Factory
+	key := types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.FactoryRef.Name}
+	if err := r.reader().Get(ctx, key, &factory); err != nil {
+		return "", err
+	}
+	return firstGitHubRepo(factory.Spec.Repositories), nil
+}
+
+func (r *AgentRunReconciler) reader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
+}
+
+// firstGitHubRepo is the first non-deferred GitHub owner/name.
+func firstGitHubRepo(repos []factoryv1.RepositoryRef) string {
+	for _, repo := range repos {
+		if repo.Deferred {
+			continue
+		}
+		if repo.CodeForge != "" && !strings.EqualFold(repo.CodeForge, "GITHUB") {
+			continue
+		}
+		if !githubSlug(repo.Owner) || !githubSlug(repo.Name) {
+			continue
+		}
+		return repo.Owner + "/" + repo.Name
+	}
+	return ""
+}
+
+func githubSlug(s string) bool {
+	if s == "" || len(s) > 100 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (r *AgentRunReconciler) reconcileDelete(ctx context.Context, key types.NamespacedName, run *factoryv1.AgentRun) (ctrl.Result, error) {
@@ -359,6 +433,20 @@ func terminalPhase(phase string) bool {
 	default:
 		return false
 	}
+}
+
+func (r *AgentRunReconciler) writePhase(ctx context.Context, key types.NamespacedName, phase string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var run factoryv1.AgentRun
+		if err := r.Get(ctx, key, &run); err != nil {
+			return err
+		}
+		if run.Status.Phase == phase {
+			return nil
+		}
+		run.Status.Phase = phase
+		return r.Status().Update(ctx, &run)
+	})
 }
 
 func (r *AgentRunReconciler) writeRunID(ctx context.Context, key types.NamespacedName, runID, phase string) error {

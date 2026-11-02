@@ -392,7 +392,38 @@ func (s *Server) tokenRepos(ctx context.Context, run store.Run) []string {
 			}
 		}
 	}
+	// AgentRun creates the run through POST /agent/run and stores owner/name
+	// on the row. Intake runs leave Repo empty and use the sources above.
+	// A run-scoped ref (m7-run/<id>/main) is not a repository.
+	if repo, ok := singleOwnerRepo(run.Repo); ok {
+		add(repo)
+	}
 	return repos
+}
+
+// singleOwnerRepo accepts owner/name. Extra path segments are rejected so a
+// git ref cannot be minted as a repository.
+func singleOwnerRepo(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	owner, name, ok := strings.Cut(raw, "/")
+	if !ok || !githubSlug(owner) || !githubSlug(name) {
+		return "", false
+	}
+	return owner + "/" + name, true
+}
+
+func githubSlug(s string) bool {
+	if s == "" || len(s) > 100 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // secretSource resolves webhook credential names. The error names the

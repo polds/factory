@@ -109,6 +109,7 @@ m7_apply_definition() {
   if [[ -d "$WORK/remote-seed" ]]; then
     def="$WORK/remote-seed"
   fi
+  m7_stamp_reviewer "$def"
   (cd "$ROOT" && go build -o "$WORK/factoryctl" ./cmd/factoryctl)
   "$WORK/factoryctl" convert "$def" >"$WORK/manifests.yaml"
   rm -rf "$WORK/apply"
@@ -257,6 +258,39 @@ scan_evidence() {
   EVIDENCE_EXTRA_SECRETS="${extra}" python3 "$ROOT/spike/lib/redact_evidence.py" \
     --key-file "$WORK/api-key" \
     "$EVIDENCE"
+}
+
+# m7_stamp_reviewer writes the configured reviewer login into the implementer
+# instructions. An empty login leaves the placeholder. A login that is not a
+# GitHub handle fails closed and does not print the value.
+m7_stamp_reviewer() {
+  local def="$1" agent login
+  agent="$def/agents/implementer/agent.md"
+  if [[ ! -f "$agent" ]]; then
+    return 0
+  fi
+  login="${FACTORY_REVIEWERS_ADMINS:-}"
+  login="${login%%,*}"
+  login="${login#"${login%%[![:space:]]*}"}"
+  login="${login%"${login##*[![:space:]]}"}"
+  if [[ -z "$login" ]]; then
+    return 0
+  fi
+  if [[ ! "$login" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
+    printf 'reviewer was not accepted\n' >&2
+    return 1
+  fi
+  python3 - "$agent" "$login" <<'PY'
+import pathlib
+import sys
+
+path, login = pathlib.Path(sys.argv[1]), sys.argv[2]
+text = path.read_text(encoding="utf-8")
+if "{{M7_REVIEWER}}" not in text:
+    sys.stderr.write("implementer steps have no reviewer placeholder\n")
+    raise SystemExit(1)
+path.write_text(text.replace("{{M7_REVIEWER}}", login), encoding="utf-8")
+PY
 }
 
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then

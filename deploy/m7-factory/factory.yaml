@@ -3,6 +3,10 @@
 schemaVersion: v1alpha1
 name: m7
 description: Operator-mode exit factory for one pull request and one cancel.
+repositories:
+  - codeForge: GITHUB
+    owner: polds
+    name: factory-m7-target
 secrets:
   - GH_TOKEN
   - DEFINITION_GIT_URL
