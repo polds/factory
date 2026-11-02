@@ -1,0 +1,15 @@
+apiVersion: factory.dev/v1alpha1
+kind: AgentRun
+metadata:
+  name: m7-pr
+  namespace: factory
+spec:
+  factoryRef:
+    name: m7
+  agentRef:
+    name: implementer
+  prompt: |
+    Add a line to README.md and open a pull request against the run base ref.
+  priority: batch
+  poolRef:
+    name: standard

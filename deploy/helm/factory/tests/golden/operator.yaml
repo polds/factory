@@ -318,7 +318,7 @@ metadata:
     app.kubernetes.io/part-of: factory
     app.kubernetes.io/component: control-plane
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: factory
@@ -365,6 +365,8 @@ spec:
               value: "http://factory-factoryd.factory.svc:8080"
             - name: FACTORY_DEFINITION_PATH
               value: "/definitions/factory"
+            - name: FACTORY_DEFINITION_SOURCE
+              value: api
             - name: FACTORY_LOG_LEVEL
               value: info
             - name: FACTORY_WORKER_POOL
@@ -433,13 +435,10 @@ spec:
               memory: 512Mi
           volumeMounts:
             - name: definition
-              mountPath: /definitions/factory/factory.yaml
-              subPath: factory.yaml
-              readOnly: true
+              mountPath: /definitions
       volumes:
         - name: definition
-          configMap:
-            name: factory-definition
+          emptyDir: {}
 ---
 # Source: factory/templates/render.yaml
 apiVersion: apps/v1

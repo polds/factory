@@ -72,7 +72,12 @@ func (s *Server) ensureTerminalEvent(ctx context.Context, run store.Run) {
 		s.log.Error("terminal execution", "run_id", run.ID, "err", err)
 		return
 	}
-	if err := s.appendServerEvent(ctx, run.ID, execID, serverEventBase, terminalPayload(s.now(), run.Status, run.FailureReason, "", run.FailureClass, run.FailureCode, run.ExitCode)); err != nil {
+	prs, err := s.recordedPullURLs(ctx, run.ID)
+	if err != nil {
+		s.log.Error("terminal pull requests", "run_id", run.ID, "err", err)
+		return
+	}
+	if err := s.appendServerEvent(ctx, run.ID, execID, serverEventBase, terminalPayload(s.now(), run.Status, run.FailureReason, "", run.FailureClass, run.FailureCode, run.ExitCode, prs)); err != nil {
 		s.log.Error("terminal event", "run_id", run.ID, "err", err)
 		return
 	}
@@ -199,7 +204,11 @@ func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason,
 	if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
 		return false, err
 	}
-	payload := terminalPayload(s.now(), status, reason, summary, class, code, exit)
+	prs, err := s.recordedPullURLs(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	payload := terminalPayload(s.now(), status, reason, summary, class, code, exit, prs)
 	if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
 		return false, err
 	}
@@ -257,7 +266,11 @@ func (s *Server) cancelRun(ctx context.Context, runID string) (store.Run, error)
 		if err != nil {
 			return store.Run{}, err
 		}
-		payload := terminalPayload(s.now(), store.StatusCancelled, "", "", class, code, nil)
+		prs, prErr := s.recordedPullURLs(ctx, runID)
+		if prErr != nil {
+			return store.Run{}, prErr
+		}
+		payload := terminalPayload(s.now(), store.StatusCancelled, "", "", class, code, nil, prs)
 		if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
 			return store.Run{}, err
 		}
@@ -311,7 +324,11 @@ func (s *Server) commitBareCancel(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
-	payload := terminalPayload(s.now(), store.StatusCancelled, "", "", class, code, nil)
+	prs, err := s.recordedPullURLs(ctx, runID)
+	if err != nil {
+		return err
+	}
+	payload := terminalPayload(s.now(), store.StatusCancelled, "", "", class, code, nil, prs)
 	if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
 		return err
 	}
@@ -453,11 +470,103 @@ func terminalMeta(payload []byte) (string, time.Time, error) {
 	return meta.Type, ts, nil
 }
 
-func terminalPayload(now time.Time, status, reason, summary, class, code string, exit *int) []byte {
+// recordedPullURLs is the work item's open pull request plus any prUrls
+// already stored on this run's events. The terminal event is the copy the
+// operator mirrors into AgentRun status.
+func (s *Server) recordedPullURLs(ctx context.Context, runID string) ([]string, error) {
+	var work string
+	err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(w.open_pr_url, '')
+		FROM runs r
+		LEFT JOIN work_items w ON w.id = r.work_item_id
+		WHERE r.id = $1`, runID).Scan(&work)
+	if errors.Is(err, pgx.ErrNoRows) {
+		work = ""
+		err = nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(ctx, `SELECT payload_json FROM run_events WHERE run_id = $1 ORDER BY seq`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var blobs [][]byte
+	for rows.Next() {
+		var blob []byte
+		if err := rows.Scan(&blob); err != nil {
+			return nil, err
+		}
+		blobs = append(blobs, blob)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return mergePullURLs(work, pullURLsFromPayloads(blobs)), nil
+}
+
+func mergePullURLs(work string, fromEvents []string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		if _, ok := seen[raw]; ok {
+			return
+		}
+		seen[raw] = struct{}{}
+		out = append(out, raw)
+	}
+	add(work)
+	for _, raw := range fromEvents {
+		add(raw)
+	}
+	return out
+}
+
+func pullURLsFromPayloads(blobs [][]byte) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		if _, ok := seen[raw]; ok {
+			return
+		}
+		seen[raw] = struct{}{}
+		out = append(out, raw)
+	}
+	for _, blob := range blobs {
+		var raw struct {
+			PRURLs []string `json:"prUrls"`
+			Snake  []string `json:"pr_urls"`
+		}
+		if err := json.Unmarshal(blob, &raw); err != nil {
+			continue
+		}
+		for _, url := range raw.PRURLs {
+			add(url)
+		}
+		for _, url := range raw.Snake {
+			add(url)
+		}
+	}
+	return out
+}
+
+func terminalPayload(now time.Time, status, reason, summary, class, code string, exit *int, prs []string) []byte {
 	payload := map[string]any{
 		"type":   "run.terminal",
 		"ts":     now.UTC().Format(time.RFC3339Nano),
 		"status": status,
+	}
+	if len(prs) > 0 {
+		payload["prUrls"] = prs
 	}
 	if summary != "" {
 		payload["summary"] = summary

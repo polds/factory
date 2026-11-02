@@ -1,0 +1,6 @@
+description: Task image for the M7 exit run
+platform:
+  os: linux
+  arch: x86_64
+  linux:
+    dockerImage: factory-m1-task:dev

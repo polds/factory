@@ -1,0 +1,15 @@
+apiVersion: factory.dev/v1alpha1
+kind: AgentRun
+metadata:
+  name: m7-hold
+  namespace: factory
+spec:
+  factoryRef:
+    name: m7
+  agentRef:
+    name: implementer
+  prompt: |
+    m7-hold. Sleep until this run is cancelled. Do not open a pull request.
+  priority: batch
+  poolRef:
+    name: standard

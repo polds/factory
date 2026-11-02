@@ -6,11 +6,15 @@ import (
 	"path/filepath"
 	"testing"
 
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
-var k8sClient client.Client
+var (
+	k8sClient  client.Client
+	restConfig *rest.Config
+)
 
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
@@ -27,6 +31,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
+	restConfig = cfg
 	k8sClient, err = client.New(cfg, client.Options{Scheme: Scheme})
 	if err != nil {
 		_ = env.Stop()

@@ -5,14 +5,19 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	factoryv1 "github.com/polds/factory/api/factory/v1alpha1"
 	fclient "github.com/polds/factory/internal/client"
@@ -127,6 +132,149 @@ func TestAgentRunCancelGrace(t *testing.T) {
 	}
 	if err := k8sClient.Get(ctx, key, &got); err == nil {
 		t.Fatal("finalizer was not removed after the grace")
+	}
+}
+
+func TestParseRunEventCopiesPRURLs(t *testing.T) {
+	got := parseRunEvent(fclient.Event{
+		Type: "run.terminal",
+		Data: `{"status":"succeeded","prUrls":["https://pr.invalid/m7/factory-m7-target/pull/1"]}`,
+	})
+	if got.phase != "succeeded" || len(got.prs) != 1 || got.prs[0] != "https://pr.invalid/m7/factory-m7-target/pull/1" {
+		t.Fatalf("parsed %+v", got)
+	}
+	snake := parseRunEvent(fclient.Event{Type: "run.terminal", Data: `{"pr_urls":["https://example.invalid/pull/2"]}`})
+	if len(snake.prs) != 1 || snake.prs[0] != "https://example.invalid/pull/2" {
+		t.Fatalf("snake %+v", snake.prs)
+	}
+}
+
+func TestAgentRunPredicateRequeuesRunIDAndTerminalPhase(t *testing.T) {
+	pred := agentRunPredicate()
+	base := &factoryv1.AgentRun{}
+	base.Generation = 2
+	withRun := base.DeepCopy()
+	withRun.Status.RunID = "run-1"
+	if !pred.Update(event.UpdateEvent{ObjectOld: base, ObjectNew: withRun}) {
+		t.Fatal("run id did not requeue")
+	}
+	running := withRun.DeepCopy()
+	running.Status.Phase = "running"
+	if pred.Update(event.UpdateEvent{ObjectOld: withRun, ObjectNew: running}) {
+		t.Fatal("non-terminal phase requeued")
+	}
+	done := running.DeepCopy()
+	done.Status.Phase = "cancelled"
+	if !pred.Update(event.UpdateEvent{ObjectOld: running, ObjectNew: done}) {
+		t.Fatal("terminal phase did not requeue")
+	}
+	if pred.Update(event.UpdateEvent{ObjectOld: done, ObjectNew: done.DeepCopy()}) {
+		t.Fatal("unchanged terminal phase requeued")
+	}
+}
+
+func TestAgentRunTerminalPhaseDropsFinalizer(t *testing.T) {
+	requireEnvtest(t)
+	ctx := testContext(t)
+	ns := newNamespace(t, ctx)
+	var once sync.Once
+	release := make(chan struct{})
+	signal := func() { once.Do(func() { close(release) }) }
+	var starts atomic.Int32
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/agent/run":
+			starts.Add(1)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "run-hold", "status": "queued"})
+		default:
+			if strings.HasSuffix(r.URL.Path, "/cancel") {
+				signal()
+				_ = json.NewEncoder(w).Encode(map[string]string{"id": "run-hold", "status": "cancelling"})
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			if _, err := fmt.Fprint(w, "id: 1\nevent: run.status\ndata: {\"status\":\"running\"}\n\n"); err != nil {
+				return
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-release:
+			}
+			_, _ = fmt.Fprint(w, "id: 2\nevent: run.terminal\ndata: {\"status\":\"cancelled\",\"prUrls\":[\"https://pr.invalid/m7/factory-m7-target/pull/1\"]}\n\n")
+		}
+	}))
+	t.Cleanup(httpSrv.Close)
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
+		Scheme:                 Scheme,
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &fclient.Client{BaseURL: httpSrv.URL, APIKey: "test-api-key", Backoff: func(int) time.Duration { return 0 }}
+	reconciler := &AgentRunReconciler{Client: mgr.GetClient(), API: api, Recorder: record.NewFakeRecorder(8), Base: ctx}
+	if err := reconciler.SetupWithManager(mgr); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		if err := mgr.Start(ctx); err != nil {
+			t.Errorf("manager: %v", err)
+		}
+	}()
+	if !mgr.GetCache().WaitForCacheSync(ctx) {
+		t.Fatal("cache did not sync")
+	}
+	run := &factoryv1.AgentRun{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "hold"},
+		Spec:       factoryv1.AgentRunSpec{Prompt: "wait"},
+	}
+	if err := k8sClient.Create(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	key := client.ObjectKey{Namespace: ns, Name: run.Name}
+	var got factoryv1.AgentRun
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if err := k8sClient.Get(ctx, key, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Status.RunID == "run-hold" && got.Status.Phase == "running" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("watch did not start phase %q run %q", got.Status.Phase, got.Status.RunID)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if starts.Load() != 1 {
+		t.Fatalf("starts %d", starts.Load())
+	}
+	started := time.Now()
+	if err := k8sClient.Delete(ctx, &got); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(15 * time.Second)
+	for {
+		err := k8sClient.Get(ctx, key, &got)
+		if apierrors.IsNotFound(err) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("finalizer still held after %s phase %q", time.Since(started), got.Status.Phase)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if elapsed := time.Since(started); elapsed > 15*time.Second {
+		t.Fatalf("delete-to-cancel %s", elapsed)
 	}
 }
 

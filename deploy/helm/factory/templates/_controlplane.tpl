@@ -1,4 +1,7 @@
 {{- define "factory.controlplane" -}}
+{{- if and .Values.operator.enabled (or (gt (int .Values.controlPlane.replicas) 1) .Values.controlPlane.autoscaling.enabled) -}}
+{{- fail "operator.enabled needs controlPlane.replicas=1 (API-backed definitions are per pod)" -}}
+{{- end -}}
 {{- if .Values.controlPlane.enabled }}
 ---
 apiVersion: v1
@@ -105,6 +108,10 @@ spec:
               value: {{ include "factory.taskServerURL" . | quote }}
             - name: FACTORY_DEFINITION_PATH
               value: {{ .Values.controlPlane.definition.mountPath | quote }}
+            {{- if .Values.operator.enabled }}
+            - name: FACTORY_DEFINITION_SOURCE
+              value: api
+            {{- end }}
             - name: FACTORY_LOG_LEVEL
               value: info
             - name: FACTORY_WORKER_POOL
@@ -129,6 +136,13 @@ spec:
                   name: {{ include "factory.apiSecretName" . }}
                   key: {{ .Values.controlPlane.api.workerKeyKey }}
             {{- include "factory.s3Env" . | trim | nindent 12 }}
+            {{- with .Values.controlPlane.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.controlPlane.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           readinessProbe:
             exec:
               command: ["/factoryd", "healthcheck"]
@@ -153,16 +167,32 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
+            {{- if .Values.operator.enabled }}
+            - name: definition
+              mountPath: {{ dir .Values.controlPlane.definition.mountPath }}
+            {{- else }}
             {{- range $name, $_ := .Values.controlPlane.definition.files }}
             - name: definition
               mountPath: {{ $.Values.controlPlane.definition.mountPath }}/{{ $name }}
               subPath: {{ $name }}
               readOnly: true
             {{- end }}
+            {{- end }}
+            {{- with .Values.controlPlane.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
+        {{- if .Values.operator.enabled }}
+        - name: definition
+          emptyDir: {}
+        {{- else }}
         - name: definition
           configMap:
             name: {{ include "factory.definitionName" . }}
+        {{- end }}
+        {{- with .Values.controlPlane.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
 {{- if .Values.controlPlane.ingress.enabled }}
 ---
 apiVersion: networking.k8s.io/v1

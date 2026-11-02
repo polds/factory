@@ -1,0 +1,161 @@
+# Manual M7 CI live run.
+#
+# workflow_dispatch only. This workflow is not part of the required CI
+# check. Dispatch it from the orchestrator only. Do not run it on
+# pull_request or push, and do not dispatch it from an agent.
+#
+# exec so cancel SIGINT reaches the driver; if: cancelled() runs --cleanup-remote.
+# That step prints one summary line: refs, branches, and PRs deleted or
+# left, by count. It does not print tokens.
+#
+# permissions is contents:read only. GITHUB_TOKEN cannot push or open
+# PRs. There is no job-level permissions block.
+#
+# Repository secrets (values are masked; never printed):
+#   M1_OPENAI_BASE_URL          OpenAI-compatible endpoint (reused)
+#   M1_OPENAI_API_KEY           key for that endpoint (reused)
+#   M1_OPENAI_EXTRA_HEADERS     optional newline-separated Name: value
+#   M6_GITHUB_APP_ID            GitHub App id
+#   M6_GITHUB_APP_PRIVATE_KEY   unencrypted PEM text
+#
+# The workflow writes the PEM to ${RUNNER_TEMP}/m6-github-app.pem at
+# mode 644 and points FACTORY_GITHUB_APP_PRIVATE_KEY_FILE at that path.
+# The file is not under spike/m7/.work/evidence and is not uploaded.
+name: m7-live
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: LiteLLM model id.
+        required: false
+        default: nous/claude-sonnet-5.5
+        type: string
+      target_git_url:
+        description: Target git URL.
+        required: false
+        default: https://github.com/polds/factory-m7-target
+        type: string
+      reviewer:
+        description: Collaborator login. Required.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m7-live
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  live:
+    name: m7 live
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check required secrets and inputs
+        env:
+          M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
+          M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
+          M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          REVIEWER: ${{ inputs.reviewer }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in M1_OPENAI_BASE_URL M1_OPENAI_API_KEY M6_GITHUB_APP_ID M6_GITHUB_APP_PRIVATE_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              printf 'missing %s\n' "${name}"
+              missing=1
+            fi
+          done
+          if [[ -z "${REVIEWER:-}" ]]; then
+            printf 'missing reviewer\n'
+            missing=1
+          fi
+          if [[ "${missing}" -ne 0 ]]; then
+            exit 1
+          fi
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Mask optional inference headers
+        env:
+          M1_OPENAI_EXTRA_HEADERS: ${{ secrets.M1_OPENAI_EXTRA_HEADERS }}
+        run: python3 scripts/ci/mask-extra-headers.py
+      - name: Write the GitHub App private key
+        env:
+          M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          key="${RUNNER_TEMP}/m6-github-app.pem"
+          if [[ -z "${M6_GITHUB_APP_PRIVATE_KEY:-}" ]]; then
+            printf 'missing M6_GITHUB_APP_PRIVATE_KEY\n'
+            exit 1
+          fi
+          printf '%s\n' "${M6_GITHUB_APP_PRIVATE_KEY}" > "${key}"
+          chmod 644 "${key}"
+      - name: Run the CI live M7 driver
+        env:
+          M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          M1_OPENAI_EXTRA_HEADERS: ${{ secrets.M1_OPENAI_EXTRA_HEADERS }}
+          M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
+          M7_LIVE_MODEL: ${{ inputs.model }}
+          M7_DEFINITION_GIT_URL: ${{ inputs.target_git_url }}
+          M7_GITHUB_API_BASE: https://api.github.com
+          FACTORY_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/m6-github-app.pem
+          FACTORY_REVIEWERS_ADMINS: ${{ inputs.reviewer }}
+        run: MODE=live-ci exec ./spike/m7/run.sh
+      - name: Clean up remote state after cancel
+        if: cancelled()
+        env:
+          M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          M1_OPENAI_EXTRA_HEADERS: ${{ secrets.M1_OPENAI_EXTRA_HEADERS }}
+          M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
+          M7_LIVE_MODEL: ${{ inputs.model }}
+          M7_DEFINITION_GIT_URL: ${{ inputs.target_git_url }}
+          M7_GITHUB_API_BASE: https://api.github.com
+          FACTORY_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/m6-github-app.pem
+          FACTORY_REVIEWERS_ADMINS: ${{ inputs.reviewer }}
+        run: MODE=live-ci ./spike/m7/run.sh --cleanup-remote
+      - name: Redact M7 evidence
+        id: redact
+        if: always()
+        env:
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          M1_OPENAI_EXTRA_HEADERS: ${{ secrets.M1_OPENAI_EXTRA_HEADERS }}
+        run: |
+          set -euo pipefail
+          if [[ -f spike/m7/.work/github-app-token ]]; then
+            M7_APP_TOKEN="$(tr -d '[:space:]' < spike/m7/.work/github-app-token)"
+            export M7_APP_TOKEN
+          fi
+          export EVIDENCE_EXTRA_SECRETS="M7_APP_TOKEN"
+          python3 spike/lib/redact_evidence.py \
+            --key-file spike/m7/.work/api-key \
+            spike/m7/.work/evidence
+          if [[ -d spike/m7/.work/evidence ]]; then
+            echo "ready=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Publish M7 evidence artifact
+        if: always() && steps.redact.outputs.ready == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: m7-evidence
+          path: spike/m7/.work/evidence/
+          retention-days: 30
+          include-hidden-files: true
+          if-no-files-found: warn

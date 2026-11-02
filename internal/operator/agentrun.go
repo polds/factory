@@ -75,7 +75,21 @@ func agentRunPredicate() predicate.Predicate {
 			if !e.ObjectOld.GetDeletionTimestamp().Equal(e.ObjectNew.GetDeletionTimestamp()) {
 				return true
 			}
-			return gen.Update(e)
+			if gen.Update(e) {
+				return true
+			}
+			// Status does not bump generation. A run id has to requeue so the
+			// event watch starts, and a terminal phase has to requeue so a
+			// deleting run drops its finalizer inside the cancel grace.
+			oldRun, oldOK := e.ObjectOld.(*factoryv1.AgentRun)
+			newRun, newOK := e.ObjectNew.(*factoryv1.AgentRun)
+			if !oldOK || !newOK {
+				return false
+			}
+			if oldRun.Status.RunID == "" && newRun.Status.RunID != "" {
+				return true
+			}
+			return !terminalPhase(oldRun.Status.Phase) && terminalPhase(newRun.Status.Phase)
 		},
 	}
 }
