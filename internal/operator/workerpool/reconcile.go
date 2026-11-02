@@ -113,6 +113,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		taskNS = pool.Spec.KubernetesBackend.Namespace
 	}
 	if !r.Config.allows(taskNS) {
+		// A move into a disallowed namespace must not leave the previous
+		// namespace's labeled RBAC behind. The new namespace is not rendered.
+		if err := r.dropPreviousTaskRBAC(ctx, &pool, taskNS); err != nil {
+			return ctrl.Result{}, err
+		}
 		msg := fmt.Sprintf("kubernetesBackend.namespace %q is not in WORKERPOOL_TASK_NAMESPACES", taskNS)
 		if err := r.writeStatus(ctx, req.NamespacedName, metav1.ConditionFalse, "TaskNamespaceNotAllowed", msg); err != nil {
 			return ctrl.Result{}, err
@@ -187,16 +192,37 @@ func (r *Reconciler) deleteTaskRBAC(ctx context.Context, pool *factoryv1.WorkerP
 	if pool.Spec.KubernetesBackend != nil {
 		add(pool.Spec.KubernetesBackend.Namespace)
 	}
-	name := r.Config.objectName(pool.Name)
 	for _, ns := range namespaces {
-		if err := r.deleteIfOurs(ctx, &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}, pool); err != nil {
-			return err
-		}
-		if err := r.deleteIfOurs(ctx, &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}, pool); err != nil {
+		if err := r.deleteTaskRBACIn(ctx, pool, ns); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// dropPreviousTaskRBAC deletes this pool's labeled Role and RoleBinding in the
+// namespace recorded by AnnTaskNamespace when spec now names a different one.
+// The caller writes the new annotation only after this returns nil.
+func (r *Reconciler) dropPreviousTaskRBAC(ctx context.Context, pool *factoryv1.WorkerPool, next string) error {
+	prev := ""
+	if pool.Annotations != nil {
+		prev = pool.Annotations[AnnTaskNamespace]
+	}
+	if prev == "" || prev == next {
+		return nil
+	}
+	return r.deleteTaskRBACIn(ctx, pool, prev)
+}
+
+func (r *Reconciler) deleteTaskRBACIn(ctx context.Context, pool *factoryv1.WorkerPool, namespace string) error {
+	if namespace == "" {
+		return nil
+	}
+	name := r.Config.objectName(pool.Name)
+	if err := r.deleteIfOurs(ctx, &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}, pool); err != nil {
+		return err
+	}
+	return r.deleteIfOurs(ctx, &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}, pool)
 }
 
 func (r *Reconciler) deleteIfOurs(ctx context.Context, obj client.Object, pool *factoryv1.WorkerPool) error {
@@ -223,8 +249,17 @@ func (r *Reconciler) noteTaskNamespace(ctx context.Context, key types.Namespaced
 		if err := r.Get(ctx, key, &fresh); err != nil {
 			return err
 		}
-		if fresh.Annotations[AnnTaskNamespace] == taskNS {
+		prev := ""
+		if fresh.Annotations != nil {
+			prev = fresh.Annotations[AnnTaskNamespace]
+		}
+		if prev == taskNS {
 			return nil
+		}
+		// Delete the previous namespace before the annotation moves, or a
+		// later delete only sees the new namespace.
+		if err := r.dropPreviousTaskRBAC(ctx, &fresh, taskNS); err != nil {
+			return err
 		}
 		ann := fresh.Annotations
 		if ann == nil {

@@ -20,8 +20,9 @@ const (
 	// LabelPool marks objects this reconciler created. Pre-existing objects
 	// without it are never adopted or deleted.
 	LabelPool = "factory.dev/workerpool"
-	// AnnTaskNamespace records the task namespace a pool last rendered, so
-	// delete still finds a Role after spec.kubernetesBackend.namespace changes.
+	// AnnTaskNamespace records the task namespace a pool last rendered.
+	// A namespace change deletes that namespace's Role and RoleBinding
+	// before this annotation is overwritten.
 	AnnTaskNamespace = "factory.dev/task-namespace"
 
 	labelComponent  = "app.kubernetes.io/component"

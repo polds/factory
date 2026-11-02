@@ -161,6 +161,157 @@ func TestCreateScaleDeleteAndDrift(t *testing.T) {
 	}
 }
 
+func TestMoveTaskNamespaceThenDelete(t *testing.T) {
+	requireEnvtest(t)
+	ctx, _ := captureLogs(t)
+	poolNS := makeNS(t, ctx, "p")
+	nsA := makeNS(t, ctx, "a")
+	nsB := makeNS(t, ctx, "b")
+	nsC := makeNS(t, ctx, "c")
+	denied := makeNS(t, ctx, "d")
+
+	t.Run("A to B", func(t *testing.T) {
+		r := newMoveReconciler(nsA, nsB, nsC)
+		req := reconcilePoolIn(t, ctx, r, poolNS, "move-ab", nsA)
+		movePoolNamespace(t, ctx, r, req, nsB)
+		assertLabeledRBAC(t, ctx, nsA, PoolLabel(poolNS, "move-ab"), 0)
+		assertLabeledRBAC(t, ctx, nsB, PoolLabel(poolNS, "move-ab"), 1)
+		deletePool(t, ctx, r, req)
+		assertNoLabeledRBAC(t, ctx, PoolLabel(poolNS, "move-ab"))
+	})
+
+	t.Run("A to B to C", func(t *testing.T) {
+		r := newMoveReconciler(nsA, nsB, nsC)
+		req := reconcilePoolIn(t, ctx, r, poolNS, "move-abc", nsA)
+		movePoolNamespace(t, ctx, r, req, nsB)
+		movePoolNamespace(t, ctx, r, req, nsC)
+		assertLabeledRBAC(t, ctx, nsA, PoolLabel(poolNS, "move-abc"), 0)
+		assertLabeledRBAC(t, ctx, nsB, PoolLabel(poolNS, "move-abc"), 0)
+		assertLabeledRBAC(t, ctx, nsC, PoolLabel(poolNS, "move-abc"), 1)
+		deletePool(t, ctx, r, req)
+		assertNoLabeledRBAC(t, ctx, PoolLabel(poolNS, "move-abc"))
+	})
+
+	t.Run("A to disallowed", func(t *testing.T) {
+		cfg := fixtureConfig()
+		cfg.TaskNamespaces = []string{nsA}
+		cfg.ImagePullSecrets = nil
+		r := &Reconciler{Client: k8sClient, Recorder: record.NewFakeRecorder(8), Config: cfg}
+		req := reconcilePoolIn(t, ctx, r, poolNS, "move-deny", nsA)
+		movePoolNamespace(t, ctx, r, req, denied)
+		var got factoryv1.WorkerPool
+		if err := k8sClient.Get(ctx, req.NamespacedName, &got); err != nil {
+			t.Fatal(err)
+		}
+		cond := readyCondition(t, &got)
+		if cond.Status != metav1.ConditionFalse || cond.Reason != "TaskNamespaceNotAllowed" {
+			t.Fatalf("disallowed condition: %+v", cond)
+		}
+		assertLabeledRBAC(t, ctx, nsA, PoolLabel(poolNS, "move-deny"), 0)
+		assertLabeledRBAC(t, ctx, denied, PoolLabel(poolNS, "move-deny"), 0)
+		deletePool(t, ctx, r, req)
+		assertNoLabeledRBAC(t, ctx, PoolLabel(poolNS, "move-deny"))
+	})
+}
+
+func newMoveReconciler(namespaces ...string) *Reconciler {
+	cfg := fixtureConfig()
+	cfg.TaskNamespaces = namespaces
+	cfg.ImagePullSecrets = nil
+	return &Reconciler{Client: k8sClient, Recorder: record.NewFakeRecorder(8), Config: cfg}
+}
+
+func reconcilePoolIn(t *testing.T, ctx context.Context, r *Reconciler, poolNS, name, taskNS string) ctrl.Request {
+	t.Helper()
+	pool := testPool(poolNS, taskNS, 1)
+	pool.Name = name
+	if err := k8sClient.Create(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: poolNS, Name: name}}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	assertLabeledRBAC(t, ctx, taskNS, PoolLabel(poolNS, name), 1)
+	return req
+}
+
+func movePoolNamespace(t *testing.T, ctx context.Context, r *Reconciler, req ctrl.Request, taskNS string) {
+	t.Helper()
+	var fresh factoryv1.WorkerPool
+	if err := k8sClient.Get(ctx, req.NamespacedName, &fresh); err != nil {
+		t.Fatal(err)
+	}
+	fresh.Spec.KubernetesBackend.Namespace = taskNS
+	if err := k8sClient.Update(ctx, &fresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func deletePool(t *testing.T, ctx context.Context, r *Reconciler, req ctrl.Request) {
+	t.Helper()
+	var fresh factoryv1.WorkerPool
+	if err := k8sClient.Get(ctx, req.NamespacedName, &fresh); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8sClient.Delete(ctx, &fresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8sClient.Get(ctx, req.NamespacedName, &fresh); !apierrors.IsNotFound(err) {
+		t.Fatalf("pool release: %v", err)
+	}
+}
+
+func assertLabeledRBAC(t *testing.T, ctx context.Context, namespace, label string, want int) {
+	t.Helper()
+	roles, bindings := labeledRBACCounts(t, ctx, namespace, label)
+	if roles != want || bindings != want {
+		t.Fatalf("namespace %s labeled rbac roles %d bindings %d, want %d", namespace, roles, bindings, want)
+	}
+}
+
+func assertNoLabeledRBAC(t *testing.T, ctx context.Context, label string) {
+	t.Helper()
+	roles, bindings := labeledRBACCounts(t, ctx, "", label)
+	if roles != 0 || bindings != 0 {
+		t.Fatalf("labeled rbac remains roles %d bindings %d", roles, bindings)
+	}
+}
+
+func labeledRBACCounts(t *testing.T, ctx context.Context, namespace, label string) (int, int) {
+	t.Helper()
+	var roles rbacv1.RoleList
+	var bindings rbacv1.RoleBindingList
+	var opts []client.ListOption
+	if namespace != "" {
+		opts = append(opts, client.InNamespace(namespace))
+	}
+	if err := k8sClient.List(ctx, &roles, opts...); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8sClient.List(ctx, &bindings, opts...); err != nil {
+		t.Fatal(err)
+	}
+	nRoles, nBindings := 0, 0
+	for i := range roles.Items {
+		if roles.Items[i].Labels[LabelPool] == label {
+			nRoles++
+		}
+	}
+	for i := range bindings.Items {
+		if bindings.Items[i].Labels[LabelPool] == label {
+			nBindings++
+		}
+	}
+	return nRoles, nBindings
+}
+
 func TestGuards(t *testing.T) {
 	requireEnvtest(t)
 	ctx, logs := captureLogs(t)

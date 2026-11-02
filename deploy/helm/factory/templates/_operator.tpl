@@ -19,7 +19,10 @@
 {{- end -}}
 
 {{- define "factory.operatorTaskNamespaces" -}}
-{{- $ns := .Values.operator.workerPools.taskNamespaces -}}
+{{- $ns := list -}}
+{{- if .Values.operator.workerPools -}}
+{{- $ns = .Values.operator.workerPools.taskNamespaces -}}
+{{- end -}}
 {{- if not $ns -}}
 {{- $ns = list "factory-runs" -}}
 {{- end -}}
@@ -137,7 +140,10 @@ subjects:
     name: {{ include "factory.operatorName" $ }}
     namespace: {{ $.Release.Namespace }}
 {{- end }}
-{{- $taskNamespaces := .Values.operator.workerPools.taskNamespaces }}
+{{- $taskNamespaces := list }}
+{{- if .Values.operator.workerPools }}
+{{- $taskNamespaces = .Values.operator.workerPools.taskNamespaces }}
+{{- end }}
 {{- if not $taskNamespaces }}
 {{- $taskNamespaces = list "factory-runs" }}
 {{- end }}
@@ -345,10 +351,16 @@ spec:
               value: {{ printf "ws://%s.%s.svc:8080/api/v1/selfhosted/worker/ws" (include "factory.factorydName" .) .Release.Namespace | quote }}
             - name: WORKER_SERVER_ROOT_URL
               value: {{ printf "http://%s.%s.svc:8080" (include "factory.factorydName" .) .Release.Namespace | quote }}
+            {{- $apiSecret := dict "name" "factory-worker" "key" "FACTORY_API_KEY" -}}
+            {{- if .Values.operator.workerPools -}}
+            {{- if .Values.operator.workerPools.apiKeySecret -}}
+            {{- $apiSecret = .Values.operator.workerPools.apiKeySecret -}}
+            {{- end -}}
+            {{- end }}
             - name: WORKER_API_KEY_SECRET_NAME
-              value: {{ .Values.operator.workerPools.apiKeySecret.name | default "factory-worker" | quote }}
+              value: {{ include "factory.workerApiSecretName" (list . (dict "apiKeySecret" $apiSecret)) | quote }}
             - name: WORKER_API_KEY_SECRET_KEY
-              value: {{ .Values.operator.workerPools.apiKeySecret.key | default "FACTORY_API_KEY" | quote }}
+              value: {{ include "factory.workerApiSecretKey" (list . (dict "apiKeySecret" $apiSecret)) | quote }}
             - name: WORKERPOOL_TASK_NAMESPACES
               value: {{ include "factory.operatorTaskNamespaces" . | quote }}
             - name: WORKER_FULLNAME
