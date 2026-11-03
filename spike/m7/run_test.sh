@@ -154,7 +154,56 @@ case_remote() {
   M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" preflight
   M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" ledger
   M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" rewrite
+  M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" probe
+  M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" record
   rm -rf "$work"
+}
+
+case_router() {
+  PYTHONPATH="$ROOT/spike/lib${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 "$ROOT/spike/m7/router_cases.py"
+}
+
+case_pull_url() {
+  local got
+  got="$(m7_trim_pull_url 'https://github.com/acme/app/pull/9.')"
+  if [[ "$got" != "https://github.com/acme/app/pull/9" ]]; then
+    fail "trailing period was kept"
+  fi
+  got="$(m7_trim_pull_url 'https://pr.invalid/m7/factory-m7-target/pull/2),')"
+  if [[ "$got" != "https://pr.invalid/m7/factory-m7-target/pull/2" ]]; then
+    fail "trailing punctuation was kept"
+  fi
+}
+
+case_pr_budget() {
+  local got
+  unset M7_PR_WAIT_SECONDS
+  got="$(m7_pr_wait_seconds)"
+  if [[ "$got" != "480" ]]; then
+    fail "default pr budget was ${got}"
+  fi
+  if M7_PR_WAIT_SECONDS=1 m7_pr_wait_seconds >/dev/null 2>&1; then
+    fail "pr budget of 1 was accepted"
+  fi
+}
+
+case_hold_agent() {
+  local agent run
+  agent="$ROOT/deploy/m7-factory/agents/hold/agent.md"
+  run="$ROOT/spike/m7/agentrun-hold.yaml"
+  if [[ "$(grep -c '^model: m7-hold$' "$agent")" -ne 1 ]]; then
+    fail "hold agent model was not m7-hold"
+  fi
+  if grep -q 'git clone' "$agent" || grep -q 'GITHUB_API_BASE' "$agent"; then
+    fail "hold agent can clone or open a pull request"
+  fi
+  if ! grep -q 'name: hold' "$run"; then
+    fail "hold AgentRun does not name the hold agent"
+  fi
+  if grep -q 'name: implementer' "$run"; then
+    fail "hold AgentRun still names the implementer"
+  fi
 }
 
 case_live_before_apply() {
@@ -284,6 +333,10 @@ case_cancel_window
 case_apply_order
 case_planted_token
 case_remote
+case_router
+case_pull_url
+case_pr_budget
+case_hold_agent
 case_live_before_apply
 case_reviewer_stamp
 case_cleanup_on_exit

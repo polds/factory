@@ -1,5 +1,5 @@
 ---
-description: Opens one pull request, or holds until the run is deleted.
+description: Opens one pull request on the seeded base branch.
 agentType: IMPLEMENT
 model: m7-agent
 runner: local

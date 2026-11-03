@@ -123,6 +123,11 @@ def base_env(work: Path, mode: str) -> dict[str, str]:
     env["FACTORY_GITHUB_APP_PRIVATE_KEY_FILE"] = str(ensure_key(work))
     env["M7_APPTOKEN_BIN"] = str(ensure_apptoken(work))
     env["FACTORY_REVIEWERS_ADMINS"] = "m7-reviewer"
+    env["M1_OPENAI_BASE_URL"] = ""
+    env["M1_OPENAI_API_KEY"] = ""
+    env["M1_OPENAI_EXTRA_HEADERS"] = ""
+    env["FACTORY_INFERENCE_OPENAI_API_KEY"] = ""
+    env["FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS"] = ""
     env.pop("GITHUB_RUN_ID", None)
     env.pop("GITHUB_RUN_ATTEMPT", None)
     return env
@@ -354,6 +359,200 @@ def case_rewrite(work: Path) -> None:
         fail("rewrite changed the source agent")
 
 
+PLANTED_KEY = "sk-planted-m7-probe-0123456789"
+PLANTED_EXTRA = "planted-extra-value-m7"
+
+
+class Probe(BaseHTTPRequestHandler):
+    status_code = 402
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        del fmt, args
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(length) if length else b""
+        Probe.last = {
+            "path": self.path.split("?", 1)[0],
+            "body": raw.decode("utf-8", "replace"),
+            "auth": self.headers.get("Authorization", ""),
+            "extra": self.headers.get("x-litellm-api-key", ""),
+        }
+        if Probe.status_code == 200:
+            body = b'{"choices":[{"message":{"content":"x"}}]}'
+        else:
+            body = json.dumps(
+                {
+                    "error": Probe.last["auth"],
+                    "extra": Probe.last["extra"],
+                    "message": "model not found",
+                }
+            ).encode()
+        self.send_response(Probe.status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def serve_probe(status: int) -> tuple[ThreadingHTTPServer, int]:
+    Probe.status_code = status
+    Probe.last = {}
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Probe)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, server.server_address[1]
+
+
+def run_probe(work: Path, status: int) -> str:
+    server, port = serve_probe(status)
+    try:
+        env = base_env(work, "9")
+        env["M1_OPENAI_BASE_URL"] = f"http://127.0.0.1:{port}/v1"
+        env["M1_OPENAI_API_KEY"] = PLANTED_KEY
+        env["M1_OPENAI_EXTRA_HEADERS"] = f"x-litellm-api-key: {PLANTED_EXTRA}"
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "spike" / "lib" / "remote.py"), "preflight"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        text = proc.stderr + proc.stdout
+        fail_file = work / "remote-fail"
+        if fail_file.is_file():
+            text += fail_file.read_text(encoding="utf-8")
+        if PLANTED_KEY in text or PLANTED_EXTRA in text:
+            fail("probe output contained a planted secret")
+        return text
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def case_model_probe(work: Path) -> None:
+    denied = run_probe(work, 402)
+    if "payment required" not in denied or "402" not in denied:
+        fail("402 did not report payment required")
+    if "Authorization" not in denied or "x-litellm-api-key" not in denied:
+        fail("402 did not name the request headers")
+    limited = run_probe(work, 429)
+    if "rate limited" not in limited or "429" not in limited:
+        fail("429 did not report rate limited")
+    unknown = run_probe(work, 400)
+    if "unknown model" not in unknown:
+        fail("400 did not report an unknown model")
+    ready = run_probe(work, 200)
+    if "remote preflight: model PASS" not in ready:
+        fail("200 did not pass the model probe")
+    seen = getattr(Probe, "last", {})
+    body = seen.get("body", "")
+    if '"max_tokens": 1' not in body and '"max_tokens":1' not in body:
+        fail("probe did not ask for one token")
+    if seen.get("auth") != f"Bearer {PLANTED_KEY}":
+        fail("probe did not send the bearer")
+    if seen.get("extra") != PLANTED_EXTRA:
+        fail("probe did not send the extra header")
+
+
+def post_pull(base: str, head: str, target: str) -> None:
+    import urllib.request
+
+    body = json.dumps(
+        {"title": "m7", "head": head, "base": target, "body": "m7"}
+    ).encode()
+    req = urllib.request.Request(
+        base + "/repos/polds/factory-m7-target/pulls",
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {TOKEN}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=5) as res:
+        if res.status != 201:
+            fail(f"create status {res.status}")
+
+
+def write_record_ledger(work: Path, api: str) -> None:
+    ledger = {
+        "version": 1,
+        "run_id": RUN,
+        "owner": "polds",
+        "repo": "factory-m7-target",
+        "git_url": "git://m7-git.factory.svc.cluster.local/target.git",
+        "api_base": api,
+        "base_ref": f"m7-run/{RUN}/main",
+        "candidate_ref": f"m7-run/{RUN}/change",
+        "batch_id": "",
+        "entries": [],
+    }
+    path = work / "remote-ledger.json"
+    path.write_text(json.dumps(ledger), encoding="utf-8")
+    path.chmod(0o600)
+
+
+def case_record(work: Path) -> None:
+    proc, base = start_forge(work)
+    try:
+        post_pull(base, f"m7-run/{RUN}/change", f"m7-run/{RUN}/main")
+        write_record_ledger(work, base)
+        env = base_env(work, "9")
+        env["MODE"] = "offline"
+        opened = subprocess.run(
+            [sys.executable, str(ROOT / "spike" / "lib" / "remote.py"), "record-prs"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if opened.returncode != 0:
+            fail("offline record-prs failed")
+        url = (work / "opened-pr-url").read_text(encoding="utf-8").strip()
+        if url != "https://pr.invalid/m7/factory-m7-target/pull/1":
+            fail("offline record-prs did not write the forge url")
+        (work / "opened-pr-url").unlink()
+        env["SPIKE_ENV_PREFIX"] = "M6"
+        skipped = subprocess.run(
+            [sys.executable, str(ROOT / "spike" / "lib" / "remote.py"), "record-prs"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if skipped.returncode != 0 or (work / "opened-pr-url").exists():
+            fail("m6 offline record-prs was not a no-op")
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+    proc, base = start_forge(work)
+    try:
+        post_pull(base, f"m7-run/{RUN}/change", "main")
+        write_record_ledger(work, base)
+        env = base_env(work, "9")
+        env["MODE"] = "offline"
+        refused = subprocess.run(
+            [sys.executable, str(ROOT / "spike" / "lib" / "remote.py"), "record-prs"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if refused.returncode == 0:
+            fail("a main-base pull was recorded")
+        if "not the single run-base pull" not in refused.stderr:
+            fail("main-base pull was not rejected")
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
 def main() -> None:
     work = Path(os.environ["M7_CASE_WORK"])
     name = sys.argv[1]
@@ -363,6 +562,10 @@ def main() -> None:
         case_ledger(work)
     elif name == "rewrite":
         case_rewrite(work)
+    elif name == "probe":
+        case_model_probe(work)
+    elif name == "record":
+        case_record(work)
     else:
         fail(f"unknown case {name}")
 

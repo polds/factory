@@ -19,6 +19,8 @@ import os
 import re
 import sys
 import threading
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CONVENTION = "CONVENTION: cite-sources"
@@ -36,7 +38,21 @@ RULE_PARTS = (
 )
 BRANCH_RE = re.compile(r"branch: (improve/[A-Za-z0-9_-]+)")
 UNSAFE_URL = re.compile(r"[\s'\"$`\\]")
+RUN_ID_RE = re.compile(r"^[a-z0-9-]{1,80}$")
+REF_PREFIX_RE = re.compile(r"^[a-z0-9-]{1,40}$")
+REF_RE = re.compile(r"^[a-z0-9][a-z0-9./-]{0,160}$")
 MODELS = ("m6-agent", "m6-judge")
+LOCAL_MODELS = {"m6-agent", "m6-judge", "m7-agent", "m7-hold"}
+HOP_HEADERS = {
+    "host",
+    "content-length",
+    "connection",
+    "transfer-encoding",
+    "keep-alive",
+    "te",
+    "trailers",
+    "upgrade",
+}
 
 _reason_lock = threading.Lock()
 _reason_n = 0
@@ -305,27 +321,90 @@ def m7_target() -> tuple[str, str]:
     return git_url, api
 
 
+def m7_refs() -> tuple[str, str] | None:
+    """Run-scoped head and base. Unset or invalid ids do not fall back to main."""
+    run = os.environ.get("M7_RUN_ID", "").strip()
+    prefix = os.environ.get("SPIKE_RUN_REF_PREFIX", "m7-run").strip()
+    if RUN_ID_RE.fullmatch(run) is None or REF_PREFIX_RE.fullmatch(prefix) is None:
+        return None
+    head = f"{prefix}/{run}/change"
+    base = f"{prefix}/{run}/main"
+    if REF_RE.fullmatch(head) is None or REF_RE.fullmatch(base) is None:
+        return None
+    return head, base
+
+
+def m7_hold_turn(body: dict) -> dict:
+    """Sleep until cancel. The command is fixed; the model is not asked."""
+    del body
+    return bash_call("sleep 600 && echo M7_HOLDING")
+
+
+def upstream_base() -> str:
+    return os.environ.get("M7_UPSTREAM_BASE", "").strip().rstrip("/")
+
+
+def forward_completion(raw: bytes, headers: object) -> tuple[int, bytes, str]:
+    """Forward one completion. Header values are not logged."""
+    base = upstream_base()
+    if base == "":
+        return 400, b'{"error":{"message":"unknown model"}}\n', "application/json"
+    req = urllib.request.Request(base + "/chat/completions", data=raw, method="POST")
+    items = getattr(headers, "items", None)
+    if callable(items):
+        for key, value in items():
+            if str(key).lower() in HOP_HEADERS:
+                continue
+            req.add_header(str(key), str(value))
+    try:
+        with urllib.request.urlopen(req, timeout=90) as res:
+            ctype = res.headers.get("Content-Type", "application/json")
+            return res.status, res.read(), ctype.split(";", 1)[0].strip()
+    except urllib.error.HTTPError as err:
+        ctype = "application/json"
+        if err.headers is not None:
+            ctype = err.headers.get("Content-Type", ctype).split(";", 1)[0].strip()
+        return err.code, err.read(), ctype or "application/json"
+    except urllib.error.URLError:
+        return (
+            502,
+            b'{"error":{"message":"upstream unreachable"}}\n',
+            "application/json",
+        )
+
+
+def dispatch(body: dict, raw: bytes, headers: object) -> tuple[int, bytes, str]:
+    model = body.get("model")
+    if model in LOCAL_MODELS or upstream_base() == "":
+        status, payload = answer(body)
+        return status, json.dumps(payload).encode(), "application/json"
+    return forward_completion(raw, headers)
+
+
 def m7_turn(body: dict) -> dict:
-    """Offline m7-agent. Hold and the pull-request script are prompt text.
+    """Offline m7-agent. The hold model is m7-hold and never reaches here.
 
     m6-agent and m6-judge are unchanged. m7-agent is not listed in MODELS.
+    Pull requests use m7-run/<id>/change against m7-run/<id>/main.
     """
     text = blob(body)
     if "m7-hold" in text and "M7_HOLDING" not in text:
-        return bash_call("sleep 600 && echo M7_HOLDING")
+        return m7_hold_turn(body)
     if "m7-hold" in text:
         return completion("holding", None)
     if "M7_PR_HTTP" in text:
         return completion("pull request opened", None)
     git_url, api = m7_target()
+    refs = m7_refs()
     if "M7_PUSHED" in text:
-        if git_url == "" or api == "":
+        if git_url == "" or api == "" or refs is None:
             return completion("missing m7 target", None)
+        head, base = refs
         payload = json.dumps(
             {
                 "title": "m7",
-                "head": "m7-change",
-                "base": "main",
+                "head": head,
+                "base": base,
                 "body": "m7 offline",
             }
         )
@@ -341,11 +420,16 @@ def m7_turn(body: dict) -> dict:
         )
         return bash_call(command)
     if "M7_CLONED" in text:
+        if refs is None:
+            return completion("missing m7 run id", None)
+        head, base = refs
         command = (
-            "cd /workspace && git checkout -B m7-change && "
+            f"cd /workspace && git checkout -B '{head}' && "
             "printf '%s\\n' m7 >> README.md && git add README.md && "
             "git -c user.email=m7@example.invalid -c user.name=m7 "
-            "commit -m m7 && git -c protocol.allow=always push origin HEAD:refs/heads/m7-change && "
+            "commit -m m7 && "
+            f"git -c protocol.allow=always push origin 'HEAD~1:refs/heads/{base}' && "
+            f"git -c protocol.allow=always push origin 'HEAD:refs/heads/{head}' && "
             "echo M7_PUSHED"
         )
         return bash_call(command)
@@ -371,6 +455,8 @@ def answer(body: dict) -> tuple[int, dict]:
         return 200, agent(body)
     if model == "m6-judge":
         return 200, judge(body)
+    if model == "m7-hold":
+        return 200, m7_hold_turn(body)
     if model == "m7-agent":
         return 200, m7_turn(body)
     return 400, {"error": {"message": "unknown model"}}
@@ -421,8 +507,8 @@ class Router(BaseHTTPRequestHandler):
                 400, b'{"error":{"message":"bad request"}}\n', "application/json"
             )
             return
-        status, payload = answer(body)
-        self._send(status, json.dumps(payload).encode(), "application/json")
+        status, payload, content_type = dispatch(body, raw, self.headers)
+        self._send(status, payload, content_type)
 
     def _send(self, status: int, payload: bytes, content_type: str) -> None:
         self.send_response(status)

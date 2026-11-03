@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Live and live-ci forge calls for spike/m6.
+"""Live and live-ci forge calls for the spike drivers.
 
 One function per step: preflight, seed, watch, cleanup, and the ledger.
 Python holds the JSON ledger and the URL parser. MODE=offline returns
-before any git or curl call. The GitHub token stays in a mode-600 file
-and is handed to git through GIT_CONFIG_* and to curl on stdin
-(`curl -K -`), never through argv or a config file.
+before any git or curl call, except M7 record-prs, which reads the
+in-cluster forge. The GitHub token stays in a mode-600 file and is
+handed to git through GIT_CONFIG_* and to curl on stdin (`curl -K -`),
+never through argv or a config file.
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ import sys
 import tempfile
 import time
 import unicodedata
+import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 PERMISSION_NAMES = "checks contents issues metadata pull_requests"
@@ -785,10 +788,144 @@ def reviewer_logins() -> list[str]:
     return logins
 
 
+def redact_api_key(text: str) -> str:
+    secrets_found = []
+    for name in (
+        "M1_OPENAI_API_KEY",
+        "FACTORY_INFERENCE_OPENAI_API_KEY",
+        "M1_OPENAI_EXTRA_HEADERS",
+        "FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS",
+    ):
+        raw = os.environ.get(name, "")
+        if name.endswith("HEADERS"):
+            for line in raw.split("\n"):
+                if ":" not in line:
+                    continue
+                value = line.split(":", 1)[1].strip()
+                if len(value) >= 4:
+                    secrets_found.append(value)
+                if value.lower().startswith("bearer ") and len(value) > 7:
+                    token = value[7:].strip()
+                    if len(token) >= 4:
+                        secrets_found.append(token)
+            continue
+        if len(raw.strip()) >= 4:
+            secrets_found.append(raw.strip())
+    out = text
+    for secret in sorted(set(secrets_found), key=len, reverse=True):
+        out = out.replace(secret, "[REDACTED]")
+    return out
+
+
+def extra_header_pairs() -> list[tuple[str, str]]:
+    raw = os.environ.get("M1_OPENAI_EXTRA_HEADERS", "")
+    if raw == "":
+        raw = os.environ.get("FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS", "")
+    if "\r" in raw:
+        raise RemoteError("extra headers: CR or LF inside a header value")
+    text = raw.strip()
+    if text == "":
+        return []
+    name_re = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+    headers: list[tuple[str, str]] = []
+    index: dict[str, int] = {}
+    for number, line in enumerate(text.split("\n"), 1):
+        if line.strip() == "" or ":" not in line:
+            raise RemoteError(f"extra headers: line {number} is malformed")
+        name, value = line.split(":", 1)
+        name = name.strip()
+        value = value.strip()
+        if name_re.fullmatch(name) is None or value == "":
+            raise RemoteError(f"extra headers: line {number} is malformed")
+        for char in value:
+            if ord(char) < 32 or ord(char) == 127:
+                raise RemoteError(f"extra headers: line {number} is malformed")
+        key = name.lower()
+        if key in index:
+            headers[index[key]] = (name, value)
+            continue
+        index[key] = len(headers)
+        headers.append((name, value))
+    return headers
+
+
+def live_model() -> str:
+    model = os.environ.get("M7_LIVE_MODEL", "").strip()
+    if model == "":
+        model = "nous/claude-sonnet-5.5"
+    if re.fullmatch(r"[A-Za-z0-9_.:/+-]{1,200}", model) is None:
+        raise RemoteError("model id was not accepted")
+    return model
+
+
+def model_probe_reason(status: int, model: str) -> str:
+    if status == 402:
+        return f"model probe payment required (402) model {model}"
+    if status == 429:
+        return f"model probe rate limited (429) model {model}"
+    if status in {400, 404}:
+        return f"model probe unknown model {model} (status {status})"
+    return f"model probe failed status {status} model {model}"
+
+
+def probe_model() -> None:
+    """One-token completion on the live gateway. Header values are not printed."""
+    base = os.environ.get("M1_OPENAI_BASE_URL", "").strip().rstrip("/")
+    key = os.environ.get("M1_OPENAI_API_KEY", "").strip()
+    if base == "":
+        raise RemoteError("M1_OPENAI_BASE_URL is empty")
+    if not valid_secret(key):
+        raise RemoteError("M1_OPENAI_API_KEY is invalid")
+    model = live_model()
+    pairs = [("Authorization", "Bearer " + key), ("Content-Type", "application/json")]
+    pairs.extend(extra_header_pairs())
+    names = [name for name, _ in pairs]
+    payload = json.dumps(
+        {
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+    ).encode()
+    req = urllib.request.Request(
+        base + "/chat/completions", data=payload, method="POST"
+    )
+    for name, value in pairs:
+        req.add_header(name, value)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as res:
+            status = res.status
+            body = res.read(2048)
+    except urllib.error.HTTPError as err:
+        status = err.code
+        body = err.read(2048)
+    except urllib.error.URLError as err:
+        detail = redact_api_key(str(err.reason))
+        raise RemoteError(
+            "model probe failed", status="error", body=detail, headers=names
+        ) from None
+    text = redact_api_key(body.decode("utf-8", "replace"))
+    if 200 <= status < 300:
+        return
+    raise RemoteError(
+        model_probe_reason(status, model),
+        status=str(status),
+        body=text[:500],
+        headers=names,
+    )
+
+
 def preflight() -> None:
     if not live_mode():
         return
     failures: list[str] = []
+    if env_prefix() == "M7":
+        try:
+            probe_model()
+        except RemoteError as err:
+            note_preflight_failure("model", err, failures)
+        else:
+            emit_preflight("model", "PASS", "")
     owner: str | None = None
     repo: str | None = None
     raw = eget("DEFINITION_GIT_URL", "")
@@ -1164,17 +1301,45 @@ def note_opened_pr(ledger: dict, number: int, head: str, base_ref: str) -> None:
     save_ledger(ledger)
 
 
-def record_prs() -> None:
-    """Record open pull requests whose base is this run's seeded ref."""
-    if not live_mode():
-        return
-    ledger = load_ledger()
-    if ledger is None:
-        raise RemoteError("remote ledger is missing")
-    base_ref = str(ledger.get("base_ref") or "")
-    if not ref_allowed(base_ref, str(ledger.get("run_id") or ""), ""):
-        raise RemoteError("run base ref is not in the allow-list")
-    token = read_secret(token_path())
+def normalize_pull(row: object) -> dict | None:
+    if not isinstance(row, dict):
+        return None
+    base = row.get("base")
+    head = row.get("head")
+    if isinstance(base, str):
+        base = {"ref": base}
+    if isinstance(head, str):
+        head = {"ref": head}
+    if not isinstance(base, dict) or not isinstance(head, dict):
+        return None
+    copied = dict(row)
+    copied["base"] = base
+    copied["head"] = head
+    return copied
+
+
+def snapshot_pulls(api: str, token: str) -> list[dict]:
+    """Offline forge snapshot. Each pull already stores the create base and head."""
+    status, body = request("GET", f"{api}/_spike/m6", token)
+    if status != 200:
+        raise http_error("pull request list failed", status, body)
+    try:
+        doc = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RemoteError("pull request list failed") from exc
+    if not isinstance(doc, dict) or not isinstance(doc.get("pulls"), list):
+        raise RemoteError("pull request list failed")
+    rows: list[dict] = []
+    for pull in doc["pulls"]:
+        if isinstance(pull, dict) and pull.get("state") not in {None, "open"}:
+            continue
+        normalized = normalize_pull(pull)
+        if normalized is not None:
+            rows.append(normalized)
+    return rows
+
+
+def github_pulls(ledger: dict, token: str, base_ref: str) -> list[dict]:
     quoted = urllib.parse.quote(base_ref, safe="")
     status, body = request(
         "GET",
@@ -1184,11 +1349,35 @@ def record_prs() -> None:
     if status != 200:
         raise http_error("pull request list failed", status, body)
     try:
-        rows = json.loads(body.decode("utf-8"))
+        parsed = json.loads(body.decode("utf-8"))
     except json.JSONDecodeError as exc:
         raise RemoteError("pull request list failed") from exc
-    if not isinstance(rows, list):
+    if not isinstance(parsed, list):
         raise RemoteError("pull request list failed")
+    return parsed
+
+
+def record_prs() -> None:
+    """Record open pull requests whose base is this run's seeded ref."""
+    ledger = load_ledger()
+    if ledger is None:
+        raise RemoteError("remote ledger is missing")
+    base_ref = str(ledger.get("base_ref") or "")
+    if not ref_allowed(base_ref, str(ledger.get("run_id") or ""), ""):
+        raise RemoteError("run base ref is not in the allow-list")
+    token = read_secret(token_path())
+    if live_mode():
+        rows: list = github_pulls(ledger, token, base_ref)
+    else:
+        rows = snapshot_pulls(str(ledger["api_base"]), token)
+        matched = []
+        for row in rows:
+            base = row.get("base")
+            if isinstance(base, dict) and base.get("ref") == base_ref:
+                matched.append(row)
+        if len(rows) != 1 or len(matched) != 1:
+            raise RemoteError("forge pull request was not the single run-base pull")
+        rows = matched
     html = ""
     for row in rows:
         if not isinstance(row, dict):
@@ -1590,7 +1779,7 @@ def main(argv: list[str]) -> int:
         )
         return 2
     command = argv[1]
-    if not live_mode():
+    if not live_mode() and not (command == "record-prs" and env_prefix() != "M6"):
         return 0
     try:
         if command == "preflight":

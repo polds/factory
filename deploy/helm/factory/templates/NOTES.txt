@@ -22,4 +22,6 @@ Migrations run as a pre-install/pre-upgrade hook: factoryd migrate up.
 Each worker pool runs a pre-install/pre-upgrade hook that executes the
 worker binary's own Kubernetes startup preflight.
 
-operator.enabled and operator.installCRDs are accepted and render nothing.
+operator.enabled renders the operator ServiceAccount, Roles, RoleBindings,
+Deployment, Service, and admission webhook. operator.installCRDs does not
+gate this chart's crds/ directory. Helm installs those CRDs on every release.

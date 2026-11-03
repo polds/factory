@@ -40,6 +40,11 @@ on:
         description: Collaborator login. Required.
         required: true
         type: string
+      pr_wait_seconds:
+        description: Seconds to wait for the pull-request AgentRun.
+        required: false
+        default: "480"
+        type: string
 
 permissions:
   contents: read
@@ -111,6 +116,7 @@ jobs:
           M1_OPENAI_EXTRA_HEADERS: ${{ secrets.M1_OPENAI_EXTRA_HEADERS }}
           M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
           M7_LIVE_MODEL: ${{ inputs.model }}
+          M7_PR_WAIT_SECONDS: ${{ inputs.pr_wait_seconds }}
           M7_DEFINITION_GIT_URL: ${{ inputs.target_git_url }}
           M7_GITHUB_API_BASE: https://api.github.com
           FACTORY_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/m6-github-app.pem
