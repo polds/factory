@@ -29,6 +29,7 @@ const (
 	CodeWorkerLost             = "worker_lost"
 	CodeSuperseded             = "superseded"
 	CodeCancelled              = "cancelled"
+	CodeNoWorkProduct          = "no_work_product"
 	CodeUnknown                = "unknown"
 )
 
@@ -45,6 +46,7 @@ const (
 	ReasonLeaseExpired           = "lease_expired"
 	ReasonWorkerGone             = "worker_gone"
 	ReasonSuperseded             = "superseded_duplicate_building_run"
+	ReasonNoWorkProduct          = "no_work_product"
 
 	StatusCancelled = "cancelled"
 	StatusFailed    = "failed"
@@ -112,6 +114,8 @@ func Classify(in Input) Result {
 		return done(ClassInfrastructure, CodeWorkerLost, "Worker lost the run ("+code+")", false, ev)
 	case reason == ReasonSuperseded:
 		return done(ClassCancelled, CodeSuperseded, "Run was superseded by a newer building run", false, facts(exit, reason, harness, snap))
+	case reason == ReasonNoWorkProduct:
+		return done(ClassAgent, CodeNoWorkProduct, "Agent finished without opening a pull request", false, facts(exit, reason, harness, snap))
 	case status == StatusCancelled:
 		ev := facts(exit, reason, harness, snap)
 		ev = appendFact(ev, "run status "+StatusCancelled)
@@ -197,6 +201,7 @@ var echoedReasons = map[string]bool{
 	ReasonLeaseExpired:           true,
 	ReasonWorkerGone:             true,
 	ReasonSuperseded:             true,
+	ReasonNoWorkProduct:          true,
 	"task_timeout":               true,
 	"task_cancelled":             true,
 	"graceful_shutdown":          true,

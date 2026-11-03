@@ -496,6 +496,24 @@ PY
   rm -rf "$dir"
 }
 
+case_pr_phase_settled() {
+  if m7_pr_phase_settled succeeded ""; then
+    fail "succeeded without a pull request was final"
+  fi
+  if ! m7_pr_phase_settled succeeded "https://example.invalid/pr/1"; then
+    fail "succeeded with a pull request was not final"
+  fi
+  if ! m7_pr_phase_settled failed ""; then
+    fail "failed was not final"
+  fi
+  if m7_pr_phase_settled running ""; then
+    fail "running was final"
+  fi
+  if m7_pr_phase_settled running "https://example.invalid/pr/1"; then
+    fail "running with a pull request was final"
+  fi
+}
+
 case_inference_headers() {
   local dir text mode bits
   dir="$(mktemp -d "$ROOT/spike/m7/.work/headers.XXXXXX")"
@@ -511,6 +529,15 @@ case_inference_headers() {
     fi
     if [[ "$text" != "factoryd inference extra headers set" ]]; then
       fail "${mode} header notice"
+    fi
+    text="$(
+      MODE="$mode" \
+        M7_WORK="$dir" \
+        M1_OPENAI_EXTRA_HEADERS='x-litellm-api-key: sk-planted-header-value' \
+        bash -x -c 'source "$1"; m7_prepare_inference_headers' _ "$ROOT/spike/m7/run.sh" 2>&1
+    )"
+    if [[ "$text" == *sk-planted-header-value* ]]; then
+      fail "${mode} bash -x printed the header value"
     fi
     if [[ ! -f "$dir/openai-extra-headers" ]]; then
       fail "${mode} did not write the header file"
@@ -591,6 +618,7 @@ case_live_before_apply
 case_reviewer_stamp
 case_offline_refs
 case_evidence
+case_pr_phase_settled
 case_inference_headers
 case_cleanup_on_exit
 echo "m7 run_test ok"

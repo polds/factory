@@ -235,12 +235,46 @@ write_key_file() {
 # never printed. Live and live-ci both pass it, matching driver.sh.
 m7_prepare_inference_headers() {
   local dest="$WORK/openai-extra-headers"
+  local tracing=0
+  if [[ $- == *x* ]]; then
+    tracing=1
+    set +x
+  fi
   if [[ "$MODE" == "offline" || -z "${M1_OPENAI_EXTRA_HEADERS:-}" ]]; then
     rm -f "$dest"
+    if [[ "$tracing" == 1 ]]; then
+      set -x
+    fi
     return 0
   fi
   write_key_file "$dest" "${M1_OPENAI_EXTRA_HEADERS}"
+  if [[ "$tracing" == 1 ]]; then
+    set -x
+  fi
   printf 'factoryd inference extra headers set\n'
+}
+
+# m7_pr_phase_settled is true when the implementer AgentRun is done.
+# succeeded counts only once a pull request URL is recorded. The harness
+# terminal can publish succeeded before factoryd's run.terminal, and that
+# window has no prUrls.
+m7_pr_phase_settled() {
+  local phase="$1"
+  local urls="$2"
+  case "$phase" in
+    failed | cancelled | canceled | model_unavailable | config_invalid)
+      return 0
+      ;;
+    succeeded | complete | completed)
+      if [[ -n "$urls" ]]; then
+        return 0
+      fi
+      return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 # m7_note_run_id remembers an AgentRun id so evidence can fetch its events
@@ -1147,11 +1181,10 @@ run_id=""
 for _ in $(seq 1 "$ticks"); do
   pr_phase="$(k -n "${NAMESPACE}" get agentrun m7-pr -o jsonpath='{.status.phase}' 2>/dev/null || true)"
   run_id="$(k -n "${NAMESPACE}" get agentrun m7-pr -o jsonpath='{.status.runId}' 2>/dev/null || true)"
-  case "$pr_phase" in
-    succeeded | failed | cancelled | canceled | model_unavailable | config_invalid | complete | completed)
-      break
-      ;;
-  esac
+  pr_urls_now="$(k -n "${NAMESPACE}" get agentrun m7-pr -o jsonpath='{.status.prUrls}' 2>/dev/null || true)"
+  if m7_pr_phase_settled "$pr_phase" "$pr_urls_now"; then
+    break
+  fi
   sleep 2
 done
 elapsed="$((SECONDS - pr_wait_start))"

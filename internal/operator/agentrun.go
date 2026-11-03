@@ -411,6 +411,21 @@ type parsedEvent struct {
 	prs        []string
 }
 
+// parseRunEvent copies factoryd's run status onto the AgentRun phase.
+// The harness event type "terminal" is not that decision. factoryd flushes
+// it before task_completed, then writes run.terminal. The four orders are:
+//
+//  1. Harness terminal succeeded, then run.terminal failed/no_work_product
+//     and no pull request: the phase becomes failed. The harness status is
+//     not copied, so a watch that reconnects does not stick on succeeded.
+//  2. Harness terminal succeeded and run.terminal succeeded, including when
+//     an earlier tool.result already carried prUrls: the phase stays succeeded.
+//  3. Harness terminal with a non-success status, then a different
+//     run.terminal status: the run.terminal status is copied.
+//  4. run.terminal alone, with no harness terminal: that status is copied.
+//
+// An empty run.terminal status still defaults to succeeded. prUrls on any
+// event, including tool.result and the harness terminal, are still copied.
 func parseRunEvent(ev fclient.Event) parsedEvent {
 	var raw struct {
 		Status        string                        `json:"status"`
@@ -431,7 +446,13 @@ func parseRunEvent(ev fclient.Event) parsedEvent {
 	if phase == "" {
 		phase = raw.Status
 	}
-	if phase == "" && (ev.Type == "terminal" || ev.Type == "run.terminal") {
+	reason := strings.TrimSpace(raw.FailureReason)
+	summary := strings.TrimSpace(raw.Summary)
+	if ev.Type == "terminal" {
+		phase = ""
+		reason = ""
+		summary = ""
+	} else if phase == "" && ev.Type == "run.terminal" {
 		phase = "succeeded"
 	}
 	prs := raw.PRURLs
@@ -440,8 +461,8 @@ func parseRunEvent(ev fclient.Event) parsedEvent {
 	}
 	return parsedEvent{
 		phase:      redact(phase),
-		reason:     strings.TrimSpace(raw.FailureReason),
-		summary:    strings.TrimSpace(raw.Summary),
+		reason:     reason,
+		summary:    summary,
 		executions: raw.Executions,
 		usage:      raw.Usage,
 		prs:        redactAll(prs),

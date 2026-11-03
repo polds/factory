@@ -41,6 +41,9 @@ func TestE2EDirectPromptAndNoWorkProduct(t *testing.T) {
 	if detail.FailureReason != "no_work_product" {
 		t.Fatalf("failure_reason %q", detail.FailureReason)
 	}
+	if detail.Failure.Class != "agent" || detail.Failure.Code != "no_work_product" {
+		t.Fatalf("class %s code %s", detail.Failure.Class, detail.Failure.Code)
+	}
 	env.requireOneTerminal(t, runID, "failed")
 	reason, summary := env.terminalFields(t, runID)
 	if reason != "no_work_product" {
