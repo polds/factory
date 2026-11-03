@@ -329,6 +329,124 @@ print(raw)
 PY
 }
 
+# m7_agent_names_ready succeeds when factoryd is serving both exit agents.
+# DefinitionValid stays True when a later push is ignored, so the condition
+# is not proof that implementer and hold are in the snapshot StartRun uses.
+m7_agent_names_ready() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+
+try:
+    rows = json.loads(open(sys.argv[1], encoding="utf-8").read())
+except (OSError, json.JSONDecodeError):
+    sys.stderr.write("factoryd agent list was unreadable\n")
+    raise SystemExit(1)
+if not isinstance(rows, list):
+    sys.stderr.write("factoryd agent list was unreadable\n")
+    raise SystemExit(1)
+names = set()
+for row in rows:
+    if isinstance(row, dict) and isinstance(row.get("name"), str):
+        names.add(row["name"])
+missing = sorted({"implementer", "hold"} - names)
+if missing:
+    sys.stderr.write("factoryd agents missing %s\n" % ",".join(missing))
+    raise SystemExit(1)
+PY
+}
+
+# A comment in factory.yaml changes the bundle hash. The operator then sends
+# a newer generation, which factoryd applies instead of ignoring.
+m7_bump_definition_hash() {
+  local n="$1"
+  k -n "${NAMESPACE}" get factory m7 -o json >"$WORK/factory.json"
+  python3 - "$n" "$WORK/factory.json" "$WORK/factory-patch.json" <<'PY'
+import json
+import sys
+
+n, src, dest = sys.argv[1:]
+doc = json.loads(open(src, encoding="utf-8").read())
+files = doc.get("spec", {}).get("files") or []
+found = False
+for item in files:
+    if not isinstance(item, dict) or item.get("path") != "factory.yaml":
+        continue
+    lines = [
+        line
+        for line in str(item.get("content") or "").splitlines()
+        if not line.startswith("# m7-republish ")
+    ]
+    lines.append("# m7-republish %s" % n)
+    item["content"] = "\n".join(lines) + "\n"
+    found = True
+if not found:
+    sys.stderr.write("factory.yaml was not in the Factory spec\n")
+    raise SystemExit(1)
+with open(dest, "w", encoding="utf-8") as fh:
+    json.dump({"spec": {"files": files}}, fh)
+PY
+  k -n "${NAMESPACE}" patch factory m7 --type=merge --patch-file "$WORK/factory-patch.json"
+  rm -f "$WORK/factory.json" "$WORK/factory-patch.json"
+}
+
+m7_definition_stamp() {
+  k -n "${NAMESPACE}" get factory m7 -o json | python3 -c 'import json,sys; ann=json.load(sys.stdin).get("metadata",{}).get("annotations") or {}; print("%s %s" % (ann.get("factory.dev/definition-generation",""), ann.get("factory.dev/definition-hash","")))'
+}
+
+m7_write_curl_cfg() {
+  python3 - "$WORK/api-key" "$WORK/curl.cfg" <<'PY'
+import pathlib
+import sys
+
+key = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+dest = pathlib.Path(sys.argv[2])
+dest.write_text('header = "Authorization: Bearer %s"\n' % key, encoding="utf-8")
+dest.chmod(0o600)
+PY
+}
+
+# Poll factoryd until implementer and hold are listed. A missing name means
+# the served snapshot predates those agents; bump the bundle and try again.
+m7_wait_served_agents() {
+  local attempt="" ready="" code="" before="" after="" _
+  k -n "${NAMESPACE}" port-forward svc/factory-factoryd 18081:8080 >/tmp/m7-factoryd-pf.log 2>&1 &
+  pf_pid=$!
+  m7_write_curl_cfg
+  ready=""
+  for attempt in $(seq 1 12); do
+    code=0
+    curl -fsS --connect-timeout 1 -m 3 -K "$WORK/curl.cfg" \
+      -o "$WORK/served-agents.json" \
+      http://127.0.0.1:18081/api/v1/factory/m7/agents || code=$?
+    if [[ "$code" -eq 0 ]] && m7_agent_names_ready "$WORK/served-agents.json"; then
+      ready=1
+      break
+    fi
+    if [[ "$code" -eq 0 ]]; then
+      printf 'm7 republish definition %s\n' "$attempt"
+      before="$(m7_definition_stamp)"
+      m7_bump_definition_hash "$attempt"
+      for _ in $(seq 1 15); do
+        after="$(m7_definition_stamp)"
+        if [[ -n "$after" && "$after" != "$before" ]]; then
+          break
+        fi
+        sleep 1
+      done
+    else
+      sleep 2
+    fi
+  done
+  kill "${pf_pid}" >/dev/null 2>&1 || true
+  wait "${pf_pid}" >/dev/null 2>&1 || true
+  pf_pid=""
+  if [[ -z "$ready" ]]; then
+    die "factoryd is not serving implementer and hold"
+  fi
+  printf 'm7 factoryd serving implementer and hold\n'
+}
+
 # The router answers m7-hold locally. Live forwards every other model to
 # the real gateway. Offline has no upstream and scripts m7-agent.
 m7_apply_router() {
@@ -811,6 +929,7 @@ if [[ -z "$ok" ]]; then
   k -n "${NAMESPACE}" describe factory m7 >"$EVIDENCE/factory-describe.txt" || true
   die "Factory DefinitionValid was not True"
 fi
+m7_wait_served_agents
 phase definition "$step_start"
 
 step_start=$SECONDS
@@ -975,13 +1094,7 @@ fi
 if [[ -n "$hold_run" ]]; then
   k -n "${NAMESPACE}" port-forward svc/factory-factoryd 18081:8080 >/tmp/m7-factoryd-pf.log 2>&1 &
   pf_pid=$!
-  python3 - "$WORK/api-key" "$WORK/curl.cfg" "http://127.0.0.1:18081/api/v1/agent/runs/${hold_run}" <<'PY'
-import pathlib, sys
-key = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip()
-dest = pathlib.Path(sys.argv[2])
-dest.write_text('header = "Authorization: Bearer %s"\n' % key, encoding="utf-8")
-dest.chmod(0o600)
-PY
+  m7_write_curl_cfg
   got=""
   for _ in $(seq 1 20); do
     if curl -fsS --connect-timeout 1 -m 3 -K "$WORK/curl.cfg" -o "$EVIDENCE/hold-run.json" \

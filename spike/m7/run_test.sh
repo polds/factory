@@ -188,6 +188,64 @@ case_pr_budget() {
   fi
 }
 
+case_served_agents() {
+  local dir
+  dir="$(mktemp -d "$ROOT/spike/m7/.work/agents.XXXXXX")"
+  printf '%s\n' '[{"name":"foreman"},{"name":"hold"}]' >"$dir/agents.json"
+  if m7_agent_names_ready "$dir/agents.json" 2>"$dir/err"; then
+    fail "a list without implementer was accepted"
+  fi
+  if [[ "$(cat "$dir/err")" != "factoryd agents missing implementer" ]]; then
+    fail "missing implementer was not reported"
+  fi
+  printf '%s\n' 'not-json' >"$dir/agents.json"
+  if m7_agent_names_ready "$dir/agents.json" 2>"$dir/err"; then
+    fail "an unreadable agent list was accepted"
+  fi
+  printf '%s\n' '[{"name":"implementer"},{"name":"hold"}]' >"$dir/agents.json"
+  if ! m7_agent_names_ready "$dir/agents.json"; then
+    fail "implementer and hold were rejected"
+  fi
+  mkdir -p "$dir/bin"
+  cat >"$dir/source.json" <<'EOF'
+{"spec":{"files":[{"path":"factory.yaml","content":"name: m7\n# m7-republish 1\n"}]}}
+EOF
+  cat >"$dir/bin/kubectl" <<EOF
+#!/bin/bash
+patch=""
+prev=""
+for arg in "\$@"; do
+  if [[ "\$prev" == "--patch-file" ]]; then
+    patch="\$arg"
+  fi
+  prev="\$arg"
+done
+if [[ -n "\$patch" ]]; then
+  cp "\$patch" "$dir/patch.json"
+  exit 0
+fi
+cat "$dir/source.json"
+EOF
+  chmod 755 "$dir/bin/kubectl"
+  KUBECTL="$dir/bin/kubectl" \
+    kubeconfig="$dir/kc" \
+    WORK="$dir" \
+    m7_bump_definition_hash 4
+  if ! python3 - "$dir/patch.json" <<'PY'
+import json
+import sys
+
+content = json.load(open(sys.argv[1], encoding="utf-8"))["spec"]["files"][0]["content"]
+if content != "name: m7\n# m7-republish 4\n":
+    sys.stderr.write(repr(content) + "\n")
+    raise SystemExit(1)
+PY
+  then
+    fail "republish comment was not rewritten"
+  fi
+  rm -rf "$dir"
+}
+
 case_hold_agent() {
   local agent run
   agent="$ROOT/deploy/m7-factory/agents/hold/agent.md"
@@ -336,6 +394,7 @@ case_remote
 case_router
 case_pull_url
 case_pr_budget
+case_served_agents
 case_hold_agent
 case_live_before_apply
 case_reviewer_stamp
