@@ -49,7 +49,16 @@ def test_refs() -> None:
     status, payload = router.answer(
         {
             "model": "m7-agent",
-            "messages": [{"role": "user", "content": "M7_PUSHED"}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "check out m7-run/off-abcd1234/main\n"
+                        "open a pull request against m7-run/off-abcd1234/main\n"
+                        "M7_PUSHED"
+                    ),
+                }
+            ],
         }
     )
     if status != 200:
@@ -63,6 +72,43 @@ def test_refs() -> None:
             fail(f"push command missed {needle}")
     if "m7-change" in command or '"base": "main"' in command:
         fail("push command used an unscoped ref")
+
+
+def test_prompt_without_instructions() -> None:
+    """The operator prompt on main 5472cd7 had no run-scoped ref."""
+    os.environ["M7_RUN_ID"] = "off-abcd1234"
+    os.environ["SPIKE_RUN_REF_PREFIX"] = "m7-run"
+    os.environ["M7_DEFINITION_GIT_URL"] = (
+        "git://m7-git.factory.svc.cluster.local/target.git"
+    )
+    os.environ["M7_GITHUB_API_BASE"] = "http://m7-forge.factory.svc.cluster.local:8080"
+    os.environ.pop("M7_UPSTREAM_BASE", None)
+    old = (
+        "Add a line to README.md and open a pull request against the run base ref.\n"
+        "M7_PUSHED"
+    )
+    _, payload = router.answer(
+        {"model": "m7-agent", "messages": [{"role": "user", "content": old}]}
+    )
+    text = json.dumps(payload)
+    if "missing implementer instructions" not in text:
+        fail("old prompt was scripted")
+    if "tool_calls" in text or "git " in text or "/pulls" in text:
+        fail("old prompt produced a git or pull command")
+    _, first = router.answer(
+        {
+            "model": "m7-agent",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Add a line to README.md and open a pull request against the run base ref.",
+                }
+            ],
+        }
+    )
+    first_text = json.dumps(first)
+    if "M7_CLONED" in first_text or "git -c" in first_text:
+        fail("old prompt cloned the repository")
 
 
 def test_missing_run() -> None:
@@ -153,6 +199,7 @@ def test_dispatch() -> None:
 def main() -> None:
     test_hold()
     test_refs()
+    test_prompt_without_instructions()
     test_missing_run()
     test_dispatch()
     print("m7 router cases ok")

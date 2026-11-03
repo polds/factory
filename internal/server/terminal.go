@@ -11,9 +11,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/polds/factory/internal/definition"
 	"github.com/polds/factory/internal/events"
 	"github.com/polds/factory/internal/protocol"
 	"github.com/polds/factory/internal/store"
+)
+
+const (
+	reasonNoWorkProduct  = "no_work_product"
+	summaryNoWorkProduct = "agent finished without opening a pull request"
 )
 
 // settleCancel makes a cancel-requested run terminal and records one
@@ -173,6 +179,22 @@ func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason,
 	}
 	if gotRun != runID {
 		return false, fmt.Errorf("server: execution %s belongs to run %s", execID, gotRun)
+	}
+	missing, err := s.pullRequestMissing(ctx, tx, runID, status)
+	if err != nil {
+		return false, err
+	}
+	if missing {
+		status = store.StatusFailed
+		state = store.ExecFailed
+		reason = reasonNoWorkProduct
+		summary = summaryNoWorkProduct
+		if _, err := tx.Exec(ctx, `
+			UPDATE executions
+			SET state = $2, failure_reason = $3
+			WHERE id = $1`, execID, state, reason); err != nil {
+			return false, err
+		}
 	}
 	harness, err := harnessStatusTx(ctx, tx, runID)
 	if err != nil {
@@ -468,6 +490,31 @@ func terminalMeta(payload []byte) (string, time.Time, error) {
 		return "", time.Time{}, fmt.Errorf("server: terminal event ts: %w", err)
 	}
 	return meta.Type, ts, nil
+}
+
+// pullRequestMissing is true when a completed run opted into a pull request
+// and none was recorded. Other statuses, and agents that did not opt in,
+// are unchanged. The check runs before the run row is marked succeeded.
+func (s *Server) pullRequestMissing(ctx context.Context, tx pgx.Tx, runID, status string) (bool, error) {
+	if status != store.StatusSucceeded {
+		return false, nil
+	}
+	prs, err := s.recordedPullURLs(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	if len(prs) > 0 {
+		return false, nil
+	}
+	var agentID string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(agent_id, '') FROM runs WHERE id = $1`, runID).Scan(&agentID); err != nil {
+		return false, err
+	}
+	bound, ok := s.snapshot().byID[agentID]
+	if !ok {
+		return false, nil
+	}
+	return definition.RequiresPullRequest(bound.agent), nil
 }
 
 // recordedPullURLs is the work item's open pull request plus any prUrls

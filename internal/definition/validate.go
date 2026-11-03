@@ -93,6 +93,26 @@ func checkName(file string, raw map[string]any, lines map[string]int, diags *[]D
 	}
 }
 
+// checkRequires accepts only pullRequest. An omitted key and an empty list
+// opt out. A string, or any other token, is an error.
+func checkRequires(file string, raw map[string]any, lines map[string]int, diags *[]Diagnostic) {
+	v, ok := raw["requires"]
+	if !ok || v == nil {
+		return
+	}
+	items, ok := v.([]any)
+	if !ok {
+		addDiag(diags, file, lineAt(lines, "requires"), SeverityError, "requires must be a list")
+		return
+	}
+	for _, item := range items {
+		s, isStr := item.(string)
+		if !isStr || s != RequirePullRequest {
+			addDiag(diags, file, lineAt(lines, "requires"), SeverityError, fmt.Sprintf("requires %q is not a work product", fmt.Sprint(item)))
+		}
+	}
+}
+
 func checkExclusive(file, prefix string, raw map[string]any, lines map[string]int, diags *[]Diagnostic) {
 	m := raw
 	if prefix != "" {

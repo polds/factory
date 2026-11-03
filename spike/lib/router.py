@@ -386,16 +386,22 @@ def m7_turn(body: dict) -> dict:
 
     m6-agent and m6-judge are unchanged. m7-agent is not listed in MODELS.
     Pull requests use m7-run/<id>/change against m7-run/<id>/main.
+
+    The run-scoped base ref has to be in the prompt. A direct run that
+    never received the implementer instructions does not get a scripted
+    clone or pull request.
     """
     text = blob(body)
     if "m7-hold" in text and "M7_HOLDING" not in text:
         return m7_hold_turn(body)
     if "m7-hold" in text:
         return completion("holding", None)
+    refs = m7_refs()
+    if refs is not None and refs[1] not in text:
+        return completion("missing implementer instructions", None)
     if "M7_PR_HTTP" in text:
         return completion("pull request opened", None)
     git_url, api = m7_target()
-    refs = m7_refs()
     if "M7_PUSHED" in text:
         if git_url == "" or api == "" or refs is None:
             return completion("missing m7 target", None)

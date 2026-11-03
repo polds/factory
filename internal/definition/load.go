@@ -194,6 +194,7 @@ type agentDoc struct {
 	ComputerUseModel   string               `json:"computerUseModel,omitempty"`
 	MaxTurns           int                  `json:"maxTurns,omitempty"`
 	WorkerHost         string               `json:"workerHost,omitempty"`
+	Requires           []string             `json:"requires,omitempty"`
 }
 
 type parsedAgent struct {
@@ -248,6 +249,7 @@ func loadAgents(root string, tree *Tree, diags *[]Diagnostic) {
 		walkKeys(rel, raw, agentSchema, "", lines, diags)
 		checkExclusive(rel, "", raw, lines, diags)
 		scanMCPCredentials(rel, "", raw, lines, diags)
+		checkRequires(rel, raw, lines, diags)
 		var doc agentDoc
 		if err := syaml.Unmarshal([]byte(fm), &doc); err != nil {
 			addDiag(diags, rel, 1, SeverityError, "invalid YAML: "+err.Error())
@@ -326,6 +328,7 @@ func (p parsedAgent) agent(factory Factory) Agent {
 		ComputerUseModel:   p.doc.ComputerUseModel,
 		MaxTurns:           p.doc.MaxTurns,
 		WorkerHost:         p.doc.WorkerHost,
+		Requires:           cloneStrings(p.doc.Requires),
 		Body:               p.body,
 	}
 	if nonBlankString(p.raw["model"]) {

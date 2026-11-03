@@ -559,6 +559,36 @@ func promptWith(env map[string]string, body string, headers map[string]string) s
 	return BuildPrompt(agent, Context{Title: "T", Body: body, Env: env})
 }
 
+func TestDirectPromptIncludesInstructionsAndRedacts(t *testing.T) {
+	t.Parallel()
+	const planted = "ghp_Planted/SecretValue99"
+	agent := definition.Agent{
+		Name: "implementer",
+		Body: "Check out m7-run/direct/main. Token " + planted,
+	}
+	got := DirectPrompt(agent, "Add a line to README.md "+planted, map[string]string{"GH_TOKEN": planted})
+	if !strings.Contains(got, "# Instructions\n") || !strings.Contains(got, "m7-run/direct/main") {
+		t.Fatalf("instructions missing:\n%s", got)
+	}
+	if !strings.Contains(got, "# Task\n") || !strings.Contains(got, "Add a line to README.md") {
+		t.Fatalf("task missing:\n%s", got)
+	}
+	if strings.Contains(got, planted) {
+		t.Fatal("prompt contains the secret")
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("secret was not redacted:\n%s", got)
+	}
+}
+
+func TestDirectPromptEmptyBody(t *testing.T) {
+	t.Parallel()
+	got := DirectPrompt(definition.Agent{}, "  ", nil)
+	if !strings.Contains(got, "# Instructions\n(none)\n") || !strings.Contains(got, "# Task\n(none)\n") {
+		t.Fatalf("empty prompt:\n%s", got)
+	}
+}
+
 func TestBuildPromptHarnessOmitsAuthMaterial(t *testing.T) {
 	t.Parallel()
 	agent := definition.Agent{

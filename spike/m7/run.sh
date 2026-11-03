@@ -230,6 +230,227 @@ write_key_file() {
   chmod 600 "$dest"
 }
 
+# m7_prepare_inference_headers copies M1_OPENAI_EXTRA_HEADERS into a mode-600
+# file for the factoryd secret. Offline removes a stale file. The value is
+# never printed. Live and live-ci both pass it, matching driver.sh.
+m7_prepare_inference_headers() {
+  local dest="$WORK/openai-extra-headers"
+  if [[ "$MODE" == "offline" || -z "${M1_OPENAI_EXTRA_HEADERS:-}" ]]; then
+    rm -f "$dest"
+    return 0
+  fi
+  write_key_file "$dest" "${M1_OPENAI_EXTRA_HEADERS}"
+  printf 'factoryd inference extra headers set\n'
+}
+
+# m7_note_run_id remembers an AgentRun id so evidence can fetch its events
+# after the CR is deleted.
+m7_note_run_id() {
+  local id="$1"
+  if [[ -z "$id" || ! "$id" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    return 0
+  fi
+  mkdir -p "$WORK"
+  if [[ -f "$WORK/run-ids" ]] && grep -qx -- "$id" "$WORK/run-ids"; then
+    return 0
+  fi
+  printf '%s\n' "$id" >>"$WORK/run-ids"
+}
+
+# m7_k8s_name accepts a DNS-1123 label used as a kubectl argument.
+m7_k8s_name() {
+  local name="$1"
+  [[ "$name" =~ ^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$ ]]
+}
+
+# m7_save_log writes a command's output. A failed refetch does not replace
+# a log captured while the pod still existed.
+m7_save_log() {
+  local dest="$1"
+  shift
+  local tmp
+  tmp="$(mktemp)"
+  if "$@" >"$tmp" 2>&1; then
+    mv "$tmp" "$dest"
+    return 0
+  fi
+  if [[ -s "$dest" ]]; then
+    rm -f "$tmp"
+    return 0
+  fi
+  mv "$tmp" "$dest"
+}
+
+m7_collect_task_pods() {
+  local pod name kind
+  mkdir -p "$EVIDENCE/task-pods" "$EVIDENCE/task-describe"
+  while IFS= read -r pod; do
+    if ! m7_k8s_name "$pod"; then
+      continue
+    fi
+    m7_save_log "$EVIDENCE/task-pods/${pod}.log" \
+      k logs -n "$TASK_NAMESPACE" "$pod" --all-containers --tail=2000
+    if k logs -n "$TASK_NAMESPACE" "$pod" --all-containers --previous --tail=2000 \
+      >"$EVIDENCE/task-pods/${pod}.previous.log" 2>/dev/null; then
+      if [[ ! -s "$EVIDENCE/task-pods/${pod}.previous.log" ]]; then
+        rm -f "$EVIDENCE/task-pods/${pod}.previous.log"
+      fi
+    else
+      rm -f "$EVIDENCE/task-pods/${pod}.previous.log"
+    fi
+  done < <(k get pods -n "$TASK_NAMESPACE" -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+  for kind in jobs pods; do
+    while IFS= read -r name; do
+      if [[ "$name" != oz-task-* ]] || ! m7_k8s_name "$name"; then
+        continue
+      fi
+      m7_save_log "$EVIDENCE/task-describe/${name}.${kind}.txt" \
+        k describe -n "$TASK_NAMESPACE" "$kind" "$name"
+    done < <(k get "$kind" -n "$TASK_NAMESPACE" -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+  done
+}
+
+m7_collect_router_log() {
+  m7_save_log "$EVIDENCE/router.log" \
+    k logs -n "$NAMESPACE" deploy/m7-router --tail=2000
+}
+
+# m7_collect_run_events saves each AgentRun's factoryd event stream.
+# The stream returns after run.terminal, so curl finishes on a terminal run.
+m7_collect_run_events() {
+  local id port pf="" ready=""
+  mkdir -p "$EVIDENCE/run-events" "$WORK"
+  while IFS= read -r id; do
+    m7_note_run_id "$id"
+  done < <(k get agentruns -n "$NAMESPACE" -o 'jsonpath={range .items[*]}{.status.runId}{"\n"}{end}' 2>/dev/null || true)
+  if [[ ! -s "$WORK/run-ids" || ! -f "$WORK/api-key" ]]; then
+    return 0
+  fi
+  port="${M7_EVENTS_PORT:-18082}"
+  if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  m7_write_curl_cfg
+  k -n "$NAMESPACE" port-forward svc/factory-factoryd "${port}:8080" >/tmp/m7-events-pf.log 2>&1 &
+  pf=$!
+  for _ in $(seq 1 20); do
+    if curl -fsS --connect-timeout 1 -m 2 -o /dev/null -K "$WORK/curl.cfg" \
+      "http://127.0.0.1:${port}/healthz"; then
+      ready=1
+      break
+    fi
+    sleep 0.2
+  done
+  if [[ -n "$ready" ]]; then
+    while IFS= read -r id; do
+      if [[ ! "$id" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        continue
+      fi
+      m7_save_stdout "$EVIDENCE/run-events/${id}.sse" \
+        curl -fsS --connect-timeout 2 -m 20 -K "$WORK/curl.cfg" \
+        "http://127.0.0.1:${port}/api/v1/agent/runs/${id}/events"
+    done <"$WORK/run-ids"
+  fi
+  if [[ -n "$pf" ]]; then
+    kill "$pf" >/dev/null 2>&1 || true
+    wait "$pf" >/dev/null 2>&1 || true
+  fi
+}
+
+# m7_note_model_calls prints one line for run.log: model-call count plus the
+# harness terminal and the factoryd run.terminal status. Secret file values
+# are replaced before the line is printed.
+m7_save_stdout() {
+  local dest="$1"
+  shift
+  local tmp
+  tmp="$(mktemp)"
+  if "$@" >"$tmp"; then
+    mv "$tmp" "$dest"
+    return 0
+  fi
+  if [[ -s "$dest" ]]; then
+    rm -f "$tmp"
+    return 0
+  fi
+  if [[ -s "$tmp" ]]; then
+    mv "$tmp" "$dest"
+    return 0
+  fi
+  rm -f "$tmp"
+}
+
+m7_note_model_calls() {
+  python3 - "$EVIDENCE" "$WORK" <<'PY'
+import json
+import pathlib
+import sys
+
+evidence, work = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+secrets = []
+for name in ("api-key", "gh-token", "openai-key", "openai-extra-headers"):
+    path = work / name
+    if path.is_file():
+        text = path.read_text(encoding="utf-8").strip()
+        if text:
+            secrets.append(text)
+
+def scrub(value: str) -> str:
+    text = " ".join(value.split())
+    for secret in secrets:
+        text = text.replace(secret, "[REDACTED]")
+    return text or "empty"
+
+harness_status = harness_summary = run_status = run_summary = ""
+events = evidence / "run-events"
+if events.is_dir():
+    for path in sorted(events.glob("*.sse")):
+        event = ""
+        data = []
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines.append("")
+        for line in lines:
+            if line.startswith("event:"):
+                event = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data.append(line.split(":", 1)[1].lstrip())
+            elif line == "" and event:
+                raw = "\n".join(data)
+                try:
+                    doc = json.loads(raw)
+                except json.JSONDecodeError:
+                    doc = {}
+                if not isinstance(doc, dict):
+                    doc = {}
+                if event == "terminal":
+                    harness_status = str(doc.get("status") or "")
+                    harness_summary = str(doc.get("summary") or "")
+                elif event == "run.terminal":
+                    run_status = str(doc.get("status") or "")
+                    run_summary = str(doc.get("summary") or "")
+                event = ""
+                data = []
+router = evidence / "router.log"
+calls = 0
+if router.is_file():
+    calls = sum(
+        1
+        for line in router.read_text(encoding="utf-8", errors="replace").splitlines()
+        if "POST /v1/chat/completions" in line
+    )
+print(
+    "m7 model calls %s harness status=%s summary=%s run status=%s summary=%s"
+    % (
+        calls,
+        scrub(harness_status),
+        scrub(harness_summary),
+        scrub(run_status),
+        scrub(run_summary),
+    )
+)
+PY
+}
+
 # shellcheck disable=SC2317,SC2329
 collect_evidence() {
   mkdir -p "$EVIDENCE"
@@ -240,6 +461,10 @@ collect_evidence() {
   k logs -n "$NAMESPACE" deploy/factory-factoryd --tail=400 >"$EVIDENCE/factoryd.log" 2>&1 || true
   k logs -n "$NAMESPACE" deploy/factory-operator --tail=400 >"$EVIDENCE/operator.log" 2>&1 || true
   k logs -n "$NAMESPACE" deploy/factory-worker-standard --tail=400 >"$EVIDENCE/worker.log" 2>&1 || true
+  m7_collect_task_pods || true
+  m7_collect_router_log || true
+  m7_collect_run_events || true
+  m7_note_model_calls || true
 }
 
 scan_evidence() {
@@ -509,6 +734,30 @@ path.chmod(0o600)
 PY
 }
 
+# m7_bind_offline_refs writes the run-scoped base ref into the implementer
+# steps. Live seed does this in remote.py before the definition is applied.
+# Offline has no seed, and the router will not script a pull request until
+# that ref is in the prompt.
+m7_bind_offline_refs() {
+  local def="$1" agent
+  if [[ "$MODE" != "offline" ]]; then
+    return 0
+  fi
+  agent="$def/agents/implementer/agent.md"
+  if [[ ! -f "$agent" || -z "${M7_RUN_ID:-}" ]]; then
+    die "offline implementer ref is unset"
+  fi
+  PYTHONPATH="$ROOT/spike/lib${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 - "$agent" "m7-run/${M7_RUN_ID}/main" <<'PY'
+import sys
+from pathlib import Path
+
+import remote
+
+remote.rewrite_agent_steps(Path(sys.argv[1]), sys.argv[2])
+PY
+}
+
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
 fi
@@ -628,11 +877,17 @@ else
   write_key_file "$WORK/app-id" "${M6_GITHUB_APP_ID}"
   write_key_file "$WORK/gh-token" "app-mint"
 fi
+m7_prepare_inference_headers
+header_args=()
+if [[ -f "$WORK/openai-extra-headers" ]]; then
+  header_args+=(--from-file=FACTORY_INFERENCE_OPENAI_COMPATIBLE_EXTRA_HEADERS="$WORK/openai-extra-headers")
+fi
 k -n "${NAMESPACE}" create secret generic m7-runtime \
   --from-file=FACTORY_INFERENCE_OPENAI_API_KEY="$WORK/worker-key" \
   --from-file=FACTORY_SECRET_GH_TOKEN="$WORK/gh-token" \
   --from-file=FACTORY_SECRET_DEFINITION_GIT_URL="$WORK/definition-git-url" \
   --from-file=FACTORY_SECRET_GITHUB_API_BASE="$WORK/github-api-base" \
+  "${header_args[@]}" \
   --dry-run=client -o yaml | k apply -f -
 if [[ "$MODE" != "offline" ]]; then
   k -n "${NAMESPACE}" create secret generic m7-runtime \
@@ -642,6 +897,7 @@ if [[ "$MODE" != "offline" ]]; then
     --from-file=FACTORY_SECRET_GH_TOKEN="$WORK/gh-token" \
     --from-file=FACTORY_SECRET_DEFINITION_GIT_URL="$WORK/definition-git-url" \
     --from-file=FACTORY_SECRET_GITHUB_API_BASE="$WORK/github-api-base" \
+    "${header_args[@]}" \
     --dry-run=client -o yaml | k apply -f -
   k -n "${NAMESPACE}" create secret generic m7-github-app \
     --from-file=key.pem="${FACTORY_GITHUB_APP_PRIVATE_KEY_FILE}" \
@@ -859,6 +1115,7 @@ for path in root.rglob("*"):
     path.write_text(path.read_text(encoding="utf-8").replace("m7-agent", model), encoding="utf-8")
 PY
 fi
+m7_bind_offline_refs "$def"
 m7_apply_definition "$def"
 echo "Factory DefinitionValid"
 ok=""
@@ -899,8 +1156,9 @@ for _ in $(seq 1 "$ticks"); do
 done
 elapsed="$((SECONDS - pr_wait_start))"
 printf 'm7 pr wait elapsed %ss budget %ss phase=%s\n' "$elapsed" "$budget" "${pr_phase:-empty}"
+m7_note_run_id "$run_id"
+collect_evidence || true
 if [[ "$pr_phase" != "succeeded" || -z "$run_id" ]]; then
-  collect_evidence || true
   die "m7-pr phase=${pr_phase:-empty} runId=${run_id:-empty}"
 fi
 pr_urls="$(k -n "${NAMESPACE}" get agentrun m7-pr -o jsonpath='{.status.prUrls}' 2>/dev/null || true)"
@@ -971,6 +1229,7 @@ if [[ -z "$hold_id" ]]; then
   collect_evidence || true
   die "hold run id was empty"
 fi
+m7_note_run_id "$hold_id"
 label="$(m7_task_label "$hold_id")" || die "hold run id was not accepted"
 hold_pod=""
 for _ in $(seq 1 60); do

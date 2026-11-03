@@ -29,6 +29,8 @@ const (
 	finalizerStopRun    = "factory.dev/stop-run"
 	condCancelRequested = "CancelRequested"
 	condCancelTimedOut  = "CancelTimedOut"
+	condFailed          = "Failed"
+	reasonNoWorkProduct = "NoWorkProduct"
 	cancelGrace         = 120 * time.Second
 )
 
@@ -348,7 +350,7 @@ func (r *AgentRunReconciler) dropWatch(key types.NamespacedName) {
 
 func (r *AgentRunReconciler) applyEvent(ctx context.Context, key types.NamespacedName, ev fclient.Event) error {
 	fields := parseRunEvent(ev)
-	if fields.phase == "" && len(fields.executions) == 0 && fields.usage == nil && len(fields.prs) == 0 {
+	if fields.phase == "" && fields.reason == "" && len(fields.executions) == 0 && fields.usage == nil && len(fields.prs) == 0 {
 		return nil
 	}
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -371,12 +373,39 @@ func (r *AgentRunReconciler) applyEvent(ctx context.Context, key types.Namespace
 		if len(fields.prs) > 0 {
 			run.Status.PRURLs = fields.prs
 		}
+		if strings.EqualFold(fields.phase, "failed") && fields.reason != "" {
+			setCondition(&run.Status.Conditions, failedCondition(&run, fields.reason, fields.summary, r.now()))
+		}
 		return r.Status().Update(ctx, &run)
 	})
 }
 
+func failedCondition(run *factoryv1.AgentRun, reason, summary string, now time.Time) metav1.Condition {
+	return metav1.Condition{
+		Type:               condFailed,
+		Status:             metav1.ConditionTrue,
+		Reason:             failedConditionReason(reason),
+		Message:            clip(reason+": "+summary, maxMessage),
+		ObservedGeneration: run.Generation,
+		LastTransitionTime: metav1.NewTime(now),
+	}
+}
+
+// failedConditionReason maps the factoryd token onto a Kubernetes condition
+// reason. no_work_product stays in the message; the reason field is CamelCase.
+func failedConditionReason(reason string) string {
+	switch reason {
+	case "no_work_product":
+		return reasonNoWorkProduct
+	default:
+		return condFailed
+	}
+}
+
 type parsedEvent struct {
 	phase      string
+	reason     string
+	summary    string
 	executions []factoryv1.AgentRunExecution
 	usage      *factoryv1.AgentRunUsage
 	prs        []string
@@ -392,6 +421,8 @@ func parseRunEvent(ev fclient.Event) parsedEvent {
 		PRURLsSnake   []string                      `json:"pr_urls"`
 		WorkItemID    string                        `json:"workItemId"`
 		WorkItemSnake string                        `json:"work_item_id"`
+		FailureReason string                        `json:"failure_reason"`
+		Summary       string                        `json:"summary"`
 	}
 	if ev.Data != "" {
 		_ = json.Unmarshal([]byte(ev.Data), &raw)
@@ -409,6 +440,8 @@ func parseRunEvent(ev fclient.Event) parsedEvent {
 	}
 	return parsedEvent{
 		phase:      redact(phase),
+		reason:     strings.TrimSpace(raw.FailureReason),
+		summary:    strings.TrimSpace(raw.Summary),
 		executions: raw.Executions,
 		usage:      raw.Usage,
 		prs:        redactAll(prs),

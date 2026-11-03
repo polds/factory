@@ -5,6 +5,8 @@ model: m7-agent
 runner: local
 pool: standard
 maxTurns: 8
+requires:
+  - pullRequest
 secrets:
   - GH_TOKEN
   - DEFINITION_GIT_URL

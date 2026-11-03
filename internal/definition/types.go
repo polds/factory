@@ -273,8 +273,17 @@ type Agent struct {
 	RequiredRepos      []Repository
 	MaxTurns           int
 	WorkerHost         string
-	Body               string
+	// Requires names work products a completed run must record before it
+	// can succeed. The only value is pullRequest. Nil means the agent did
+	// not opt in.
+	Requires []string
+	Body     string
 }
+
+// RequirePullRequest is the work product an agent opts into with
+// requires: [pullRequest]. A completed run for that agent fails when no
+// pull request URL was recorded.
+const RequirePullRequest = "pullRequest"
 
 // Harness is an explicit harness block. It is mutually exclusive with Model.
 type Harness struct {

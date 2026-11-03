@@ -10,6 +10,7 @@ import (
 
 	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/definition"
+	"github.com/polds/factory/internal/handoff"
 	"github.com/polds/factory/internal/store"
 )
 
@@ -97,12 +98,15 @@ func (s *Server) StartRun(ctx context.Context, req api.RunRequest) (api.Run, err
 	if pool == "" {
 		pool = s.cfg.WorkerPool
 	}
+	// The stored prompt is what the model receives. A direct run previously
+	// kept only req.Prompt, so the agent body never left factoryd.
+	prompt := handoff.DirectPrompt(bound.agent, req.Prompt, s.redactEnv())
 	run, err := s.store.CreateRun(ctx, store.NewRun{
 		FactoryID: fac.ID,
 		AgentID:   agentID,
 		Pool:      pool,
 		Priority:  priority,
-		Prompt:    req.Prompt,
+		Prompt:    prompt,
 		Title:     req.Title,
 		Repo:      req.Repo,
 	})
