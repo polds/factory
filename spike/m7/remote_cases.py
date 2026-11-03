@@ -494,6 +494,102 @@ def write_record_ledger(work: Path, api: str) -> None:
     path.chmod(0o600)
 
 
+def write_slow_git(stub: Path) -> None:
+    stub.mkdir(parents=True, exist_ok=True)
+    path = stub / "git"
+    path.write_text(
+        """#!/bin/bash
+printf '%s\\n' "$*" >> "$M7_ARGV_LOG"
+if [[ "$*" == *ls-remote* ]]; then
+  if [[ "${M7_GIT_HEADS_LEFT:-}" == 1 ]]; then
+    printf '%s\\t%s\\n' \\
+      1111111111111111111111111111111111111111 refs/heads/m7-run/local-s1/main \\
+      2222222222222222222222222222222222222222 refs/heads/m7-run/local-s1/candidate \\
+      3333333333333333333333333333333333333333 refs/heads/m7-run/local-s1/change
+  fi
+  exit 0
+fi
+if [[ "$*" == *push* ]]; then
+  sleep "${M7_GIT_PUSH_SLEEP:-2}"
+  exit 0
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def case_cleanup_timeout(work: Path) -> None:
+    token = work / "github-app-token"
+    token.write_text(TOKEN + "\n", encoding="utf-8")
+    token.chmod(0o600)
+    names = [
+        f"m7-run/{RUN}/main",
+        f"m7-run/{RUN}/candidate",
+        f"m7-run/{RUN}/change",
+    ]
+    ledger = {
+        "version": 1,
+        "run_id": RUN,
+        "owner": "polds",
+        "repo": "factory-m7-target",
+        "git_url": "https://github.com/polds/factory-m7-target.git",
+        "api_base": "http://127.0.0.1:9",
+        "base_ref": names[0],
+        "candidate_ref": names[2],
+        "batch_id": "",
+        "entries": [{"kind": "pr", "number": 1, "phase": "cleaned"}]
+        + [{"kind": "ref", "name": name, "phase": "created"} for name in names],
+    }
+    path = work / "remote-ledger.json"
+    path.write_text(json.dumps(ledger), encoding="utf-8")
+    path.chmod(0o600)
+    log = work / "argv"
+    log.write_text("", encoding="utf-8")
+    write_slow_git(work / "bin")
+    env = base_env(work, "9")
+    env["PATH"] = f"{work / 'bin'}:{env['PATH']}"
+    env["M7_ARGV_LOG"] = str(log)
+    env["M7_REUSE_TOKEN"] = "1"
+    env["M7_DELETE_TIMEOUT"] = "0.3"
+
+    def run_cleanup() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(ROOT / "spike" / "lib" / "remote.py"), "cleanup"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    env["M7_GIT_HEADS_LEFT"] = "1"
+    held = run_cleanup()
+    if held.returncode == 0 or "delete timed out" not in held.stderr:
+        fail("still-present refs did not time out: " + held.stderr + held.stdout)
+    phases = [
+        entry.get("phase")
+        for entry in json.loads(path.read_text(encoding="utf-8"))["entries"]
+    ]
+    if phases != ["cleaned", "created", "created", "created"]:
+        fail(f"timed-out ledger phases {phases}")
+    env.pop("M7_GIT_HEADS_LEFT", None)
+    log.write_text("", encoding="utf-8")
+    gone = run_cleanup()
+    if gone.returncode != 0:
+        fail("cleanup after refs were gone: " + gone.stderr + gone.stdout)
+    phases = [
+        entry.get("phase")
+        for entry in json.loads(path.read_text(encoding="utf-8"))["entries"]
+    ]
+    if phases != ["cleaned", "cleaned", "cleaned", "cleaned"]:
+        fail(f"reconciled ledger phases {phases}")
+    argv = log.read_text(encoding="utf-8")
+    if "ls-remote" not in argv or "push" not in argv:
+        fail("reconcile did not push and then list heads")
+
+
 def case_record(work: Path) -> None:
     proc, base = start_forge(work)
     try:
@@ -566,6 +662,8 @@ def main() -> None:
         case_model_probe(work)
     elif name == "record":
         case_record(work)
+    elif name == "cleanup-timeout":
+        case_cleanup_timeout(work)
     else:
         fail(f"unknown case {name}")
 

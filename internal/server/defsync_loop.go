@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/polds/factory/internal/definition"
 	"github.com/polds/factory/internal/defsync"
+	"github.com/polds/factory/internal/harness"
 	"github.com/polds/factory/internal/inference"
 )
 
@@ -71,12 +73,6 @@ func (s *Server) onDefinitionSync(sha string, changed bool, diags []definition.D
 }
 
 func (s *Server) redact(text string) string {
-	for _, value := range s.cfg.Secrets {
-		if len(value) < 4 {
-			continue
-		}
-		text = strings.ReplaceAll(text, value, "[REDACTED]")
-	}
 	secretVals := []string{
 		s.cfg.InferenceAPIKey,
 		s.cfg.APIKey,
@@ -90,11 +86,13 @@ func (s *Server) redact(text string) string {
 		s.cfg.S3.SecretKey,
 		s.cfg.S3.AccessKey,
 	}
+	for _, value := range s.cfg.Secrets {
+		secretVals = append(secretVals, value)
+	}
 	secretVals = append(secretVals, inference.Values(s.cfg.InferenceExtraHeaders)...)
-	for _, value := range secretVals {
-		if len(value) < 4 {
-			continue
-		}
+	needles := harness.RedactionNeedles(secretVals)
+	sort.Slice(needles, func(i, j int) bool { return len(needles[i]) > len(needles[j]) })
+	for _, value := range needles {
 		text = strings.ReplaceAll(text, value, "[REDACTED]")
 	}
 	return userinfoRe.ReplaceAllString(text, "://")

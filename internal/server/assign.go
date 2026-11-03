@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/polds/factory/internal/api"
+	"github.com/polds/factory/internal/harness"
 	"github.com/polds/factory/internal/inference"
 	"github.com/polds/factory/internal/protocol"
 	"github.com/polds/factory/internal/store"
@@ -99,7 +100,7 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 		env[inference.ExtraHeadersEnv] = formatted
 		values = append(values, inference.Values(s.cfg.InferenceExtraHeaders)...)
 	}
-	env["FACTORY_SECRET_VALUES"] = strings.Join(values, "\n")
+	env["FACTORY_SECRET_VALUES"] = strings.Join(harness.RedactionNeedles(values), "\n")
 	// The task image has no git user (arbitrary uid, empty global config).
 	// Git reads these instead of user.name, so the first commit can succeed.
 	// An allowlisted secret of the same name is already in env and wins.
