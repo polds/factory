@@ -1,5 +1,5 @@
 # Chart-only factory. global.image.tag is required: an empty tag or "latest"
-# fails helm template. operator.enabled and operator.installCRDs render nothing.
+# fails helm template. operator.enabled renders the operator resources. installCRDs does not gate crds/.
 global:
   image:
     registry: ghcr.io/acme

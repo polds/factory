@@ -329,9 +329,7 @@ print(raw)
 PY
 }
 
-# m7_agent_names_ready succeeds when factoryd is serving both exit agents.
-# DefinitionValid stays True when a later push is ignored, so the condition
-# is not proof that implementer and hold are in the snapshot StartRun uses.
+# m7_agent_names_ready succeeds when factoryd lists both exit agents.
 m7_agent_names_ready() {
   python3 - "$1" <<'PY'
 import json
@@ -356,44 +354,6 @@ if missing:
 PY
 }
 
-# A comment in factory.yaml changes the bundle hash. The operator then sends
-# a newer generation, which factoryd applies instead of ignoring.
-m7_bump_definition_hash() {
-  local n="$1"
-  k -n "${NAMESPACE}" get factory m7 -o json >"$WORK/factory.json"
-  python3 - "$n" "$WORK/factory.json" "$WORK/factory-patch.json" <<'PY'
-import json
-import sys
-
-n, src, dest = sys.argv[1:]
-doc = json.loads(open(src, encoding="utf-8").read())
-files = doc.get("spec", {}).get("files") or []
-found = False
-for item in files:
-    if not isinstance(item, dict) or item.get("path") != "factory.yaml":
-        continue
-    lines = [
-        line
-        for line in str(item.get("content") or "").splitlines()
-        if not line.startswith("# m7-republish ")
-    ]
-    lines.append("# m7-republish %s" % n)
-    item["content"] = "\n".join(lines) + "\n"
-    found = True
-if not found:
-    sys.stderr.write("factory.yaml was not in the Factory spec\n")
-    raise SystemExit(1)
-with open(dest, "w", encoding="utf-8") as fh:
-    json.dump({"spec": {"files": files}}, fh)
-PY
-  k -n "${NAMESPACE}" patch factory m7 --type=merge --patch-file "$WORK/factory-patch.json"
-  rm -f "$WORK/factory.json" "$WORK/factory-patch.json"
-}
-
-m7_definition_stamp() {
-  k -n "${NAMESPACE}" get factory m7 -o json | python3 -c 'import json,sys; ann=json.load(sys.stdin).get("metadata",{}).get("annotations") or {}; print("%s %s" % (ann.get("factory.dev/definition-generation",""), ann.get("factory.dev/definition-hash","")))'
-}
-
 m7_write_curl_cfg() {
   python3 - "$WORK/api-key" "$WORK/curl.cfg" <<'PY'
 import pathlib
@@ -406,15 +366,15 @@ dest.chmod(0o600)
 PY
 }
 
-# Poll factoryd until implementer and hold are listed. A missing name means
-# the served snapshot predates those agents; bump the bundle and try again.
+# Read factoryd's agent list. This does not change the definition. The
+# operator retries a push factoryd ignored. A missing name fails the run.
 m7_wait_served_agents() {
-  local attempt="" ready="" code="" before="" after="" _
+  local ready="" code=""
   k -n "${NAMESPACE}" port-forward svc/factory-factoryd 18081:8080 >/tmp/m7-factoryd-pf.log 2>&1 &
   pf_pid=$!
   m7_write_curl_cfg
   ready=""
-  for attempt in $(seq 1 12); do
+  for _ in $(seq 1 15); do
     code=0
     curl -fsS --connect-timeout 1 -m 3 -K "$WORK/curl.cfg" \
       -o "$WORK/served-agents.json" \
@@ -423,20 +383,7 @@ m7_wait_served_agents() {
       ready=1
       break
     fi
-    if [[ "$code" -eq 0 ]]; then
-      printf 'm7 republish definition %s\n' "$attempt"
-      before="$(m7_definition_stamp)"
-      m7_bump_definition_hash "$attempt"
-      for _ in $(seq 1 15); do
-        after="$(m7_definition_stamp)"
-        if [[ -n "$after" && "$after" != "$before" ]]; then
-          break
-        fi
-        sleep 1
-      done
-    else
-      sleep 2
-    fi
+    sleep 2
   done
   kill "${pf_pid}" >/dev/null 2>&1 || true
   wait "${pf_pid}" >/dev/null 2>&1 || true
