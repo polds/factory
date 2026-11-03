@@ -1,7 +1,9 @@
 package harness
 
 import (
+	"encoding/json"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 )
@@ -63,7 +65,17 @@ func TestRedactionNeedlesLiveShape(t *testing.T) {
 	if strings.Contains(enc, encodedPW) || strings.Contains(enc, "ghs_"+strings.Repeat("a", 20)) {
 		t.Fatalf("encoded userinfo password survived: %q", enc)
 	}
-	for _, secret := range []string{query, opaque, splice, "http://m7-forge.factory.svc.cluster.local:8080"} {
+	encodedOwner := "https://github.com/owner%2Frepo"
+	encodedPull := "https://github.com/owner/repo/pull%2F1"
+	kept := []string{
+		query,
+		opaque,
+		splice,
+		"http://m7-forge.factory.svc.cluster.local:8080",
+		encodedOwner,
+		encodedPull,
+	}
+	for _, secret := range kept {
 		if publicHTTPSURL(secret) {
 			t.Fatalf("%q was treated as public", secret)
 		}
@@ -100,6 +112,28 @@ func containsNeedle(needles []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestPublicHTTPSSharedCases(t *testing.T) {
+	data, err := os.ReadFile("../../spike/lib/public_https_cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		URL    string `json:"url"`
+		Public bool   `json:"public"`
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) == 0 {
+		t.Fatal("shared public-url table is empty")
+	}
+	for _, item := range cases {
+		if publicHTTPSURL(item.URL) != item.Public {
+			t.Fatalf("%q public=%v want %v", item.URL, publicHTTPSURL(item.URL), item.Public)
+		}
+	}
 }
 
 func TestDigestIsSHA256OfOriginal(t *testing.T) {

@@ -112,7 +112,9 @@ func RedactionNeedles(values []string) []string {
 
 // publicHTTPSURL reports a credential-free https locator. It matches
 // remote.public_definition_url and remote.public_https_origin: no userinfo,
-// query, or fragment, and no character urlsplit would delete.
+// query, or fragment, and no character urlsplit would delete. The path is
+// EscapedPath, so a %2F that url.Parse decodes still fails the segment
+// check the way Python's urlsplit path does.
 func publicHTTPSURL(raw string) bool {
 	text := strings.TrimSpace(raw)
 	if text == "" || hasControl(text) {
@@ -125,10 +127,11 @@ func publicHTTPSURL(raw string) bool {
 	if !strings.EqualFold(u.Scheme, "https") || !hostRE.MatchString(u.Host) {
 		return false
 	}
-	if u.Path == "" || u.Path == "/" {
+	escaped := u.EscapedPath()
+	if escaped == "" || escaped == "/" {
 		return true
 	}
-	parts := repoPath(u.Path)
+	parts := repoPath(escaped)
 	if len(parts) == 2 {
 		return true
 	}

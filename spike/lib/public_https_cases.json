@@ -1,0 +1,11 @@
+[
+  {"url": "https://github.com/polds/factory-m7-target", "public": true},
+  {"url": "https://github.com/polds/factory-m7-target.git", "public": true},
+  {"url": "https://github.com/polds/factory-m7-target/pull/1", "public": true},
+  {"url": "https://api.github.com", "public": true},
+  {"url": "https://api.github.com/", "public": true},
+  {"url": "https://github.com/owner%2Frepo", "public": false},
+  {"url": "https://github.com/owner/repo/pull%2F1", "public": false},
+  {"url": "https://x-access-token:ghs_aaaaaaaaaaaaaaaaaaaa@github.com/polds/factory-m7-target.git", "public": false},
+  {"url": "http://m7-forge.factory.svc.cluster.local:8080", "public": false}
+]

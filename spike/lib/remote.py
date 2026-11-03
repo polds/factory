@@ -477,6 +477,14 @@ def _num(value: float) -> str:
     return text or "0"
 
 
+def low_speed_seconds(value: float) -> str:
+    """git http.lowSpeedTime rejects a fraction. Floor to at least 1."""
+    seconds = int(value)
+    if seconds < 1:
+        return "1"
+    return str(seconds)
+
+
 def call_limits() -> tuple[float, float]:
     """Return (max_time, connect_timeout). A set deadline shrinks both."""
     raw = eget("CLEANUP_DEADLINE", "").strip()
@@ -514,7 +522,7 @@ def run_git(
                 "-c",
                 "http.lowSpeedLimit=1",
                 "-c",
-                f"http.lowSpeedTime={_num(speed)}",
+                f"http.lowSpeedTime={low_speed_seconds(speed)}",
             ]
         )
     if cwd is not None:

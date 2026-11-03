@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -520,6 +521,60 @@ exit 0
     path.chmod(0o755)
 
 
+def case_cleanup_low_speed(work: Path) -> None:
+    token = work / "github-app-token"
+    token.write_text(TOKEN + "\n", encoding="utf-8")
+    token.chmod(0o600)
+    name = f"m7-run/{RUN}/main"
+    ledger = {
+        "version": 1,
+        "run_id": RUN,
+        "owner": "polds",
+        "repo": "factory-m7-target",
+        "git_url": "https://github.com/polds/factory-m7-target.git",
+        "api_base": "http://127.0.0.1:9",
+        "base_ref": name,
+        "candidate_ref": name,
+        "batch_id": "",
+        "entries": [{"kind": "ref", "name": name, "phase": "created"}],
+    }
+    path = work / "remote-ledger.json"
+    path.write_text(json.dumps(ledger), encoding="utf-8")
+    path.chmod(0o600)
+    log = work / "argv"
+    log.write_text("", encoding="utf-8")
+    stub = work / "bin"
+    stub.mkdir(parents=True, exist_ok=True)
+    git = stub / "git"
+    git.write_text(
+        '#!/bin/bash\nprintf \'%s\\n\' "$*" >> "$M7_ARGV_LOG"\nexit 0\n',
+        encoding="utf-8",
+    )
+    git.chmod(0o755)
+    env = base_env(work, "9")
+    env["PATH"] = f"{stub}:{env['PATH']}"
+    env["M7_ARGV_LOG"] = str(log)
+    env["M7_CLEANUP_DEADLINE"] = f"{time.time() + 4.938:.3f}"
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "spike" / "lib" / "remote.py"), "cleanup"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        fail("budgeted delete failed: " + proc.stderr + proc.stdout)
+    key = "http.lowSpeedTime="
+    values = [
+        part[len(key) :]
+        for part in log.read_text(encoding="utf-8").split()
+        if part.startswith(key)
+    ]
+    if values != ["4"]:
+        fail(f"http.lowSpeedTime for a 4.938s budget was {values}")
+
+
 def case_cleanup_timeout(work: Path) -> None:
     token = work / "github-app-token"
     token.write_text(TOKEN + "\n", encoding="utf-8")
@@ -662,6 +717,8 @@ def main() -> None:
         case_model_probe(work)
     elif name == "record":
         case_record(work)
+    elif name == "cleanup-low-speed":
+        case_cleanup_low_speed(work)
     elif name == "cleanup-timeout":
         case_cleanup_timeout(work)
     else:

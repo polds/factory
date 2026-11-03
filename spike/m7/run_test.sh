@@ -156,6 +156,7 @@ case_remote() {
   M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" rewrite
   M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" probe
   M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" record
+  M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" cleanup-low-speed
   M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" cleanup-timeout
   local summary
   summary="$(M7_LEDGER="$work/remote-ledger.json" M7_WORK="$work" m7_cleanup_summary)"

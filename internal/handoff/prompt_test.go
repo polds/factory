@@ -581,6 +581,27 @@ func TestDirectPromptIncludesInstructionsAndRedacts(t *testing.T) {
 	}
 }
 
+func TestDirectPromptKeepsPublicDefinitionURL(t *testing.T) {
+	t.Parallel()
+	const (
+		repo    = "https://github.com/polds/factory-m7-target"
+		planted = "ghp_Planted/SecretValue99"
+	)
+	agent := definition.Agent{Name: "implementer", Body: "Clone " + repo}
+	env := map[string]string{"DEFINITION_GIT_URL": repo, "GH_TOKEN": planted}
+	got := DirectPrompt(agent, "Open "+repo+"/pull/1 "+planted, env)
+	if !strings.Contains(got, repo) || !strings.Contains(got, repo+"/pull/1") {
+		t.Fatalf("public url redacted:\n%s", got)
+	}
+	if strings.Contains(got, planted) || !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("token was not redacted:\n%s", got)
+	}
+	built := BuildPrompt(agent, Context{Title: "t", Body: repo + "/pull/1", Env: env})
+	if strings.Contains(built, repo) || strings.Contains(built, planted) {
+		t.Fatal("BuildPrompt kept a secret or the public definition url")
+	}
+}
+
 func TestDirectPromptEmptyBody(t *testing.T) {
 	t.Parallel()
 	got := DirectPrompt(definition.Agent{}, "  ", nil)
