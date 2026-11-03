@@ -742,6 +742,35 @@ case_cancel_proof_int() {
   rm -rf "$dir"
 }
 
+case_cancel_proof_kind_ignores_term() {
+  local dir=$ROOT/spike/m7/.work/proof-kind-ignore-$$ start end
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  m7_proof_tree "$dir" 0
+  cat >"$dir/kind" <<'EOF'
+#!/bin/bash
+trap '' TERM INT
+printf '%s\n' "$*" >> "$M7_KIND_LOG"
+[[ "$*" == *delete* ]] && sleep 30
+exit 0
+EOF
+  chmod 755 "$dir/kind"
+  m7_start "$dir" true 30 hold
+  m7_seen "$dir/out" "m7 cancel-proof: holding" || fail "holding marker missing"
+  start=$(date +%s.%N)
+  kill -INT "$M7_LAUNCH_PID"
+  m7_seen "$dir/kind.log" "delete cluster" || fail "kind delete did not start"
+  kill -TERM "$M7_LAUNCH_PID" 2>/dev/null || true
+  m7_wait_pid "$M7_LAUNCH_PID" 12
+  end=$(date +%s.%N)
+  m7_reap "$M7_LAUNCH_PID"
+  python3 -c 'import sys; raise SystemExit(0 if float(sys.argv[2])-float(sys.argv[1]) < 9 else 1)' "$start" "$end" || fail "ignore-TERM kind slower than 9s"
+  [[ "$M7_WAIT_EC" == 130 ]] || fail "ignore-TERM kind exit $M7_WAIT_EC"
+  m7_one_trap "$dir"
+  grep -q PASS "$dir/out" "$dir/err" && fail "PASS on ignore-TERM kind"
+  rm -rf "$dir"
+}
+
 case_cancel_proof_term() {
   local dir=$ROOT/spike/m7/.work/proof-term-$$
   rm -rf "$dir"
@@ -847,6 +876,7 @@ case_inference_headers
 case_cleanup_on_exit
 case_cancel_proof_flag
 case_cancel_proof_int
+case_cancel_proof_kind_ignores_term
 case_cancel_proof_term
 case_cancel_proof_expire
 case_normal_int_no_resume

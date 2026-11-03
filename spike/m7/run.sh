@@ -250,14 +250,30 @@ m7_kind_delete_cap() {
 }
 
 # shellcheck disable=SC2317,SC2329 # signal path only
+# The teardown ignores INT/TERM, and that disposition is inherited. A child
+# started here resets it, or a SIGTERM at the cap would not stop kind.
+# The cap then SIGKILLs the child, and its process group when it leads one.
 m7_delete_kind() {
-  local cap="$1" pid="" start=""
-  "${KIND}" delete cluster --name "${CLUSTER_NAME}" &
+  local cap="$1" pid="" start="" pgid="" monitor=0
+  case $- in
+    *m*) monitor=1 ;;
+  esac
+  set -m
+  (
+    trap - INT TERM
+    exec "${KIND}" delete cluster --name "${CLUSTER_NAME}"
+  ) &
   pid=$!
+  [[ "$monitor" -eq 1 ]] || set +m
   start=$SECONDS
   while kill -0 "$pid" 2>/dev/null; do
     if [[ $((SECONDS - start)) -ge "$cap" ]]; then
-      kill "$pid" >/dev/null 2>&1 || true
+      pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+      if [[ -n "$pgid" && "$pgid" == "$pid" ]]; then
+        kill -KILL -- -"$pid" >/dev/null 2>&1 || true
+      else
+        kill -KILL "$pid" >/dev/null 2>&1 || true
+      fi
       wait "$pid" >/dev/null 2>&1 || true
       return 0
     fi

@@ -306,7 +306,7 @@ workers:
     maxConcurrentTasks: 8
     logLevel: info
     cleanup: true
-    terminationGracePeriodSeconds: 600        # must exceed a graceful task drain
+    terminationGracePeriodSeconds: 600        # pod grace only; not a 600s task drain
     apiKeySecret: { name: factory-worker, key: FACTORY_API_KEY, create: false }
     resources:
       requests: { cpu: 100m, memory: 128Mi }

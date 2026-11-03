@@ -66,8 +66,8 @@ The signal handler ignores a second INT/TERM and exits 130 or 143. It does
 not resume the script. GitHub sends SIGTERM about 7.5s after SIGINT and
 SIGKILL about 2.5s after that. The handler ignores SIGTERM, so it has about
 10s. Cancel-proof skips remote cleanup. Kind delete on a signal is capped
-at 6s and the handler targets under 8s. The offline INT test finishes in
-under 2s.
+at 6s. The child resets INT/TERM, and the cap sends SIGKILL, so the
+handler returns under 8s. The offline INT test finishes in under 2s.
 
 The ledger stays at `spike/m7/.work/remote-ledger.json`. The signal path
 does not delete `.work`. The workflow cleanup step reads that file. A
@@ -85,5 +85,6 @@ example `m7 cleanup: refs deleted=3 left=0 branches deleted=3 left=0 prs deleted
 ## Tests
 
 `bash spike/m7/run_test.sh` does not start kind. It covers secrets, the
-cancel window, and the cancel-proof hold (INT 130, TERM 143, expiry, normal
-INT cleanup, and `--cleanup-remote` after a cancel-proof INT).
+cancel window, and the cancel-proof hold (INT 130, TERM 143, expiry, a
+kind that ignores TERM, normal INT cleanup, and `--cleanup-remote` after a
+cancel-proof INT).
