@@ -18,6 +18,10 @@ source "$ROOT/spike/lib/driver.sh"
 source "$ROOT/scripts/ci/helm-lib.sh"
 
 MODE="${MODE:-offline}"
+# Public https locator of the offline target. Live stores this shape as
+# FACTORY_SECRET_DEFINITION_GIT_URL, and the forge html_url is that string
+# plus /pull/N. The router still clones the git:// URL.
+M7_PUBLIC_REPO_URL="${M7_PUBLIC_REPO_URL:-https://pr.invalid/m7/factory-m7-target}"
 PHASE_PREFIX=m7
 CLUSTER_NAME="${M7_KIND_CLUSTER:-factory-m7}"
 NAMESPACE=factory
@@ -369,13 +373,15 @@ m7_collect_run_events() {
   pf=$!
   for _ in $(seq 1 20); do
     if curl -fsS --connect-timeout 1 -m 2 -o /dev/null -K "$WORK/curl.cfg" \
-      "http://127.0.0.1:${port}/healthz"; then
+      "http://127.0.0.1:${port}/healthz" 2>>/tmp/m7-events-pf.log; then
       ready=1
       break
     fi
     sleep 0.2
   done
-  if [[ -n "$ready" ]]; then
+  if [[ -z "$ready" ]]; then
+    printf 'm7 events port-forward: 127.0.0.1:%s not ready\n' "$port" >&2
+  else
     while IFS= read -r id; do
       if [[ ! "$id" =~ ^[A-Za-z0-9_-]+$ ]]; then
         continue
@@ -637,7 +643,8 @@ m7_wait_served_agents() {
     code=0
     curl -fsS --connect-timeout 1 -m 3 -K "$WORK/curl.cfg" \
       -o "$WORK/served-agents.json" \
-      http://127.0.0.1:18081/api/v1/factory/m7/agents || code=$?
+      http://127.0.0.1:18081/api/v1/factory/m7/agents \
+      2>>/tmp/m7-factoryd-pf.log || code=$?
     if [[ "$code" -eq 0 ]] && m7_agent_names_ready "$WORK/served-agents.json"; then
       ready=1
       break
@@ -662,6 +669,8 @@ m7_apply_router() {
     --from-file=forge.py="$ROOT/spike/lib/forge.py" \
     --dry-run=client -o yaml | k apply -f -
   if [[ "$MODE" == "offline" ]]; then
+    # The scripted agent clones this git:// URL. It does not read the
+    # factory secret, which is the public https URL used for redaction.
     env_yaml="$(
       cat <<EOF
           env:
@@ -899,7 +908,10 @@ phase kind "$step_start"
 step_start=$SECONDS
 k create namespace "${NAMESPACE}" --dry-run=client -o yaml | k apply -f -
 if [[ "$MODE" == "offline" ]]; then
-  write_key_file "$WORK/definition-git-url" "git://m7-git.factory.svc.cluster.local/target.git"
+  # Same shape live stores. The forge html_url starts with this string, so
+  # redaction is exercised the way the live run redacts. The API base stays
+  # http, so it is not a public https origin and does not prefix the pull URL.
+  write_key_file "$WORK/definition-git-url" "${M7_PUBLIC_REPO_URL}"
   write_key_file "$WORK/github-api-base" "http://m7-forge.factory.svc.cluster.local:8080"
 else
   write_key_file "$WORK/definition-git-url" "${M7_DEFINITION_GIT_URL}"
@@ -1025,7 +1037,7 @@ spec:
             - name: SPIKE_FORGE_STANDALONE
               value: "1"
             - name: SPIKE_PR_HTML_BASE
-              value: https://pr.invalid/m7/factory-m7-target/pull
+              value: ${M7_PUBLIC_REPO_URL}/pull
             - name: M7_TOKEN_FILE
               value: /var/run/token/token
           ports:
@@ -1201,7 +1213,8 @@ if [[ "$MODE" == "offline" ]]; then
   pf_pid=$!
   forge_ready=""
   for _ in $(seq 1 30); do
-    if curl -fsS --connect-timeout 1 -m 3 -o /dev/null http://127.0.0.1:18080/_spike/m6; then
+    if curl -fsS --connect-timeout 1 -m 3 -o /dev/null \
+      http://127.0.0.1:18080/_spike/m6 2>>/tmp/m7-forge-pf.log; then
       forge_ready=1
       break
     fi
@@ -1337,7 +1350,8 @@ if [[ -n "$hold_run" ]]; then
   got=""
   for _ in $(seq 1 20); do
     if curl -fsS --connect-timeout 1 -m 3 -K "$WORK/curl.cfg" -o "$EVIDENCE/hold-run.json" \
-      "http://127.0.0.1:18081/api/v1/agent/runs/${hold_run}"; then
+      "http://127.0.0.1:18081/api/v1/agent/runs/${hold_run}" \
+      2>>/tmp/m7-factoryd-pf.log; then
       got=1
       break
     fi

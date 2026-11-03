@@ -222,7 +222,10 @@ func TestImprovementFailureStopsRetry(t *testing.T) {
 			if got.Status != api.BatchFailed {
 				t.Fatalf("status %s", got.Status)
 			}
-			m6AssertNoSecret(t, got.RejectionNote)
+			m6AssertNoCredential(t, got.RejectionNote)
+			if !strings.Contains(got.RejectionNote, t81SecretURL) {
+				t.Fatal("public definition url was redacted")
+			}
 			if !strings.Contains(got.RejectionNote, "authentication failed") || !strings.Contains(got.RejectionNote, "improvement clone") {
 				t.Fatalf("note %q", got.RejectionNote)
 			}
@@ -293,7 +296,10 @@ func TestImprovementFailureStopsRetry(t *testing.T) {
 		if got.Status != api.BatchFailed {
 			t.Fatalf("status %s", got.Status)
 		}
-		m6AssertNoSecret(t, got.RejectionNote)
+		m6AssertNoCredential(t, got.RejectionNote)
+		if !strings.Contains(got.RejectionNote, t81SecretURL) {
+			t.Fatal("public definition url was redacted")
+		}
 		if !strings.Contains(got.RejectionNote, "improvement pr") || !strings.Contains(got.RejectionNote, "HTTP 500") {
 			t.Fatalf("note %q", got.RejectionNote)
 		}
@@ -603,6 +609,14 @@ func m6AssertNoSecret(t *testing.T, text string) {
 		if strings.Contains(text, secret) {
 			t.Fatal("text contains a secret value")
 		}
+	}
+}
+
+// m6AssertNoCredential checks a token. A public definition URL is not a secret.
+func m6AssertNoCredential(t *testing.T, text string) {
+	t.Helper()
+	if strings.Contains(text, plantedGH) {
+		t.Fatal("text contains a secret value")
 	}
 }
 

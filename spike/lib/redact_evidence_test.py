@@ -282,6 +282,17 @@ def plant_stateless_tree(root: Path) -> None:
 
 
 class PublicURLTest(unittest.TestCase):
+    def test_shared_public_https_cases(self) -> None:
+        path = Path(__file__).resolve().parent / "public_https_cases.json"
+        cases = json.loads(path.read_text(encoding="utf-8"))
+        self.assertNotEqual(cases, [])
+        for item in cases:
+            self.assertEqual(
+                redact_evidence.public_https_url(item["url"]),
+                item["public"],
+                item["url"],
+            )
+
     def test_pull_request_url_survives_and_tokens_do_not(self) -> None:
         repo = "https://github.com/polds/factory-m6-definition"
         html = repo + "/pull/1"

@@ -77,6 +77,14 @@ class RemoteError(Exception):
         self.headers = headers or []
 
 
+class DeleteUnconfirmed(RemoteError):
+    """A ref delete did not confirm. deleted names are already absent."""
+
+    def __init__(self, deleted: set[str]) -> None:
+        super().__init__("delete timed out")
+        self.deleted = deleted
+
+
 class PreflightFailed(RemoteError):
     """Preflight already printed its lines and wrote remote-fail."""
 
@@ -469,6 +477,14 @@ def _num(value: float) -> str:
     return text or "0"
 
 
+def low_speed_seconds(value: float) -> str:
+    """git http.lowSpeedTime rejects a fraction. Floor to at least 1."""
+    seconds = int(value)
+    if seconds < 1:
+        return "1"
+    return str(seconds)
+
+
 def call_limits() -> tuple[float, float]:
     """Return (max_time, connect_timeout). A set deadline shrinks both."""
     raw = eget("CLEANUP_DEADLINE", "").strip()
@@ -493,10 +509,12 @@ def run_git(
     timeout: float | None = None,
     http_bound: bool = False,
     connect_timeout: float | None = None,
+    low_speed: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     cmd = ["git", "-c", "protocol.file.allow=always"]
     if http_bound:
         connect = 2.0 if connect_timeout is None else connect_timeout
+        speed = 5.0 if low_speed is None else low_speed
         cmd.extend(
             [
                 "-c",
@@ -504,7 +522,7 @@ def run_git(
                 "-c",
                 "http.lowSpeedLimit=1",
                 "-c",
-                "http.lowSpeedTime=5",
+                f"http.lowSpeedTime={low_speed_seconds(speed)}",
             ]
         )
     if cwd is not None:
@@ -1522,6 +1540,67 @@ def porcelain_deleted(stdout: str) -> set[str]:
     return done
 
 
+def push_delete_limits() -> tuple[float, float | None]:
+    """Delete timeout, and the connect cap when a deadline is set.
+
+    Cancel stays on call_limits (at most 5s). M6's hung-remote check expects
+    one 5s EXIT call. M7 waits 30s. DELETE_TIMEOUT overrides that.
+    """
+    if eget("CLEANUP_DEADLINE", "").strip() != "":
+        timeout, connect = call_limits()
+        return timeout, connect
+    raw = eget("DELETE_TIMEOUT", "").strip()
+    if raw != "":
+        try:
+            chosen = float(raw)
+        except ValueError:
+            chosen = 0.0
+        if chosen > 0:
+            return chosen, None
+    if env_prefix() == "M6":
+        return 5.0, None
+    return 30.0, None
+
+
+def remote_heads(token: str, url: str, timeout: float) -> set[str] | None:
+    """Branch names from ls-remote --heads, or None when the listing fails."""
+    try:
+        proc = run_git(
+            ["ls-remote", "--heads", url],
+            token,
+            url,
+            timeout=timeout,
+            http_bound=True,
+            low_speed=timeout,
+        )
+    except RemoteError:
+        return None
+    if proc.returncode != 0:
+        return None
+    present: set[str] = set()
+    prefix = "refs/heads/"
+    for line in (proc.stdout or "").splitlines():
+        if "\t" not in line:
+            continue
+        ref = line.split("\t", 1)[1].strip()
+        if ref.startswith(prefix):
+            present.add(ref[len(prefix) :])
+    return present
+
+
+def finish_unconfirmed(
+    names: list[str], token: str, url: str, timeout: float, *, reason: str
+) -> set[str]:
+    """Names missing from ls-remote are deleted. A failed listing confirms nothing."""
+    present = remote_heads(token, url, timeout)
+    if present is None:
+        raise RemoteError(reason)
+    gone = {name for name in names if name not in present}
+    if gone != set(names):
+        raise DeleteUnconfirmed(gone)
+    return gone
+
+
 def delete_refs(ledger: dict, names: list[str]) -> set[str]:
     run_id = accepted_run_id(str(ledger.get("run_id") or ""))
     batch_id = str(ledger.get("batch_id") or "")
@@ -1535,19 +1614,23 @@ def delete_refs(ledger: dict, names: list[str]) -> set[str]:
     token = read_secret(token_path())
     url = str(ledger["git_url"])
     specs = [f":refs/heads/{name}" for name in names]
-    budgeted = eget("CLEANUP_DEADLINE", "").strip() != ""
-    timeout = 5.0
-    connect: float | None = None
-    if budgeted:
-        timeout, connect = call_limits()
-    proc = run_git(
-        ["push", "--porcelain", url, *specs],
-        token,
-        url,
-        timeout=timeout,
-        http_bound=True,
-        connect_timeout=connect,
-    )
+    timeout, connect = push_delete_limits()
+    try:
+        proc = run_git(
+            ["push", "--porcelain", url, *specs],
+            token,
+            url,
+            timeout=timeout,
+            http_bound=True,
+            connect_timeout=connect,
+            low_speed=timeout,
+        )
+    except RemoteError as err:
+        if err.reason != "delete timed out":
+            raise
+        if env_prefix() == "M6":
+            raise
+        return finish_unconfirmed(names, token, url, timeout, reason="delete timed out")
     done = porcelain_deleted(proc.stdout or "")
     if proc.returncode == 0:
         return done or set(names)
@@ -1555,8 +1638,10 @@ def delete_refs(ledger: dict, names: list[str]) -> set[str]:
         return done
     if delete_missing(proc.stderr or ""):
         return set(names)
-    git_ok(proc, "delete refs failed")
-    return done
+    if env_prefix() == "M6":
+        git_ok(proc, "delete refs failed")
+        return done
+    return finish_unconfirmed(names, token, url, timeout, reason="delete refs failed")
 
 
 def ensure_cleanup_token(ledger: dict) -> None:
@@ -1753,13 +1838,23 @@ def cleanup() -> None:
         return
     if budgeted:
         call_limits()
-    deleted = delete_refs(ledger, [str(entry.get("name") or "") for entry in refs])
-    for entry in refs:
-        if str(entry.get("name") or "") in deleted:
-            entry["phase"] = "cleaned"
+    names = [str(entry.get("name") or "") for entry in refs]
+    try:
+        deleted = delete_refs(ledger, names)
+    except DeleteUnconfirmed as err:
+        mark_deleted(refs, err.deleted)
+        save_ledger(ledger)
+        raise RemoteError("delete timed out") from None
+    mark_deleted(refs, deleted)
     save_ledger(ledger)
     if any(entry.get("phase") != "cleaned" for entry in refs):
         raise RemoteError("remote cleanup incomplete")
+
+
+def mark_deleted(refs: list[dict], deleted: set[str]) -> None:
+    for entry in refs:
+        if str(entry.get("name") or "") in deleted:
+            entry["phase"] = "cleaned"
 
 
 def remember_watch_error(err: RemoteError) -> None:

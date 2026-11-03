@@ -156,6 +156,13 @@ case_remote() {
   M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" rewrite
   M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" probe
   M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" record
+  M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" cleanup-low-speed
+  M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" cleanup-timeout
+  local summary
+  summary="$(M7_LEDGER="$work/remote-ledger.json" M7_WORK="$work" m7_cleanup_summary)"
+  if [[ "$summary" != "m7 cleanup: refs deleted=3 left=0 branches deleted=3 left=0 prs deleted=1 left=0" ]]; then
+    fail "cleanup summary was ${summary}"
+  fi
   rm -rf "$work"
 }
 

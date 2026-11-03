@@ -7,6 +7,7 @@ import (
 
 	"github.com/polds/factory/internal/definition"
 	"github.com/polds/factory/internal/handoff"
+	"github.com/polds/factory/internal/harness"
 	"github.com/polds/factory/internal/inference"
 	"github.com/polds/factory/internal/store"
 )
@@ -65,6 +66,48 @@ func TestTaskEnvGitIdentityYieldsToAllowlistedSecret(t *testing.T) {
 	}
 	if env["GIT_COMMITTER_NAME"] != "Agent" || env["GIT_COMMITTER_EMAIL"] != "agent@example.com" {
 		t.Fatalf("missing committer default: %q <%s>", env["GIT_COMMITTER_NAME"], env["GIT_COMMITTER_EMAIL"])
+	}
+}
+
+func TestTaskEnvLiveShapedRedactionKeepsPullURL(t *testing.T) {
+	const repo = "https://github.com/polds/factory-m7-target"
+	const api = "https://api.github.com"
+	token := "ghs_" + strings.Repeat("a", 20)
+	s := &Server{
+		cfg: Config{
+			TaskServerURL: "http://172.17.0.1:8080",
+			Secrets: map[string]string{
+				"GH_TOKEN":           token,
+				"DEFINITION_GIT_URL": repo,
+				"GITHUB_API_BASE":    api,
+			},
+		},
+		loaded: loaded{tree: &definition.Tree{
+			Factory: definition.Factory{Secrets: []string{
+				"GH_TOKEN", "DEFINITION_GIT_URL", "GITHUB_API_BASE",
+			}},
+		}},
+	}
+	env, err := s.taskEnv(context.Background(), store.Run{ID: "run_test", Prompt: "edit greet"}, boundAgent{
+		agent: definition.Agent{MaxTurns: 3},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["DEFINITION_GIT_URL"] != repo {
+		t.Fatalf("task clone url = %q", env["DEFINITION_GIT_URL"])
+	}
+	list := env["FACTORY_SECRET_VALUES"]
+	if strings.Contains(list, "github.com/polds/factory-m7-target") || strings.Contains(list, api) {
+		t.Fatalf("public url is a redaction value: %q", list)
+	}
+	if !strings.Contains(list, token) {
+		t.Fatal("token missing from redaction list")
+	}
+	pr := repo + "/pull/1"
+	got := harness.Redact(pr+" "+token, strings.Split(list, "\n"))
+	if got != pr+" [REDACTED]" {
+		t.Fatalf("pull url: %q", got)
 	}
 }
 

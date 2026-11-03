@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/polds/factory/internal/definition"
+	"github.com/polds/factory/internal/harness"
 )
 
 // Agent is the resolved stage agent. BuildPrompt reads its name, description,
@@ -51,16 +52,17 @@ type Context struct {
 
 // DirectPrompt is the prompt a direct or operator-started run stores and
 // sends. It is the agent instructions, then the caller's task. Secret values
-// in env are redacted the same way BuildPrompt redacts a work-item prompt.
-// The stored run prompt is this text, so the API and the assignment show
-// what the model received.
+// in env are redacted, except a public https repository URL, pull URL, or
+// bare origin. BuildPrompt still redacts those. The stored run prompt is
+// this text, so the API and the assignment show what the model received.
 func DirectPrompt(agent Agent, task string, env map[string]string) string {
 	var b strings.Builder
 	b.WriteString("# Instructions\n")
 	writeBody(&b, agent.Body)
 	b.WriteString("\n# Task\n")
 	writeBody(&b, task)
-	return redactPrompt(b.String(), secretValues(agent, Context{Env: env}))
+	needles := harness.RedactionNeedles(secretValues(agent, Context{Env: env}))
+	return redactPrompt(b.String(), needles)
 }
 
 // BuildPrompt returns the deterministic FACTORY_TASK_PROMPT for agent and ctx.

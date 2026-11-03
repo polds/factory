@@ -389,5 +389,5 @@ func secretList(task TaskFile, env []string) []string {
 			}
 		}
 	}
-	return s
+	return RedactionNeedles(s)
 }
