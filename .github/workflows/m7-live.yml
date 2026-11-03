@@ -8,6 +8,13 @@
 # That step prints one summary line: refs, branches, and PRs deleted or
 # left, by count. It does not print tokens.
 #
+# cancel_proof defaults to false. When it is true, the driver records the
+# pull request, prints "m7 cancel-proof: holding Ns pr=<url>", and waits.
+# INT/TERM then deletes kind and leaves the remote ledger. This cleanup
+# step closes the PR and deletes the m7-run refs. A hold that ends without
+# a cancel fails and does not print LIVE PASS. With cancel_proof false,
+# the driver itself runs the budgeted remote cleanup on INT/TERM.
+#
 # permissions is contents:read only. GITHUB_TOKEN cannot push or open
 # PRs. There is no job-level permissions block.
 #
@@ -45,6 +52,11 @@ on:
         required: false
         default: "480"
         type: string
+      cancel_proof:
+        description: Hold after the PR so a cancel reaches the runner.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -121,6 +133,7 @@ jobs:
           M7_GITHUB_API_BASE: https://api.github.com
           FACTORY_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/m6-github-app.pem
           FACTORY_REVIEWERS_ADMINS: ${{ inputs.reviewer }}
+          M7_CANCEL_PROOF: ${{ inputs.cancel_proof }}
         run: MODE=live-ci exec ./spike/m7/run.sh
       - name: Clean up remote state after cancel
         if: cancelled()
@@ -134,6 +147,7 @@ jobs:
           M7_GITHUB_API_BASE: https://api.github.com
           FACTORY_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/m6-github-app.pem
           FACTORY_REVIEWERS_ADMINS: ${{ inputs.reviewer }}
+          M7_CANCEL_PROOF: ${{ inputs.cancel_proof }}
         run: MODE=live-ci ./spike/m7/run.sh --cleanup-remote
       - name: Redact M7 evidence
         id: redact

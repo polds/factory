@@ -4,6 +4,10 @@
 # and proves one pull request plus delete-to-cancel. The cluster is deleted
 # on every exit. Live modes are not run from an agent; m7-live.yml is the
 # dispatch. This script refuses --cleanup-remote when MODE=offline.
+# M7_CANCEL_PROOF=true holds after the pull request is recorded. INT/TERM
+# then deletes kind and leaves the remote ledger for --cleanup-remote.
+# Without that flag, INT/TERM still runs the budgeted remote cleanup.
+# Both signal paths exit 130 or 143 and do not resume.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -16,6 +20,9 @@ source "$ROOT/spike/lib/driver.sh"
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../../scripts/ci/helm-lib.sh
 source "$ROOT/scripts/ci/helm-lib.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=../lib/cleanup.sh
+source "$ROOT/spike/lib/cleanup.sh"
 
 MODE="${MODE:-offline}"
 # Public https locator of the offline target. Live stores this shape as
@@ -35,6 +42,11 @@ export PHASE_PREFIX WORK EVIDENCE MODE
 cluster_up=0
 kubeconfig=""
 pf_pid=""
+m7_hold_pid=""
+# GitHub sends SIGTERM about 7.5s after SIGINT, then SIGKILL about 2.5s
+# later. The signal handler ignores that second signal, so it must return
+# inside this window. Kind delete on INT/TERM is capped to fit.
+m7_signal_window_s=8
 
 die() {
   printf 'M7 FAIL — %s\n' "$*" >&2
@@ -190,12 +202,96 @@ m7_budgeted_remote_cleanup() {
   m7_cleanup_summary
 }
 
+m7_cancel_proof_enabled() {
+  case "${M7_CANCEL_PROOF:-}" in
+    1 | true | TRUE | True) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Values outside 1..600 become 600. The holding line prints the value used.
+m7_cancel_proof_hold_seconds() {
+  local n="${M7_CANCEL_PROOF_HOLD_SECONDS:-600}"
+  if [[ ! "$n" =~ ^[0-9]+$ ]] || [[ "$n" -lt 1 || "$n" -gt 600 ]]; then
+    n=600
+  fi
+  printf '%s' "$n"
+}
+
+# sleep in the background so a trapped signal interrupts wait. A plain
+# sleep would delay the trap until it finished.
+m7_interruptible_sleep() {
+  local seconds="$1" rc=0
+  sleep "$seconds" &
+  m7_hold_pid=$!
+  wait "$m7_hold_pid" || rc=$?
+  return "$rc"
+}
+
+m7_cancel_proof_hold() {
+  local html="$1" n=""
+  n="$(m7_cancel_proof_hold_seconds)"
+  printf 'm7 cancel-proof: holding %ss pr=%s\n' "$n" "$html"
+  m7_interruptible_sleep "$n" || true
+  printf 'm7 cancel-proof: hold expired without cancel\n' >&2
+  exit 1
+}
+
+m7_kind_delete_cap() {
+  local elapsed="$1" left=""
+  left="$((m7_signal_window_s - elapsed))"
+  if [[ "$left" -gt 6 ]]; then
+    left=6
+  fi
+  if [[ "$left" -lt 1 ]]; then
+    left=1
+  fi
+  printf '%s' "$left"
+}
+
+# shellcheck disable=SC2317,SC2329 # signal path only
+m7_delete_kind() {
+  local cap="$1" pid="" start=""
+  "${KIND}" delete cluster --name "${CLUSTER_NAME}" &
+  pid=$!
+  start=$SECONDS
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ $((SECONDS - start)) -ge "$cap" ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
+      return 0
+    fi
+    sleep 0.2
+  done
+  wait "$pid" >/dev/null 2>&1 || true
+}
+
+m7_install_traps() {
+  trap 'cleanup EXIT' EXIT
+  trap 'cleanup INT' INT
+  trap 'cleanup TERM' TERM
+}
+
 # shellcheck disable=SC2317,SC2329 # invoked by the EXIT trap and by tests
 cleanup() {
   local status=$?
   local why="${1:-EXIT}"
+  local trap_start="" elapsed="" cap=""
+  spike_arm_signal_teardown "$why" || return 0
+  if [[ -n "${M7_TRAP_COUNT:-}" ]]; then
+    printf '%s\n' "$why" >>"$M7_TRAP_COUNT"
+  fi
+  trap_start=$SECONDS
+  if [[ -n "${m7_hold_pid}" ]]; then
+    kill "${m7_hold_pid}" >/dev/null 2>&1 || true
+    wait "${m7_hold_pid}" >/dev/null 2>&1 || true
+    m7_hold_pid=""
+  fi
   if [[ "$why" == "INT" || "$why" == "TERM" ]]; then
-    m7_budgeted_remote_cleanup || true
+    # Cancel-proof leaves the ledger for the workflow --cleanup-remote step.
+    if ! m7_cancel_proof_enabled; then
+      m7_budgeted_remote_cleanup || true
+    fi
   else
     m7_cleanup_remote || true
   fi
@@ -206,16 +302,20 @@ cleanup() {
   fi
   if [[ "${cluster_up}" -eq 1 ]]; then
     echo "deleting kind cluster ${CLUSTER_NAME}"
-    "${KIND}" delete cluster --name "${CLUSTER_NAME}" || true
+    if [[ "$why" == "INT" || "$why" == "TERM" ]]; then
+      elapsed="$((SECONDS - trap_start))"
+      cap="$(m7_kind_delete_cap "$elapsed")"
+      m7_delete_kind "$cap" || true
+    else
+      "${KIND}" delete cluster --name "${CLUSTER_NAME}" || true
+    fi
     cluster_up=0
   fi
   if [[ -n "${kubeconfig}" ]]; then
     rm -f "${kubeconfig}"
     kubeconfig=""
   fi
-  if [[ "$why" == "EXIT" ]]; then
-    exit "${status}"
-  fi
+  spike_teardown_finish "$status"
 }
 
 k() {
@@ -823,9 +923,7 @@ fi
 
 mkdir -p "$WORK" "$EVIDENCE"
 chmod 700 "$WORK"
-trap 'cleanup EXIT' EXIT
-trap 'cleanup INT' INT
-trap 'cleanup TERM' TERM
+m7_install_traps
 
 # Model probe before image builds, kind, and helm. A 402 or 429 stops here.
 if [[ "$MODE" != "offline" ]]; then
@@ -1252,6 +1350,10 @@ if [[ "$pr_first" != "$html" ]]; then
   die "status.prUrls does not match the forge pull request"
 fi
 phase pr "$step_start"
+
+if m7_cancel_proof_enabled; then
+  m7_cancel_proof_hold "$html"
+fi
 
 step_start=$SECONDS
 for _ in $(seq 1 30); do

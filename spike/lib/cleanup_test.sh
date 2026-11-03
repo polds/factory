@@ -736,6 +736,41 @@ EOF
   rm -rf "$dir"
 }
 
+case_arm_signal_teardown() {
+  local ec
+  set +e
+  bash -c '
+    set -euo pipefail
+    . "$1"
+    spike_arm_signal_teardown INT
+    if spike_arm_signal_teardown TERM; then
+      echo "second arm succeeded" >&2
+      exit 1
+    fi
+    spike_teardown_finish 0
+  ' _ "$LIB" >/dev/null
+  ec=$?
+  set -e
+  if [[ "$ec" -ne 130 ]]; then
+    echo "exit ${ec}, want 130" >&2
+    return 1
+  fi
+  set +e
+  bash -c '
+    set -euo pipefail
+    . "$1"
+    spike_arm_signal_teardown TERM
+    spike_teardown_finish 0
+  ' _ "$LIB" >/dev/null
+  ec=$?
+  set -e
+  if [[ "$ec" -ne 143 ]]; then
+    echo "exit ${ec}, want 143" >&2
+    return 1
+  fi
+}
+
+run_case arm-signal-teardown case_arm_signal_teardown
 run_case spawn-flags-one-loop case_spawn_flags_one_loop
 run_case respawn-child case_respawn_child
 run_case stack-env-roundtrip case_stack_env_roundtrip

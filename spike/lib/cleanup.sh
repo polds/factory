@@ -15,6 +15,7 @@
 # Redirect flags may sit before the name or between the name and the
 # command. The command's own flags are not scanned.
 #   spike_fg <cmd...>
+#   spike_arm_signal_teardown <EXIT|INT|TERM>  # ignore a second signal
 #   spike_teardown_begin <EXIT|INT|TERM>   # hook, containers, process groups
 #   spike_teardown_finish <status>
 #   spike_install_trap                     # tests and drivers with no extra steps
@@ -408,9 +409,10 @@ spike_stop_containers() {
   docker rm -f "${arr[@]}" >/dev/null 2>&1 || true
 }
 
-# spike_teardown_begin is idempotent. A second signal, or the EXIT that
-# follows TERM, returns 1 and the caller must not repeat the hook.
-spike_teardown_begin() {
+# spike_arm_signal_teardown records why and ignores a later INT or TERM.
+# A second call returns 1. The caller finishes its own teardown, then
+# spike_teardown_finish, which exits 130 or 143 and does not resume.
+spike_arm_signal_teardown() {
   local why="${1:-EXIT}"
   if [[ "${SPIKE_TEARDOWN_DONE:-}" == 1 ]]; then
     return 1
@@ -421,6 +423,14 @@ spike_teardown_begin() {
   # A second TERM must not abort the teardown halfway through.
   trap '' INT TERM
   set +e
+  return 0
+}
+
+# spike_teardown_begin is idempotent. A second signal, or the EXIT that
+# follows TERM, returns 1 and the caller must not repeat the hook.
+spike_teardown_begin() {
+  local why="${1:-EXIT}"
+  spike_arm_signal_teardown "$why" || return 1
   if declare -F spike_cleanup_pre >/dev/null 2>&1; then
     spike_cleanup_pre || true
   fi

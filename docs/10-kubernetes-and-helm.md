@@ -232,12 +232,15 @@ Three layers, each catching what the previous cannot:
 deploy/helm/factory/
 ├── Chart.yaml
 ├── values.yaml
+├── crds/                 install-only CRDs (not under templates/)
 └── templates/
-    ├── controlplane/     deployment, service, ingress, configmap, serviceaccount, hpa
-    ├── operator/         deployment, rbac (optional)
-    ├── crds/             (install-only; see note)
-    ├── worker/           deployment per pool, configmap, rbac, preflight hook
-    └── migrations/       pre-install/pre-upgrade Job
+    ├── render.yaml       includes the partials below
+    ├── _helpers.tpl
+    ├── _controlplane.tpl
+    ├── _worker.tpl
+    ├── _migrations.tpl
+    ├── _dev.tpl
+    └── _operator.tpl
 ```
 
 ### Values
@@ -291,7 +294,7 @@ operator:
   watchNamespaces: []     # empty = own namespace only
   admissionWebhook:
     enabled: true
-    certManager: true
+    certManager: false       # self-signed serving cert; true selects cert-manager
 
 workers:
   - name: standard
@@ -335,11 +338,12 @@ workers:
   stateful workloads nobody is backing up.
 - **Migrations run as a pre-install/pre-upgrade hook Job** with the chart's own
   ServiceAccount, and the control plane refuses to start against an unmigrated schema.
-- **Worker `terminationGracePeriodSeconds` defaults to 600, not 30.** A worker killed in
-  30 s abandons running agent tasks. On SIGTERM a worker stops claiming, lets in-flight
-  tasks finish, and exits — a drain, not a kill.
+- **Worker `terminationGracePeriodSeconds` defaults to 600, not 30.** That is the
+  pod's grace. The worker process at `63dbb8a` does not drain for 600s: its
+  `BackendShutdownTimeout` is 10s, and the Kubernetes backend's `Shutdown` preserves
+  Jobs instead of waiting for them. The AgentRun finalizer's cancel grace is 120s.
 - **Namespace-scoped RBAC for workers**, exactly the upstream permission set: `jobs`
-  (`create|get|list|watch|delete`), `pods` (`get|list|watch`), `pods/log` (`get`),
+  (`create|get|list|watch|patch|delete`), `pods` (`get|list|watch`), `pods/log` (`get`),
   `events` (`list`). Nothing cluster-scoped.
 - **A preflight hook** runs the worker's own RBAC/admission check at install time, so a
   cluster policy that blocks root init containers fails the install rather than the first
@@ -350,6 +354,42 @@ workers:
   (`factory-runs` vs `factory`), so agent workloads can carry NetworkPolicy and
   admission policy that would be wrong for the control plane
   ([11](11-security-model.md#egress)).
+
+### M7 applied
+
+Shipped behavior where it differs from the sketch above:
+
+- **D1.** The operator publishes a Factory through
+  `PUT /api/v1/factory/{name}/definition` (generation plus files). A git-backed
+  factory returns 409. An invalid tree returns `valid: false` and leaves the
+  last good generation serving. The control plane is API-backed only when
+  `FACTORY_DEFINITION_SOURCE=api` and there is no git URL. See
+  [04](04-protocols-and-apis.md#factories-and-definitions).
+- **D2.** Deleting an AgentRun cancels the run and waits up to 120s
+  (`cancelGrace` in `internal/operator/agentrun.go`). If the run is still not
+  terminal, the condition is `CancelTimedOut` and the finalizer is removed.
+  `spec` is immutable after create.
+- **D6.** The chart is `templates/render.yaml` plus the `_*.tpl` partials, not
+  one directory per component. Worker RBAC is copied from upstream
+  `charts/oz-agent-worker` at `63dbb8a`, including `patch` on jobs.
+- **D7.** `admissionWebhook.certManager` defaults to false
+  (`deploy/helm/factory/values.yaml`). The operator rotates its own serving
+  certificate. `certManager: true` is the cert-manager path.
+- **D8.** `factoryctl convert` covers the definition tree, `--from-manifests`,
+  and `--from-cluster`. AgentRun and WorkerPool are never converted.
+- **D9.** A WorkerPool reconciler owns that pool's Deployment, ConfigMap, and
+  RBAC. Chart-only mode still uses `workers[]` in values. The M7 exit uses the
+  chart worker, not a WorkerPool manifest.
+- **D10.** CRDs live in `deploy/helm/factory/crds/`. `operator.installCRDs` does
+  not gate that directory (Helm installs it; Helm does not upgrade CRDs).
+  `factoryctl crds apply` is the upgrade path.
+- **Replicas.** With `operator.enabled`, rendering fails unless
+  `controlPlane.replicas` is 1 and autoscaling is off. API-backed definitions
+  are per pod. A shared store for more than one factoryd replica is M8.
+  Chart-only mode still defaults to 2 replicas.
+- **Values.** `values.yaml` has a `worker:` image default and a `workers:` list.
+  `terminationGracePeriodSeconds: 600` is the pod grace described above, not a
+  600s process drain.
 
 ## GitOps
 

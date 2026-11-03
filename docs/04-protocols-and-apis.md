@@ -186,6 +186,7 @@ POST   /factory                             create
 GET    /factory/{uid}
 PATCH  /factory/{uid}
 GET    /factory/{uid}/definition            current applied tree + git sha
+PUT    /factory/{name}/definition           publish an API-backed tree (M7)
 POST   /factory/{uid}/definition:validate   dry-run a tree, returns per-file diagnostics
 POST   /factory/{uid}/definition:apply      apply atomically
 GET    /factory-files/schemas               supported versions + current
@@ -195,6 +196,14 @@ GET    /factory-files/schemas/{version}/{document}
 
 Schema endpoints are **unauthenticated** — they are public contract, and requiring auth
 breaks editor integration for exactly the people you want validating before they push.
+
+**M7 applied (D1).** `PUT /api/v1/factory/{name}/definition` takes
+`{"generation", "files"}` and returns `{"valid", "errors", "published_generation"}`.
+The handler is `handlePutDefinition`. A git URL or a non-api definition source
+returns 409 `factory definition is git-backed` and writes nothing. An invalid
+tree returns 200 with `valid: false` and the generation that is still serving.
+`factoryctl definition push` calls this route. The operator is the writer in
+CRD mode.
 
 ### Work items and runs
 

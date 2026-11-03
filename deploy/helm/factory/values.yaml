@@ -164,6 +164,8 @@ workers:
     maxConcurrentTasks: 8
     logLevel: info
     cleanup: true
+    # Pod grace only. Upstream oz-agent-worker 63dbb8a bounds backend
+    # shutdown at 10s and preserves Jobs. The operator cancel grace is 120s.
     terminationGracePeriodSeconds: 600
     apiKeySecret:
       name: factory-worker
