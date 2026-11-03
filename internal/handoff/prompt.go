@@ -49,6 +49,20 @@ type Context struct {
 	Env map[string]string
 }
 
+// DirectPrompt is the prompt a direct or operator-started run stores and
+// sends. It is the agent instructions, then the caller's task. Secret values
+// in env are redacted the same way BuildPrompt redacts a work-item prompt.
+// The stored run prompt is this text, so the API and the assignment show
+// what the model received.
+func DirectPrompt(agent Agent, task string, env map[string]string) string {
+	var b strings.Builder
+	b.WriteString("# Instructions\n")
+	writeBody(&b, agent.Body)
+	b.WriteString("\n# Task\n")
+	writeBody(&b, task)
+	return redactPrompt(b.String(), secretValues(agent, Context{Env: env}))
+}
+
 // BuildPrompt returns the deterministic FACTORY_TASK_PROMPT for agent and ctx.
 // Prior stage outputs stay in slice order. Secret values from ctx.Env and
 // from the agent's MCP server env and headers do not appear in the result.

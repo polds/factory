@@ -11,9 +11,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/polds/factory/internal/definition"
 	"github.com/polds/factory/internal/events"
 	"github.com/polds/factory/internal/protocol"
 	"github.com/polds/factory/internal/store"
+)
+
+const (
+	reasonNoWorkProduct  = "no_work_product"
+	summaryNoWorkProduct = "agent finished without opening a pull request"
 )
 
 // settleCancel makes a cancel-requested run terminal and records one
@@ -72,7 +78,7 @@ func (s *Server) ensureTerminalEvent(ctx context.Context, run store.Run) {
 		s.log.Error("terminal execution", "run_id", run.ID, "err", err)
 		return
 	}
-	prs, err := s.recordedPullURLs(ctx, run.ID)
+	prs, err := recordedPullURLs(ctx, s.db, run.ID)
 	if err != nil {
 		s.log.Error("terminal pull requests", "run_id", run.ID, "err", err)
 		return
@@ -174,6 +180,22 @@ func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason,
 	if gotRun != runID {
 		return false, fmt.Errorf("server: execution %s belongs to run %s", execID, gotRun)
 	}
+	missing, err := s.pullRequestMissing(ctx, tx, runID, status)
+	if err != nil {
+		return false, err
+	}
+	if missing {
+		status = store.StatusFailed
+		state = store.ExecFailed
+		reason = reasonNoWorkProduct
+		summary = summaryNoWorkProduct
+		if _, err := tx.Exec(ctx, `
+			UPDATE executions
+			SET state = $2, failure_reason = $3
+			WHERE id = $1`, execID, state, reason); err != nil {
+			return false, err
+		}
+	}
 	harness, err := harnessStatusTx(ctx, tx, runID)
 	if err != nil {
 		return false, err
@@ -204,9 +226,13 @@ func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason,
 	if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
 		return false, err
 	}
-	prs, err := s.recordedPullURLs(ctx, runID)
-	if err != nil {
+	prs, err := recordedPullURLsTx(ctx, tx, runID)
+	if err != nil && !missing {
 		return false, err
+	}
+	if err != nil {
+		// The opted-in read already failed closed. The payload carries no URLs.
+		prs = nil
 	}
 	payload := terminalPayload(s.now(), status, reason, summary, class, code, exit, prs)
 	if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
@@ -266,7 +292,7 @@ func (s *Server) cancelRun(ctx context.Context, runID string) (store.Run, error)
 		if err != nil {
 			return store.Run{}, err
 		}
-		prs, prErr := s.recordedPullURLs(ctx, runID)
+		prs, prErr := recordedPullURLs(ctx, tx, runID)
 		if prErr != nil {
 			return store.Run{}, prErr
 		}
@@ -324,7 +350,7 @@ func (s *Server) commitBareCancel(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
-	prs, err := s.recordedPullURLs(ctx, runID)
+	prs, err := recordedPullURLs(ctx, tx, runID)
 	if err != nil {
 		return err
 	}
@@ -470,12 +496,111 @@ func terminalMeta(payload []byte) (string, time.Time, error) {
 	return meta.Type, ts, nil
 }
 
+// pullRequestMissing is true when a completed run opted into a pull request
+// and none was recorded. Other statuses, and agents that did not opt in,
+// are unchanged. The check runs before the run row is marked succeeded.
+// URL rows are read on tx, the transaction that commits the status.
+func (s *Server) pullRequestMissing(ctx context.Context, tx pgx.Tx, runID, status string) (bool, error) {
+	if status != store.StatusSucceeded {
+		return false, nil
+	}
+	var agentID string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(agent_id, '') FROM runs WHERE id = $1`, runID).Scan(&agentID); err != nil {
+		return false, err
+	}
+	opted, known, err := s.agentRequiresPullRequest(ctx, tx, agentID)
+	if err != nil {
+		return false, err
+	}
+	prs, err := recordedPullURLsTx(ctx, tx, runID)
+	return pullRequestMissingDecision(agentID, known, opted, len(prs), err)
+}
+
+// agentRequiresPullRequest reports the opt-in bit for the run's agent.
+// known is false when that bit cannot be read. A definition reload gives
+// the agent a new id while the run keeps the old one, so a missing snapshot
+// id is resolved by name before it counts as unknown. An unknown named
+// agent fails closed in pullRequestMissingDecision.
+func (s *Server) agentRequiresPullRequest(ctx context.Context, tx pgx.Tx, agentID string) (opted, known bool, err error) {
+	if agentID == "" {
+		return false, true, nil
+	}
+	snap := s.snapshot()
+	if bound, ok := snap.byID[agentID]; ok {
+		return definition.RequiresPullRequest(bound.agent), true, nil
+	}
+	var name string
+	err = tx.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, agentID).Scan(&name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	id, ok := snap.byName[name]
+	if !ok {
+		return false, false, nil
+	}
+	return definition.RequiresPullRequest(snap.byID[id].agent), true, nil
+}
+
+// recordedPullURLsTx reads pull URLs on tx. A statement error would abort tx,
+// and the opted-in path still has to commit no_work_product, so the read
+// runs in a savepoint that is rolled back on failure.
+func recordedPullURLsTx(ctx context.Context, tx pgx.Tx, runID string) ([]string, error) {
+	if _, err := tx.Exec(ctx, "SAVEPOINT recorded_pull_urls"); err != nil {
+		return nil, err
+	}
+	prs, err := recordedPullURLs(ctx, tx, runID)
+	if err != nil {
+		if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT recorded_pull_urls"); rbErr != nil {
+			return nil, rbErr
+		}
+	}
+	if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT recorded_pull_urls"); relErr != nil {
+		return nil, relErr
+	}
+	return prs, err
+}
+
+// pullRequestMissingDecision is no_work_product when the recorded URLs are
+// empty and the agent opted in. known is false when the opt-in bit cannot
+// be read: that used to succeed the run. A named agent in that state fails
+// closed, as does a URL read error for an opted-in agent or for an agent
+// we cannot see. An agent that is present and did not opt in keeps the
+// read error. A run with no agent id did not opt in. Recorded URLs are a
+// work product either way.
+func pullRequestMissingDecision(agentID string, known, opted bool, n int, readErr error) (bool, error) {
+	if readErr != nil {
+		if opted || (agentID != "" && !known) {
+			return true, nil
+		}
+		return false, readErr
+	}
+	if n > 0 {
+		return false, nil
+	}
+	if !known {
+		return agentID != "", nil
+	}
+	return opted, nil
+}
+
+// dbQuerier is the subset of pgx.Tx and *pgxpool.Pool that can read pull URLs.
+// Finish, cancel, and the bare cancel pass their open transaction so the
+// read sees rows written earlier in that transaction.
+type dbQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // recordedPullURLs is the work item's open pull request plus any prUrls
 // already stored on this run's events. The terminal event is the copy the
-// operator mirrors into AgentRun status.
-func (s *Server) recordedPullURLs(ctx context.Context, runID string) ([]string, error) {
+// operator mirrors into AgentRun status. q is the finish transaction when
+// one is open, and the pool only after that transaction has committed.
+func recordedPullURLs(ctx context.Context, q dbQuerier, runID string) ([]string, error) {
 	var work string
-	err := s.db.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT COALESCE(w.open_pr_url, '')
 		FROM runs r
 		LEFT JOIN work_items w ON w.id = r.work_item_id
@@ -487,7 +612,7 @@ func (s *Server) recordedPullURLs(ctx context.Context, runID string) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(ctx, `SELECT payload_json FROM run_events WHERE run_id = $1 ORDER BY seq`, runID)
+	rows, err := q.Query(ctx, `SELECT payload_json FROM run_events WHERE run_id = $1 ORDER BY seq`, runID)
 	if err != nil {
 		return nil, err
 	}

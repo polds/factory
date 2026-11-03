@@ -320,6 +320,261 @@ case_reviewer_stamp() {
   rm -rf "$dir"
 }
 
+case_offline_refs() {
+  local dir text
+  dir="$(mktemp -d "$ROOT/spike/m7/.work/refs.XXXXXX")"
+  mkdir -p "$dir/agents/implementer"
+  cp "$ROOT/deploy/m7-factory/agents/implementer/agent.md" "$dir/agents/implementer/agent.md"
+  MODE=live M7_RUN_ID=off-abcd1234 m7_bind_offline_refs "$dir"
+  if ! grep -q 'against the run base ref' "$dir/agents/implementer/agent.md"; then
+    fail "live rewrote the implementer steps"
+  fi
+  MODE=offline M7_RUN_ID=off-abcd1234 m7_bind_offline_refs "$dir"
+  text="$(cat "$dir/agents/implementer/agent.md")"
+  if [[ "$text" != *'check out m7-run/off-abcd1234/main'* ]]; then
+    fail "offline steps missed the base ref"
+  fi
+  if [[ "$text" != *'against m7-run/off-abcd1234/main'* ]]; then
+    fail "offline steps missed the pull request base"
+  fi
+  if [[ "$text" == *'run base ref'* ]]; then
+    fail "offline left the unbound base step"
+  fi
+  rm -rf "$dir"
+}
+
+case_evidence() {
+  local dir secret
+  dir="$(mktemp -d "$ROOT/spike/m7/.work/evidence.XXXXXX")"
+  secret="planted-evidence-secret"
+  umask 077
+  printf '%s' "$secret" >"$dir/api-key"
+  chmod 600 "$dir/api-key"
+  cat >"$dir/kubectl" <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "--kubeconfig" ]]; then
+  shift 2
+fi
+cmd="${1:-}"
+shift || true
+case "$cmd" in
+  get)
+    resource="${1:-}"
+    shift || true
+    case "$resource" in
+      pods)
+        if [[ "$*" == *jsonpath* ]]; then
+          printf '%s\n' 'oz-task-run-abc'
+        fi
+        ;;
+      jobs)
+        if [[ "$*" == *jsonpath* ]]; then
+          printf '%s\n' 'oz-task-run-abc'
+        fi
+        ;;
+      agentruns)
+        if [[ "$*" == *jsonpath* ]]; then
+          printf '%s\n' 'run-evidence-1'
+        fi
+        ;;
+    esac
+    ;;
+  logs)
+    if [[ "$*" == *--previous* ]]; then
+      exit 1
+    fi
+    if [[ "$*" == *m7-router* ]]; then
+      printf '%s\n' 'INFO POST /v1/chat/completions'
+      exit 0
+    fi
+    if [[ "$*" == *oz-task-run-abc* ]]; then
+      printf '%s\n' "task saw ${M7_PLANTED_SECRET}"
+      exit 0
+    fi
+    printf 'log\n'
+    ;;
+  describe)
+    printf 'describe %s\n' "$*"
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+  cat >"$dir/events.py" <<'PY'
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+SSE = """event: terminal
+data: {"status":"succeeded","summary":"done"}
+
+event: run.terminal
+data: {"status":"failed","failure_reason":"no_work_product","summary":"agent finished without opening a pull request"}
+
+"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/healthz":
+            body = b"ok"
+        elif self.path.endswith("/events"):
+            body = SSE.encode()
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        return
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+print(server.server_address[1], flush=True)
+server.serve_forever()
+PY
+  chmod 755 "$dir/kubectl"
+  (
+    WORK="$dir"
+    EVIDENCE="$dir/evidence"
+    KUBECTL="$dir/kubectl"
+    kubeconfig="$dir/kubeconfig"
+    touch "$kubeconfig"
+    export M7_PLANTED_SECRET="$secret"
+    python3 "$dir/events.py" >"$dir/port" &
+    py=$!
+    trap 'kill "$py" >/dev/null 2>&1 || true; wait "$py" >/dev/null 2>&1 || true' EXIT
+    ready=""
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if [[ -s "$dir/port" ]]; then
+        ready=1
+        break
+      fi
+      sleep 0.1
+    done
+    if [[ -z "$ready" ]]; then
+      fail "events server did not start"
+    fi
+    M7_EVENTS_PORT="$(cat "$dir/port")"
+    text="$(collect_evidence)"
+    if [[ "$text" == *"$secret"* ]]; then
+      fail "model call line contained a secret"
+    fi
+    if [[ "$text" != "m7 model calls 1 harness status=succeeded summary=done run status=failed summary=agent finished without opening a pull request" ]]; then
+      fail "model call line was not the harness and run status"
+    fi
+    for path in \
+      "$EVIDENCE/task-pods/oz-task-run-abc.log" \
+      "$EVIDENCE/task-describe/oz-task-run-abc.pods.txt" \
+      "$EVIDENCE/task-describe/oz-task-run-abc.jobs.txt" \
+      "$EVIDENCE/router.log" \
+      "$EVIDENCE/run-events/run-evidence-1.sse"; do
+      if [[ ! -s "$path" ]]; then
+        fail "missing evidence $path"
+      fi
+    done
+    if [[ -e "$EVIDENCE/task-pods/oz-task-run-abc.previous.log" ]]; then
+      fail "empty previous log was kept"
+    fi
+    if ! grep -q 'POST /v1/chat/completions' "$EVIDENCE/router.log"; then
+      fail "router log missed the model call"
+    fi
+    if ! grep -q 'no_work_product' "$EVIDENCE/run-events/run-evidence-1.sse"; then
+      fail "run events missed the terminal reason"
+    fi
+    scan_evidence
+    if grep -R -q -F -- "$secret" "$EVIDENCE"; then
+      fail "evidence kept a secret"
+    fi
+    if ! grep -q '\[REDACTED\]' "$EVIDENCE/task-pods/oz-task-run-abc.log"; then
+      fail "task pod log was not redacted"
+    fi
+  )
+  rm -rf "$dir"
+}
+
+case_pr_phase_settled() {
+  if m7_pr_phase_settled succeeded ""; then
+    fail "succeeded without a pull request was final"
+  fi
+  if ! m7_pr_phase_settled succeeded "https://example.invalid/pr/1"; then
+    fail "succeeded with a pull request was not final"
+  fi
+  if ! m7_pr_phase_settled failed ""; then
+    fail "failed was not final"
+  fi
+  if m7_pr_phase_settled running ""; then
+    fail "running was final"
+  fi
+  if m7_pr_phase_settled running "https://example.invalid/pr/1"; then
+    fail "running with a pull request was final"
+  fi
+}
+
+case_inference_headers() {
+  local dir text mode bits
+  dir="$(mktemp -d "$ROOT/spike/m7/.work/headers.XXXXXX")"
+  for mode in live live-ci; do
+    text="$(
+      MODE="$mode" \
+        M7_WORK="$dir" \
+        M1_OPENAI_EXTRA_HEADERS='x-litellm-api-key: sk-planted-header-value' \
+        bash -c 'source "$1"; m7_prepare_inference_headers' _ "$ROOT/spike/m7/run.sh"
+    )"
+    if [[ "$text" == *sk-planted-header-value* ]]; then
+      fail "${mode} printed the header value"
+    fi
+    if [[ "$text" != "factoryd inference extra headers set" ]]; then
+      fail "${mode} header notice"
+    fi
+    text="$(
+      MODE="$mode" \
+        M7_WORK="$dir" \
+        M1_OPENAI_EXTRA_HEADERS='x-litellm-api-key: sk-planted-header-value' \
+        bash -x -c 'source "$1"; m7_prepare_inference_headers' _ "$ROOT/spike/m7/run.sh" 2>&1
+    )"
+    if [[ "$text" == *sk-planted-header-value* ]]; then
+      fail "${mode} bash -x printed the header value"
+    fi
+    if [[ ! -f "$dir/openai-extra-headers" ]]; then
+      fail "${mode} did not write the header file"
+    fi
+    bits="$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$dir/openai-extra-headers")"
+    if [[ "$bits" != "0o600" ]]; then
+      fail "${mode} header file mode ${bits}"
+    fi
+    if ! grep -q -F -x -- 'x-litellm-api-key: sk-planted-header-value' "$dir/openai-extra-headers"; then
+      fail "${mode} header file mismatch"
+    fi
+  done
+  text="$(
+    MODE=offline \
+      M7_WORK="$dir" \
+      M1_OPENAI_EXTRA_HEADERS='x-litellm-api-key: sk-planted-header-value' \
+      bash -c 'source "$1"; m7_prepare_inference_headers' _ "$ROOT/spike/m7/run.sh"
+  )"
+  if [[ -n "$text" ]]; then
+    fail "offline printed a header notice"
+  fi
+  if [[ -f "$dir/openai-extra-headers" ]]; then
+    fail "offline kept the header file"
+  fi
+  printf 'stale' >"$dir/openai-extra-headers"
+  text="$(
+    MODE=live \
+      M7_WORK="$dir" \
+      M1_OPENAI_EXTRA_HEADERS='' \
+      bash -c 'source "$1"; m7_prepare_inference_headers' _ "$ROOT/spike/m7/run.sh"
+  )"
+  if [[ -n "$text" || -f "$dir/openai-extra-headers" ]]; then
+    fail "empty live headers were kept"
+  fi
+  rm -rf "$dir"
+}
+
 case_cleanup_on_exit() {
   local dir code
   dir="$(mktemp -d "$ROOT/spike/m7/.work/exit.XXXXXX")"
@@ -361,5 +616,9 @@ case_served_agents
 case_hold_agent
 case_live_before_apply
 case_reviewer_stamp
+case_offline_refs
+case_evidence
+case_pr_phase_settled
+case_inference_headers
 case_cleanup_on_exit
 echo "m7 run_test ok"

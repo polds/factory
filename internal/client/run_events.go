@@ -9,12 +9,15 @@ import (
 	"strconv"
 )
 
-// errRunStreamDone ends StreamRunEvents after a terminal event.
+// errRunStreamDone ends StreamRunEvents after factoryd's run.terminal.
+// The harness event type "terminal" is not the end of the stream: factoryd
+// flushes it before it decides the run, and the authoritative status arrives
+// later as run.terminal. Stopping on the harness event drops that status.
 var errRunStreamDone = errors.New("run stream done")
 
 // StreamRunEvents reads GET /api/v1/agent/runs/{runId}/events until the
-// context ends or a terminal event is delivered. A dropped connection
-// reconnects from the last event id.
+// context ends or factoryd's run.terminal is delivered. A dropped connection
+// reconnects from the last event id, including past a harness terminal.
 func (c *Client) StreamRunEvents(ctx context.Context, runID string, yield func(Event) error) error {
 	if err := c.requireKey(); err != nil {
 		return err
@@ -109,7 +112,7 @@ func readRunEvents(body io.Reader, yield func(Event) error, lastID *string, seq 
 		if err := yield(ev); err != nil {
 			return err
 		}
-		if ev.Type == "terminal" || ev.Type == "run.terminal" {
+		if ev.Type == "run.terminal" {
 			return errRunStreamDone
 		}
 	}

@@ -29,6 +29,8 @@ const (
 	finalizerStopRun    = "factory.dev/stop-run"
 	condCancelRequested = "CancelRequested"
 	condCancelTimedOut  = "CancelTimedOut"
+	condFailed          = "Failed"
+	reasonNoWorkProduct = "NoWorkProduct"
 	cancelGrace         = 120 * time.Second
 )
 
@@ -348,7 +350,7 @@ func (r *AgentRunReconciler) dropWatch(key types.NamespacedName) {
 
 func (r *AgentRunReconciler) applyEvent(ctx context.Context, key types.NamespacedName, ev fclient.Event) error {
 	fields := parseRunEvent(ev)
-	if fields.phase == "" && len(fields.executions) == 0 && fields.usage == nil && len(fields.prs) == 0 {
+	if fields.phase == "" && fields.reason == "" && len(fields.executions) == 0 && fields.usage == nil && len(fields.prs) == 0 {
 		return nil
 	}
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -371,17 +373,59 @@ func (r *AgentRunReconciler) applyEvent(ctx context.Context, key types.Namespace
 		if len(fields.prs) > 0 {
 			run.Status.PRURLs = fields.prs
 		}
+		if strings.EqualFold(fields.phase, "failed") && fields.reason != "" {
+			setCondition(&run.Status.Conditions, failedCondition(&run, fields.reason, fields.summary, r.now()))
+		}
 		return r.Status().Update(ctx, &run)
 	})
 }
 
+func failedCondition(run *factoryv1.AgentRun, reason, summary string, now time.Time) metav1.Condition {
+	return metav1.Condition{
+		Type:               condFailed,
+		Status:             metav1.ConditionTrue,
+		Reason:             failedConditionReason(reason),
+		Message:            clip(reason+": "+summary, maxMessage),
+		ObservedGeneration: run.Generation,
+		LastTransitionTime: metav1.NewTime(now),
+	}
+}
+
+// failedConditionReason maps the factoryd token onto a Kubernetes condition
+// reason. no_work_product stays in the message; the reason field is CamelCase.
+func failedConditionReason(reason string) string {
+	switch reason {
+	case "no_work_product":
+		return reasonNoWorkProduct
+	default:
+		return condFailed
+	}
+}
+
 type parsedEvent struct {
 	phase      string
+	reason     string
+	summary    string
 	executions []factoryv1.AgentRunExecution
 	usage      *factoryv1.AgentRunUsage
 	prs        []string
 }
 
+// parseRunEvent copies factoryd's run status onto the AgentRun phase.
+// The harness event type "terminal" is not that decision. factoryd flushes
+// it before task_completed, then writes run.terminal. The four orders are:
+//
+//  1. Harness terminal succeeded, then run.terminal failed/no_work_product
+//     and no pull request: the phase becomes failed. The harness status is
+//     not copied, so a watch that reconnects does not stick on succeeded.
+//  2. Harness terminal succeeded and run.terminal succeeded, including when
+//     an earlier tool.result already carried prUrls: the phase stays succeeded.
+//  3. Harness terminal with a non-success status, then a different
+//     run.terminal status: the run.terminal status is copied.
+//  4. run.terminal alone, with no harness terminal: that status is copied.
+//
+// An empty run.terminal status still defaults to succeeded. prUrls on any
+// event, including tool.result and the harness terminal, are still copied.
 func parseRunEvent(ev fclient.Event) parsedEvent {
 	var raw struct {
 		Status        string                        `json:"status"`
@@ -392,6 +436,8 @@ func parseRunEvent(ev fclient.Event) parsedEvent {
 		PRURLsSnake   []string                      `json:"pr_urls"`
 		WorkItemID    string                        `json:"workItemId"`
 		WorkItemSnake string                        `json:"work_item_id"`
+		FailureReason string                        `json:"failure_reason"`
+		Summary       string                        `json:"summary"`
 	}
 	if ev.Data != "" {
 		_ = json.Unmarshal([]byte(ev.Data), &raw)
@@ -400,7 +446,13 @@ func parseRunEvent(ev fclient.Event) parsedEvent {
 	if phase == "" {
 		phase = raw.Status
 	}
-	if phase == "" && (ev.Type == "terminal" || ev.Type == "run.terminal") {
+	reason := strings.TrimSpace(raw.FailureReason)
+	summary := strings.TrimSpace(raw.Summary)
+	if ev.Type == "terminal" {
+		phase = ""
+		reason = ""
+		summary = ""
+	} else if phase == "" && ev.Type == "run.terminal" {
 		phase = "succeeded"
 	}
 	prs := raw.PRURLs
@@ -409,6 +461,8 @@ func parseRunEvent(ev fclient.Event) parsedEvent {
 	}
 	return parsedEvent{
 		phase:      redact(phase),
+		reason:     reason,
+		summary:    summary,
 		executions: raw.Executions,
 		usage:      raw.Usage,
 		prs:        redactAll(prs),

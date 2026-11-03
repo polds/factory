@@ -136,6 +136,7 @@ var (
 		"computerUseModel":   leaf(),
 		"maxTurns":           leaf(),
 		"workerHost":         leaf(),
+		"requires":           {elem: leaf()},
 		"name":               leaf(),
 	}}
 

@@ -303,6 +303,8 @@ FROM (
                 THEN 'infrastructure/worker_lost'
             WHEN failure_reason = 'superseded_duplicate_building_run'
                 THEN 'cancelled/superseded'
+            WHEN failure_reason = 'no_work_product'
+                THEN 'agent/no_work_product'
             WHEN run_status = 'cancelled'
                 THEN 'cancelled/cancelled'
             WHEN failure_reason <> '' OR run_status = 'failed'

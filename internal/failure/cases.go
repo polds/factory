@@ -504,6 +504,19 @@ func Cases() []Rule {
 			},
 		},
 		{
+			Name: "no_work_product",
+			Input: Input{
+				RunStatus:     StatusFailed,
+				FailureReason: ReasonNoWorkProduct,
+			},
+			Result: Result{
+				Class:    ClassAgent,
+				Code:     CodeNoWorkProduct,
+				Summary:  "Agent finished without opening a pull request",
+				Evidence: []string{"failure reason no_work_product"},
+			},
+		},
+		{
 			Name: "unknown_reason",
 			Input: Input{
 				RunStatus:     StatusFailed,

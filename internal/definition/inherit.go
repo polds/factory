@@ -2,6 +2,17 @@ package definition
 
 import "strings"
 
+// RequiresPullRequest reports whether the agent opted into a recorded
+// pull request. Other work products are rejected at load.
+func RequiresPullRequest(agent Agent) bool {
+	for _, item := range agent.Requires {
+		if item == RequirePullRequest {
+			return true
+		}
+	}
+	return false
+}
+
 // Inherit resolves a sparse agent against factory defaults.
 // An omitted list or map inherits; one set on the agent replaces the default.
 // Factory-wide secrets and MCP servers stay on Factory. EffectiveSecrets and
