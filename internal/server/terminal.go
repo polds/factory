@@ -508,10 +508,40 @@ func (s *Server) pullRequestMissing(ctx context.Context, tx pgx.Tx, runID, statu
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(agent_id, '') FROM runs WHERE id = $1`, runID).Scan(&agentID); err != nil {
 		return false, err
 	}
-	bound, known := s.snapshot().byID[agentID]
-	opted := known && definition.RequiresPullRequest(bound.agent)
+	opted, known, err := s.agentRequiresPullRequest(ctx, tx, agentID)
+	if err != nil {
+		return false, err
+	}
 	prs, err := recordedPullURLsTx(ctx, tx, runID)
 	return pullRequestMissingDecision(agentID, known, opted, len(prs), err)
+}
+
+// agentRequiresPullRequest reports the opt-in bit for the run's agent.
+// known is false when that bit cannot be read. A definition reload gives
+// the agent a new id while the run keeps the old one, so a missing snapshot
+// id is resolved by name before it counts as unknown. An unknown named
+// agent fails closed in pullRequestMissingDecision.
+func (s *Server) agentRequiresPullRequest(ctx context.Context, tx pgx.Tx, agentID string) (opted, known bool, err error) {
+	if agentID == "" {
+		return false, true, nil
+	}
+	snap := s.snapshot()
+	if bound, ok := snap.byID[agentID]; ok {
+		return definition.RequiresPullRequest(bound.agent), true, nil
+	}
+	var name string
+	err = tx.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, agentID).Scan(&name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	id, ok := snap.byName[name]
+	if !ok {
+		return false, false, nil
+	}
+	return definition.RequiresPullRequest(snap.byID[id].agent), true, nil
 }
 
 // recordedPullURLsTx reads pull URLs on tx. A statement error would abort tx,
@@ -534,12 +564,12 @@ func recordedPullURLsTx(ctx context.Context, tx pgx.Tx, runID string) ([]string,
 }
 
 // pullRequestMissingDecision is no_work_product when the recorded URLs are
-// empty and the agent opted in. A snapshot miss used to succeed the run.
-// A named agent missing from the snapshot cannot be shown to have opted out,
-// so that miss fails closed. A URL read error fails closed the same way for
-// an opted-in agent, and for a named agent we cannot see. An agent that is
-// present and did not opt in keeps the read error. A run with no agent id
-// did not opt in. Recorded URLs are a work product either way.
+// empty and the agent opted in. known is false when the opt-in bit cannot
+// be read: that used to succeed the run. A named agent in that state fails
+// closed, as does a URL read error for an opted-in agent or for an agent
+// we cannot see. An agent that is present and did not opt in keeps the
+// read error. A run with no agent id did not opt in. Recorded URLs are a
+// work product either way.
 func pullRequestMissingDecision(agentID string, known, opted bool, n int, readErr error) (bool, error) {
 	if readErr != nil {
 		if opted || (agentID != "" && !known) {
