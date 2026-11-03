@@ -36,6 +36,7 @@ const (
 // DefinitionAPI is the factoryd definition push the Factory reconciler calls.
 type DefinitionAPI interface {
 	PushDefinition(ctx context.Context, factory string, req fclient.DefinitionPushRequest) (fclient.DefinitionPushResponse, error)
+	GetDefinition(ctx context.Context, factory string) (api.DefinitionView, error)
 }
 
 // FactoryReconciler publishes a Factory and its child kinds to factoryd.
@@ -110,10 +111,7 @@ func (r *FactoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if r.API == nil {
 		return ctrl.Result{}, errors.New("factory definition client is unset")
 	}
-	resp, err := r.API.PushDefinition(ctx, factory.Name, fclient.DefinitionPushRequest{
-		Generation: gen,
-		Files:      got.files,
-	})
+	resp, appliedGen, err := r.pushDefinition(ctx, factory.Name, gen, got.files)
 	if errors.Is(err, fclient.ErrGitBackedFactory) {
 		msg := "factory definition is git-backed"
 		r.event(&factory, corev1.EventTypeWarning, "GitBacked", msg)
@@ -127,6 +125,9 @@ func (r *FactoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Info("definition publish failed", "factory", factory.Name, "message", msg)
 		r.event(&factory, corev1.EventTypeWarning, "PublishFailed", msg)
 		return ctrl.Result{}, fmt.Errorf("publish %s: %s", factory.Name, msg)
+	}
+	if resp.Valid && appliedGen != gen {
+		log.Info("definition publish retried", "factory", factory.Name, "generation", appliedGen)
 	}
 	valid := resp.Valid
 	reason := "Published"
@@ -148,7 +149,53 @@ func (r *FactoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.writeStatus(ctx, req.NamespacedName, status); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, r.writeAnnotations(ctx, req.NamespacedName, gen, hash)
+	// A short-circuit leaves the previous generation serving and still
+	// reports Valid. Record the hash only when that generation is the one
+	// this reconcile sent and factoryd stored these bytes.
+	if !valid || resp.PublishedGeneration != appliedGen {
+		return ctrl.Result{}, nil
+	}
+	return ctrl.Result{}, r.writeAnnotations(ctx, req.NamespacedName, appliedGen, hash)
+}
+
+// pushDefinition publishes files. factoryd answers Valid without storing
+// the body when the generation is already served. A different generation
+// is pushed again at PublishedGeneration+1. The same generation with
+// different bytes is not treated as stored; an identical body is.
+func (r *FactoryReconciler) pushDefinition(ctx context.Context, name string, gen int64, files []api.DefinitionFile) (fclient.DefinitionPushResponse, int64, error) {
+	var resp fclient.DefinitionPushResponse
+	sent := gen
+	for range 3 {
+		var err error
+		resp, err = r.API.PushDefinition(ctx, name, fclient.DefinitionPushRequest{
+			Generation: sent,
+			Files:      files,
+		})
+		if err != nil || !resp.Valid {
+			return resp, sent, err
+		}
+		if resp.PublishedGeneration != sent {
+			sent = resp.PublishedGeneration + 1
+			continue
+		}
+		match, err := r.servedMatches(ctx, name, files)
+		if err != nil {
+			return resp, sent, err
+		}
+		if match {
+			return resp, sent, nil
+		}
+		sent = resp.PublishedGeneration + 1
+	}
+	return resp, sent, fmt.Errorf("publish %s: generation %d was not applied", name, sent)
+}
+
+func (r *FactoryReconciler) servedMatches(ctx context.Context, name string, files []api.DefinitionFile) (bool, error) {
+	view, err := r.API.GetDefinition(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	return bundleHash(view.Files) == bundleHash(files), nil
 }
 
 func (r *FactoryReconciler) event(obj client.Object, eventType, reason, message string) {

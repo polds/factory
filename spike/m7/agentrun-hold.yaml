@@ -7,7 +7,7 @@ spec:
   factoryRef:
     name: m7
   agentRef:
-    name: implementer
+    name: hold
   prompt: |
     m7-hold. Sleep until this run is cancelled. Do not open a pull request.
   priority: batch

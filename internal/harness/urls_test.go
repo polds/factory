@@ -17,6 +17,18 @@ func TestPullURLs(t *testing.T) {
 	}
 }
 
+func TestPullURLsTrimTrailingPunctuation(t *testing.T) {
+	text := "see https://github.com/acme/app/pull/9. and (https://pr.invalid/m7/factory-m7-target/pull/2),"
+	got := PullURLs(text)
+	if len(got) != 2 || got[0] != "https://github.com/acme/app/pull/9" || got[1] != "https://pr.invalid/m7/factory-m7-target/pull/2" {
+		t.Fatalf("urls %#v", got)
+	}
+	again := PullURLs("https://github.com/acme/app/pull/9). https://github.com/acme/app/pull/9")
+	if len(again) != 1 || again[0] != "https://github.com/acme/app/pull/9" {
+		t.Fatalf("dedupe %#v", again)
+	}
+}
+
 func TestToolResultJSONNamesPullURLs(t *testing.T) {
 	raw, err := json.Marshal(Event{
 		Type:   "tool.result",

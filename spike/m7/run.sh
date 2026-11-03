@@ -100,16 +100,16 @@ m7_prepare_remote() {
   fi
 }
 
-# Preflight and seed run before convert and apply. Live seed rewrites the
-# copied definition onto m7-run/<run-id>/main and leaves it in remote-seed.
+# Stamp the reviewer, then preflight and seed, then convert and apply.
+# Live seed copies the stamped tree onto m7-run/<run-id>/main.
 m7_apply_definition() {
   local def="$1"
   local manifest
+  m7_stamp_reviewer "$def"
   m7_prepare_remote
   if [[ -d "$WORK/remote-seed" ]]; then
     def="$WORK/remote-seed"
   fi
-  m7_stamp_reviewer "$def"
   (cd "$ROOT" && go build -o "$WORK/factoryctl" ./cmd/factoryctl)
   "$WORK/factoryctl" convert "$def" >"$WORK/manifests.yaml"
   rm -rf "$WORK/apply"
@@ -293,6 +293,222 @@ path.write_text(text.replace("{{M7_REVIEWER}}", login), encoding="utf-8")
 PY
 }
 
+# m7_trim_pull_url drops sentence punctuation glued onto a pull URL.
+m7_trim_pull_url() {
+  python3 - "$1" <<'PY'
+import sys
+
+print(sys.argv[1].strip().rstrip(".,;:!?)]}>\"'"))
+PY
+}
+
+# 480s is three times the 138s Playwright phase of m6-live 41243409323
+# (that phase included the improver pull request; 41229523981 was 129s)
+# plus the 7s pod-to-first-token on m7-live 41545354673. Override with
+# M7_PR_WAIT_SECONDS.
+m7_pr_wait_seconds() {
+  local raw="${M7_PR_WAIT_SECONDS:-480}"
+  if [[ ! "$raw" =~ ^[0-9]+$ ]] || [[ "$raw" -lt 2 ]]; then
+    printf 'M7_PR_WAIT_SECONDS is invalid\n' >&2
+    return 1
+  fi
+  printf '%s\n' "$raw"
+}
+
+# oz-task-id is the worker's lowercase run id (oz-agent-worker kubernetes.go).
+m7_task_label() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+
+raw = sys.argv[1].strip().lower()
+if not re.fullmatch(r"run_[a-z0-9]{10,40}", raw):
+    sys.stderr.write("hold run id was not accepted\n")
+    raise SystemExit(1)
+print(raw)
+PY
+}
+
+# m7_agent_names_ready succeeds when factoryd lists both exit agents.
+m7_agent_names_ready() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+
+try:
+    rows = json.loads(open(sys.argv[1], encoding="utf-8").read())
+except (OSError, json.JSONDecodeError):
+    sys.stderr.write("factoryd agent list was unreadable\n")
+    raise SystemExit(1)
+if not isinstance(rows, list):
+    sys.stderr.write("factoryd agent list was unreadable\n")
+    raise SystemExit(1)
+names = set()
+for row in rows:
+    if isinstance(row, dict) and isinstance(row.get("name"), str):
+        names.add(row["name"])
+missing = sorted({"implementer", "hold"} - names)
+if missing:
+    sys.stderr.write("factoryd agents missing %s\n" % ",".join(missing))
+    raise SystemExit(1)
+PY
+}
+
+m7_write_curl_cfg() {
+  python3 - "$WORK/api-key" "$WORK/curl.cfg" <<'PY'
+import pathlib
+import sys
+
+key = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+dest = pathlib.Path(sys.argv[2])
+dest.write_text('header = "Authorization: Bearer %s"\n' % key, encoding="utf-8")
+dest.chmod(0o600)
+PY
+}
+
+# Read factoryd's agent list. This does not change the definition. The
+# operator retries a push factoryd ignored. A missing name fails the run.
+m7_wait_served_agents() {
+  local ready="" code=""
+  k -n "${NAMESPACE}" port-forward svc/factory-factoryd 18081:8080 >/tmp/m7-factoryd-pf.log 2>&1 &
+  pf_pid=$!
+  m7_write_curl_cfg
+  ready=""
+  for _ in $(seq 1 15); do
+    code=0
+    curl -fsS --connect-timeout 1 -m 3 -K "$WORK/curl.cfg" \
+      -o "$WORK/served-agents.json" \
+      http://127.0.0.1:18081/api/v1/factory/m7/agents || code=$?
+    if [[ "$code" -eq 0 ]] && m7_agent_names_ready "$WORK/served-agents.json"; then
+      ready=1
+      break
+    fi
+    sleep 2
+  done
+  kill "${pf_pid}" >/dev/null 2>&1 || true
+  wait "${pf_pid}" >/dev/null 2>&1 || true
+  pf_pid=""
+  if [[ -z "$ready" ]]; then
+    die "factoryd is not serving implementer and hold"
+  fi
+  printf 'm7 factoryd serving implementer and hold\n'
+}
+
+# The router answers m7-hold locally. Live forwards every other model to
+# the real gateway. Offline has no upstream and scripts m7-agent.
+m7_apply_router() {
+  local env_yaml
+  k -n "${NAMESPACE}" create configmap m7-spike \
+    --from-file=router.py="$ROOT/spike/lib/router.py" \
+    --from-file=forge.py="$ROOT/spike/lib/forge.py" \
+    --dry-run=client -o yaml | k apply -f -
+  if [[ "$MODE" == "offline" ]]; then
+    env_yaml="$(
+      cat <<EOF
+          env:
+            - name: M7_DEFINITION_GIT_URL
+              value: git://m7-git.factory.svc.cluster.local/target.git
+            - name: M7_GITHUB_API_BASE
+              value: http://m7-forge.factory.svc.cluster.local:8080
+            - name: M7_RUN_ID
+              value: ${M7_RUN_ID}
+            - name: SPIKE_RUN_REF_PREFIX
+              value: m7-run
+EOF
+    )"
+  else
+    k -n "${NAMESPACE}" create secret generic m7-upstream \
+      --from-file=base="$WORK/upstream-base" \
+      --dry-run=client -o yaml | k apply -f -
+    env_yaml="$(
+      cat <<'EOF'
+          env:
+            - name: M7_UPSTREAM_BASE
+              valueFrom:
+                secretKeyRef:
+                  name: m7-upstream
+                  key: base
+EOF
+    )"
+  fi
+  k apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: m7-router
+  namespace: ${NAMESPACE}
+spec:
+  selector:
+    app: m7-router
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: m7-router
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: m7-router
+  template:
+    metadata:
+      labels:
+        app: m7-router
+    spec:
+      containers:
+        - name: router
+          image: ${PY_IMAGE}
+          imagePullPolicy: IfNotPresent
+          args: ["python3", "/opt/spike/router.py", "--addr", "0.0.0.0:8080"]
+${env_yaml}
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: spike
+              mountPath: /opt/spike
+              readOnly: true
+      volumes:
+        - name: spike
+          configMap:
+            name: m7-spike
+EOF
+}
+
+m7_write_offline_ledger() {
+  local token="$WORK/github-app-token" ledger="$WORK/remote-ledger.json"
+  umask 077
+  cp "$WORK/gh-token" "$token"
+  chmod 600 "$token"
+  python3 - "$ledger" "$M7_RUN_ID" <<'PY'
+import json
+import pathlib
+import sys
+
+path, run = pathlib.Path(sys.argv[1]), sys.argv[2]
+base = f"m7-run/{run}/main"
+doc = {
+    "version": 1,
+    "run_id": run,
+    "owner": "polds",
+    "repo": "factory-m7-target",
+    "git_url": "git://m7-git.factory.svc.cluster.local/target.git",
+    "api_base": "http://127.0.0.1:18080",
+    "base_ref": base,
+    "candidate_ref": f"m7-run/{run}/change",
+    "batch_id": "",
+    "entries": [],
+}
+path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+path.chmod(0o600)
+PY
+}
+
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   return 0
 fi
@@ -318,6 +534,18 @@ chmod 700 "$WORK"
 trap 'cleanup EXIT' EXIT
 trap 'cleanup INT' INT
 trap 'cleanup TERM' TERM
+
+# Model probe before image builds, kind, and helm. A 402 or 429 stops here.
+if [[ "$MODE" != "offline" ]]; then
+  echo "live preflight"
+  if ! m7_run_remote preflight; then
+    reason="remote preflight failed"
+    if [[ -f "$WORK/remote-fail" ]]; then
+      IFS= read -r reason <"$WORK/remote-fail" || true
+    fi
+    die "$reason"
+  fi
+fi
 
 if ! docker info >/dev/null 2>&1; then
   sudo -n service docker start
@@ -394,7 +622,9 @@ else
   write_key_file "$WORK/definition-git-url" "${M7_DEFINITION_GIT_URL}"
   write_key_file "$WORK/github-api-base" "${M7_GITHUB_API_BASE}"
   write_key_file "$WORK/openai-key" "${M1_OPENAI_API_KEY}"
-  write_key_file "$WORK/openai-base" "${M1_OPENAI_BASE_URL}"
+  # factoryd talks to the in-cluster router. The router forwards to the gateway.
+  write_key_file "$WORK/openai-base" "http://m7-router.factory.svc.cluster.local:8080/v1"
+  write_key_file "$WORK/upstream-base" "${M1_OPENAI_BASE_URL}"
   write_key_file "$WORK/app-id" "${M6_GITHUB_APP_ID}"
   write_key_file "$WORK/gh-token" "app-mint"
 fi
@@ -453,64 +683,19 @@ phase helm "$step_start"
 
 if [[ "$MODE" == "offline" ]]; then
   step_start=$SECONDS
-  k -n "${NAMESPACE}" create configmap m7-spike \
-    --from-file=router.py="$ROOT/spike/lib/router.py" \
-    --from-file=forge.py="$ROOT/spike/lib/forge.py" \
-    --dry-run=client -o yaml | k apply -f -
+  if [[ -z "${M7_RUN_ID:-}" ]]; then
+    M7_RUN_ID="off-$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
+  fi
+  if [[ ! "${M7_RUN_ID}" =~ ^[a-z0-9-]{1,80}$ ]]; then
+    die "M7_RUN_ID is invalid"
+  fi
+  export M7_RUN_ID
+  printf 'm7 offline run id %s\n' "$M7_RUN_ID"
+  m7_apply_router
   k -n "${NAMESPACE}" create secret generic m7-forge-token \
     --from-file=token="$WORK/gh-token" \
     --dry-run=client -o yaml | k apply -f -
   k apply -f - <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: m7-router
-  namespace: ${NAMESPACE}
-spec:
-  selector:
-    app: m7-router
-  ports:
-    - name: http
-      port: 8080
-      targetPort: http
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: m7-router
-  namespace: ${NAMESPACE}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: m7-router
-  template:
-    metadata:
-      labels:
-        app: m7-router
-    spec:
-      containers:
-        - name: router
-          image: ${PY_IMAGE}
-          imagePullPolicy: IfNotPresent
-          args: ["python3", "/opt/spike/router.py", "--addr", "0.0.0.0:8080"]
-          env:
-            - name: M7_DEFINITION_GIT_URL
-              value: git://m7-git.factory.svc.cluster.local/target.git
-            - name: M7_GITHUB_API_BASE
-              value: http://m7-forge.factory.svc.cluster.local:8080
-          ports:
-            - name: http
-              containerPort: 8080
-          volumeMounts:
-            - name: spike
-              mountPath: /opt/spike
-              readOnly: true
-      volumes:
-        - name: spike
-          configMap:
-            name: m7-spike
----
 apiVersion: v1
 kind: Service
 metadata:
@@ -651,6 +836,10 @@ EOF
   k -n "${NAMESPACE}" rollout status deploy/m7-forge --timeout=180s
   k -n "${NAMESPACE}" rollout status deploy/m7-git --timeout=180s
   phase backends "$step_start"
+else
+  echo "applying live router"
+  m7_apply_router
+  k -n "${NAMESPACE}" rollout status deploy/m7-router --timeout=180s
 fi
 
 step_start=$SECONDS
@@ -664,6 +853,8 @@ import pathlib, sys
 root, model = pathlib.Path(sys.argv[1]), sys.argv[2]
 for path in root.rglob("*"):
     if path.suffix not in {".yaml", ".md"} or not path.is_file():
+        continue
+    if "agents/hold/" in path.as_posix():
         continue
     path.write_text(path.read_text(encoding="utf-8").replace("m7-agent", model), encoding="utf-8")
 PY
@@ -685,48 +876,61 @@ if [[ -z "$ok" ]]; then
   k -n "${NAMESPACE}" describe factory m7 >"$EVIDENCE/factory-describe.txt" || true
   die "Factory DefinitionValid was not True"
 fi
+m7_wait_served_agents
 phase definition "$step_start"
 
 step_start=$SECONDS
 k apply -f "$ROOT/spike/m7/agentrun-pr.yaml"
 echo "waiting for m7-pr"
+budget="$(m7_pr_wait_seconds)" || die "M7_PR_WAIT_SECONDS is invalid"
+ticks="$((budget / 2))"
+pr_wait_start=$SECONDS
 pr_phase=""
 run_id=""
-for _ in $(seq 1 90); do
+for _ in $(seq 1 "$ticks"); do
   pr_phase="$(k -n "${NAMESPACE}" get agentrun m7-pr -o jsonpath='{.status.phase}' 2>/dev/null || true)"
   run_id="$(k -n "${NAMESPACE}" get agentrun m7-pr -o jsonpath='{.status.runId}' 2>/dev/null || true)"
-  if [[ "$pr_phase" == "succeeded" || "$pr_phase" == "failed" || "$pr_phase" == "cancelled" ]]; then
-    break
-  fi
+  case "$pr_phase" in
+    succeeded | failed | cancelled | canceled | model_unavailable | config_invalid | complete | completed)
+      break
+      ;;
+  esac
   sleep 2
 done
+elapsed="$((SECONDS - pr_wait_start))"
+printf 'm7 pr wait elapsed %ss budget %ss phase=%s\n' "$elapsed" "$budget" "${pr_phase:-empty}"
 if [[ "$pr_phase" != "succeeded" || -z "$run_id" ]]; then
   collect_evidence || true
   die "m7-pr phase=${pr_phase:-empty} runId=${run_id:-empty}"
 fi
 pr_urls="$(k -n "${NAMESPACE}" get agentrun m7-pr -o jsonpath='{.status.prUrls}' 2>/dev/null || true)"
-html=""
 if [[ "$MODE" == "offline" ]]; then
-  printf '%s\n' '{}' >"$WORK/forge-snapshot.json"
+  m7_write_offline_ledger
   k -n "${NAMESPACE}" port-forward svc/m7-forge 18080:8080 >/tmp/m7-forge-pf.log 2>&1 &
   pf_pid=$!
+  forge_ready=""
   for _ in $(seq 1 30); do
-    if curl -fsS --connect-timeout 1 -m 3 -o "$WORK/forge-snapshot.json" http://127.0.0.1:18080/_spike/m6; then
+    if curl -fsS --connect-timeout 1 -m 3 -o /dev/null http://127.0.0.1:18080/_spike/m6; then
+      forge_ready=1
       break
     fi
     sleep 1
   done
+  if [[ -z "$forge_ready" ]]; then
+    collect_evidence || true
+    die "forge port-forward was not ready"
+  fi
+fi
+if ! m7_run_remote record-prs; then
+  collect_evidence || true
+  die "remote pull request was not recorded"
+fi
+if [[ -n "${pf_pid}" ]]; then
   kill "${pf_pid}" >/dev/null 2>&1 || true
   wait "${pf_pid}" >/dev/null 2>&1 || true
   pf_pid=""
-  html="$(python3 -c 'import json,sys; doc=json.load(open(sys.argv[1], encoding="utf-8")); pulls=doc.get("pulls") or []; print(pulls[0]["html_url"] if pulls else "")' "$WORK/forge-snapshot.json")"
-else
-  if ! m7_run_remote record-prs; then
-    collect_evidence || true
-    die "remote pull request was not recorded"
-  fi
-  html="$(tr -d '[:space:]' <"$WORK/opened-pr-url")"
 fi
+html="$(m7_trim_pull_url "$(tr -d '[:space:]' <"$WORK/opened-pr-url")")"
 if [[ -z "$html" ]]; then
   collect_evidence || true
   die "forge has no pull request"
@@ -734,6 +938,7 @@ fi
 printf 'm7 pr assertion: forge=%s runId=%s phase=%s status.prUrls=%s\n' \
   "$html" "$run_id" "$pr_phase" "${pr_urls:-[]}"
 pr_first="$(k -n "${NAMESPACE}" get agentrun m7-pr -o jsonpath='{.status.prUrls[0]}' 2>/dev/null || true)"
+pr_first="$(m7_trim_pull_url "$pr_first")"
 if [[ -z "$pr_first" ]]; then
   collect_evidence || true
   die "status.prUrls is empty"
@@ -754,6 +959,7 @@ for _ in $(seq 1 30); do
 done
 k apply -f "$ROOT/spike/m7/agentrun-hold.yaml"
 echo "waiting for hold pod"
+hold_id=""
 for _ in $(seq 1 30); do
   hold_id="$(k -n "${NAMESPACE}" get agentrun m7-hold -o jsonpath='{.status.runId}' 2>/dev/null || true)"
   if [[ -n "$hold_id" ]]; then
@@ -761,9 +967,14 @@ for _ in $(seq 1 30); do
   fi
   sleep 2
 done
+if [[ -z "$hold_id" ]]; then
+  collect_evidence || true
+  die "hold run id was empty"
+fi
+label="$(m7_task_label "$hold_id")" || die "hold run id was not accepted"
 hold_pod=""
 for _ in $(seq 1 60); do
-  hold_pod="$(k get pods -n "${TASK_NAMESPACE}" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  hold_pod="$(k get pods -n "${TASK_NAMESPACE}" -l "oz-task-id=${label}" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
   if [[ -n "$hold_pod" ]]; then
     break
   fi
@@ -773,6 +984,7 @@ if [[ -z "$hold_pod" ]]; then
   collect_evidence || true
   die "hold pod was not Running"
 fi
+printf 'm7 hold pod %s label oz-task-id=%s\n' "$hold_pod" "$label"
 hold_run="$(k -n "${NAMESPACE}" get agentrun m7-hold -o jsonpath='{.status.runId}' 2>/dev/null || true)"
 cancel_start="$(date +%s)"
 k delete agentrun m7-hold -n "${NAMESPACE}" --wait=false
@@ -818,6 +1030,10 @@ if [[ -n "$later" ]]; then
   die "new claim after cancel"
 fi
 printf 'm7 delete-to-cancel %ss\n' "$cancel_s"
+# D2 cancel grace is 120s. The provider client times out at 60s and the
+# bash tool kills a command at 30s, which is also the task pod's default
+# termination grace. An in-flight call ends inside the 120s grace.
+# sleep 600 is cut at 30s and the hold agent retries until it is deleted.
 if [[ "$cancel_s" -gt 120 ]]; then
   collect_evidence || true
   die "delete-to-cancel ${cancel_s}s exceeds 120s"
@@ -825,13 +1041,7 @@ fi
 if [[ -n "$hold_run" ]]; then
   k -n "${NAMESPACE}" port-forward svc/factory-factoryd 18081:8080 >/tmp/m7-factoryd-pf.log 2>&1 &
   pf_pid=$!
-  python3 - "$WORK/api-key" "$WORK/curl.cfg" "http://127.0.0.1:18081/api/v1/agent/runs/${hold_run}" <<'PY'
-import pathlib, sys
-key = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip()
-dest = pathlib.Path(sys.argv[2])
-dest.write_text('header = "Authorization: Bearer %s"\n' % key, encoding="utf-8")
-dest.chmod(0o600)
-PY
+  m7_write_curl_cfg
   got=""
   for _ in $(seq 1 20); do
     if curl -fsS --connect-timeout 1 -m 3 -K "$WORK/curl.cfg" -o "$EVIDENCE/hold-run.json" \

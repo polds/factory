@@ -5,14 +5,19 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
 
 // pullURLRe matches an https pull request URL. The harness copies matches
 // from tool output onto the tool result so factoryd can put them on
-// run.terminal. Query strings are not part of the match.
+// run.terminal. Query strings are not part of the match. Trailing
+// punctuation is stripped in PullURLs.
 var pullURLRe = regexp.MustCompile(`https://[^\s"'<>]+/pull/[0-9]+`)
+
+// pullURLTrail is punctuation a sentence can glue onto a copied URL.
+const pullURLTrail = ".,;:!?)]}>\"'"
 
 // Event is one NDJSON record from Harness Contract v1.
 type Event struct {
@@ -56,6 +61,10 @@ func PullURLs(text string) []string {
 	out := make([]string, 0, len(found))
 	seen := map[string]struct{}{}
 	for _, raw := range found {
+		raw = strings.TrimRight(raw, pullURLTrail)
+		if raw == "" {
+			continue
+		}
 		if _, ok := seen[raw]; ok {
 			continue
 		}
