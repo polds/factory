@@ -194,3 +194,491 @@
 .hljs-title {
   color: var(--foreground);
 }
+
+/* ---------- landing page ---------- */
+:root {
+  --accent: #e3a83c;
+  --accent-ink: #1a1203;
+  --accent-soft: color-mix(in oklab, var(--accent) 14%, transparent);
+  --accent-glow: color-mix(in oklab, var(--accent) 22%, transparent);
+}
+.dark {
+  --accent: #e3a83c;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 2.75rem;
+  padding: 0 1.1rem;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  background: var(--background);
+  transition:
+    border-color 120ms,
+    background-color 120ms,
+    color 120ms;
+}
+.btn:hover {
+  border-color: var(--foreground);
+}
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+.btn-primary:hover {
+  border-color: var(--accent);
+  filter: brightness(1.06);
+}
+
+.hero-glow {
+  position: relative;
+}
+.hero-glow::before {
+  content: "";
+  position: absolute;
+  inset: -20% -10% auto;
+  height: 70%;
+  background: radial-gradient(60% 60% at 70% 30%, var(--accent-glow), transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+.hero-glow > * {
+  position: relative;
+  z-index: 1;
+}
+
+.card {
+  border: 1px solid var(--border);
+  background: var(--card);
+  padding: 1.25rem;
+}
+.card-title {
+  font-weight: 600;
+}
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+}
+.section {
+  padding: 4.5rem 0;
+  border-top: 1px solid var(--border);
+}
+@media (min-width: 640px) {
+  .section {
+    padding: 6rem 0;
+  }
+}
+.h2 {
+  font-size: clamp(1.6rem, 1.1rem + 2vw, 2.25rem);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.15;
+}
+.lede {
+  font-size: 1.05rem;
+  color: var(--muted-foreground);
+  line-height: 1.6;
+}
+.codeblock {
+  border: 1px solid var(--border);
+  background: var(--code);
+}
+.codeblock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.codeblock pre {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+.callout-n {
+  display: inline-flex;
+  width: 1.4rem;
+  height: 1.4rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  flex: none;
+}
+.yaml-mark {
+  background: var(--accent-soft);
+  outline: 1px solid var(--accent-soft);
+}
+.ok {
+  color: var(--success);
+}
+.err {
+  color: var(--destructive);
+}
+.dim {
+  color: var(--muted-foreground);
+}
+.tag {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+/* milestone rail */
+.rail {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (min-width: 768px) {
+  .rail {
+    grid-template-columns: repeat(9, minmax(0, 1fr));
+  }
+}
+.rail-item {
+  border-top: 2px solid var(--border);
+  padding-top: 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+.rail-item.done {
+  border-top-color: var(--success);
+}
+.rail-item.now {
+  border-top-color: var(--accent);
+}
+.rail-item .rail-name {
+  display: block;
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  margin-top: 0.15rem;
+}
+
+/* ---------- the animated run (hero) ---------- */
+.run {
+  --T: 16s;
+  border: 1px solid var(--border);
+  background: var(--card);
+  box-shadow: 0 30px 80px -40px color-mix(in oklab, var(--accent) 35%, transparent);
+}
+.run-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.run-head-id {
+  color: var(--foreground);
+}
+.run-steps {
+  list-style: none;
+  margin: 0;
+  padding: 1rem 1rem 1.1rem;
+  display: grid;
+  gap: 0;
+}
+.run-step {
+  display: grid;
+  grid-template-columns: 1.25rem 1fr;
+  gap: 0.8rem;
+  padding: 0.55rem 0;
+  position: relative;
+  animation: run-step var(--T) linear infinite;
+  animation-delay: calc(var(--i) * 1.6s);
+  color: var(--muted-foreground);
+}
+.run-step + .run-step::before {
+  content: "";
+  position: absolute;
+  left: 0.6rem;
+  top: -0.55rem;
+  height: 1.1rem;
+  border-left: 1px solid var(--border);
+}
+.run-marker {
+  position: relative;
+  width: 1.25rem;
+  height: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  margin-top: 0.1rem;
+  background: var(--card);
+}
+.run-marker-idle {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: var(--border);
+}
+.run-marker-done {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  color: var(--success);
+  font-weight: 600;
+}
+.run-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.run-name {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--foreground);
+}
+.run-meta {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  position: relative;
+}
+.run-gate-ok {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+}
+.run-gate-wait,
+.run-gate-ok,
+.run-marker,
+.run-marker-idle,
+.run-marker-done,
+.run-name {
+  animation-duration: var(--T);
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  animation-delay: calc(var(--i) * 1.6s);
+}
+.run-step .run-marker {
+  animation-name: run-marker;
+}
+.run-step .run-marker-idle {
+  animation-name: run-marker-idle;
+}
+.run-step .run-marker-done {
+  animation-name: run-marker-done;
+}
+.run-gate .run-gate-wait {
+  animation-name: run-gate-wait;
+}
+.run-gate .run-gate-ok {
+  animation-name: run-gate-ok;
+}
+.run-gate .run-marker {
+  animation-name: run-marker-gate;
+}
+.run-end .run-marker {
+  animation-name: run-marker-end;
+}
+
+/* timeline per step, as a share of --T, offset by --i * 1.6s:
+   0–4%  idle · 4–12% active · 12–88% done · 88–100% back to idle */
+@keyframes run-step {
+  0%,
+  4% {
+    color: var(--muted-foreground);
+  }
+  5%,
+  12% {
+    color: var(--foreground);
+  }
+  13%,
+  88% {
+    color: var(--muted-foreground);
+  }
+  100% {
+    color: var(--muted-foreground);
+  }
+}
+@keyframes run-marker {
+  0%,
+  4% {
+    border-color: var(--border);
+    box-shadow: none;
+  }
+  5%,
+  12% {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-soft);
+  }
+  13%,
+  88% {
+    border-color: var(--success);
+    box-shadow: none;
+  }
+  92%,
+  100% {
+    border-color: var(--border);
+  }
+}
+@keyframes run-marker-gate {
+  0%,
+  4% {
+    border-color: var(--border);
+    box-shadow: none;
+  }
+  5%,
+  7% {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  8% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  9% {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  10% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  11%,
+  12% {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  13%,
+  88% {
+    border-color: var(--success);
+    box-shadow: none;
+  }
+  92%,
+  100% {
+    border-color: var(--border);
+  }
+}
+@keyframes run-marker-end {
+  0%,
+  4% {
+    border-color: var(--border);
+    box-shadow: none;
+  }
+  5%,
+  88% {
+    border-color: var(--success);
+    box-shadow: 0 0 0 4px color-mix(in oklab, var(--success) 18%, transparent);
+  }
+  92%,
+  100% {
+    border-color: var(--border);
+    box-shadow: none;
+  }
+}
+@keyframes run-marker-idle {
+  0%,
+  4% {
+    opacity: 1;
+    background: var(--border);
+  }
+  5%,
+  12% {
+    opacity: 1;
+    background: var(--accent);
+  }
+  13%,
+  88% {
+    opacity: 0;
+  }
+  92%,
+  100% {
+    opacity: 1;
+    background: var(--border);
+  }
+}
+@keyframes run-marker-done {
+  0%,
+  12% {
+    opacity: 0;
+  }
+  13%,
+  88% {
+    opacity: 1;
+  }
+  92%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes run-gate-wait {
+  0%,
+  12% {
+    opacity: 1;
+  }
+  13%,
+  88% {
+    opacity: 0;
+  }
+  92%,
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes run-gate-ok {
+  0%,
+  12% {
+    opacity: 0;
+  }
+  13%,
+  88% {
+    opacity: 1;
+    color: var(--success);
+  }
+  92%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run *,
+  .run {
+    animation: none !important;
+  }
+  .run-marker-done {
+    opacity: 1;
+  }
+  .run-marker-idle {
+    opacity: 0;
+  }
+  .run-gate-wait {
+    opacity: 0;
+  }
+  .run-gate-ok {
+    opacity: 1;
+    color: var(--success);
+  }
+  .run-marker {
+    border-color: var(--success);
+  }
+}
