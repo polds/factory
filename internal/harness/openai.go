@@ -14,11 +14,68 @@ import (
 	"github.com/polds/factory/internal/inference"
 )
 
+// Empty tool text is omitted by encoding/json, and OpenAI requires content.
+// LiteLLM's Anthropic adapter leaves role "tool" unchanged
+// (_sanitize_empty_text_content in prompt_templates/factory.py).
+const (
+	noToolOutput = "(no output)"
+	noUserText   = "(no text)"
+)
+
 type chatMessage struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content,omitempty"`
 	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+// MarshalJSON is the only encoder for chatMessage. An assistant turn that
+// only has tool_calls omits content. "" becomes an empty Anthropic text
+// block, which Anthropic rejects. Omitting it is what turns 1-3 already
+// sent. Null would also be valid.
+func (m chatMessage) MarshalJSON() ([]byte, error) {
+	wire := struct {
+		Role       string     `json:"role"`
+		Content    *string    `json:"content,omitempty"`
+		ToolCalls  []toolCall `json:"tool_calls,omitempty"`
+		ToolCallID string     `json:"tool_call_id,omitempty"`
+	}{
+		Role:       m.Role,
+		ToolCalls:  m.ToolCalls,
+		ToolCallID: m.ToolCallID,
+	}
+	if text, ok := outboundContent(m); ok {
+		wire.Content = &text
+	}
+	return json.Marshal(wire)
+}
+
+func outboundContent(m chatMessage) (string, bool) {
+	switch m.Role {
+	case "tool":
+		if strings.TrimSpace(m.Content) == "" {
+			return noToolOutput, true
+		}
+		return m.Content, true
+	case "user":
+		if strings.TrimSpace(m.Content) == "" {
+			return noUserText, true
+		}
+		return m.Content, true
+	case "assistant":
+		if len(m.ToolCalls) > 0 && strings.TrimSpace(m.Content) == "" {
+			return "", false
+		}
+		if m.Content == "" {
+			return "", false
+		}
+		return m.Content, true
+	default:
+		if m.Content == "" {
+			return "", false
+		}
+		return m.Content, true
+	}
 }
 
 type toolCall struct {
@@ -62,17 +119,35 @@ func (e *providerError) Error() string {
 	return fmt.Sprintf("provider HTTP %d: %s", e.Status, e.Message)
 }
 
-func classifyProvider(err error) int {
+// statusRequestRejected stays on exit 20. Exit 21 would retry the same body.
+const statusRequestRejected = "request_rejected"
+
+// classifyProvider maps a provider failure to a contract exit.
+// 401, 403, 404, and a 400 before any accepted call are configuration.
+// A 400 after an accepted call on the same model and key is the request
+// body, so the status names that instead of config_invalid.
+func classifyProvider(err error, accepted, turn int) (code int, status, summary string) {
+	summary = err.Error()
 	var pe *providerError
-	if errors.As(err, &pe) {
-		switch pe.Status {
-		case 400, 401, 403, 404:
-			return ExitConfigInvalid
-		default:
-			return ExitModelUnavailable
-		}
+	if !errors.As(err, &pe) {
+		return ExitModelUnavailable, "model_unavailable", summary
 	}
-	return ExitModelUnavailable
+	switch pe.Status {
+	case 401, 403, 404:
+		return ExitConfigInvalid, "config_invalid", summary
+	case 400:
+		if accepted > 0 {
+			detail := pe.Message
+			if detail == "" {
+				detail = pe.Error()
+			}
+			summary = fmt.Sprintf("provider rejected request shape (HTTP 400) at turn %d: %s", turn, detail)
+			return ExitConfigInvalid, statusRequestRejected, summary
+		}
+		return ExitConfigInvalid, "config_invalid", summary
+	default:
+		return ExitModelUnavailable, "model_unavailable", summary
+	}
 }
 
 var toolSchema = []any{

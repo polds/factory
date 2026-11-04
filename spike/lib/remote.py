@@ -1785,6 +1785,133 @@ def close_pr(ledger: dict, entry: dict) -> None:
     accept_status(status, {200, 422}, "pull request close failed", body)
 
 
+def branch_name(ref: str) -> str:
+    return ref.removeprefix("refs/heads/")
+
+
+def side_ref(value: object) -> str:
+    if isinstance(value, dict):
+        ref = value.get("ref")
+        return ref if isinstance(ref, str) else ""
+    return value if isinstance(value, str) else ""
+
+
+def list_matching_refs(ledger: dict, token: str, run_id: str) -> list[str]:
+    """Branch names under this run's prefix. A 404 means the prefix is empty."""
+    prefix = f"{run_ref_prefix()}/{run_id}/"
+    quoted = urllib.parse.quote(f"heads/{prefix}", safe="/")
+    repo = f"{ledger['api_base']}/repos/{ledger['owner']}/{ledger['repo']}"
+    status, body = request("GET", f"{repo}/git/matching-refs/{quoted}", token)
+    if status == 404:
+        return []
+    if status != 200:
+        raise http_error("matching refs failed", status, body)
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RemoteError("matching refs failed") from exc
+    if not isinstance(parsed, list):
+        raise RemoteError("matching refs failed")
+    names = []
+    for row in parsed:
+        if isinstance(row, dict) and isinstance(row.get("ref"), str) and row["ref"]:
+            names.append(branch_name(row["ref"]))
+    return names
+
+
+def list_prefix_pulls(ledger: dict, token: str, run_id: str) -> list[tuple[int, str]]:
+    """Open pulls on this run's base whose head is under this run's prefix."""
+    base_ref = str(ledger.get("base_ref") or "")
+    if not ref_allowed(base_ref, run_id, ""):
+        refuse(shown_id(base_ref))
+        return []
+    prefix = f"{run_ref_prefix()}/{run_id}/"
+    found: list[tuple[int, str]] = []
+    for row in github_pulls(ledger, token, base_ref):
+        if not isinstance(row, dict) or side_ref(row.get("base")) != base_ref:
+            continue
+        head = side_ref(row.get("head"))
+        number = row.get("number")
+        if head.startswith(prefix) and isinstance(number, int):
+            found.append((number, head))
+    return found
+
+
+def ensure_entry(ledger: dict, kind: str, key: str, value: object, row: dict) -> bool:
+    for entry in ledger["entries"]:
+        if entry.get("kind") == kind and entry.get(key) == value:
+            if entry.get("phase") == "cleaned":
+                entry["phase"] = "created"
+                return True
+            return False
+    ledger["entries"].append(row)
+    return True
+
+
+def remember_sweep(
+    ledger: dict, names: list[str], pulls: list[tuple[int, str]]
+) -> None:
+    """Add swept names. A ref outside the allow-list is refused and skipped."""
+    run_id = str(ledger.get("run_id") or "")
+    batch = str(ledger.get("batch_id") or "")
+    base_ref = str(ledger.get("base_ref") or "")
+    dirty = False
+    for name in names:
+        if not ref_allowed(name, run_id, batch):
+            refuse(name)
+            continue
+        if ensure_entry(
+            ledger,
+            "ref",
+            "name",
+            name,
+            {"kind": "ref", "name": name, "phase": "created"},
+        ):
+            dirty = True
+    for number, head in pulls:
+        if not ref_allowed(head, run_id, batch):
+            refuse(head)
+            continue
+        if ensure_entry(
+            ledger,
+            "ref",
+            "name",
+            head,
+            {"kind": "ref", "name": head, "phase": "created"},
+        ):
+            dirty = True
+        if ensure_entry(
+            ledger,
+            "pr",
+            "number",
+            number,
+            {
+                "kind": "pr",
+                "number": number,
+                "head": head,
+                "base": base_ref,
+                "phase": "created",
+            },
+        ):
+            dirty = True
+    if dirty:
+        save_ledger(ledger)
+
+
+def sweep_run_prefix(ledger: dict) -> None:
+    """List this run's refs and pulls and add them to the ledger."""
+    run_id = accepted_run_id(str(ledger.get("run_id") or ""))
+    token = read_secret(token_path())
+    names = list_matching_refs(ledger, token, run_id)
+    pulls = list_prefix_pulls(ledger, token, run_id)
+    remember_sweep(ledger, names, pulls)
+    if names or pulls:
+        print(
+            f"prefix sweep: found {len(names)} refs, {len(pulls)} pulls",
+            file=sys.stderr,
+        )
+
+
 def cleanup_key(entry: dict) -> tuple[int, str]:
     if entry.get("kind") == "pr":
         return (0, "")
@@ -1805,16 +1932,18 @@ def remint(ledger: dict) -> None:
 def cleanup() -> None:
     # The hook has already ignored INT and TERM in the shell. A second
     # Ctrl-C still reaches this process group; don't raise from it.
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    # The bound-cleanup tests call this from a worker thread, which cannot
+    # change process signal handlers.
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    except ValueError:
+        pass
     if not live_mode():
         return
     ledger = load_ledger()
     if ledger is None:
         raise RemoteError("remote ledger is missing")
-    pending = [entry for entry in ledger["entries"] if entry.get("phase") != "cleaned"]
-    if not pending:
-        return
     accepted_run_id(str(ledger.get("run_id") or ""))
     accepted_batch_id(str(ledger.get("batch_id") or ""))
     budgeted = eget("CLEANUP_DEADLINE", "").strip() != ""
@@ -1822,12 +1951,26 @@ def cleanup() -> None:
         ensure_cleanup_token(ledger)
     else:
         remint(ledger)
+    # The agent can push m7-run/<run>/change before record_prs runs.
+    # Sweep that prefix even when the ledger has nothing pending.
+    sweep_run_prefix(ledger)
+    pending = [entry for entry in ledger["entries"] if entry.get("phase") != "cleaned"]
+    if not pending:
+        return
     refs: list[dict] = []
+    run_id = str(ledger.get("run_id") or "")
+    prefix = f"{run_ref_prefix()}/{run_id}/"
     for entry in sorted(pending, key=cleanup_key):
         if budgeted:
             call_limits()
         if entry.get("kind") == "pr":
-            close_pr(ledger, entry)
+            head = str(entry.get("head") or "")
+            # m6 close_pr only closes improve/<batch>. A run-prefix head
+            # uses the scoped close, which checks ref_allowed.
+            if head.startswith(prefix):
+                close_scoped_pr(ledger, entry)
+            else:
+                close_pr(ledger, entry)
             entry["phase"] = "cleaned"
             save_ledger(ledger)
         elif entry.get("kind") == "ref":

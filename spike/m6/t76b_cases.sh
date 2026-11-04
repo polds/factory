@@ -142,7 +142,15 @@ esac
 body='{}'
 case "$method" in
   GET)
-    body="$(printf '%s' "{\"number\":${number},\"state\":\"open\",\"html_url\":\"https://github.com/acme/widgets/pull/${number}\",\"head\":{\"ref\":\"improve/ibt_new\",\"label\":\"acme:improve/ibt_new\"},\"base\":{\"ref\":\"m6-run/local-s1/main\"},\"requested_reviewers\":[],\"labels\":[]}")"
+    case "$url" in
+      */git/matching-refs/* | */pulls\?* | */pulls)
+        # The prefix sweep lists refs and open pulls. This stub has neither.
+        body='[]'
+        ;;
+      *)
+        body="$(printf '%s' "{\"number\":${number},\"state\":\"open\",\"html_url\":\"https://github.com/acme/widgets/pull/${number}\",\"head\":{\"ref\":\"improve/ibt_new\",\"label\":\"acme:improve/ibt_new\"},\"base\":{\"ref\":\"m6-run/local-s1/main\"},\"requested_reviewers\":[],\"labels\":[]}")"
+        ;;
+    esac
     ;;
   PATCH)
     body='{"state":"closed"}'
@@ -683,20 +691,23 @@ EOF
   # mixed it into this script's stderr. Search the git log instead.
   local curls=""
   curls="$(grep -c ' m=' "$scratch/curl.log" || true)"
-  [[ "$curls" -eq 2 ]] || fail "curl calls ${curls}, want 2"
+  # Two sweep reads (matching refs, open pulls) plus the pull read and close.
+  [[ "$curls" -eq 4 ]] || fail "curl calls ${curls}, want 4"
   grep -F 'push' "$scratch/git.log" >/dev/null || fail "git push did not run"
   python3 -c 'import json,sys
 doc=json.load(open(sys.argv[1], encoding="utf-8"))
 if any(e.get("phase")!="cleaned" for e in doc["entries"]):
     raise SystemExit("ledger not cleaned")
 ' "$dir/remote-ledger.json" || fail "ledger not fully cleaned"
-  local before=""
-  before="$(wc -c <"$scratch/curl.log" | tr -d '[:space:]')"
+  local patches="" git_before="" git_after=""
+  patches="$(grep -c '^PATCH ' "$scratch/curl.log" || true)"
+  git_before="$(wc -c <"$scratch/git.log" | tr -d '[:space:]')"
   PATH="$scratch/bin:$PATH" M6_REUSE_TOKEN=1 MODE="$mode" CURL_LOG="$scratch/curl.log" GIT_LOG="$scratch/git.log" \
     "$M6/run.sh" --cleanup-remote
-  local after=""
-  after="$(wc -c <"$scratch/curl.log" | tr -d '[:space:]')"
-  [[ "$before" == "$after" ]] || fail "second --cleanup-remote called curl"
+  git_after="$(wc -c <"$scratch/git.log" | tr -d '[:space:]')"
+  [[ "$patches" == "$(grep -c '^PATCH ' "$scratch/curl.log" || true)" ]] ||
+    fail "second --cleanup-remote closed a pull again"
+  [[ "$git_before" == "$git_after" ]] || fail "second --cleanup-remote called git"
   trap - EXIT
   rm -f "$dir/remote-ledger.json" "$dir/github-app-token" "$dir/remote-fail"
   rm -rf "$scratch" "$dir/spike-run"
