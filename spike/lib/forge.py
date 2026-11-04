@@ -40,6 +40,7 @@ REVIEWERS = re.compile(r"^/repos/([^/]+)/([^/]+)/pulls/(\d+)/requested_reviewers
 LABELS = re.compile(r"^/repos/([^/]+)/([^/]+)/issues/(\d+)/labels$")
 LABEL_ONE = re.compile(r"^/repos/([^/]+)/([^/]+)/issues/(\d+)/labels/([^/]+)$")
 COLLABORATOR = re.compile(r"^/repos/([^/]+)/([^/]+)/collaborators/([^/]+)$")
+MATCHING_REFS = re.compile(r"^/repos/([^/]+)/([^/]+)/git/matching-refs/heads/.+")
 
 _lock = threading.Lock()
 _pulls: list[dict] = []
@@ -212,6 +213,12 @@ class Forge(BaseHTTPRequestHandler):
         labels = LABELS.match(path)
         if self.command == "POST" and labels:
             self._labels(int(labels.group(3)), body)
+            return
+        # GitHub's matching-refs route returns 404 when nothing has that prefix.
+        # This forge does not store git refs; the empty answer lets cleanup
+        # sweep and then fall through to the ledger.
+        if self.command == "GET" and MATCHING_REFS.match(path):
+            self._send(404, message("not found"))
             return
         self._proxy(body)
 

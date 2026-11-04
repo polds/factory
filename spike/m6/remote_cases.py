@@ -985,14 +985,12 @@ def case_cleanup(mode: str) -> None:
         blocked = stub / "git"
         blocked.write_text("#!/bin/bash\nexit 99\n", encoding="utf-8")
         blocked.chmod(0o755)
-        curl_block = stub / "curl"
-        curl_block.write_text("#!/bin/bash\nexit 99\n", encoding="utf-8")
-        curl_block.chmod(0o755)
         apply_env(env)
         if remote.main(["remote.py", "cleanup"]) != 0:
             fail("second cleanup failed")
-        if log.exists() and log.read_text(encoding="utf-8").strip():
-            fail("second cleanup invoked git or curl")
+        text = log.read_text(encoding="utf-8") if log.exists() else ""
+        if "\ngit " in f"\n{text}" or text.startswith("git "):
+            fail("second cleanup invoked git")
         with urllib.request.urlopen(base + "/_spike/m6", timeout=5) as res:
             again = json.load(res)
         if again["mutations"] != mutations:
@@ -1000,6 +998,32 @@ def case_cleanup(mode: str) -> None:
     finally:
         stop_proc(forge)
         stop_proc(fake)
+
+
+def serve_empty() -> tuple[ThreadingHTTPServer, str]:
+    """Answer a prefix sweep with no refs and no pulls."""
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            del fmt, args
+
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path.endswith("/pulls"):
+                body, status = b"[]", 200
+            else:
+                body, status = b'{"message":"not found"}', 404
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
 
 
 def case_allow(mode: str) -> None:
@@ -1023,9 +1047,10 @@ def case_allow(mode: str) -> None:
         if remote.ref_allowed(f"m6-run/{bad_run}/main", bad_run, BATCH):
             fail(f"allow-list accepted run id {bad_run!r}")
     work = Path(os.environ["M6_CASE_WORK"])
+    hub, api = serve_empty()
     env = base_env(mode, work)
     env["M6_REUSE_TOKEN"] = "1"
-    env["M6_GITHUB_API_BASE"] = "http://127.0.0.1:9"
+    env["M6_GITHUB_API_BASE"] = api
     env["M6_DEFINITION_GIT_URL"] = "file:///tmp/acme/widgets.git"
     token = work / "github-app-token"
     token.write_text(TOKEN + "\n", encoding="utf-8")
@@ -1036,7 +1061,7 @@ def case_allow(mode: str) -> None:
         "owner": "acme",
         "repo": "widgets",
         "git_url": "file:///tmp/acme/widgets.git",
-        "api_base": "http://127.0.0.1:9",
+        "api_base": api,
         "base_ref": f"m6-run/{run}/main",
         "candidate_ref": f"m6-run/{run}/candidate",
         "batch_id": BATCH,
@@ -1058,7 +1083,10 @@ def case_allow(mode: str) -> None:
     )
     blocked.chmod(0o755)
     apply_env(env)
-    code = remote.main(["remote.py", "cleanup"])
+    try:
+        code = remote.main(["remote.py", "cleanup"])
+    finally:
+        hub.shutdown()
     if code == 0:
         fail("allow-list refusal succeeded")
     err = (work / "remote-fail").read_text(encoding="utf-8")
@@ -1397,7 +1425,7 @@ def case_close_guard(mode: str) -> None:
         err = run_cleanup("empty-batch", "local-s1", "", 3, code_ok=0)
         if "allow-list" not in err:
             fail("empty-batch did not log the allow-list")
-        assert_no_calls(log)
+        assert_get_only(argv_text(log), "empty-batch")
         err = run_cleanup("empty-run", "", BATCH, 4, code_ok=1)
         if "allow-list" not in err:
             fail("empty-run did not log the allow-list")
@@ -1689,13 +1717,21 @@ def case_cleanup_bound_git(mode: str) -> None:
         git = commit_ref(work, bare, "m6-run/local-s1/main")
         env = base_env(mode, work)
         env["M6_REUSE_TOKEN"] = "1"
-        env["M6_GITHUB_API_BASE"] = "http://127.0.0.1:9"
+        hub, api = serve_empty()
+        env["M6_GITHUB_API_BASE"] = api
         token = work / "github-app-token"
         token.write_text(TOKEN + "\n", encoding="utf-8")
         token.chmod(0o600)
         bound_ledger(work, f"{stall.url()}/acme/widgets.git")
+        ledger_path = work / "remote-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["api_base"] = api
+        ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
         apply_env(env)
-        code, elapsed = within(6.5, lambda: remote.main(["remote.py", "cleanup"]))
+        try:
+            code, elapsed = within(6.5, lambda: remote.main(["remote.py", "cleanup"]))
+        finally:
+            hub.shutdown()
         print(f"bounded git in {elapsed:.2f}s")
         assert_bounded(elapsed, "stalled delete")
         if code == 0:

@@ -167,6 +167,7 @@ case_remote() {
   if [[ "$summary" != "m7 cleanup: refs deleted=3 left=0 branches deleted=3 left=0 prs deleted=1 left=0" ]]; then
     fail "cleanup summary was ${summary}"
   fi
+  M7_CASE_WORK="$work" python3 "$ROOT/spike/m7/remote_cases.py" sweep
   rm -rf "$work"
 }
 

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -521,7 +523,41 @@ exit 0
     path.chmod(0o755)
 
 
+def serve_empty() -> tuple[ThreadingHTTPServer, str]:
+    """Answer the prefix sweep with no refs and no pulls."""
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            del fmt, args
+
+        def do_GET(self) -> None:
+            path = self.path.split("?", 1)[0]
+            if path.endswith("/pulls"):
+                body, status = b"[]", 200
+            else:
+                body, status = b'{"message":"not found"}', 404
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
 def case_cleanup_low_speed(work: Path) -> None:
+    hub, api = serve_empty()
+    try:
+        _cleanup_low_speed(work, api)
+    finally:
+        hub.shutdown()
+
+
+def _cleanup_low_speed(work: Path, api: str) -> None:
     token = work / "github-app-token"
     token.write_text(TOKEN + "\n", encoding="utf-8")
     token.chmod(0o600)
@@ -532,7 +568,7 @@ def case_cleanup_low_speed(work: Path) -> None:
         "owner": "polds",
         "repo": "factory-m7-target",
         "git_url": "https://github.com/polds/factory-m7-target.git",
-        "api_base": "http://127.0.0.1:9",
+        "api_base": api,
         "base_ref": name,
         "candidate_ref": name,
         "batch_id": "",
@@ -576,6 +612,14 @@ def case_cleanup_low_speed(work: Path) -> None:
 
 
 def case_cleanup_timeout(work: Path) -> None:
+    hub, api = serve_empty()
+    try:
+        _cleanup_timeout(work, api)
+    finally:
+        hub.shutdown()
+
+
+def _cleanup_timeout(work: Path, api: str) -> None:
     token = work / "github-app-token"
     token.write_text(TOKEN + "\n", encoding="utf-8")
     token.chmod(0o600)
@@ -590,7 +634,7 @@ def case_cleanup_timeout(work: Path) -> None:
         "owner": "polds",
         "repo": "factory-m7-target",
         "git_url": "https://github.com/polds/factory-m7-target.git",
-        "api_base": "http://127.0.0.1:9",
+        "api_base": api,
         "base_ref": names[0],
         "candidate_ref": names[2],
         "batch_id": "",
@@ -704,6 +748,323 @@ def case_record(work: Path) -> None:
         proc.wait(timeout=5)
 
 
+class SweepState:
+    def __init__(self) -> None:
+        self.paths: list[str] = []
+        self.refs: list[dict] = []
+        self.pulls: list[dict] = []
+        self.delay = 0.0
+        self.stop = False
+
+
+def serve_sweep(state: SweepState) -> ThreadingHTTPServer:
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            del fmt, args
+
+        def _send(self, status: int, body: bytes) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except BrokenPipeError:
+                return
+
+        def do_GET(self) -> None:
+            self._route("GET")
+
+        def do_PATCH(self) -> None:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length:
+                self.rfile.read(length)
+            self._route("PATCH")
+
+        def _route(self, method: str) -> None:
+            path = self.path.split("?", 1)[0]
+            state.paths.append(f"{method} {self.path}")
+            if state.delay:
+                end = time.time() + state.delay
+                while time.time() < end and not state.stop:
+                    time.sleep(0.05)
+            if "/git/matching-refs/" in path:
+                self._send(200, json.dumps(state.refs).encode())
+                return
+            if method == "GET" and path.endswith("/pulls"):
+                rows = [
+                    {
+                        "number": pull["number"],
+                        "html_url": pull["html_url"],
+                        "state": pull["state"],
+                        "head": {"ref": pull["head"]},
+                        "base": {"ref": pull["base"]},
+                    }
+                    for pull in state.pulls
+                    if pull["state"] == "open"
+                ]
+                self._send(200, json.dumps(rows).encode())
+                return
+            match = re.fullmatch(r"/repos/[^/]+/[^/]+/pulls/(\d+)", path)
+            if match is None:
+                self._send(404, b'{"message":"not found"}')
+                return
+            number = int(match.group(1))
+            for pull in state.pulls:
+                if pull["number"] != number:
+                    continue
+                if method == "PATCH":
+                    pull["state"] = "closed"
+                    self._send(200, b"{}")
+                    return
+                self._send(
+                    200,
+                    json.dumps(
+                        {
+                            "number": number,
+                            "state": pull["state"],
+                            "head": {"ref": pull["head"]},
+                            "base": {"ref": pull["base"]},
+                            "requested_reviewers": [],
+                            "labels": [],
+                        }
+                    ).encode(),
+                )
+                return
+            self._send(404, b'{"message":"not found"}')
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def write_ok_git(stub: Path) -> None:
+    stub.mkdir(parents=True, exist_ok=True)
+    path = stub / "git"
+    path.write_text(
+        '#!/bin/bash\nprintf \'%s\\n\' "$*" >> "$M7_ARGV_LOG"\nexit 0\n',
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def sweep_ledger(work: Path, api: str, ref_prefix: str, run: str) -> None:
+    ledger = {
+        "version": 1,
+        "run_id": run,
+        "owner": "polds",
+        "repo": "factory-m7-target",
+        "git_url": "https://github.com/polds/factory-m7-target.git",
+        "api_base": api,
+        "base_ref": f"{ref_prefix}/{run}/main",
+        "candidate_ref": f"{ref_prefix}/{run}/candidate",
+        "batch_id": "",
+        "entries": [],
+    }
+    path = work / "remote-ledger.json"
+    path.write_text(json.dumps(ledger), encoding="utf-8")
+    path.chmod(0o600)
+
+
+def sweep_env(work: Path, api: str, env_prefix: str, ref_prefix: str) -> dict[str, str]:
+    env = base_env(work, "9")
+    env["SPIKE_ENV_PREFIX"] = env_prefix
+    env["SPIKE_RUN_REF_PREFIX"] = ref_prefix
+    env[f"{env_prefix}_WORK"] = str(work)
+    env[f"{env_prefix}_REUSE_TOKEN"] = "1"
+    env[f"{env_prefix}_RUN_ID"] = RUN
+    env[f"{env_prefix}_GITHUB_API_BASE"] = api
+    env["M7_ARGV_LOG"] = str(work / "argv")
+    env["PATH"] = f"{work / 'bin'}:{env['PATH']}"
+    return env
+
+
+def seed_leaks(state: SweepState, ref_prefix: str, run: str) -> None:
+    other = "ci-999-1"
+    state.refs = [
+        {"ref": f"refs/heads/{ref_prefix}/{run}/change"},
+        {"ref": f"refs/heads/{ref_prefix}/{other}/change"},
+        {"ref": "refs/heads/main"},
+        {"ref": "refs/heads/improve/ibt_other"},
+    ]
+    state.pulls = [
+        {
+            "number": 4,
+            "html_url": "https://pr.invalid/m7/pull/4",
+            "state": "open",
+            "head": f"{ref_prefix}/{run}/change",
+            "base": f"{ref_prefix}/{run}/main",
+        },
+        {
+            "number": 5,
+            "html_url": "https://pr.invalid/m7/pull/5",
+            "state": "open",
+            "head": f"{ref_prefix}/{other}/change",
+            "base": f"{ref_prefix}/{other}/main",
+        },
+        {
+            "number": 6,
+            "html_url": "https://pr.invalid/m7/pull/6",
+            "state": "open",
+            "head": f"{ref_prefix}/{run}/change",
+            "base": "main",
+        },
+        {
+            "number": 7,
+            "html_url": "https://pr.invalid/m7/pull/7",
+            "state": "open",
+            "head": "main",
+            "base": f"{ref_prefix}/{run}/main",
+        },
+        {
+            "number": 8,
+            "html_url": "https://pr.invalid/m7/pull/8",
+            "state": "open",
+            "head": "improve/ibt_other",
+            "base": f"{ref_prefix}/{run}/main",
+        },
+    ]
+
+
+def assert_sweep(work: Path, ref_prefix: str, state: SweepState) -> None:
+    change = f"{ref_prefix}/{RUN}/change"
+    other = f"{ref_prefix}/ci-999-1/change"
+    argv = (work / "argv").read_text(encoding="utf-8")
+    if f":refs/heads/{change}" not in argv:
+        fail(f"{ref_prefix} did not delete {change}")
+    for banned in (other, ":refs/heads/main", "improve/ibt_other"):
+        if banned in argv:
+            fail(f"{ref_prefix} deleted {banned}")
+    pulls = {pull["number"]: pull["state"] for pull in state.pulls}
+    if pulls[4] != "closed":
+        fail(f"{ref_prefix} left the run pull open")
+    for number in (5, 6, 7, 8):
+        if pulls[number] != "open":
+            fail(f"{ref_prefix} closed pull {number}")
+    saved = json.loads((work / "remote-ledger.json").read_text(encoding="utf-8"))
+    cleaned = {"ref": 0, "pr": 0}
+    left = {"ref": 0, "pr": 0}
+    for entry in saved["entries"]:
+        bucket = cleaned if entry.get("phase") == "cleaned" else left
+        bucket[str(entry.get("kind"))] += 1
+    if cleaned != {"ref": 1, "pr": 1} or left != {"ref": 0, "pr": 0}:
+        fail(f"{ref_prefix} ledger counts cleaned={cleaned} left={left}")
+    needle = f"/git/matching-refs/heads/{ref_prefix}/{RUN}/"
+    if not any(needle in path for path in state.paths):
+        fail(f"{ref_prefix} did not list matching refs")
+    quoted = urllib.parse.quote(f"{ref_prefix}/{RUN}/main", safe="")
+    if not any(f"base={quoted}" in path for path in state.paths):
+        fail(f"{ref_prefix} did not list pulls for the run base")
+
+
+def case_prefix_sweep(work: Path) -> None:
+    token = work / "github-app-token"
+    token.write_text(TOKEN + "\n", encoding="utf-8")
+    token.chmod(0o600)
+    write_ok_git(work / "bin")
+    for env_prefix, ref_prefix in (("M7", "m7-run"), ("M6", "m6-run")):
+        state = SweepState()
+        seed_leaks(state, ref_prefix, RUN)
+        server = serve_sweep(state)
+        try:
+            api = f"http://127.0.0.1:{server.server_address[1]}"
+            sweep_ledger(work, api, ref_prefix, RUN)
+            (work / "argv").write_text("", encoding="utf-8")
+            fail_path = work / "remote-fail"
+            if fail_path.exists():
+                fail_path.unlink()
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "spike" / "lib" / "remote.py"), "cleanup"],
+                cwd=ROOT,
+                env=sweep_env(work, api, env_prefix, ref_prefix),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode != 0:
+                fail(f"{ref_prefix} cleanup failed: {proc.stderr}")
+            for refused in (
+                f"{ref_prefix}/ci-999-1/change",
+                "main",
+                "improve/ibt_other",
+            ):
+                if f"remote ref refused: {refused}: allow-list" not in proc.stderr:
+                    fail(f"{ref_prefix} did not refuse {refused}")
+            if "prefix sweep: found 4 refs, 1 pulls" not in proc.stderr:
+                fail(f"{ref_prefix} summary was {proc.stderr}")
+            assert_sweep(work, ref_prefix, state)
+        finally:
+            state.stop = True
+            server.shutdown()
+    case_sweep_deadline(work)
+
+
+def case_sweep_deadline(work: Path) -> None:
+    state = SweepState()
+    state.delay = 3
+    state.refs = [{"ref": f"refs/heads/m7-run/{RUN}/change"}]
+    server = serve_sweep(state)
+    try:
+        api = f"http://127.0.0.1:{server.server_address[1]}"
+        sweep_ledger(work, api, "m7-run", RUN)
+        write_ok_git(work / "bin")
+        env = sweep_env(work, api, "M7", "m7-run")
+        env["M7_CLEANUP_DEADLINE"] = f"{time.time() + 0.6:.3f}"
+        (work / "argv").write_text("", encoding="utf-8")
+        started = time.monotonic()
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "spike" / "lib" / "remote.py"), "cleanup"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=8,
+        )
+        elapsed = time.monotonic() - started
+        if elapsed >= 2.5:
+            fail(f"cleanup ignored the deadline ({elapsed:.2f}s)")
+        if proc.returncode == 0:
+            fail("a slow sweep inside the deadline succeeded")
+        reason = (work / "remote-fail").read_text(encoding="utf-8")
+        # curl -m reports HTTP 000, which the sweep surfaces as a failed list.
+        if reason.strip() not in {
+            "github request failed",
+            "remote cleanup incomplete",
+            "matching refs failed",
+        }:
+            fail(f"deadline failure was {reason.strip()}")
+        if "push" in (work / "argv").read_text(encoding="utf-8"):
+            fail("deadline still deleted refs")
+        state.paths.clear()
+        state.delay = 0
+        env["M7_CLEANUP_DEADLINE"] = f"{time.time() - 1:.3f}"
+        (work / "argv").write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "spike" / "lib" / "remote.py"), "cleanup"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        if state.paths:
+            fail(f"past deadline still called GitHub: {state.paths}")
+        if proc.returncode == 0:
+            fail("past deadline succeeded")
+        reason = (work / "remote-fail").read_text(encoding="utf-8")
+        if "remote cleanup incomplete" not in reason:
+            fail(f"past deadline said {reason.strip()}")
+        if (work / "argv").read_text(encoding="utf-8").strip():
+            fail("past deadline invoked git")
+    finally:
+        state.stop = True
+        server.shutdown()
+
+
 def main() -> None:
     work = Path(os.environ["M7_CASE_WORK"])
     name = sys.argv[1]
@@ -721,6 +1082,8 @@ def main() -> None:
         case_cleanup_low_speed(work)
     elif name == "cleanup-timeout":
         case_cleanup_timeout(work)
+    elif name == "sweep":
+        case_prefix_sweep(work)
     else:
         fail(f"unknown case {name}")
 
