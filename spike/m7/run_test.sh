@@ -63,6 +63,9 @@ printf '%s\n' "$*" >> "$M7_REMOTE_LOG"
 exit 0
 EOF
   chmod 755 "$dir/remote"
+  # cleanup INT exits 130. This bash exits on that status inside a
+  # substitution when set -e is on, so the capture is outside set -e.
+  set +e
   out="$(
     MODE=live-ci \
       M7_TRACE_CANCEL=1 \
@@ -73,8 +76,9 @@ EOF
       M7_REMOTE_LOG="$dir/remote.log" \
       KIND="$stub" \
       CLUSTER_NAME=factory-m7-test \
-      bash -c 'source "$1"; cluster_up=1; cleanup INT' _ "$ROOT/spike/m7/run.sh"
+      bash -c 'source "$1"; cluster_up=1; cleanup INT' _ "$ROOT/spike/m7/run.sh" 2>&1
   )"
+  set -e
   if [[ "$out" != *"cancel-window e="* || "$out" != *" G="* ]]; then
     fail "cancel window was not printed"
   fi
@@ -609,6 +613,248 @@ EOF
   rm -rf "$dir"
 }
 
+m7_launch() {
+  set -m
+  "$@" &
+  M7_LAUNCH_PID=$!
+  set +m
+}
+
+# Wait here. A substitution cannot wait on this shell's child, and set -e
+# exits on status 130.
+m7_wait_pid() {
+  local pid="$1" limit="$2" start=$SECONDS
+  M7_WAIT_EC=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ $((SECONDS - start)) -ge $limit ]]; then
+      kill -KILL "$pid" 2>/dev/null || true
+      set +e
+      wait "$pid" 2>/dev/null
+      set -e
+      M7_WAIT_EC=124
+      return 0
+    fi
+    sleep 0.05
+  done
+  set +e
+  wait "$pid" 2>/dev/null
+  M7_WAIT_EC=$?
+  set -e
+}
+
+m7_proof_tree() {
+  local dir="$1" pause="${2:-0}"
+  cat >"$dir/kind" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "\$M7_KIND_LOG"
+[[ "\$*" == *delete* ]] && sleep $pause
+exit 0
+EOF
+  cat >"$dir/remote" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$M7_REMOTE_LOG"
+[[ "$1" == cleanup ]] || exit 0
+python3 - "$M7_WORK/remote-ledger.json" <<'PY'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+if p.is_file():
+    d = json.loads(p.read_text())
+    for e in d.get("entries") or []:
+        if isinstance(e, dict):
+            e["phase"] = "cleaned"
+    p.write_text(json.dumps(d) + "\n")
+PY
+EOF
+  cat >"$dir/child.sh" <<EOF
+#!/bin/bash
+set -euo pipefail
+source "$ROOT/spike/m7/run.sh"
+cluster_up=1
+m7_install_traps
+if [[ "\${1:-hold}" == sleep ]]; then
+  sleep 30 &
+  m7_hold_pid=\$!
+  wait "\$m7_hold_pid" || true
+else
+  m7_cancel_proof_hold "https://github.com/polds/factory-m7-target/pull/3"
+fi
+printf 'M7 LIVE PASS wall 1s\n'
+EOF
+  chmod 755 "$dir/kind" "$dir/remote" "$dir/child.sh"
+  : >"$dir/kind.log"
+  : >"$dir/remote.log"
+  : >"$dir/trap.count"
+}
+
+m7_start() {
+  m7_launch env MODE=live-ci M7_CANCEL_PROOF="$2" M7_CANCEL_PROOF_HOLD_SECONDS="$3" \
+    M7_WORK="$1" M7_REMOTE_STUB="$1/remote" M7_KIND_LOG="$1/kind.log" \
+    M7_REMOTE_LOG="$1/remote.log" M7_TRAP_COUNT="$1/trap.count" \
+    M7_KIND_CLUSTER=factory-m7-test KIND="$1/kind" M7_LEDGER="$1/remote-ledger.json" \
+    bash "$1/child.sh" "${4:-hold}" >"$1/out" 2>"$1/err"
+}
+
+m7_seen() {
+  local i
+  for i in $(seq 1 80); do
+    grep -q "$2" "$1" 2>/dev/null && return 0
+    sleep 0.05
+  done
+  return 1
+}
+
+m7_reap() { kill -KILL -- -"$1" 2>/dev/null || true; }
+
+m7_one_trap() {
+  [[ $(wc -l <"$1/trap.count") -eq 1 ]] || fail "trap count in $1"
+}
+
+case_cancel_proof_flag() {
+  local n
+  M7_CANCEL_PROOF=false m7_cancel_proof_enabled && fail "false enabled cancel proof"
+  M7_CANCEL_PROOF='' m7_cancel_proof_enabled && fail "empty enabled cancel proof"
+  M7_CANCEL_PROOF=true m7_cancel_proof_enabled || fail "true did not enable cancel proof"
+  n="$(M7_CANCEL_PROOF_HOLD_SECONDS=900 m7_cancel_proof_hold_seconds)"
+  [[ "$n" == 600 ]] || fail "hold cap was $n"
+  n="$(M7_CANCEL_PROOF_HOLD_SECONDS=0 m7_cancel_proof_hold_seconds)"
+  [[ "$n" == 600 ]] || fail "zero hold was $n"
+}
+
+case_cancel_proof_int() {
+  local dir=$ROOT/spike/m7/.work/proof-int-$$ start end
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  m7_proof_tree "$dir" 0
+  m7_start "$dir" true 30 hold
+  m7_seen "$dir/out" "m7 cancel-proof: holding 30s pr=https://github.com/polds/factory-m7-target/pull/3" || fail "holding marker missing"
+  start=$(date +%s.%N)
+  kill -INT "$M7_LAUNCH_PID"
+  m7_wait_pid "$M7_LAUNCH_PID" 8
+  end=$(date +%s.%N)
+  m7_reap "$M7_LAUNCH_PID"
+  python3 -c 'import sys; raise SystemExit(0 if float(sys.argv[2])-float(sys.argv[1]) < 2 else 1)' "$start" "$end" || fail "INT slower than 2s"
+  [[ "$M7_WAIT_EC" == 130 ]] || fail "INT exit $M7_WAIT_EC"
+  m7_one_trap "$dir"
+  grep -q PASS "$dir/out" "$dir/err" && fail "PASS on INT"
+  grep -q cleanup "$dir/remote.log" && fail "remote cleanup on proof INT"
+  grep -q "delete cluster --name factory-m7-test" "$dir/kind.log" || fail "kind not deleted"
+  rm -rf "$dir"
+}
+
+case_cancel_proof_kind_ignores_term() {
+  local dir=$ROOT/spike/m7/.work/proof-kind-ignore-$$ start end
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  m7_proof_tree "$dir" 0
+  cat >"$dir/kind" <<'EOF'
+#!/bin/bash
+trap '' TERM INT
+printf '%s\n' "$*" >> "$M7_KIND_LOG"
+[[ "$*" == *delete* ]] && sleep 30
+exit 0
+EOF
+  chmod 755 "$dir/kind"
+  m7_start "$dir" true 30 hold
+  m7_seen "$dir/out" "m7 cancel-proof: holding" || fail "holding marker missing"
+  start=$(date +%s.%N)
+  kill -INT "$M7_LAUNCH_PID"
+  m7_seen "$dir/kind.log" "delete cluster" || fail "kind delete did not start"
+  kill -TERM "$M7_LAUNCH_PID" 2>/dev/null || true
+  m7_wait_pid "$M7_LAUNCH_PID" 12
+  end=$(date +%s.%N)
+  m7_reap "$M7_LAUNCH_PID"
+  python3 -c 'import sys; raise SystemExit(0 if float(sys.argv[2])-float(sys.argv[1]) < 9 else 1)' "$start" "$end" || fail "ignore-TERM kind slower than 9s"
+  [[ "$M7_WAIT_EC" == 130 ]] || fail "ignore-TERM kind exit $M7_WAIT_EC"
+  m7_one_trap "$dir"
+  grep -q PASS "$dir/out" "$dir/err" && fail "PASS on ignore-TERM kind"
+  rm -rf "$dir"
+}
+
+case_cancel_proof_term() {
+  local dir=$ROOT/spike/m7/.work/proof-term-$$
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  m7_proof_tree "$dir" 1.2
+  m7_start "$dir" true 30 hold
+  m7_seen "$dir/out" "m7 cancel-proof: holding" || fail "holding marker missing"
+  kill -TERM "$M7_LAUNCH_PID"
+  m7_seen "$dir/kind.log" "delete cluster" || fail "kind delete did not start"
+  kill -TERM "$M7_LAUNCH_PID" 2>/dev/null || true
+  m7_wait_pid "$M7_LAUNCH_PID" 8
+  m7_reap "$M7_LAUNCH_PID"
+  [[ "$M7_WAIT_EC" == 143 ]] || fail "TERM exit $M7_WAIT_EC"
+  m7_one_trap "$dir"
+  grep -q PASS "$dir/out" "$dir/err" && fail "PASS on TERM"
+  rm -rf "$dir"
+}
+
+case_cancel_proof_expire() {
+  local dir=$ROOT/spike/m7/.work/proof-expire-$$
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  m7_proof_tree "$dir" 0
+  m7_start "$dir" true 1 hold
+  m7_wait_pid "$M7_LAUNCH_PID" 8
+  m7_reap "$M7_LAUNCH_PID"
+  [[ "$M7_WAIT_EC" != 0 && "$M7_WAIT_EC" != 124 ]] || fail "expired hold exit $M7_WAIT_EC"
+  grep -q "m7 cancel-proof: hold expired without cancel" "$dir/err" || fail "hold expired line missing"
+  grep -q PASS "$dir/out" "$dir/err" && fail "PASS on expiry"
+  rm -rf "$dir"
+}
+
+case_normal_int_no_resume() {
+  local dir=$ROOT/spike/m7/.work/normal-int-$$
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  m7_proof_tree "$dir" 0
+  m7_start "$dir" false 30 sleep
+  sleep 0.2
+  kill -INT "$M7_LAUNCH_PID"
+  m7_wait_pid "$M7_LAUNCH_PID" 8
+  m7_reap "$M7_LAUNCH_PID"
+  [[ "$M7_WAIT_EC" == 130 ]] || fail "normal INT exit $M7_WAIT_EC"
+  grep -q PASS "$dir/out" && fail "normal INT resumed"
+  grep -qx cleanup "$dir/remote.log" || fail "normal INT skipped remote cleanup"
+  grep -q "delete cluster --name factory-m7-test" "$dir/kind.log" || fail "kind not deleted"
+  rm -rf "$dir"
+}
+
+case_cleanup_remote_after_proof() {
+  local dir=$ROOT/spike/m7/.work/proof-clean-$$ text phase
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  m7_proof_tree "$dir" 0
+  python3 - "$dir/remote-ledger.json" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({"version": 1, "entries": [
+    {"kind": "ref", "name": "m7-run/ci-proof/main", "phase": "created"},
+    {"kind": "ref", "name": "m7-run/ci-proof/change", "phase": "created"},
+    {"kind": "ref", "name": "m7-run/ci-proof/extra", "phase": "created"},
+    {"kind": "pr", "name": "3", "phase": "created"},
+]}) + "\n")
+PY
+  m7_start "$dir" true 30 hold
+  m7_seen "$dir/out" "m7 cancel-proof: holding" || fail "holding marker missing"
+  kill -INT "$M7_LAUNCH_PID"
+  m7_wait_pid "$M7_LAUNCH_PID" 8
+  m7_reap "$M7_LAUNCH_PID"
+  [[ "$M7_WAIT_EC" == 130 ]] || fail "proof INT exit $M7_WAIT_EC"
+  [[ -f "$dir/remote-ledger.json" ]] || fail "INT deleted the ledger"
+  phase=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["entries"][0]["phase"])' "$dir/remote-ledger.json")
+  [[ "$phase" != cleaned ]] || fail "INT cleaned the ledger"
+  text=$(
+    MODE=live-ci M7_CANCEL_PROOF=true M7_WORK="$dir" M7_REMOTE_STUB="$dir/remote" \
+      M7_REMOTE_LOG="$dir/remote.log" M1_OPENAI_BASE_URL=http://127.0.0.1:9 \
+      M1_OPENAI_API_KEY=offline-not-a-key M6_GITHUB_APP_ID=1 \
+      M6_GITHUB_APP_PRIVATE_KEY=offline-not-a-key FACTORY_REVIEWERS_ADMINS=polds \
+      "$ROOT/spike/m7/run.sh" --cleanup-remote
+  )
+  [[ "$text" == *"m7 cleanup: refs deleted=3 left=0 branches deleted=3 left=0 prs deleted=1 left=0"* ]] || fail "cleanup-remote summary was $text"
+  rm -rf "$dir"
+}
+
 mkdir -p "$ROOT/spike/m7/.work"
 case_secrets
 case_cleanup_refused
@@ -628,4 +874,11 @@ case_evidence
 case_pr_phase_settled
 case_inference_headers
 case_cleanup_on_exit
+case_cancel_proof_flag
+case_cancel_proof_int
+case_cancel_proof_kind_ignores_term
+case_cancel_proof_term
+case_cancel_proof_expire
+case_normal_int_no_resume
+case_cleanup_remote_after_proof
 echo "m7 run_test ok"

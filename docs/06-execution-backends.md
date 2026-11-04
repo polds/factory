@@ -110,11 +110,15 @@ backend:
 
 Requirements, all observed upstream and all load-bearing:
 
-- **glibc images.** musl/Alpine is unsupported — the harness sidecar binaries are
-  glibc-linked. Using Alpine produces a confusing loader error, so the preflight check
-  tests for it explicitly.
-- **Namespace-scoped RBAC:** `create|get|list|watch|delete` on `jobs`; `get|list|watch` on
-  `pods`; `get` on `pods/log`; `list` on `events`.
+- **glibc images.** musl/Alpine task images are unsupported: the harness sidecar
+  binaries are glibc-linked. The startup preflight Job does not probe the dynamic
+  linker. It checks that the task namespace can create a Job under the current
+  RBAC and admission policy (a root init container, or image volumes when that
+  option is on). Upstream `internal/worker/kubernetes.go` at `63dbb8a`
+  (`startupPreflightError`) is that check.
+- **Namespace-scoped RBAC:** `create|get|list|watch|patch|delete` on `jobs`;
+  `get|list|watch` on `pods`; `get` on `pods/log`; `list` on `events`. `patch` is
+  in the upstream role; a list that omits it is short.
 - **Root init container** permission in the task namespace, unless `use_image_volumes: true`.
 - A **startup preflight Job** validates RBAC and admission policy before any real task
   runs, so a misconfigured cluster fails at deploy time instead of on someone's PR.
@@ -133,6 +137,15 @@ We keep that mode as the default, and add an optional operator path
 ([10](10-kubernetes-and-helm.md)) for teams that want the cluster to be the source of
 truth. The worker's Job-creating path is unchanged in both; the operator adds declarative
 resources above it, not a second executor.
+
+**T88 audit (worker `63dbb8a`).** Preflight RBAC, Job watching, structured failure
+capture, and `unschedulable_timeout` (default 10m) are in the upstream Kubernetes
+backend. factoryd maps those failure reasons in `internal/failure/k8s_cases.go`.
+The 600s graceful drain is not met: `BackendShutdownTimeout` in upstream
+`internal/worker/worker.go` is 10s, `PreservesTasksOnShutdown` is true, and
+`Shutdown` logs that it preserves Jobs. The chart still sets
+`terminationGracePeriodSeconds: 600`. The operator's delete path uses a 120s
+cancel grace, not that pod grace. No worker fork.
 
 ## Direct backend
 

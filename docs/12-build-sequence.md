@@ -371,6 +371,26 @@ entries cleaned. There are no leftover refs or PRs.
 **Exit criterion:** `helm install` on a fresh cluster, `kubectl apply` a `Factory` and an
 `AgentRun`, get a PR; `kubectl delete agentrun` actually stops the agent.
 
+**CI live exit met.** GitHub-hosted runner (`m7-live.yml`, `workflow_dispatch`,
+`MODE=live-ci`). `main` at `e7367d9`.
+[Live run 41727044294](https://github.com/polds/factory/actions/runs/41727044294)
+printed `M7 LIVE PASS wall 407s`. Cluster: kind v0.33.0 and node image
+`kindest/node:v1.34.11` (both pinned in `scripts/ci/helm-lib.sh`). Chart
+`factory` 0.1.0, values `spike/m7/values-live.yaml`, with
+`operator.enabled=true` and `operator.installCRDs=true`. Factory `m7`.
+AgentRun `m7-pr` is `run_01M6HQ8AKQBXGC9XGN7REFRV7M` (`succeeded`);
+`status.prUrls` is
+<https://github.com/polds/factory-m7-target/pull/2>. The implementer summary
+in that run says reviewer `polds` was requested. AgentRun `m7-hold` is
+`run_01M6HQ97TW2X9H3CGXFMWXEAFS`. Delete-to-cancel was 1s and the cancel
+phase was 12s. The driver reaches `M7 LIVE PASS` only after that hold run's
+task pod and Job are gone. Exit cleanup printed
+`m7 cleanup: refs deleted=3 left=0 branches deleted=3 left=0 prs deleted=1 left=0`,
+so pull request 2 was removed with the `m7-run` refs. Evidence artifact
+`m7-evidence`. Cancel-proof of the workflow `if: cancelled()` step:
+`<cancel-proof run id: TBD by orchestrator>`. That line is not met until the
+orchestrator dispatches it.
+
 ## M8 — Hardening (ongoing)
 
 Secret providers beyond the default; egress policy templates; per-run-VM backend via
