@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>factory</title>
+    <meta
+      name="description"
+      content="A self-hostable software factory orchestrator: an open equivalent of Warp's Oz and Factories, with no dependency on a vendor control plane."
+    />
+    <meta property="og:site_name" content="factory" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="factory" />
+    <meta
+      property="og:description"
+      content="A self-hostable software factory orchestrator. Laptop, Helm, or Kubernetes CRDs from one definition."
+    />
+    <meta property="og:url" content="https://factory.polds.dev/" />
+    <meta name="twitter:card" content="summary" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("factory.site.theme");
+          document.documentElement.classList.toggle("dark", stored !== "light");
+        } catch (e) {
+          /* theme preference is optional */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

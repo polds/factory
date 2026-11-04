@@ -12,6 +12,9 @@ Target operating modes, all from one definition:
 | Self-hosted cloud | Helm chart: control plane + operator + worker pools |
 | Cloud-native | Kubernetes CRDs (`factory.dev/v1alpha1`) reconciled by an operator |
 
+The design docs are rendered at [factory.polds.dev](https://factory.polds.dev)
+(`web/site`, published by `.github/workflows/site.yml`).
+
 **Status.** The design is in `docs/`. M0 and M1 are done
 ([`spike/m0`](spike/m0), [`cmd/factory-harness`](cmd/factory-harness)).
 M2 and M3 are done: the control plane, the work-item pipeline, and the
