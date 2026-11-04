@@ -388,8 +388,9 @@ task pod and Job are gone. Exit cleanup printed
 `m7 cleanup: refs deleted=3 left=0 branches deleted=3 left=0 prs deleted=1 left=0`,
 so pull request 2 was removed with the `m7-run` refs. Evidence artifact
 `m7-evidence`. Cancel-proof of the workflow `if: cancelled()` step:
-`<cancel-proof run id: TBD by orchestrator>`. That line is not met until the
-orchestrator dispatches it.
+[Cancel-proof run 41756628979](https://github.com/polds/factory/actions/runs/41756628979).
+The workflow was cancelled during the hold; the `if: cancelled()` cleanup
+step ran and left 0 refs, 0 branches and 0 PRs.
 
 ## M8 — Hardening (ongoing)
 
