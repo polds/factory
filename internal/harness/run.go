@@ -381,6 +381,9 @@ type conversation struct {
 	// parked is set when ask_input emits a question. The caller exits
 	// without the idle-on-complete wait.
 	parked bool
+	// accepted is how many model calls in this process returned HTTP 2xx.
+	// A later 400 is a bad request body, not a bad model id or key.
+	accepted int
 }
 
 func (c *conversation) run(ctx context.Context, prompt string) (int, string, string) {
@@ -449,13 +452,10 @@ func (c *conversation) oneTurn(ctx context.Context, turn int, messages []chatMes
 		return c.finishInterrupt(ctx, turn, gen, messages)
 	}
 	if err != nil {
-		code := classifyProvider(err)
-		status := "model_unavailable"
-		if code == ExitConfigInvalid {
-			status = "config_invalid"
-		}
-		return messages, false, code, status, err.Error()
+		code, status, summary := classifyProvider(err, c.accepted, turn)
+		return messages, false, code, status, summary
 	}
+	c.accepted++
 	msg := resp.Choices[0].Message
 	if resp.Usage != nil {
 		_ = c.log.Emit(Event{
