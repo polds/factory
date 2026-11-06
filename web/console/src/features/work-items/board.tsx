@@ -77,7 +77,12 @@ export function WorkItemBoard({ factoryId }: { factoryId: string }) {
             Factory <span className="mono">{factoryId}</span>
           </>
         }
-        actions={<NewWorkItem factoryId={factoryId} />}
+        actions={
+          <>
+            <NewInvocation factoryId={factoryId} />
+            <NewWorkItem factoryId={factoryId} />
+          </>
+        }
       />
       <div className="toolbar">
         <label>
@@ -344,6 +349,95 @@ function NewWorkItem({ factoryId }: { factoryId: string }) {
               </Dialog.Close>
               <Button type="submit" className="button-primary" disabled={pending}>
                 Create
+              </Button>
+            </div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function NewInvocation({ factoryId }: { factoryId: string }) {
+  const queryClient = useQueryClient();
+  const keyRef = useRef<HTMLInputElement>(null);
+  const [open, setOpen] = useState(false);
+  const [occurrenceKey, setOccurrenceKey] = useState("");
+  const [profile, setProfile] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [lastReceipt, setLastReceipt] = useState<string | null>(null);
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!occurrenceKey.trim() || pending) {
+      setError("Occurrence key is required");
+      keyRef.current?.focus();
+      return;
+    }
+    setPending(true);
+    setError(null);
+    try {
+      const body: Parameters<typeof client.createInvocation>[1] = {
+        sourceOccurrenceKey: occurrenceKey.trim(),
+        intent: "new",
+        priority: "interactive",
+      };
+      if (profile.trim()) {
+        body.profile = { name: profile.trim() };
+      }
+      const receipt = await client.createInvocation(factoryId, body);
+      setLastReceipt(receipt.invocationId);
+      await queryClient.invalidateQueries({ queryKey: ["tasks", factoryId] });
+      setOpen(false);
+    } catch (err) {
+      setError(problemDetail(err));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Trigger asChild>
+        <Button type="button">Invoke</Button>
+      </Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Overlay className="dialog-overlay" />
+        <Dialog.Content className="dialog-content">
+          <Dialog.Title>Invoke</Dialog.Title>
+          <Dialog.Description>Admits one defined-factory occurrence.</Dialog.Description>
+          {lastReceipt ? (
+            <p className="muted">
+              Last receipt <span className="mono">{lastReceipt}</span>
+            </p>
+          ) : null}
+          <form className="dialog-form" onSubmit={(event) => void onSubmit(event)}>
+            <label className="field" htmlFor="invoke-key">
+              Occurrence key
+              <input
+                id="invoke-key"
+                ref={keyRef}
+                value={occurrenceKey}
+                required
+                onChange={(event) => setOccurrenceKey(event.target.value)}
+              />
+            </label>
+            <label className="field" htmlFor="invoke-profile">
+              Profile
+              <input
+                id="invoke-profile"
+                value={profile}
+                onChange={(event) => setProfile(event.target.value)}
+              />
+            </label>
+            {error ? <p role="alert">{error}</p> : null}
+            <div className="dialog-actions">
+              <Dialog.Close asChild>
+                <Button type="button">Cancel</Button>
+              </Dialog.Close>
+              <Button type="submit" className="button-primary" disabled={pending}>
+                Admit
               </Button>
             </div>
           </form>

@@ -2,6 +2,8 @@ package result_test
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/polds/factory/internal/result"
@@ -22,6 +24,23 @@ func TestINVSizeRejectsOversizeReport(t *testing.T) {
 	err := result.ValidateSize(body, nil, "")
 	var pub result.PublishError
 	if !errorsAs(err, &pub) || pub.Code != result.CodeOversize {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestINVSymlinkRejectsLink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target.txt")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "report.md")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip("symlink unsupported")
+	}
+	err := result.ValidateSymlink(root, "report.md")
+	var pub result.PublishError
+	if !errorsAs(err, &pub) || pub.Code != result.CodeSymlinkRejected {
 		t.Fatalf("err %v", err)
 	}
 }

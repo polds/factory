@@ -108,8 +108,10 @@ type Skill struct {
 // Automation is one automations/<name>/automation.md, with execution
 // settings resolved onto its target agent. RequiredRepos extends the agent.
 type Automation struct {
-	Name               string
-	Enabled            bool
+	Name    string
+	Enabled bool
+	// OccurrenceMode is legacy_continue (default) or fresh for invocation admission.
+	OccurrenceMode     string
 	Agent              string
 	DisplayName        string
 	Triggers           []Trigger
@@ -138,8 +140,10 @@ type Trigger struct {
 
 // Schedule is a cron trigger.
 type Schedule struct {
-	Name string `json:"name,omitempty"`
-	Cron string `json:"cron,omitempty"`
+	Name           string `json:"name,omitempty"`
+	Cron           string `json:"cron,omitempty"`
+	OccurrenceMode string `json:"occurrenceMode,omitempty"`
+	OverlapPolicy  string `json:"overlapPolicy,omitempty"`
 }
 
 // Scorer is one scorers/<name>/scorer.md.

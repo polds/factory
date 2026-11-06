@@ -2051,6 +2051,7 @@ func toAPITask(item store.WorkItem, gate string) api.Task {
 		CreatedBy:      item.CreatedBy,
 		ConversationID: item.ConversationID,
 		RevisionCount:  item.RevisionCount,
+		InvocationID:   item.InvocationID,
 		PendingGate:    gate,
 		CreatedAt:      item.CreatedAt,
 	}

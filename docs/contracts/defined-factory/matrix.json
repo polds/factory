@@ -82,10 +82,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "priority",
       "baseline": {
-        "file": "internal/server/m4_cron.go",
-        "start": 61,
-        "end": 83,
-        "anchor": "EventCronFired"
+        "file": "internal/server/m8_admit.go",
+        "start": 185,
+        "end": 195,
+        "anchor": "batch"
       },
       "decision": "Human invoke is interactive. A schedule occurrence is batch.",
       "testOwner": "M8-I",
@@ -100,10 +100,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "correlation.threadRef",
       "baseline": {
-        "file": "internal/automation/engine.go",
-        "start": 170,
-        "end": 174,
-        "anchor": "ExternalRef"
+        "file": "internal/server/m8_admit.go",
+        "start": 76,
+        "end": 80,
+        "anchor": "ThreadRef"
       },
       "decision": "A thread ref correlates replies. It is not the occurrence identity.",
       "testOwner": "M8-I",
@@ -244,10 +244,10 @@
       "method": "scheduler.EmitOccurrence",
       "fieldPath": "scheduleId,dueSlot",
       "baseline": {
-        "file": "internal/server/m4_cron.go",
-        "start": 76,
-        "end": 82,
-        "anchor": "ev.DueAt"
+        "file": "internal/server/m8_admit.go",
+        "start": 185,
+        "end": 187,
+        "anchor": "ScheduleOccurrenceKey"
       },
       "decision": "The occurrence key is schedule id plus the due slot. Delivery time is not part of the key.",
       "testOwner": "M8-I",
@@ -262,10 +262,10 @@
       "method": "store.InsertInvocation",
       "fieldPath": "sourceOccurrenceKey",
       "baseline": {
-        "file": "internal/server/m4_cron.go",
-        "start": 76,
-        "end": 82,
-        "anchor": "DeliveryID"
+        "file": "internal/store/invocations.go",
+        "start": 109,
+        "end": 125,
+        "anchor": "InsertInvocation"
       },
       "decision": "Redelivery of the same due slot returns the original receipt and does not start another run.",
       "testOwner": "M8-I",
@@ -298,10 +298,10 @@
       "method": "scheduler.EmitOccurrence",
       "fieldPath": "dueSlot,workItemId",
       "baseline": {
-        "file": "internal/server/m4_cron.go",
-        "start": 76,
-        "end": 82,
-        "anchor": "ev.DueAt"
+        "file": "internal/server/m8_admit.go",
+        "start": 185,
+        "end": 187,
+        "anchor": "ScheduleOccurrenceKey"
       },
       "decision": "Two nonoverlapping due slots create two work items.",
       "testOwner": "M8-I",
@@ -317,8 +317,8 @@
       "fieldPath": "occurrenceMode",
       "baseline": {
         "file": "internal/automation/engine.go",
-        "start": 170,
-        "end": 180,
+        "start": 198,
+        "end": 210,
         "anchor": "OpenWorkItem"
       },
       "decision": "Legacy schedule and coding-thread continuation stays the default until occurrenceMode is fresh.",
@@ -587,8 +587,8 @@
       "fieldPath": "nativeHierarchy",
       "baseline": {
         "file": "internal/definition/types.go",
-        "start": 267,
-        "end": 270,
+        "start": 271,
+        "end": 274,
         "anchor": "SpawnableBy"
       },
       "decision": "Legacy factories may omit reportsTo. The field is not enforced unless native hierarchy is on.",

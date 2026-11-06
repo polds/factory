@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,23 +13,28 @@ import (
 const workItemColumns = `
     id, factory_id, source, source_ref, title, body, stage, status, created_by,
     conversation_id, revision_count, created_at,
-    suspended_run_id, suspended_execution_id, suspended_at`
+    suspended_run_id, suspended_execution_id, suspended_at, invocation_id`
 
 const approvalColumns = `
     id, work_item_id, gate, requested_at, decided_at, decided_by, decision, note`
 
 func scanWorkItem(row pgx.Row) (WorkItem, error) {
 	var item WorkItem
+	var invocationID sql.NullString
 	err := row.Scan(
 		&item.ID, &item.FactoryID, &item.Source, &item.SourceRef, &item.Title, &item.Body,
 		&item.Stage, &item.Status, &item.CreatedBy, &item.ConversationID, &item.RevisionCount,
 		&item.CreatedAt, &item.SuspendedRunID, &item.SuspendedExecutionID, &item.SuspendedAt,
+		&invocationID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return WorkItem{}, ErrNotFound
 	}
 	if err != nil {
 		return WorkItem{}, err
+	}
+	if invocationID.Valid {
+		item.InvocationID = invocationID.String
 	}
 	return item, nil
 }

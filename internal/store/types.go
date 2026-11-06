@@ -304,6 +304,7 @@ type WorkItem struct {
 	SuspendedRunID       string
 	SuspendedExecutionID string
 	SuspendedAt          *time.Time
+	InvocationID         string
 }
 
 // NewWorkItem is the input to CreateWorkItem.

@@ -100,6 +100,40 @@ func (e *Engine) decide(ctx context.Context, ev event.Event) (Result, *event.Eve
 	return e.intake(ctx, tree, ev, matches)
 }
 
+// Preview classifies an event before intake. Continuation is true when the
+// event continues an existing thread rather than opening a new one.
+func (e *Engine) Preview(ctx context.Context, ev event.Event) (Preview, error) {
+	var out Preview
+	if e == nil || e.Store == nil || e.Tree == nil || e.FactoryID == "" {
+		return out, errors.New("automation: engine is not configured")
+	}
+	tree := e.Tree()
+	if shape := replyShape(tree, ev); shape != replyNone {
+		if _, err := e.Store.GetExternalRef(ctx, ev.Provider, ev.Thread.ExternalRef); err == nil {
+			out.Continuation = true
+			return out, nil
+		} else if !errors.Is(err, ErrNotFound) {
+			return out, fmt.Errorf("automation: external ref: %w", err)
+		}
+	}
+	out.Matches = e.matching(tree, ev)
+	return out, nil
+}
+
+// Preview is the pre-intake classification for ingress routing.
+type Preview struct {
+	Continuation bool
+	Matches      []compiled
+}
+
+// FirstAutomation returns the first matched automation, if any.
+func (p Preview) FirstAutomation() definition.Automation {
+	if len(p.Matches) == 0 {
+		return definition.Automation{}
+	}
+	return p.Matches[0].auto
+}
+
 func (e *Engine) matching(tree definition.Tree, ev event.Event) []compiled {
 	// The GitHub normalizer appends [bot] when sender.type is Bot.
 	// That includes labels the App applies. Those actors do not open work.

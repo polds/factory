@@ -210,6 +210,9 @@ CRD mode.
 ```
 GET    /factory/{uid}/tasks                 work items (filter: stage, status, source)
 POST   /factory/{uid}/tasks                 create a work item (intake)
+POST   /factory/{uid}/invocations           admit a defined-factory occurrence (Invoke)
+GET    /factory/{uid}/invocations/{id}
+GET    /factory/{uid}/invocations/{id}/result
 GET    /factory/{uid}/tasks/{task_uid}
 POST   /factory/{uid}/tasks/{task_uid}/cancel
 GET    /factory/{uid}/task-by-conversation  resolve by conversation id

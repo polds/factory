@@ -270,6 +270,7 @@ export type Task = {
   created_by?: string;
   conversation_id?: string;
   revision_count: number;
+  invocation_id?: string;
   pending_gate?: string;
   created_at: string;
 };
@@ -293,6 +294,13 @@ export type InvocationReceipt = {
   invocationId: string;
   workItemId?: string;
   links: { self: string; result?: string };
+};
+
+export type InvocationResult = {
+  summary?: string;
+  coverageStatus?: string;
+  findingsCount?: number;
+  report?: string;
 };
 
 export type Approval = {

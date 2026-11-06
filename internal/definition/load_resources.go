@@ -311,6 +311,7 @@ func loadAutomations(root string, tree *Tree, diags *[]Diagnostic) {
 
 type automationDoc struct {
 	Enabled            bool                 `json:"enabled"`
+	OccurrenceMode     string               `json:"occurrenceMode,omitempty"`
 	Agent              string               `json:"agent,omitempty"`
 	DisplayName        string               `json:"displayName,omitempty"`
 	Triggers           []Trigger            `json:"triggers,omitempty"`
@@ -357,6 +358,7 @@ func parseAutomation(rel, name string, body []byte, tree *Tree, diags *[]Diagnos
 	auto := Automation{
 		Name:               name,
 		Enabled:            doc.Enabled,
+		OccurrenceMode:     strings.TrimSpace(doc.OccurrenceMode),
 		Agent:              strings.TrimSpace(doc.Agent),
 		DisplayName:        doc.DisplayName,
 		Triggers:           doc.Triggers,

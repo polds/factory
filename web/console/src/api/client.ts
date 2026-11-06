@@ -24,6 +24,7 @@ import type {
   InputAnswer,
   InvocationCreate,
   InvocationReceipt,
+  InvocationResult,
   Problem,
   Run,
   RunDetail,
@@ -372,6 +373,12 @@ export class ConsoleClient {
       method: "POST",
       body: JSON.stringify(body),
     });
+  }
+
+  getInvocationResult(factoryId: string, invocationId: string): Promise<InvocationResult> {
+    return this.request(
+      `/api/v1/factory/${segment(factoryId)}/invocations/${segment(invocationId)}/result`,
+    );
   }
 
   cancelTask(factoryId: string, id: string): Promise<Task> {
