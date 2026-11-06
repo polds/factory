@@ -1,0 +1,321 @@
+{
+  "contractVersion": "defined-factory/1",
+  "area": "harness",
+  "cases": [
+    {
+      "vectorId": "INV-TOKEN",
+      "invariant": "INV-TOKEN",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Child tool tokens are a subset of the parent. A specialist token cannot dispatch or cross invocations.",
+      "document": {
+        "childCanDispatch": false,
+        "childGrants": [
+          "ack.write",
+          "inbox.read"
+        ],
+        "crossInvocation": false,
+        "parentGrants": [
+          "ack.write",
+          "inbox.read",
+          "roster.dispatch"
+        ],
+        "specialistDispatch": false
+      }
+    },
+    {
+      "vectorId": "INV-TOKEN-BAD",
+      "invariant": "INV-TOKEN",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-TOKEN",
+      "schema": "scenario",
+      "title": "Child tool tokens are a subset of the parent. A specialist token cannot dispatch or cross invocations.",
+      "document": {
+        "childCanDispatch": true,
+        "childGrants": [
+          "ack.write",
+          "inbox.read"
+        ],
+        "crossInvocation": false,
+        "parentGrants": [
+          "ack.write",
+          "inbox.read",
+          "roster.dispatch"
+        ],
+        "specialistDispatch": false
+      }
+    },
+    {
+      "vectorId": "INV-NO-DISPATCH",
+      "invariant": "INV-NO-DISPATCH",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Specialists do not dispatch roster agents. Leads may, under policy.",
+      "document": {
+        "dispatchAllowed": false,
+        "dispatcherRole": "specialist",
+        "leadMayDispatch": true
+      }
+    },
+    {
+      "vectorId": "INV-NO-DISPATCH-BAD",
+      "invariant": "INV-NO-DISPATCH",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-NO-DISPATCH",
+      "schema": "scenario",
+      "title": "Specialists do not dispatch roster agents. Leads may, under policy.",
+      "document": {
+        "dispatchAllowed": true,
+        "dispatcherRole": "specialist",
+        "leadMayDispatch": true
+      }
+    },
+    {
+      "vectorId": "INV-WORKFLOW",
+      "invariant": "INV-WORKFLOW",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Internal workers stay in-session. Workflow stays main-loop-only. They are not roster nodes.",
+      "document": {
+        "internalWorkersAreRoster": false,
+        "internalWorkersInSession": true,
+        "workflowMainLoopOnly": true
+      }
+    },
+    {
+      "vectorId": "INV-WORKFLOW-BAD",
+      "invariant": "INV-WORKFLOW",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-WORKFLOW",
+      "schema": "scenario",
+      "title": "Internal workers stay in-session. Workflow stays main-loop-only. They are not roster nodes.",
+      "document": {
+        "internalWorkersAreRoster": false,
+        "internalWorkersInSession": true,
+        "workflowMainLoopOnly": false
+      }
+    },
+    {
+      "vectorId": "INV-SECRET-ALLOWLIST",
+      "invariant": "INV-SECRET-ALLOWLIST",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Resolve allows only names on the allowlist. Other names fail closed.",
+      "document": {
+        "allowlist": [
+          "SCAN_GITHUB_TOKEN"
+        ],
+        "code": null,
+        "name": "SCAN_GITHUB_TOKEN",
+        "resolved": true
+      }
+    },
+    {
+      "vectorId": "INV-SECRET-ALLOWLIST-BAD",
+      "invariant": "INV-SECRET-ALLOWLIST",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SECRET-ALLOWLIST",
+      "schema": "scenario",
+      "title": "Resolve allows only names on the allowlist. Other names fail closed.",
+      "document": {
+        "allowlist": [
+          "SCAN_GITHUB_TOKEN"
+        ],
+        "code": null,
+        "name": "OPENAI_API_KEY",
+        "resolved": true
+      }
+    },
+    {
+      "vectorId": "INV-SECRET-REFRESH",
+      "invariant": "INV-SECRET-REFRESH",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Every injection reads the mounted file again. subPath is not rotation. A running process does not rotate in place.",
+      "document": {
+        "lookupPerInjection": true,
+        "lookups": 2,
+        "rotatesRunningProcess": false,
+        "subPathMount": false
+      }
+    },
+    {
+      "vectorId": "INV-SECRET-REFRESH-BAD",
+      "invariant": "INV-SECRET-REFRESH",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SECRET-REFRESH",
+      "schema": "scenario",
+      "title": "Every injection reads the mounted file again. subPath is not rotation. A running process does not rotate in place.",
+      "document": {
+        "lookupPerInjection": true,
+        "lookups": 2,
+        "rotatesRunningProcess": true,
+        "subPathMount": false
+      }
+    },
+    {
+      "vectorId": "INV-SECRET-UNSAFE",
+      "invariant": "INV-SECRET-UNSAFE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A missing ref or an unsafe path is secret_ref_rejected.",
+      "document": {
+        "code": "secret_ref_rejected",
+        "missingRef": true,
+        "resolved": false,
+        "unsafePath": "../secrets/token"
+      }
+    },
+    {
+      "vectorId": "INV-SECRET-UNSAFE-BAD",
+      "invariant": "INV-SECRET-UNSAFE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SECRET-UNSAFE",
+      "schema": "scenario",
+      "title": "A missing ref or an unsafe path is secret_ref_rejected.",
+      "document": {
+        "code": "secret_ref_rejected",
+        "missingRef": true,
+        "resolved": true,
+        "unsafePath": "../secrets/token"
+      }
+    },
+    {
+      "vectorId": "INV-REDACTION",
+      "invariant": "INV-REDACTION",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Redaction keeps both the old and the new synthetic values through rotation, including MCP output.",
+      "document": {
+        "coversMcp": true,
+        "retainedLiterals": [
+          "CANARY-NEW",
+          "CANARY-OLD"
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-REDACTION-BAD",
+      "invariant": "INV-REDACTION",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-REDACTION",
+      "schema": "scenario",
+      "title": "Redaction keeps both the old and the new synthetic values through rotation, including MCP output.",
+      "document": {
+        "coversMcp": true,
+        "retainedLiterals": [
+          "CANARY-NEW"
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-ISOLATION",
+      "invariant": "INV-ISOLATION",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Credential isolation is an adapter-level result. Child environment isolation alone is not accepted. An unproven boundary blocks live.",
+      "document": {
+        "envOnlyIsolationAccepted": false,
+        "evidenceClass": "adapter",
+        "liveBlockedIfUnproven": true,
+        "outcome": "isolated"
+      }
+    },
+    {
+      "vectorId": "INV-ISOLATION-BAD",
+      "invariant": "INV-ISOLATION",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-ISOLATION",
+      "schema": "scenario",
+      "title": "Credential isolation is an adapter-level result. Child environment isolation alone is not accepted. An unproven boundary blocks live.",
+      "document": {
+        "envOnlyIsolationAccepted": true,
+        "evidenceClass": "adapter",
+        "liveBlockedIfUnproven": true,
+        "outcome": "isolated"
+      }
+    },
+    {
+      "vectorId": "INV-READONLY-TOKEN",
+      "invariant": "INV-READONLY-TOKEN",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Scanner forge tokens are contents read and metadata read. The current DefaultPermissions write set is not a scanner token.",
+      "document": {
+        "contents": "read",
+        "metadata": "read",
+        "pullRequests": "none",
+        "scannerTask": true
+      }
+    },
+    {
+      "vectorId": "INV-READONLY-TOKEN-BAD",
+      "invariant": "INV-READONLY-TOKEN",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-READONLY-TOKEN",
+      "schema": "scenario",
+      "title": "Scanner forge tokens are contents read and metadata read. The current DefaultPermissions write set is not a scanner token.",
+      "document": {
+        "contents": "write",
+        "metadata": "read",
+        "pullRequests": "none",
+        "scannerTask": true
+      }
+    },
+    {
+      "vectorId": "INV-UNTRUSTED",
+      "invariant": "INV-UNTRUSTED",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "An untrusted task gets no Docker socket, no foreign checkout write, and no broad secret mount.",
+      "document": {
+        "broadSecretMount": false,
+        "dockerSocket": false,
+        "foreignCheckoutWrite": false
+      }
+    },
+    {
+      "vectorId": "INV-UNTRUSTED-BAD",
+      "invariant": "INV-UNTRUSTED",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-UNTRUSTED",
+      "schema": "scenario",
+      "title": "An untrusted task gets no Docker socket, no foreign checkout write, and no broad secret mount.",
+      "document": {
+        "broadSecretMount": false,
+        "dockerSocket": true,
+        "foreignCheckoutWrite": false
+      }
+    }
+  ]
+}

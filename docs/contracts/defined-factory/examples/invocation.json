@@ -1,0 +1,571 @@
+{
+  "contractVersion": "defined-factory/1",
+  "area": "invocation",
+  "cases": [
+    {
+      "vectorId": "INV-REQUEST-SHAPE",
+      "invariant": "INV-REQUEST-SHAPE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "request",
+      "title": "Add Invoke beside POST /tasks and POST /agent/run. The body has no principal and the profile is a name only.",
+      "document": {
+        "correlation": {
+          "replyTo": "1555.1",
+          "threadRef": "slack:T/C/1555"
+        },
+        "definitionRevision": "rev-applied-1",
+        "inputs": {
+          "instruction": "review"
+        },
+        "intent": "new",
+        "priority": "interactive",
+        "profile": {
+          "name": "scan"
+        },
+        "sourceOccurrenceKey": "human:review:1",
+        "target": {
+          "pullRequest": 2213,
+          "repository": "example/atum-core"
+        }
+      }
+    },
+    {
+      "vectorId": "INV-REQUEST-SHAPE-BAD",
+      "invariant": "INV-REQUEST-SHAPE",
+      "expect": "reject",
+      "rejectBy": "schema",
+      "code": "input_invalid",
+      "schema": "request",
+      "title": "Add Invoke beside POST /tasks and POST /agent/run. The body has no principal and the profile is a name only.",
+      "document": {
+        "budgetCeilingCents": 2500,
+        "intent": "new",
+        "priority": "interactive",
+        "profile": {
+          "name": "scan"
+        },
+        "sourceOccurrenceKey": "human:review:1"
+      }
+    },
+    {
+      "vectorId": "INV-REPLAY",
+      "invariant": "INV-REPLAY",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Same key and same canonical digest returns the original definition digest and target SHA. A reload or a moved ref does not rewrite the receipt.",
+      "document": {
+        "canonicalBody": {
+          "correlation": {
+            "threadRef": "slack:T/C/1555"
+          },
+          "definitionRevision": "rev-applied-1",
+          "inputs": {
+            "instruction": "review"
+          },
+          "intent": "new",
+          "priority": "interactive",
+          "profile": {
+            "name": "scan"
+          },
+          "sourceOccurrenceKey": "human:review:1",
+          "target": {
+            "pullRequest": 2213,
+            "repository": "example/atum-core"
+          }
+        },
+        "canonicalDigest": "b67e84668f3df343d6203b54a72377e2eb59ca7d919a9463efeab47c7b7111a0",
+        "movedRefSha": "3333333333333333333333333333333333333333",
+        "originalDefinitionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "originalTargetSha": "1111111111111111111111111111111111111111",
+        "receiptIdsEqual": true,
+        "reloadedDefinitionDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "returnedDefinitionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "returnedTargetSha": "1111111111111111111111111111111111111111",
+        "sameCanonical": true,
+        "sameKey": true,
+        "writesOnReplay": 0
+      }
+    },
+    {
+      "vectorId": "INV-REPLAY-BAD",
+      "invariant": "INV-REPLAY",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-REPLAY",
+      "schema": "scenario",
+      "title": "Same key and same canonical digest returns the original definition digest and target SHA. A reload or a moved ref does not rewrite the receipt.",
+      "document": {
+        "canonicalBody": {
+          "correlation": {
+            "threadRef": "slack:T/C/1555"
+          },
+          "definitionRevision": "rev-applied-1",
+          "inputs": {
+            "instruction": "review"
+          },
+          "intent": "new",
+          "priority": "interactive",
+          "profile": {
+            "name": "scan"
+          },
+          "sourceOccurrenceKey": "human:review:1",
+          "target": {
+            "pullRequest": 2213,
+            "repository": "example/atum-core"
+          }
+        },
+        "canonicalDigest": "b67e84668f3df343d6203b54a72377e2eb59ca7d919a9463efeab47c7b7111a0",
+        "movedRefSha": "3333333333333333333333333333333333333333",
+        "originalDefinitionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "originalTargetSha": "1111111111111111111111111111111111111111",
+        "receiptIdsEqual": true,
+        "reloadedDefinitionDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "returnedDefinitionDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "returnedTargetSha": "1111111111111111111111111111111111111111",
+        "sameCanonical": true,
+        "sameKey": true,
+        "writesOnReplay": 0
+      }
+    },
+    {
+      "vectorId": "INV-CONFLICT",
+      "invariant": "INV-CONFLICT",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Same key and a different canonical digest returns 409 invocation_conflict and writes nothing.",
+      "document": {
+        "code": "invocation_conflict",
+        "httpStatus": 409,
+        "originalReceiptUnchanged": true,
+        "sameCanonical": false,
+        "sameKey": true,
+        "writes": 0
+      }
+    },
+    {
+      "vectorId": "INV-CONFLICT-BAD",
+      "invariant": "INV-CONFLICT",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-CONFLICT",
+      "schema": "scenario",
+      "title": "Same key and a different canonical digest returns 409 invocation_conflict and writes nothing.",
+      "document": {
+        "code": "invocation_conflict",
+        "httpStatus": 409,
+        "originalReceiptUnchanged": true,
+        "sameCanonical": false,
+        "sameKey": true,
+        "writes": 1
+      }
+    },
+    {
+      "vectorId": "INV-INTENT-CONFLICT",
+      "invariant": "INV-INTENT-CONFLICT",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Intent is part of the canonical body. new and wake on one occurrence key conflict.",
+      "document": {
+        "code": "invocation_conflict",
+        "httpStatus": 409,
+        "intents": [
+          "new",
+          "wake"
+        ],
+        "sameKey": true,
+        "writes": 0
+      }
+    },
+    {
+      "vectorId": "INV-INTENT-CONFLICT-BAD",
+      "invariant": "INV-INTENT-CONFLICT",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-INTENT-CONFLICT",
+      "schema": "scenario",
+      "title": "Intent is part of the canonical body. new and wake on one occurrence key conflict.",
+      "document": {
+        "code": "invocation_conflict",
+        "httpStatus": 409,
+        "intents": [
+          "new",
+          "wake"
+        ],
+        "sameKey": true,
+        "writes": 1
+      }
+    },
+    {
+      "vectorId": "INV-PRIORITY",
+      "invariant": "INV-PRIORITY",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Human invoke is interactive. A schedule occurrence is batch.",
+      "document": {
+        "human": "interactive",
+        "schedule": "batch"
+      }
+    },
+    {
+      "vectorId": "INV-PRIORITY-BAD",
+      "invariant": "INV-PRIORITY",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-PRIORITY",
+      "schema": "scenario",
+      "title": "Human invoke is interactive. A schedule occurrence is batch.",
+      "document": {
+        "human": "interactive",
+        "schedule": "interactive"
+      }
+    },
+    {
+      "vectorId": "INV-CORRELATION",
+      "invariant": "INV-CORRELATION",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A thread ref correlates replies. It is not the occurrence identity.",
+      "document": {
+        "invocationIdsDistinct": true,
+        "sameThreadRef": "slack:T/C/1555",
+        "sourceOccurrenceKeys": [
+          "human:review:1",
+          "human:review:2"
+        ],
+        "threadRefIsIdentity": false
+      }
+    },
+    {
+      "vectorId": "INV-CORRELATION-BAD",
+      "invariant": "INV-CORRELATION",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-CORRELATION",
+      "schema": "scenario",
+      "title": "A thread ref correlates replies. It is not the occurrence identity.",
+      "document": {
+        "invocationIdsDistinct": true,
+        "sameThreadRef": "slack:T/C/1555",
+        "sourceOccurrenceKeys": [
+          "human:review:1",
+          "human:review:2"
+        ],
+        "threadRefIsIdentity": true
+      }
+    },
+    {
+      "vectorId": "INV-PR-DISTINCT",
+      "invariant": "INV-PR-DISTINCT",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Two deliberate reviews of one pull request are two invocations.",
+      "document": {
+        "invocationIds": [
+          "inv_01ARZ3NDEKTSV4RRFFQ69G5FA0",
+          "inv_01ARZ3NDEKTSV4RRFFQ69G5FA1"
+        ],
+        "pullRequest": "https://github.com/example/atum-core/pull/2213",
+        "sourceOccurrenceKeys": [
+          "human:review:1",
+          "human:review:2"
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-PR-DISTINCT-BAD",
+      "invariant": "INV-PR-DISTINCT",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-PR-DISTINCT",
+      "schema": "scenario",
+      "title": "Two deliberate reviews of one pull request are two invocations.",
+      "document": {
+        "invocationIds": [
+          "inv_01ARZ3NDEKTSV4RRFFQ69G5FA0",
+          "inv_01ARZ3NDEKTSV4RRFFQ69G5FA0"
+        ],
+        "pullRequest": "https://github.com/example/atum-core/pull/2213",
+        "sourceOccurrenceKeys": [
+          "human:review:1",
+          "human:review:2"
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-PIN",
+      "invariant": "INV-PIN",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Resolve the pull request head and base, or the ref, once. Checkout uses the pinned SHA, not the SHA written in the prompt.",
+      "document": {
+        "enforcesCheckout": true,
+        "pins": [
+          {
+            "baseSha": "2222222222222222222222222222222222222222",
+            "checkoutSha": "1111111111111111111111111111111111111111",
+            "headSha": "1111111111111111111111111111111111111111",
+            "kind": "pull_request",
+            "promptTextSha": "3333333333333333333333333333333333333333"
+          },
+          {
+            "checkoutSha": "4444444444444444444444444444444444444444",
+            "kind": "ref",
+            "promptTextSha": "3333333333333333333333333333333333333333",
+            "refSha": "4444444444444444444444444444444444444444"
+          }
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-PIN-BAD",
+      "invariant": "INV-PIN",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-PIN",
+      "schema": "scenario",
+      "title": "Resolve the pull request head and base, or the ref, once. Checkout uses the pinned SHA, not the SHA written in the prompt.",
+      "document": {
+        "enforcesCheckout": true,
+        "pins": [
+          {
+            "baseSha": "2222222222222222222222222222222222222222",
+            "checkoutSha": "3333333333333333333333333333333333333333",
+            "headSha": "1111111111111111111111111111111111111111",
+            "kind": "pull_request",
+            "promptTextSha": "3333333333333333333333333333333333333333"
+          },
+          {
+            "checkoutSha": "4444444444444444444444444444444444444444",
+            "kind": "ref",
+            "promptTextSha": "3333333333333333333333333333333333333333",
+            "refSha": "4444444444444444444444444444444444444444"
+          }
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-NO-FORGE",
+      "invariant": "INV-NO-FORGE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A definition that does not require a repository mints no forge token.",
+      "document": {
+        "accepted": true,
+        "forgeTokenMinted": false,
+        "requiresRepository": false,
+        "targetPresent": false
+      }
+    },
+    {
+      "vectorId": "INV-NO-FORGE-BAD",
+      "invariant": "INV-NO-FORGE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-NO-FORGE",
+      "schema": "scenario",
+      "title": "A definition that does not require a repository mints no forge token.",
+      "document": {
+        "accepted": true,
+        "forgeTokenMinted": true,
+        "requiresRepository": false,
+        "targetPresent": false
+      }
+    },
+    {
+      "vectorId": "INV-PRINCIPAL",
+      "invariant": "INV-PRINCIPAL",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "The principal comes from the authenticated context. A rejected principal writes nothing.",
+      "document": {
+        "authenticated": false,
+        "bodyPrincipalIgnored": true,
+        "code": "principal_rejected",
+        "httpStatus": 403,
+        "principalFromBody": false,
+        "writes": 0
+      }
+    },
+    {
+      "vectorId": "INV-PRINCIPAL-BAD",
+      "invariant": "INV-PRINCIPAL",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-PRINCIPAL",
+      "schema": "scenario",
+      "title": "The principal comes from the authenticated context. A rejected principal writes nothing.",
+      "document": {
+        "authenticated": false,
+        "bodyPrincipalIgnored": true,
+        "code": "principal_rejected",
+        "httpStatus": 403,
+        "principalFromBody": false,
+        "writes": 1
+      }
+    },
+    {
+      "vectorId": "INV-PROFILE",
+      "invariant": "INV-PROFILE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected with no writes.",
+      "document": {
+        "injectionRejected": {
+          "accepted": false,
+          "code": "profile_rejected",
+          "injected": [
+            "budgetCeilingCents"
+          ],
+          "writes": 0
+        },
+        "selectionAccepted": {
+          "accepted": true,
+          "fields": [
+            "name"
+          ]
+        }
+      }
+    },
+    {
+      "vectorId": "INV-PROFILE-BAD",
+      "invariant": "INV-PROFILE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-PROFILE",
+      "schema": "scenario",
+      "title": "A profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected with no writes.",
+      "document": {
+        "injectionRejected": {
+          "accepted": true,
+          "code": "profile_rejected",
+          "injected": [
+            "budgetCeilingCents"
+          ],
+          "writes": 0
+        },
+        "selectionAccepted": {
+          "accepted": true,
+          "fields": [
+            "name"
+          ]
+        }
+      }
+    },
+    {
+      "vectorId": "INV-REPOSITORY",
+      "invariant": "INV-REPOSITORY",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A repository outside the allowlist is repository_rejected and writes nothing.",
+      "document": {
+        "allowlisted": false,
+        "code": "repository_rejected",
+        "httpStatus": 403,
+        "writes": 0
+      }
+    },
+    {
+      "vectorId": "INV-REPOSITORY-BAD",
+      "invariant": "INV-REPOSITORY",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-REPOSITORY",
+      "schema": "scenario",
+      "title": "A repository outside the allowlist is repository_rejected and writes nothing.",
+      "document": {
+        "allowlisted": false,
+        "code": "repository_rejected",
+        "httpStatus": 403,
+        "writes": 1
+      }
+    },
+    {
+      "vectorId": "INV-GRANT",
+      "invariant": "INV-GRANT",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing.",
+      "document": {
+        "code": "grant_rejected",
+        "executeTargetRequested": true,
+        "granted": false,
+        "httpStatus": 403,
+        "writes": 0
+      }
+    },
+    {
+      "vectorId": "INV-GRANT-BAD",
+      "invariant": "INV-GRANT",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-GRANT",
+      "schema": "scenario",
+      "title": "execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing.",
+      "document": {
+        "code": "grant_rejected",
+        "executeTargetRequested": true,
+        "granted": false,
+        "httpStatus": 403,
+        "writes": 1
+      }
+    },
+    {
+      "vectorId": "INV-LEGACY-ROUTES",
+      "invariant": "INV-LEGACY-ROUTES",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "POST /tasks keeps its work-item meaning. POST /agent/run stays a bare run. Neither becomes Invoke.",
+      "document": {
+        "agentRunPath": "/api/v1/agent/run",
+        "agentRunRemainsBare": true,
+        "invocationPath": "/api/v1/factory/{uid}/invocations",
+        "postTasksRemainsWorkItem": true,
+        "tasksPath": "/api/v1/factory/{uid}/tasks"
+      }
+    },
+    {
+      "vectorId": "INV-LEGACY-ROUTES-BAD",
+      "invariant": "INV-LEGACY-ROUTES",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-LEGACY-ROUTES",
+      "schema": "scenario",
+      "title": "POST /tasks keeps its work-item meaning. POST /agent/run stays a bare run. Neither becomes Invoke.",
+      "document": {
+        "agentRunPath": "/api/v1/agent/run",
+        "agentRunRemainsBare": true,
+        "invocationPath": "/api/v1/factory/{uid}/invocations",
+        "postTasksRemainsWorkItem": false,
+        "tasksPath": "/api/v1/factory/{uid}/tasks"
+      }
+    }
+  ]
+}

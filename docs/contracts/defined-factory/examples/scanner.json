@@ -1,0 +1,266 @@
+{
+  "contractVersion": "defined-factory/1",
+  "area": "scanner",
+  "cases": [
+    {
+      "vectorId": "INV-TASK-REF",
+      "invariant": "INV-TASK-REF",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Native scanner mode uses task_ref. linear_issue is null and Linear is not required.",
+      "document": {
+        "linearIssue": null,
+        "mode": "native",
+        "requiresLinear": false,
+        "taskRef": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAA"
+      }
+    },
+    {
+      "vectorId": "INV-TASK-REF-BAD",
+      "invariant": "INV-TASK-REF",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-TASK-REF",
+      "schema": "scenario",
+      "title": "Native scanner mode uses task_ref. linear_issue is null and Linear is not required.",
+      "document": {
+        "linearIssue": null,
+        "mode": "native",
+        "requiresLinear": true,
+        "taskRef": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAA"
+      }
+    },
+    {
+      "vectorId": "INV-LOCAL-CLI",
+      "invariant": "INV-LOCAL-CLI",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Local CLI mode stays available and does not require Linear or a Factory task ref.",
+      "document": {
+        "mode": "local_cli",
+        "requiresLinear": false,
+        "requiresTaskRef": false
+      }
+    },
+    {
+      "vectorId": "INV-LOCAL-CLI-BAD",
+      "invariant": "INV-LOCAL-CLI",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-LOCAL-CLI",
+      "schema": "scenario",
+      "title": "Local CLI mode stays available and does not require Linear or a Factory task ref.",
+      "document": {
+        "mode": "local_cli",
+        "requiresLinear": true,
+        "requiresTaskRef": false
+      }
+    },
+    {
+      "vectorId": "INV-ART",
+      "invariant": "INV-ART",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Each item gets its own workspace mount. There is no shared writable ART root.",
+      "document": {
+        "perItemMount": true,
+        "sharedWritableRoot": false
+      }
+    },
+    {
+      "vectorId": "INV-ART-BAD",
+      "invariant": "INV-ART",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-ART",
+      "schema": "scenario",
+      "title": "Each item gets its own workspace mount. There is no shared writable ART root.",
+      "document": {
+        "perItemMount": true,
+        "sharedWritableRoot": true
+      }
+    },
+    {
+      "vectorId": "INV-RETENTION",
+      "invariant": "INV-RETENTION",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "The durable result row outlives task-exit cleanup of the host workspace.",
+      "document": {
+        "reportSurvivesWorkspaceCleanup": true,
+        "retention": "durable_result_row"
+      }
+    },
+    {
+      "vectorId": "INV-RETENTION-BAD",
+      "invariant": "INV-RETENTION",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-RETENTION",
+      "schema": "scenario",
+      "title": "The durable result row outlives task-exit cleanup of the host workspace.",
+      "document": {
+        "reportSurvivesWorkspaceCleanup": false,
+        "retention": "durable_result_row"
+      }
+    },
+    {
+      "vectorId": "INV-BRIDGE",
+      "invariant": "INV-BRIDGE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "One outbound owner. Default disabled. Outage queues reporting and does not block execution. A send without authorization does not send.",
+      "document": {
+        "blocksExecution": false,
+        "echoSuppressed": true,
+        "enabled": false,
+        "outageQueues": "reporting",
+        "owners": [
+          "factory-outbound-bridge"
+        ],
+        "replaySuppressed": true,
+        "sendAuthorized": false,
+        "sendCount": 0
+      }
+    },
+    {
+      "vectorId": "INV-BRIDGE-BAD",
+      "invariant": "INV-BRIDGE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-BRIDGE",
+      "schema": "scenario",
+      "title": "One outbound owner. Default disabled. Outage queues reporting and does not block execution. A send without authorization does not send.",
+      "document": {
+        "blocksExecution": false,
+        "echoSuppressed": true,
+        "enabled": false,
+        "outageQueues": "reporting",
+        "owners": [
+          "factory-outbound-bridge"
+        ],
+        "replaySuppressed": true,
+        "sendAuthorized": false,
+        "sendCount": 1
+      }
+    },
+    {
+      "vectorId": "INV-SECURITY-GATE",
+      "invariant": "INV-SECURITY-GATE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A paid probe stays closed until G14, G18, and the gateway cap are proved on the actual backend. Helm render and kind do not prove a Docker host.",
+      "document": {
+        "backend": "docker",
+        "cniProved": false,
+        "g14ActualBackend": false,
+        "g18ActualBackend": false,
+        "gatewayCapProven": false,
+        "helmRenderPassed": true,
+        "hostFirewallEnforced": false,
+        "kindPassed": true,
+        "paidProbeAllowed": false
+      }
+    },
+    {
+      "vectorId": "INV-SECURITY-GATE-BAD",
+      "invariant": "INV-SECURITY-GATE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SECURITY-GATE",
+      "schema": "scenario",
+      "title": "A paid probe stays closed until G14, G18, and the gateway cap are proved on the actual backend. Helm render and kind do not prove a Docker host.",
+      "document": {
+        "backend": "docker",
+        "cniProved": false,
+        "g14ActualBackend": false,
+        "g18ActualBackend": false,
+        "gatewayCapProven": false,
+        "helmRenderPassed": true,
+        "hostFirewallEnforced": false,
+        "kindPassed": true,
+        "paidProbeAllowed": true
+      }
+    },
+    {
+      "vectorId": "INV-ATTESTATION",
+      "invariant": "INV-ATTESTATION",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "The attestation matches bound to observed digests. A changed config, code, image, adapter, backend, or secret policy invalidates it.",
+      "document": {
+        "bound": {
+          "adapterDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "backendId": "docker-host-a",
+          "codeDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "configDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "imageDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "invalidatesOn": [
+          "adapterDigest",
+          "backendId",
+          "codeDigest",
+          "configDigest",
+          "imageDigest",
+          "secretPolicy"
+        ],
+        "observed": {
+          "adapterDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "backendId": "docker-host-a",
+          "codeDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "configDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "imageDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "valid": true
+      }
+    },
+    {
+      "vectorId": "INV-ATTESTATION-BAD",
+      "invariant": "INV-ATTESTATION",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-ATTESTATION",
+      "schema": "scenario",
+      "title": "The attestation matches bound to observed digests. A changed config, code, image, adapter, backend, or secret policy invalidates it.",
+      "document": {
+        "bound": {
+          "adapterDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "backendId": "docker-host-a",
+          "codeDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "configDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "imageDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "invalidatesOn": [
+          "adapterDigest",
+          "backendId",
+          "codeDigest",
+          "configDigest",
+          "imageDigest",
+          "secretPolicy"
+        ],
+        "observed": {
+          "adapterDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "backendId": "docker-host-a",
+          "codeDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "configDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "imageDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "valid": true
+      }
+    }
+  ]
+}

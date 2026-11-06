@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.internal/contracts/defined-factory/request.schema.json",
+  "title": "Defined-factory invocation request",
+  "description": "Witness shape for POST /api/v1/factory/{uid}/invocations. Principal is not a body field. Profile is a name only. Inputs in production are validated against the applied definition; this witness closes the example keys.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["intent", "priority", "sourceOccurrenceKey"],
+  "properties": {
+    "definitionRevision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+        }
+      }
+    },
+    "target": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "ref"],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "pattern": "^[^/\\s]+/[^/\\s]+$"
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "pullRequest"],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "pattern": "^[^/\\s]+/[^/\\s]+$"
+            },
+            "pullRequest": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instruction": {
+          "type": "string"
+        }
+      }
+    },
+    "sourceOccurrenceKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._/-]{0,255}$"
+    },
+    "correlation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "conversationId": {"type": "string"},
+        "replyTo": {"type": "string"},
+        "threadRef": {"type": "string"}
+      }
+    },
+    "intent": {
+      "enum": ["new", "continue", "wake"]
+    },
+    "priority": {
+      "enum": ["interactive", "batch"]
+    }
+  }
+}

@@ -1,0 +1,344 @@
+{
+  "contractVersion": "defined-factory/1",
+  "area": "budget",
+  "cases": [
+    {
+      "vectorId": "INV-DELEGATE-IDEMPOTENT",
+      "invariant": "INV-DELEGATE-IDEMPOTENT",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Duplicate delegate delivery does not create a second child or a second reservation.",
+      "document": {
+        "childCount": 1,
+        "duplicateDelivery": true,
+        "reservationCount": 1,
+        "sameKey": true
+      }
+    },
+    {
+      "vectorId": "INV-DELEGATE-IDEMPOTENT-BAD",
+      "invariant": "INV-DELEGATE-IDEMPOTENT",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-DELEGATE-IDEMPOTENT",
+      "schema": "scenario",
+      "title": "Duplicate delegate delivery does not create a second child or a second reservation.",
+      "document": {
+        "childCount": 2,
+        "duplicateDelivery": true,
+        "reservationCount": 1,
+        "sameKey": true
+      }
+    },
+    {
+      "vectorId": "INV-BUDGET-DEDUP",
+      "invariant": "INV-BUDGET-DEDUP",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Usage is integer cents deduplicated by call and attempt, including a failed attempt. A duplicate attempt is not counted twice.",
+      "document": {
+        "countedCents": 250,
+        "duplicateAttemptCounted": false,
+        "failedAttemptCounted": true,
+        "unit": "cents"
+      }
+    },
+    {
+      "vectorId": "INV-BUDGET-DEDUP-BAD",
+      "invariant": "INV-BUDGET-DEDUP",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-BUDGET-DEDUP",
+      "schema": "scenario",
+      "title": "Usage is integer cents deduplicated by call and attempt, including a failed attempt. A duplicate attempt is not counted twice.",
+      "document": {
+        "countedCents": 250,
+        "duplicateAttemptCounted": true,
+        "failedAttemptCounted": true,
+        "unit": "cents"
+      }
+    },
+    {
+      "vectorId": "INV-RESERVE",
+      "invariant": "INV-RESERVE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Ancestor reservation is one transaction. Scope rows lock in scope id order. Failure leaves no partial reserve.",
+      "document": {
+        "atomic": true,
+        "lockOrder": "scope_id",
+        "partialOnFailure": false,
+        "scopes": [
+          "factory",
+          "invocation",
+          "lead",
+          "agent"
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-RESERVE-BAD",
+      "invariant": "INV-RESERVE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-RESERVE",
+      "schema": "scenario",
+      "title": "Ancestor reservation is one transaction. Scope rows lock in scope id order. Failure leaves no partial reserve.",
+      "document": {
+        "atomic": true,
+        "lockOrder": "scope_id",
+        "partialOnFailure": true,
+        "scopes": [
+          "factory",
+          "invocation",
+          "lead",
+          "agent"
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-ALERT80",
+      "invariant": "INV-ALERT80",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "An 80 percent crossing emits one alert per episode. A refund below the line starts a new episode.",
+      "document": {
+        "alerts": 2,
+        "ceilingCents": 1000,
+        "charges": [
+          900,
+          -200,
+          200
+        ],
+        "thresholdPercent": 80
+      }
+    },
+    {
+      "vectorId": "INV-ALERT80-BAD",
+      "invariant": "INV-ALERT80",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-ALERT80",
+      "schema": "scenario",
+      "title": "An 80 percent crossing emits one alert per episode. A refund below the line starts a new episode.",
+      "document": {
+        "alerts": 1,
+        "ceilingCents": 1000,
+        "charges": [
+          900,
+          -200,
+          200
+        ],
+        "thresholdPercent": 80
+      }
+    },
+    {
+      "vectorId": "INV-MISSING-USAGE",
+      "invariant": "INV-MISSING-USAGE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Missing usage after the deadline admits no new spend. The overshoot bound is the outstanding reservation.",
+      "document": {
+        "admitNew": false,
+        "deadlinePassed": true,
+        "overshootBoundCents": 300,
+        "reservedCents": 300,
+        "spentCents": 0,
+        "usageArrived": false
+      }
+    },
+    {
+      "vectorId": "INV-MISSING-USAGE-BAD",
+      "invariant": "INV-MISSING-USAGE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-MISSING-USAGE",
+      "schema": "scenario",
+      "title": "Missing usage after the deadline admits no new spend. The overshoot bound is the outstanding reservation.",
+      "document": {
+        "admitNew": true,
+        "deadlinePassed": true,
+        "overshootBoundCents": 300,
+        "reservedCents": 300,
+        "spentCents": 0,
+        "usageArrived": false
+      }
+    },
+    {
+      "vectorId": "INV-OVERSHOOT",
+      "invariant": "INV-OVERSHOOT",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. The gateway cap is at most the ceiling.",
+      "document": {
+        "ceilingCents": 2500,
+        "gatewayCapCents": 2500,
+        "overshootBeyondCeilingCents": 0,
+        "reservedInFlightCents": 300
+      }
+    },
+    {
+      "vectorId": "INV-OVERSHOOT-BAD",
+      "invariant": "INV-OVERSHOOT",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-OVERSHOOT",
+      "schema": "scenario",
+      "title": "Spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. The gateway cap is at most the ceiling.",
+      "document": {
+        "ceilingCents": 2500,
+        "gatewayCapCents": 2500,
+        "overshootBeyondCeilingCents": 300,
+        "reservedInFlightCents": 300
+      }
+    },
+    {
+      "vectorId": "INV-LATE-CHARGE",
+      "invariant": "INV-LATE-CHARGE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation.",
+      "document": {
+        "code": "usage_late_over_reservation",
+        "paused": true,
+        "quarantinedCents": 150,
+        "reportedCents": 450,
+        "reservedCents": 300,
+        "spentCents": 300
+      }
+    },
+    {
+      "vectorId": "INV-LATE-CHARGE-BAD",
+      "invariant": "INV-LATE-CHARGE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-LATE-CHARGE",
+      "schema": "scenario",
+      "title": "A late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation.",
+      "document": {
+        "code": "usage_late_over_reservation",
+        "paused": true,
+        "quarantinedCents": 150,
+        "reportedCents": 450,
+        "reservedCents": 300,
+        "spentCents": 450
+      }
+    },
+    {
+      "vectorId": "INV-GATEWAY",
+      "invariant": "INV-GATEWAY",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Each engagement has its own gateway allocation at most the ceiling. A shared key is not this allocation.",
+      "document": {
+        "engagementCapCents": 2500,
+        "gatewayCapCents": 2500,
+        "gatewayCapLeqCeiling": true,
+        "isolation": "per_engagement",
+        "sharedKey": false
+      }
+    },
+    {
+      "vectorId": "INV-GATEWAY-BAD",
+      "invariant": "INV-GATEWAY",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-GATEWAY",
+      "schema": "scenario",
+      "title": "Each engagement has its own gateway allocation at most the ceiling. A shared key is not this allocation.",
+      "document": {
+        "engagementCapCents": 2500,
+        "gatewayCapCents": 5000,
+        "gatewayCapLeqCeiling": true,
+        "isolation": "per_engagement",
+        "sharedKey": false
+      }
+    },
+    {
+      "vectorId": "INV-SHARED-KEY",
+      "invariant": "INV-SHARED-KEY",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Refusing a spawn on a shared key does not guarantee the ceiling. In-flight calls on that key stay uncapped.",
+      "document": {
+        "guaranteesCeiling": false,
+        "inFlightUncapped": true,
+        "perEngagementAllocation": false,
+        "sharedKey": true,
+        "spawnRefused": true
+      }
+    },
+    {
+      "vectorId": "INV-SHARED-KEY-BAD",
+      "invariant": "INV-SHARED-KEY",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SHARED-KEY",
+      "schema": "scenario",
+      "title": "Refusing a spawn on a shared key does not guarantee the ceiling. In-flight calls on that key stay uncapped.",
+      "document": {
+        "guaranteesCeiling": true,
+        "inFlightUncapped": true,
+        "perEngagementAllocation": false,
+        "sharedKey": true,
+        "spawnRefused": true
+      }
+    },
+    {
+      "vectorId": "INV-BUDGET-OVERRIDE",
+      "invariant": "INV-BUDGET-OVERRIDE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "An authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing.",
+      "document": {
+        "accepted": true,
+        "actor": "api_key:ops",
+        "auditCommitted": true,
+        "ceilingCents": 4000,
+        "code": null,
+        "priorCeilingCents": 2500,
+        "spentDeltaCents": 0,
+        "writes": 1
+      }
+    },
+    {
+      "vectorId": "INV-BUDGET-OVERRIDE-BAD",
+      "invariant": "INV-BUDGET-OVERRIDE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-BUDGET-OVERRIDE",
+      "schema": "scenario",
+      "title": "An authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing.",
+      "document": {
+        "accepted": true,
+        "actor": "api_key:ops",
+        "auditCommitted": false,
+        "ceilingCents": 4000,
+        "code": null,
+        "priorCeilingCents": 2500,
+        "spentDeltaCents": 0,
+        "writes": 1
+      }
+    }
+  ]
+}

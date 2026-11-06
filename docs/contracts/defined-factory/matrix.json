@@ -1,0 +1,1644 @@
+{
+  "contractVersion": "defined-factory/1",
+  "baseline": "85812997d8e81b0209b678e583a7738b9d066966",
+  "rows": [
+    {
+      "invariant": "INV-REQUEST-SHAPE",
+      "title": "Add Invoke beside POST /tasks and POST /agent/run. The body has no principal and the profile is a name only.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "invocation.Service.Invoke",
+      "fieldPath": "POST /api/v1/factory/{uid}/invocations",
+      "baseline": {
+        "file": "internal/api/handler.go",
+        "start": 75,
+        "end": 86,
+        "anchor": "handleStartRun"
+      },
+      "decision": "Add Invoke beside POST /tasks and POST /agent/run. The body has no principal and the profile is a name only.",
+      "testOwner": "M8-I",
+      "positive": "INV-REQUEST-SHAPE",
+      "negative": "INV-REQUEST-SHAPE-BAD"
+    },
+    {
+      "invariant": "INV-REPLAY",
+      "title": "Same key and same canonical digest returns the original definition digest and target SHA. A reload or a moved ref does not rewrite the receipt.",
+      "consumer": "M8-I,M9-N,M9-H",
+      "producer": "M8-I",
+      "method": "store.InsertInvocation",
+      "fieldPath": "factoryUid,profile,sourceOccurrenceKey,canonicalDigest",
+      "baseline": {
+        "file": "internal/store/automation.go",
+        "start": 177,
+        "end": 181,
+        "anchor": "Continuation"
+      },
+      "decision": "Same key and same canonical digest returns the original definition digest and target SHA. A reload or a moved ref does not rewrite the receipt.",
+      "testOwner": "M8-I",
+      "positive": "INV-REPLAY",
+      "negative": "INV-REPLAY-BAD"
+    },
+    {
+      "invariant": "INV-CONFLICT",
+      "title": "Same key and a different canonical digest returns 409 invocation_conflict and writes nothing.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "invocation.Service.Invoke",
+      "fieldPath": "canonicalDigest",
+      "baseline": {
+        "file": "internal/store/automation.go",
+        "start": 177,
+        "end": 181,
+        "anchor": "Continuation"
+      },
+      "decision": "Same key and a different canonical digest returns 409 invocation_conflict and writes nothing.",
+      "testOwner": "M8-I",
+      "positive": "INV-CONFLICT",
+      "negative": "INV-CONFLICT-BAD"
+    },
+    {
+      "invariant": "INV-INTENT-CONFLICT",
+      "title": "Intent is part of the canonical body. new and wake on one occurrence key conflict.",
+      "consumer": "M9-N",
+      "producer": "M8-I",
+      "method": "invocation.Service.Invoke",
+      "fieldPath": "intent",
+      "baseline": {
+        "file": "internal/store/automation.go",
+        "start": 177,
+        "end": 181,
+        "anchor": "Continuation"
+      },
+      "decision": "Intent is part of the canonical body. new and wake on one occurrence key conflict.",
+      "testOwner": "M8-I",
+      "positive": "INV-INTENT-CONFLICT",
+      "negative": "INV-INTENT-CONFLICT-BAD"
+    },
+    {
+      "invariant": "INV-PRIORITY",
+      "title": "Human invoke is interactive. A schedule occurrence is batch.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "invocation.Service.Invoke",
+      "fieldPath": "priority",
+      "baseline": {
+        "file": "internal/server/m4_cron.go",
+        "start": 61,
+        "end": 83,
+        "anchor": "EventCronFired"
+      },
+      "decision": "Human invoke is interactive. A schedule occurrence is batch.",
+      "testOwner": "M8-I",
+      "positive": "INV-PRIORITY",
+      "negative": "INV-PRIORITY-BAD"
+    },
+    {
+      "invariant": "INV-CORRELATION",
+      "title": "A thread ref correlates replies. It is not the occurrence identity.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "invocation.Service.Invoke",
+      "fieldPath": "correlation.threadRef",
+      "baseline": {
+        "file": "internal/automation/engine.go",
+        "start": 170,
+        "end": 174,
+        "anchor": "ExternalRef"
+      },
+      "decision": "A thread ref correlates replies. It is not the occurrence identity.",
+      "testOwner": "M8-I",
+      "positive": "INV-CORRELATION",
+      "negative": "INV-CORRELATION-BAD"
+    },
+    {
+      "invariant": "INV-PR-DISTINCT",
+      "title": "Two deliberate reviews of one pull request are two invocations.",
+      "consumer": "M8-I,M10-A",
+      "producer": "M8-I",
+      "method": "invocation.Service.Invoke",
+      "fieldPath": "target.pullRequest,sourceOccurrenceKey",
+      "baseline": {
+        "file": "internal/server/m4_ingress.go",
+        "start": 295,
+        "end": 310,
+        "anchor": "pull_request_opened"
+      },
+      "decision": "Two deliberate reviews of one pull request are two invocations.",
+      "testOwner": "M8-I",
+      "positive": "INV-PR-DISTINCT",
+      "negative": "INV-PR-DISTINCT-BAD"
+    },
+    {
+      "invariant": "INV-PIN",
+      "title": "Resolve the pull request head and base, or the ref, once. Checkout uses the pinned SHA, not the SHA written in the prompt.",
+      "consumer": "M9-H,M10-A",
+      "producer": "M8-I",
+      "method": "invocation.Service.Invoke",
+      "fieldPath": "targetPin.headSha,targetPin.baseSha,targetPin.refSha",
+      "baseline": {
+        "file": "internal/server/m4_ingress.go",
+        "start": 295,
+        "end": 310,
+        "anchor": "pullHeadSHA"
+      },
+      "decision": "Resolve the pull request head and base, or the ref, once. Checkout uses the pinned SHA, not the SHA written in the prompt.",
+      "testOwner": "M8-I",
+      "positive": "INV-PIN",
+      "negative": "INV-PIN-BAD"
+    },
+    {
+      "invariant": "INV-NO-FORGE",
+      "title": "A definition that does not require a repository mints no forge token.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "invocation.Service.Invoke",
+      "fieldPath": "target",
+      "baseline": {
+        "file": "internal/server/backend.go",
+        "start": 104,
+        "end": 112,
+        "anchor": "req.Repo"
+      },
+      "decision": "A definition that does not require a repository mints no forge token.",
+      "testOwner": "M8-I",
+      "positive": "INV-NO-FORGE",
+      "negative": "INV-NO-FORGE-BAD"
+    },
+    {
+      "invariant": "INV-PRINCIPAL",
+      "title": "The principal comes from the authenticated context. A rejected principal writes nothing.",
+      "consumer": "M8-I,M9-T",
+      "producer": "M8-I",
+      "method": "api.withAPIKey",
+      "fieldPath": "principal",
+      "baseline": {
+        "file": "internal/api/handler.go",
+        "start": 138,
+        "end": 145,
+        "anchor": "withAPIKey"
+      },
+      "decision": "The principal comes from the authenticated context. A rejected principal writes nothing.",
+      "testOwner": "M8-I",
+      "positive": "INV-PRINCIPAL",
+      "negative": "INV-PRINCIPAL-BAD"
+    },
+    {
+      "invariant": "INV-PROFILE",
+      "title": "A profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected with no writes.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "invocation.Service.Invoke",
+      "fieldPath": "profile.name",
+      "baseline": {
+        "file": "internal/definition/guardrails.go",
+        "start": 83,
+        "end": 90,
+        "anchor": "WeakensApprovals"
+      },
+      "decision": "A profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected with no writes.",
+      "testOwner": "M8-I",
+      "positive": "INV-PROFILE",
+      "negative": "INV-PROFILE-BAD"
+    },
+    {
+      "invariant": "INV-REPOSITORY",
+      "title": "A repository outside the allowlist is repository_rejected and writes nothing.",
+      "consumer": "M9-H",
+      "producer": "M8-I",
+      "method": "invocation.Service.Invoke",
+      "fieldPath": "target.repository",
+      "baseline": {
+        "file": "internal/forge/github/token.go",
+        "start": 64,
+        "end": 70,
+        "anchor": "InstallationByRepo"
+      },
+      "decision": "A repository outside the allowlist is repository_rejected and writes nothing.",
+      "testOwner": "M8-I",
+      "positive": "INV-REPOSITORY",
+      "negative": "INV-REPOSITORY-BAD"
+    },
+    {
+      "invariant": "INV-GRANT",
+      "title": "execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing.",
+      "consumer": "M9-N,M10-A",
+      "producer": "M8-I",
+      "method": "invocation.Service.Invoke",
+      "fieldPath": "grants.executeTarget",
+      "baseline": {
+        "file": "internal/definition/guardrails.go",
+        "start": 83,
+        "end": 90,
+        "anchor": "WeakensApprovals"
+      },
+      "decision": "execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing.",
+      "testOwner": "M8-I",
+      "positive": "INV-GRANT",
+      "negative": "INV-GRANT-BAD"
+    },
+    {
+      "invariant": "INV-SCHEDULE-KEY",
+      "title": "The occurrence key is schedule id plus the due slot. Delivery time is not part of the key.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "scheduler.EmitOccurrence",
+      "fieldPath": "scheduleId,dueSlot",
+      "baseline": {
+        "file": "internal/server/m4_cron.go",
+        "start": 76,
+        "end": 82,
+        "anchor": "ev.DueAt"
+      },
+      "decision": "The occurrence key is schedule id plus the due slot. Delivery time is not part of the key.",
+      "testOwner": "M8-I",
+      "positive": "INV-SCHEDULE-KEY",
+      "negative": "INV-SCHEDULE-KEY-BAD"
+    },
+    {
+      "invariant": "INV-SCHEDULE-REPLAY",
+      "title": "Redelivery of the same due slot returns the original receipt and does not start another run.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "store.InsertInvocation",
+      "fieldPath": "sourceOccurrenceKey",
+      "baseline": {
+        "file": "internal/server/m4_cron.go",
+        "start": 76,
+        "end": 82,
+        "anchor": "DeliveryID"
+      },
+      "decision": "Redelivery of the same due slot returns the original receipt and does not start another run.",
+      "testOwner": "M8-I",
+      "positive": "INV-SCHEDULE-REPLAY",
+      "negative": "INV-SCHEDULE-REPLAY-BAD"
+    },
+    {
+      "invariant": "INV-OVERLAP",
+      "title": "Forbid overlap records skipped_overlap. It does not continue the busy item and it is not a completed scan.",
+      "consumer": "M8-I,M10-A",
+      "producer": "M8-I",
+      "method": "invocation.Service.Invoke",
+      "fieldPath": "overlapPolicy,outcome",
+      "baseline": {
+        "file": "internal/store/automation.go",
+        "start": 177,
+        "end": 181,
+        "anchor": "Continuation"
+      },
+      "decision": "Forbid overlap records skipped_overlap. It does not continue the busy item and it is not a completed scan.",
+      "testOwner": "M8-I",
+      "positive": "INV-OVERLAP",
+      "negative": "INV-OVERLAP-BAD"
+    },
+    {
+      "invariant": "INV-TWO-SLOTS",
+      "title": "Two nonoverlapping due slots create two work items.",
+      "consumer": "M10-A",
+      "producer": "M8-I",
+      "method": "scheduler.EmitOccurrence",
+      "fieldPath": "dueSlot,workItemId",
+      "baseline": {
+        "file": "internal/server/m4_cron.go",
+        "start": 76,
+        "end": 82,
+        "anchor": "ev.DueAt"
+      },
+      "decision": "Two nonoverlapping due slots create two work items.",
+      "testOwner": "M8-I",
+      "positive": "INV-TWO-SLOTS",
+      "negative": "INV-TWO-SLOTS-BAD"
+    },
+    {
+      "invariant": "INV-LEGACY-CONTINUE",
+      "title": "Legacy schedule and coding-thread continuation stays the default until occurrenceMode is fresh.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "automation.Engine.intake",
+      "fieldPath": "occurrenceMode",
+      "baseline": {
+        "file": "internal/automation/engine.go",
+        "start": 170,
+        "end": 180,
+        "anchor": "OpenWorkItem"
+      },
+      "decision": "Legacy schedule and coding-thread continuation stays the default until occurrenceMode is fresh.",
+      "testOwner": "M8-I",
+      "positive": "INV-LEGACY-CONTINUE",
+      "negative": "INV-LEGACY-CONTINUE-BAD"
+    },
+    {
+      "invariant": "INV-LEADER",
+      "title": "The due slot and receipt live in Postgres. Leader change and late delivery do not create a second receipt. A crash before commit inserts at most once.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "store.InsertInvocation",
+      "fieldPath": "invocation_ledgers",
+      "baseline": {
+        "file": "internal/server/m4_cron.go",
+        "start": 31,
+        "end": 40,
+        "anchor": "DueSchedules"
+      },
+      "decision": "The due slot and receipt live in Postgres. Leader change and late delivery do not create a second receipt. A crash before commit inserts at most once.",
+      "testOwner": "M8-I",
+      "positive": "INV-LEADER",
+      "negative": "INV-LEADER-BAD"
+    },
+    {
+      "invariant": "INV-REPORT-ZERO",
+      "title": "A report with findingsCount 0 and coverage present is success.",
+      "consumer": "M10-A",
+      "producer": "M8-I",
+      "method": "result.PutReport",
+      "fieldPath": "products.report.findingsCount",
+      "baseline": {
+        "file": "internal/definition/types.go",
+        "start": 276,
+        "end": 286,
+        "anchor": "RequirePullRequest"
+      },
+      "decision": "A report with findingsCount 0 and coverage present is success.",
+      "testOwner": "M8-I",
+      "positive": "INV-REPORT-ZERO",
+      "negative": "INV-REPORT-ZERO-BAD"
+    },
+    {
+      "invariant": "INV-PR-SEPARATION",
+      "title": "The input pull request never satisfies requires pullRequest.",
+      "consumer": "M8-I,M10-A",
+      "producer": "M8-I",
+      "method": "result.Get",
+      "fieldPath": "target.pullRequest,products.outputPullRequest",
+      "baseline": {
+        "file": "internal/server/terminal.go",
+        "start": 601,
+        "end": 607,
+        "anchor": "open_pr_url"
+      },
+      "decision": "The input pull request never satisfies requires pullRequest.",
+      "testOwner": "M8-I",
+      "positive": "INV-PR-SEPARATION",
+      "negative": "INV-PR-SEPARATION-BAD"
+    },
+    {
+      "invariant": "INV-REQUIRES-PR",
+      "title": "Opt-in requires pullRequest still fails closed with no_work_product when no output pull request was recorded.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "server.pullRequestMissing",
+      "fieldPath": "requires",
+      "baseline": {
+        "file": "internal/server/terminal.go",
+        "start": 499,
+        "end": 516,
+        "anchor": "pullRequestMissing"
+      },
+      "decision": "Opt-in requires pullRequest still fails closed with no_work_product when no output pull request was recorded.",
+      "testOwner": "M8-I",
+      "positive": "INV-REQUIRES-PR",
+      "negative": "INV-REQUIRES-PR-BAD"
+    },
+    {
+      "invariant": "INV-REQUIRES-EMPTY",
+      "title": "Omitted or empty requires does not demand a pull request or a report.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "definition.RequiresPullRequest",
+      "fieldPath": "requires",
+      "baseline": {
+        "file": "internal/definition/validate.go",
+        "start": 96,
+        "end": 113,
+        "anchor": "checkRequires"
+      },
+      "decision": "Omitted or empty requires does not demand a pull request or a report.",
+      "testOwner": "M8-I",
+      "positive": "INV-REQUIRES-EMPTY",
+      "negative": "INV-REQUIRES-EMPTY-BAD"
+    },
+    {
+      "invariant": "INV-REQUIRES-REPORT",
+      "title": "requires report ships only in the same change as durable storage and a real terminal validator.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "definition.Validate",
+      "fieldPath": "requires",
+      "baseline": {
+        "file": "internal/definition/validate.go",
+        "start": 96,
+        "end": 113,
+        "anchor": "checkRequires"
+      },
+      "decision": "requires report ships only in the same change as durable storage and a real terminal validator.",
+      "testOwner": "M8-I",
+      "positive": "INV-REQUIRES-REPORT",
+      "negative": "INV-REQUIRES-REPORT-BAD"
+    },
+    {
+      "invariant": "INV-NO-FINDINGS-ENUM",
+      "title": "requires findings and requires artifacts are not values.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "definition.Validate",
+      "fieldPath": "requires",
+      "baseline": {
+        "file": "internal/definition/validate.go",
+        "start": 109,
+        "end": 112,
+        "anchor": "not a work product"
+      },
+      "decision": "requires findings and requires artifacts are not values.",
+      "testOwner": "M8-I",
+      "positive": "INV-NO-FINDINGS-ENUM",
+      "negative": "INV-NO-FINDINGS-ENUM-BAD"
+    },
+    {
+      "invariant": "INV-REPORT-MISSING",
+      "title": "Missing report when report is required fails with report_missing. It does not reuse no_work_product.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "result.ValidateTerminal",
+      "fieldPath": "products.report",
+      "baseline": {
+        "file": "internal/server/terminal.go",
+        "start": 21,
+        "end": 22,
+        "anchor": "no_work_product"
+      },
+      "decision": "Missing report when report is required fails with report_missing. It does not reuse no_work_product.",
+      "testOwner": "M8-I",
+      "positive": "INV-REPORT-MISSING",
+      "negative": "INV-REPORT-MISSING-BAD"
+    },
+    {
+      "invariant": "INV-UNAUTH-READ",
+      "title": "An unauthorized result read is 403 with an empty body.",
+      "consumer": "M8-I,M10-A",
+      "producer": "M8-I",
+      "method": "GET /invocations/{id}/result",
+      "fieldPath": "links.result",
+      "baseline": {
+        "file": "internal/api/handler.go",
+        "start": 138,
+        "end": 145,
+        "anchor": "withAPIKey"
+      },
+      "decision": "An unauthorized result read is 403 with an empty body.",
+      "testOwner": "M8-I",
+      "positive": "INV-UNAUTH-READ",
+      "negative": "INV-UNAUTH-READ-BAD"
+    },
+    {
+      "invariant": "INV-PATH",
+      "title": "Publication rejects absolute paths, backslashes, and .. segments.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "result.Publish",
+      "fieldPath": "storageRef",
+      "baseline": {
+        "file": "internal/server/terminal.go",
+        "start": 748,
+        "end": 760,
+        "anchor": "events.ndjson"
+      },
+      "decision": "Publication rejects absolute paths, backslashes, and .. segments.",
+      "testOwner": "M8-I",
+      "positive": "INV-PATH",
+      "negative": "INV-PATH-BAD"
+    },
+    {
+      "invariant": "INV-SYMLINK",
+      "title": "A lexically safe path that is a symlink is result_symlink_rejected.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "result.Publish",
+      "fieldPath": "storageRef",
+      "baseline": {
+        "file": "internal/server/terminal.go",
+        "start": 748,
+        "end": 760,
+        "anchor": "events.ndjson"
+      },
+      "decision": "A lexically safe path that is a symlink is result_symlink_rejected.",
+      "testOwner": "M8-I",
+      "positive": "INV-SYMLINK",
+      "negative": "INV-SYMLINK-BAD"
+    },
+    {
+      "invariant": "INV-SIZE",
+      "title": "Report bodies are at most 1 MiB. Artifact files are at most 16 MiB.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "result.Publish",
+      "fieldPath": "reportMaxBytes,artifactMaxBytes",
+      "baseline": {
+        "file": "internal/server/terminal.go",
+        "start": 748,
+        "end": 760,
+        "anchor": "events.ndjson"
+      },
+      "decision": "Report bodies are at most 1 MiB. Artifact files are at most 16 MiB.",
+      "testOwner": "M8-I",
+      "positive": "INV-SIZE",
+      "negative": "INV-SIZE-BAD"
+    },
+    {
+      "invariant": "INV-SECRET-PUB",
+      "title": "A secret scan hit is not published. Fixtures use the synthetic canary label only.",
+      "consumer": "M10-S,M8-I",
+      "producer": "M8-I",
+      "method": "result.Publish",
+      "fieldPath": "secretScan",
+      "baseline": {
+        "file": "internal/server/assign.go",
+        "start": 91,
+        "end": 94,
+        "anchor": "OPENAI_API_KEY"
+      },
+      "decision": "A secret scan hit is not published. Fixtures use the synthetic canary label only.",
+      "testOwner": "M8-I",
+      "positive": "INV-SECRET-PUB",
+      "negative": "INV-SECRET-PUB-BAD"
+    },
+    {
+      "invariant": "INV-TREE",
+      "title": "Native mode freezes one synthetic root, an acyclic connected depth-2 tree, direct-manager delegation, and no ancestor shortcut. It is not an Atum roster.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "definition.ValidateNativeTree",
+      "fieldPath": "personas.reportsTo,policySnapshot",
+      "baseline": {
+        "file": "internal/definition/inherit.go",
+        "start": 66,
+        "end": 73,
+        "anchor": "foreman"
+      },
+      "decision": "Native mode freezes one synthetic root, an acyclic connected depth-2 tree, direct-manager delegation, and no ancestor shortcut. It is not an Atum roster.",
+      "testOwner": "M9-N",
+      "positive": "INV-TREE",
+      "negative": "INV-TREE-BAD"
+    },
+    {
+      "invariant": "INV-LEGACY-HIERARCHY",
+      "title": "Legacy factories may omit reportsTo. The field is not enforced unless native hierarchy is on.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "definition.ValidateNativeTree",
+      "fieldPath": "nativeHierarchy",
+      "baseline": {
+        "file": "internal/definition/types.go",
+        "start": 267,
+        "end": 270,
+        "anchor": "SpawnableBy"
+      },
+      "decision": "Legacy factories may omit reportsTo. The field is not enforced unless native hierarchy is on.",
+      "testOwner": "M9-N",
+      "positive": "INV-LEGACY-HIERARCHY",
+      "negative": "INV-LEGACY-HIERARCHY-BAD"
+    },
+    {
+      "invariant": "INV-DEPTH",
+      "title": "The proof profile max depth is 2. The absolute max depth is 8. A deeper spawn is depth_exceeded.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.Delegate",
+      "fieldPath": "maxDepth,absoluteMaxDepth",
+      "baseline": {
+        "file": "internal/definition/inherit.go",
+        "start": 66,
+        "end": 73,
+        "anchor": "spawnableBy"
+      },
+      "decision": "The proof profile max depth is 2. The absolute max depth is 8. A deeper spawn is depth_exceeded.",
+      "testOwner": "M9-N",
+      "positive": "INV-DEPTH",
+      "negative": "INV-DEPTH-BAD"
+    },
+    {
+      "invariant": "INV-DELEGATION",
+      "title": "Direct-manager delegation requires the delegator to be reportsTo and listed in spawnableBy. spawnableBy stays parsed until M9-N enforces it.",
+      "consumer": "M9-H",
+      "producer": "M9-N",
+      "method": "coordination.Delegate",
+      "fieldPath": "spawnableBy,reportsTo",
+      "baseline": {
+        "file": "internal/definition/inherit.go",
+        "start": 66,
+        "end": 73,
+        "anchor": "foreman"
+      },
+      "decision": "Direct-manager delegation requires the delegator to be reportsTo and listed in spawnableBy. spawnableBy stays parsed until M9-N enforces it.",
+      "testOwner": "M9-N",
+      "positive": "INV-DELEGATION",
+      "negative": "INV-DELEGATION-BAD"
+    },
+    {
+      "invariant": "INV-NOT-PARENT-RUN",
+      "title": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
+      "consumer": "M9-N,M9-T",
+      "producer": "M9-N",
+      "method": "coordination.Delegate",
+      "fieldPath": "delegationEdgeId,parentRunId",
+      "baseline": {
+        "file": "internal/server/work.go",
+        "start": 660,
+        "end": 682,
+        "anchor": "ParentRunID"
+      },
+      "decision": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
+      "testOwner": "M9-N",
+      "positive": "INV-NOT-PARENT-RUN",
+      "negative": "INV-NOT-PARENT-RUN-BAD"
+    },
+    {
+      "invariant": "INV-NO-SECRET-FROM-REPORTS",
+      "title": "Reporting line does not grant secret or repository access.",
+      "consumer": "M9-H,M10-S",
+      "producer": "M9-N",
+      "method": "coordination.Delegate",
+      "fieldPath": "reportsTo",
+      "baseline": {
+        "file": "internal/server/assign.go",
+        "start": 47,
+        "end": 53,
+        "anchor": "secretNames"
+      },
+      "decision": "Reporting line does not grant secret or repository access.",
+      "testOwner": "M9-N",
+      "positive": "INV-NO-SECRET-FROM-REPORTS",
+      "negative": "INV-NO-SECRET-FROM-REPORTS-BAD"
+    },
+    {
+      "invariant": "INV-IDENTITIES",
+      "title": "Task, assignee, blockers, activation, and execution are distinct identities.",
+      "consumer": "M9-T,M9-N",
+      "producer": "M9-T",
+      "method": "store.InsertNativeTask",
+      "fieldPath": "taskId,assignee,blockerIds,activationId,executionId",
+      "baseline": {
+        "file": "internal/store/types.go",
+        "start": 110,
+        "end": 131,
+        "anchor": "ParentRunID"
+      },
+      "decision": "Task, assignee, blockers, activation, and execution are distinct identities.",
+      "testOwner": "M9-T",
+      "positive": "INV-IDENTITIES",
+      "negative": "INV-IDENTITIES-BAD"
+    },
+    {
+      "invariant": "INV-STAGE-OWNER",
+      "title": "Only the stage owner advances the pipeline. A child with the same stage string does not.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "server.advanceAfterTerminal",
+      "fieldPath": "stageOwner",
+      "baseline": {
+        "file": "internal/server/work.go",
+        "start": 246,
+        "end": 255,
+        "anchor": "advanceAfterTerminal"
+      },
+      "decision": "Only the stage owner advances the pipeline. A child with the same stage string does not.",
+      "testOwner": "M9-N",
+      "positive": "INV-STAGE-OWNER",
+      "negative": "INV-STAGE-OWNER-BAD"
+    },
+    {
+      "invariant": "INV-CANONICAL",
+      "title": "One canonical event record per invocation. The inbox is a per-assignee projection, not a second store.",
+      "consumer": "M9-H",
+      "producer": "M9-T",
+      "method": "store.AppendLedger",
+      "fieldPath": "invocation_events",
+      "baseline": {
+        "file": "internal/store/events.go",
+        "start": 107,
+        "end": 115,
+        "anchor": "MAX(seq)"
+      },
+      "decision": "One canonical event record per invocation. The inbox is a per-assignee projection, not a second store.",
+      "testOwner": "M9-T",
+      "positive": "INV-CANONICAL",
+      "negative": "INV-CANONICAL-BAD"
+    },
+    {
+      "invariant": "INV-BODY",
+      "title": "Inbox and comment bodies are at most 8192 bytes.",
+      "consumer": "M9-H",
+      "producer": "M9-T",
+      "method": "store.AppendLedger",
+      "fieldPath": "body",
+      "baseline": {
+        "file": "internal/api/handler.go",
+        "start": 18,
+        "end": 20,
+        "anchor": "maxBodyBytes"
+      },
+      "decision": "Inbox and comment bodies are at most 8192 bytes.",
+      "testOwner": "M9-T",
+      "positive": "INV-BODY",
+      "negative": "INV-BODY-BAD"
+    },
+    {
+      "invariant": "INV-ACK",
+      "title": "Ack is explicit, idempotent, and scoped to task and principal. It runs only after durable apply.",
+      "consumer": "M9-H",
+      "producer": "M9-T",
+      "method": "store.AckDelivery",
+      "fieldPath": "deliveryId,principal,taskId",
+      "baseline": {
+        "file": "internal/store/events.go",
+        "start": 97,
+        "end": 105,
+        "anchor": "insertEvent"
+      },
+      "decision": "Ack is explicit, idempotent, and scoped to task and principal. It runs only after durable apply.",
+      "testOwner": "M9-T",
+      "positive": "INV-ACK",
+      "negative": "INV-ACK-BAD"
+    },
+    {
+      "invariant": "INV-READ-NOT-ACK",
+      "title": "Read and long-poll do not acknowledge.",
+      "consumer": "M9-H",
+      "producer": "M9-T",
+      "method": "store.ReadInbox",
+      "fieldPath": "cursor",
+      "baseline": {
+        "file": "internal/client/run_events.go",
+        "start": 50,
+        "end": 56,
+        "anchor": "Last-Event-ID"
+      },
+      "decision": "Read and long-poll do not acknowledge.",
+      "testOwner": "M9-T",
+      "positive": "INV-READ-NOT-ACK",
+      "negative": "INV-READ-NOT-ACK-BAD"
+    },
+    {
+      "invariant": "INV-DROP",
+      "title": "A dropped response leaves the delivery unacked. Redelivery applies the message once.",
+      "consumer": "M9-H",
+      "producer": "M9-T",
+      "method": "store.AckDelivery",
+      "fieldPath": "messageId,deliveryId",
+      "baseline": {
+        "file": "internal/store/events.go",
+        "start": 97,
+        "end": 105,
+        "anchor": "execution_id"
+      },
+      "decision": "A dropped response leaves the delivery unacked. Redelivery applies the message once.",
+      "testOwner": "M9-T",
+      "positive": "INV-DROP",
+      "negative": "INV-DROP-BAD"
+    },
+    {
+      "invariant": "INV-DUP-ACK",
+      "title": "A duplicate ack does not apply the message twice.",
+      "consumer": "M9-H",
+      "producer": "M9-T",
+      "method": "store.AckDelivery",
+      "fieldPath": "deliveryId",
+      "baseline": {
+        "file": "internal/store/events.go",
+        "start": 97,
+        "end": 105,
+        "anchor": "idx"
+      },
+      "decision": "A duplicate ack does not apply the message twice.",
+      "testOwner": "M9-T",
+      "positive": "INV-DUP-ACK",
+      "negative": "INV-DUP-ACK-BAD"
+    },
+    {
+      "invariant": "INV-LATE-COMMIT",
+      "title": "Lock the invocation ledger row and commit the event, state, and outbox together. factory_seq and run_events.seq are not invocation order.",
+      "consumer": "M9-N,M9-H",
+      "producer": "M9-T",
+      "method": "store.AppendLedger",
+      "fieldPath": "invocation_ledgers.ledger_seq",
+      "baseline": {
+        "file": "internal/store/migrations/0009_run_lifecycle_events.sql",
+        "start": 94,
+        "end": 96,
+        "anchor": "nextval"
+      },
+      "decision": "Lock the invocation ledger row and commit the event, state, and outbox together. factory_seq and run_events.seq are not invocation order.",
+      "testOwner": "M9-T",
+      "positive": "INV-LATE-COMMIT",
+      "negative": "INV-LATE-COMMIT-BAD"
+    },
+    {
+      "invariant": "INV-SSE",
+      "title": "Per-run SSE cursors stay on run_events.seq.",
+      "consumer": "M9-H",
+      "producer": "M9-T",
+      "method": "client.StreamRunEvents",
+      "fieldPath": "Last-Event-ID",
+      "baseline": {
+        "file": "internal/client/run_events.go",
+        "start": 50,
+        "end": 56,
+        "anchor": "Last-Event-ID"
+      },
+      "decision": "Per-run SSE cursors stay on run_events.seq.",
+      "testOwner": "M9-T",
+      "positive": "INV-SSE",
+      "negative": "INV-SSE-BAD"
+    },
+    {
+      "invariant": "INV-CLAIM",
+      "title": "A second claim loses the fence. The holder and fence stay unchanged.",
+      "consumer": "M9-N",
+      "producer": "M9-T",
+      "method": "store.ClaimInbox",
+      "fieldPath": "fence",
+      "baseline": {
+        "file": "internal/store/events.go",
+        "start": 107,
+        "end": 115,
+        "anchor": "MAX(seq)"
+      },
+      "decision": "A second claim loses the fence. The holder and fence stay unchanged.",
+      "testOwner": "M9-T",
+      "positive": "INV-CLAIM",
+      "negative": "INV-CLAIM-BAD"
+    },
+    {
+      "invariant": "INV-PAGINATION",
+      "title": "Inbox pages use an opaque cursor. Limit is 1 through 100 and defaults to 50.",
+      "consumer": "M9-H",
+      "producer": "M9-T",
+      "method": "store.ReadInbox",
+      "fieldPath": "cursor,limit",
+      "baseline": {
+        "file": "internal/store/events.go",
+        "start": 122,
+        "end": 127,
+        "anchor": "EventsFrom"
+      },
+      "decision": "Inbox pages use an opaque cursor. Limit is 1 through 100 and defaults to 50.",
+      "testOwner": "M9-T",
+      "positive": "INV-PAGINATION",
+      "negative": "INV-PAGINATION-BAD"
+    },
+    {
+      "invariant": "INV-COALESCE",
+      "title": "Repeated wake intents for one task collapse to one durable wake record.",
+      "consumer": "M9-N",
+      "producer": "M9-T",
+      "method": "store.CoalesceWake",
+      "fieldPath": "wakeIntent",
+      "baseline": {
+        "file": "internal/server/m5_steer.go",
+        "start": 31,
+        "end": 42,
+        "anchor": "enqueueSteer"
+      },
+      "decision": "Repeated wake intents for one task collapse to one durable wake record.",
+      "testOwner": "M9-T",
+      "positive": "INV-COALESCE",
+      "negative": "INV-COALESCE-BAD"
+    },
+    {
+      "invariant": "INV-CAPACITY",
+      "title": "Capacity 1 still finishes the tree because a manager parks and releases its slot before the child runs.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.ClaimActivation",
+      "fieldPath": "workerCapacity",
+      "baseline": {
+        "file": "internal/server/work.go",
+        "start": 341,
+        "end": 346,
+        "anchor": "onQuestion"
+      },
+      "decision": "Capacity 1 still finishes the tree because a manager parks and releases its slot before the child runs.",
+      "testOwner": "M9-N",
+      "positive": "INV-CAPACITY",
+      "negative": "INV-CAPACITY-BAD"
+    },
+    {
+      "invariant": "INV-PARK",
+      "title": "Park is per task, records blockers, and releases worker capacity. Today's suspension is one per work item.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.Park",
+      "fieldPath": "state,blockers",
+      "baseline": {
+        "file": "internal/server/work.go",
+        "start": 341,
+        "end": 346,
+        "anchor": "onQuestion"
+      },
+      "decision": "Park is per task, records blockers, and releases worker capacity. Today's suspension is one per work item.",
+      "testOwner": "M9-N",
+      "positive": "INV-PARK",
+      "negative": "INV-PARK-BAD"
+    },
+    {
+      "invariant": "INV-STEER",
+      "title": "A running recipient is steered only when steer was negotiated. Otherwise the input stays pending.",
+      "consumer": "M9-H",
+      "producer": "M9-N",
+      "method": "coordination.DeliverInput",
+      "fieldPath": "capabilities.steer",
+      "baseline": {
+        "file": "internal/server/m5_steer.go",
+        "start": 23,
+        "end": 29,
+        "anchor": "Interrupt"
+      },
+      "decision": "A running recipient is steered only when steer was negotiated. Otherwise the input stays pending.",
+      "testOwner": "M9-N",
+      "positive": "INV-STEER",
+      "negative": "INV-STEER-BAD"
+    },
+    {
+      "invariant": "INV-COMPLETED-WAKE",
+      "title": "Waking a completed task creates a new linked run. The prior terminal row stays immutable.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.WakeCompleted",
+      "fieldPath": "linkedFromRunId",
+      "baseline": {
+        "file": "internal/server/m5_steer.go",
+        "start": 39,
+        "end": 41,
+        "anchor": "steerUnavailable"
+      },
+      "decision": "Waking a completed task creates a new linked run. The prior terminal row stays immutable.",
+      "testOwner": "M9-N",
+      "positive": "INV-COMPLETED-WAKE",
+      "negative": "INV-COMPLETED-WAKE-BAD"
+    },
+    {
+      "invariant": "INV-RETRY-EXEC",
+      "title": "Infrastructure retry creates a new execution of the same run.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.RetryExecution",
+      "fieldPath": "runId,executionId",
+      "baseline": {
+        "file": "internal/store/types.go",
+        "start": 110,
+        "end": 112,
+        "anchor": "logical task"
+      },
+      "decision": "Infrastructure retry creates a new execution of the same run.",
+      "testOwner": "M9-N",
+      "positive": "INV-RETRY-EXEC",
+      "negative": "INV-RETRY-EXEC-BAD"
+    },
+    {
+      "invariant": "INV-PARK-CONTINUE",
+      "title": "Park continuation creates a new execution of the same run.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.ResumePark",
+      "fieldPath": "executionId",
+      "baseline": {
+        "file": "internal/server/work.go",
+        "start": 341,
+        "end": 346,
+        "anchor": "releases the worker"
+      },
+      "decision": "Park continuation creates a new execution of the same run.",
+      "testOwner": "M9-N",
+      "positive": "INV-PARK-CONTINUE",
+      "negative": "INV-PARK-CONTINUE-BAD"
+    },
+    {
+      "invariant": "INV-NO-RESURRECT",
+      "title": "A cancelled task does not auto-resurrect.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.Wake",
+      "fieldPath": "status",
+      "baseline": {
+        "file": "internal/server/work.go",
+        "start": 246,
+        "end": 255,
+        "anchor": "advanceAfterTerminal"
+      },
+      "decision": "A cancelled task does not auto-resurrect.",
+      "testOwner": "M9-N",
+      "positive": "INV-NO-RESURRECT",
+      "negative": "INV-NO-RESURRECT-BAD"
+    },
+    {
+      "invariant": "INV-SUBTREE-CANCEL",
+      "title": "Cancel and pause cascade over the chosen subtree and later spawn is spawn_denied.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.CancelSubtree",
+      "fieldPath": "descendants",
+      "baseline": {
+        "file": "internal/server/work.go",
+        "start": 330,
+        "end": 338,
+        "anchor": "cancelWorkItemRuns"
+      },
+      "decision": "Cancel and pause cascade over the chosen subtree and later spawn is spawn_denied.",
+      "testOwner": "M9-N",
+      "positive": "INV-SUBTREE-CANCEL",
+      "negative": "INV-SUBTREE-CANCEL-BAD"
+    },
+    {
+      "invariant": "INV-BOARD-RESUME",
+      "title": "Board resume is an authorized audited transition. It does not mutate the cancelled run's terminal evidence.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.BoardResume",
+      "fieldPath": "audit.board.resume",
+      "baseline": {
+        "file": "internal/store/types.go",
+        "start": 100,
+        "end": 102,
+        "anchor": "InboxActionApprove"
+      },
+      "decision": "Board resume is an authorized audited transition. It does not mutate the cancelled run's terminal evidence.",
+      "testOwner": "M9-N",
+      "positive": "INV-BOARD-RESUME",
+      "negative": "INV-BOARD-RESUME-BAD"
+    },
+    {
+      "invariant": "INV-FAIL-CHILD",
+      "title": "fail_parent does not synthesize and does not spawn a replacement.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.Join",
+      "fieldPath": "failedChildPolicy",
+      "baseline": {
+        "file": "internal/server/work.go",
+        "start": 276,
+        "end": 279,
+        "anchor": "item.Stage"
+      },
+      "decision": "fail_parent does not synthesize and does not spawn a replacement.",
+      "testOwner": "M9-N",
+      "positive": "INV-FAIL-CHILD",
+      "negative": "INV-FAIL-CHILD-BAD"
+    },
+    {
+      "invariant": "INV-JOIN",
+      "title": "Join does not synthesize while a required child is live or unresolved.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.Join",
+      "fieldPath": "blockers",
+      "baseline": {
+        "file": "internal/server/work.go",
+        "start": 276,
+        "end": 279,
+        "anchor": "item.Stage"
+      },
+      "decision": "Join does not synthesize while a required child is live or unresolved.",
+      "testOwner": "M9-N",
+      "positive": "INV-JOIN",
+      "negative": "INV-JOIN-BAD"
+    },
+    {
+      "invariant": "INV-DELEGATE-IDEMPOTENT",
+      "title": "Duplicate delegate delivery does not create a second child or a second reservation.",
+      "consumer": "M9-H",
+      "producer": "M9-N",
+      "method": "coordination.Delegate",
+      "fieldPath": "idempotencyKey",
+      "baseline": {
+        "file": "internal/store/automation.go",
+        "start": 177,
+        "end": 181,
+        "anchor": "Continuation"
+      },
+      "decision": "Duplicate delegate delivery does not create a second child or a second reservation.",
+      "testOwner": "M9-N",
+      "positive": "INV-DELEGATE-IDEMPOTENT",
+      "negative": "INV-DELEGATE-IDEMPOTENT-BAD"
+    },
+    {
+      "invariant": "INV-BUDGET-DEDUP",
+      "title": "Usage is integer cents deduplicated by call and attempt, including a failed attempt. A duplicate attempt is not counted twice.",
+      "consumer": "M9-H,M10-G",
+      "producer": "M9-N",
+      "method": "coordination.SettleUsage",
+      "fieldPath": "callId,attemptId",
+      "baseline": {
+        "file": "internal/store/m5_read.go",
+        "start": 137,
+        "end": 139,
+        "anchor": "CostCents"
+      },
+      "decision": "Usage is integer cents deduplicated by call and attempt, including a failed attempt. A duplicate attempt is not counted twice.",
+      "testOwner": "M9-N",
+      "positive": "INV-BUDGET-DEDUP",
+      "negative": "INV-BUDGET-DEDUP-BAD"
+    },
+    {
+      "invariant": "INV-ROLLUP",
+      "title": "Each leaf charge rolls up once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
+      "consumer": "M9-N,M10-G",
+      "producer": "M9-N",
+      "method": "coordination.Rollup",
+      "fieldPath": "scopes",
+      "baseline": {
+        "file": "internal/store/m5_read.go",
+        "start": 109,
+        "end": 116,
+        "anchor": "RunUsage"
+      },
+      "decision": "Each leaf charge rolls up once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
+      "testOwner": "M9-N",
+      "positive": "INV-ROLLUP",
+      "negative": "INV-ROLLUP-BAD"
+    },
+    {
+      "invariant": "INV-RESERVE",
+      "title": "Ancestor reservation is one transaction. Scope rows lock in scope id order. Failure leaves no partial reserve.",
+      "consumer": "M9-H",
+      "producer": "M9-N",
+      "method": "coordination.ReserveAncestors",
+      "fieldPath": "reservation",
+      "baseline": {
+        "file": "internal/store/m5_read.go",
+        "start": 137,
+        "end": 139,
+        "anchor": "CostCents"
+      },
+      "decision": "Ancestor reservation is one transaction. Scope rows lock in scope id order. Failure leaves no partial reserve.",
+      "testOwner": "M9-N",
+      "positive": "INV-RESERVE",
+      "negative": "INV-RESERVE-BAD"
+    },
+    {
+      "invariant": "INV-CONCURRENT",
+      "title": "Two concurrent reservations that would pass a 2500 cent ceiling cannot both commit.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.ReserveAncestors",
+      "fieldPath": "ceilingCents",
+      "baseline": {
+        "file": "internal/store/m5_read.go",
+        "start": 137,
+        "end": 139,
+        "anchor": "CostCents"
+      },
+      "decision": "Two concurrent reservations that would pass a 2500 cent ceiling cannot both commit.",
+      "testOwner": "M9-N",
+      "positive": "INV-CONCURRENT",
+      "negative": "INV-CONCURRENT-BAD"
+    },
+    {
+      "invariant": "INV-ALERT80",
+      "title": "An 80 percent crossing emits one alert per episode. A refund below the line starts a new episode.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.NoteThreshold",
+      "fieldPath": "thresholdPercent",
+      "baseline": {
+        "file": "internal/store/m5_read.go",
+        "start": 137,
+        "end": 139,
+        "anchor": "CostCents"
+      },
+      "decision": "An 80 percent crossing emits one alert per episode. A refund below the line starts a new episode.",
+      "testOwner": "M9-N",
+      "positive": "INV-ALERT80",
+      "negative": "INV-ALERT80-BAD"
+    },
+    {
+      "invariant": "INV-MISSING-USAGE",
+      "title": "Missing usage after the deadline admits no new spend. The overshoot bound is the outstanding reservation.",
+      "consumer": "M9-H,M10-G",
+      "producer": "M9-N",
+      "method": "coordination.Admit",
+      "fieldPath": "usageDeadline",
+      "baseline": {
+        "file": "internal/store/m5_read.go",
+        "start": 109,
+        "end": 116,
+        "anchor": "RunUsage"
+      },
+      "decision": "Missing usage after the deadline admits no new spend. The overshoot bound is the outstanding reservation.",
+      "testOwner": "M9-N",
+      "positive": "INV-MISSING-USAGE",
+      "negative": "INV-MISSING-USAGE-BAD"
+    },
+    {
+      "invariant": "INV-OVERSHOOT",
+      "title": "Spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. The gateway cap is at most the ceiling.",
+      "consumer": "M10-G",
+      "producer": "M9-N",
+      "method": "coordination.Admit",
+      "fieldPath": "overshootBeyondCeilingCents",
+      "baseline": {
+        "file": "internal/store/m5_read.go",
+        "start": 137,
+        "end": 139,
+        "anchor": "CostCents"
+      },
+      "decision": "Spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. The gateway cap is at most the ceiling.",
+      "testOwner": "M9-N",
+      "positive": "INV-OVERSHOOT",
+      "negative": "INV-OVERSHOOT-BAD"
+    },
+    {
+      "invariant": "INV-LATE-CHARGE",
+      "title": "A late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation.",
+      "consumer": "M10-G",
+      "producer": "M9-N",
+      "method": "coordination.SettleUsage",
+      "fieldPath": "quarantinedCents",
+      "baseline": {
+        "file": "internal/store/m5_read.go",
+        "start": 137,
+        "end": 139,
+        "anchor": "CostCents"
+      },
+      "decision": "A late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation.",
+      "testOwner": "M9-N",
+      "positive": "INV-LATE-CHARGE",
+      "negative": "INV-LATE-CHARGE-BAD"
+    },
+    {
+      "invariant": "INV-GATEWAY",
+      "title": "Each engagement has its own gateway allocation at most the ceiling. A shared key is not this allocation.",
+      "consumer": "M10-G,M10-A",
+      "producer": "M10-S",
+      "method": "gateway.AllocateEngagement",
+      "fieldPath": "gatewayCapCents",
+      "baseline": {
+        "file": "internal/store/m5_read.go",
+        "start": 137,
+        "end": 139,
+        "anchor": "CostCents"
+      },
+      "decision": "Each engagement has its own gateway allocation at most the ceiling. A shared key is not this allocation.",
+      "testOwner": "M10-G",
+      "positive": "INV-GATEWAY",
+      "negative": "INV-GATEWAY-BAD"
+    },
+    {
+      "invariant": "INV-SHARED-KEY",
+      "title": "Refusing a spawn on a shared key does not guarantee the ceiling. In-flight calls on that key stay uncapped.",
+      "consumer": "M10-G",
+      "producer": "M9-N",
+      "method": "coordination.Admit",
+      "fieldPath": "sharedKey",
+      "baseline": {
+        "file": "internal/server/assign.go",
+        "start": 91,
+        "end": 94,
+        "anchor": "OPENAI_API_KEY"
+      },
+      "decision": "Refusing a spawn on a shared key does not guarantee the ceiling. In-flight calls on that key stay uncapped.",
+      "testOwner": "M10-G",
+      "positive": "INV-SHARED-KEY",
+      "negative": "INV-SHARED-KEY-BAD"
+    },
+    {
+      "invariant": "INV-BUDGET-OVERRIDE",
+      "title": "An authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing.",
+      "consumer": "M9-N",
+      "producer": "M9-N",
+      "method": "coordination.AuthorizeCeiling",
+      "fieldPath": "ceilingCents,audit",
+      "baseline": {
+        "file": "internal/store/m5_read.go",
+        "start": 109,
+        "end": 116,
+        "anchor": "RunUsage"
+      },
+      "decision": "An authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing.",
+      "testOwner": "M9-N",
+      "positive": "INV-BUDGET-OVERRIDE",
+      "negative": "INV-BUDGET-OVERRIDE-BAD"
+    },
+    {
+      "invariant": "INV-TOKEN",
+      "title": "Child tool tokens are a subset of the parent. A specialist token cannot dispatch or cross invocations.",
+      "consumer": "M9-H,M10-A",
+      "producer": "M9-H",
+      "method": "harness.IssueRunToken",
+      "fieldPath": "grants,attenuatedFrom",
+      "baseline": {
+        "file": "internal/server/m4_wire.go",
+        "start": 343,
+        "end": 356,
+        "anchor": "DefaultPermissions"
+      },
+      "decision": "Child tool tokens are a subset of the parent. A specialist token cannot dispatch or cross invocations.",
+      "testOwner": "M9-H",
+      "positive": "INV-TOKEN",
+      "negative": "INV-TOKEN-BAD"
+    },
+    {
+      "invariant": "INV-NO-DISPATCH",
+      "title": "Specialists do not dispatch roster agents. Leads may, under policy.",
+      "consumer": "M10-A",
+      "producer": "M9-H",
+      "method": "harness.IssueRunToken",
+      "fieldPath": "roster.dispatch",
+      "baseline": {
+        "file": "internal/definition/inherit.go",
+        "start": 66,
+        "end": 73,
+        "anchor": "foreman"
+      },
+      "decision": "Specialists do not dispatch roster agents. Leads may, under policy.",
+      "testOwner": "M9-H",
+      "positive": "INV-NO-DISPATCH",
+      "negative": "INV-NO-DISPATCH-BAD"
+    },
+    {
+      "invariant": "INV-WORKFLOW",
+      "title": "Internal workers stay in-session. Workflow stays main-loop-only. They are not roster nodes.",
+      "consumer": "M9-H",
+      "producer": "M9-H",
+      "method": "harness.Negotiate",
+      "fieldPath": "workflow,internalWorkers",
+      "baseline": {
+        "file": "internal/harness/run.go",
+        "start": 117,
+        "end": 123,
+        "anchor": "adapterName"
+      },
+      "decision": "Internal workers stay in-session. Workflow stays main-loop-only. They are not roster nodes.",
+      "testOwner": "M9-H",
+      "positive": "INV-WORKFLOW",
+      "negative": "INV-WORKFLOW-BAD"
+    },
+    {
+      "invariant": "INV-SECRET-ALLOWLIST",
+      "title": "Resolve allows only names on the allowlist. Other names fail closed.",
+      "consumer": "M9-H",
+      "producer": "M10-S",
+      "method": "secrets.Resolver.Resolve",
+      "fieldPath": "name",
+      "baseline": {
+        "file": "internal/server/assign.go",
+        "start": 47,
+        "end": 53,
+        "anchor": "not configured"
+      },
+      "decision": "Resolve allows only names on the allowlist. Other names fail closed.",
+      "testOwner": "M10-S",
+      "positive": "INV-SECRET-ALLOWLIST",
+      "negative": "INV-SECRET-ALLOWLIST-BAD"
+    },
+    {
+      "invariant": "INV-SECRET-REFRESH",
+      "title": "Every injection reads the mounted file again. subPath is not rotation. A running process does not rotate in place.",
+      "consumer": "M9-H",
+      "producer": "M10-S",
+      "method": "secrets.Resolver.Resolve",
+      "fieldPath": "injectionId",
+      "baseline": {
+        "file": "internal/server/assign.go",
+        "start": 47,
+        "end": 53,
+        "anchor": "secretNames"
+      },
+      "decision": "Every injection reads the mounted file again. subPath is not rotation. A running process does not rotate in place.",
+      "testOwner": "M10-S",
+      "positive": "INV-SECRET-REFRESH",
+      "negative": "INV-SECRET-REFRESH-BAD"
+    },
+    {
+      "invariant": "INV-SECRET-UNSAFE",
+      "title": "A missing ref or an unsafe path is secret_ref_rejected.",
+      "consumer": "M9-H",
+      "producer": "M10-S",
+      "method": "secrets.Resolver.Resolve",
+      "fieldPath": "path",
+      "baseline": {
+        "file": "internal/server/assign.go",
+        "start": 47,
+        "end": 53,
+        "anchor": "not configured"
+      },
+      "decision": "A missing ref or an unsafe path is secret_ref_rejected.",
+      "testOwner": "M10-S",
+      "positive": "INV-SECRET-UNSAFE",
+      "negative": "INV-SECRET-UNSAFE-BAD"
+    },
+    {
+      "invariant": "INV-REDACTION",
+      "title": "Redaction keeps both the old and the new synthetic values through rotation, including MCP output.",
+      "consumer": "M9-H,M10-S",
+      "producer": "M10-S",
+      "method": "secrets.Redactor",
+      "fieldPath": "retainedLiterals",
+      "baseline": {
+        "file": "internal/server/assign.go",
+        "start": 91,
+        "end": 94,
+        "anchor": "OPENAI_API_KEY"
+      },
+      "decision": "Redaction keeps both the old and the new synthetic values through rotation, including MCP output.",
+      "testOwner": "M10-S",
+      "positive": "INV-REDACTION",
+      "negative": "INV-REDACTION-BAD"
+    },
+    {
+      "invariant": "INV-ISOLATION",
+      "title": "Credential isolation is an adapter-level result. Child environment isolation alone is not accepted. An unproven boundary blocks live.",
+      "consumer": "M10-A,M10-G",
+      "producer": "M9-H",
+      "method": "harness.ProveCredentialBoundary",
+      "fieldPath": "outcome",
+      "baseline": {
+        "file": "internal/harness/run.go",
+        "start": 132,
+        "end": 134,
+        "anchor": "OPENAI_BASE_URL"
+      },
+      "decision": "Credential isolation is an adapter-level result. Child environment isolation alone is not accepted. An unproven boundary blocks live.",
+      "testOwner": "M9-H",
+      "positive": "INV-ISOLATION",
+      "negative": "INV-ISOLATION-BAD"
+    },
+    {
+      "invariant": "INV-READONLY-TOKEN",
+      "title": "Scanner forge tokens are contents read and metadata read. The current DefaultPermissions write set is not a scanner token.",
+      "consumer": "M10-A",
+      "producer": "M9-H",
+      "method": "forge.MintReadToken",
+      "fieldPath": "permissions.contents",
+      "baseline": {
+        "file": "internal/forge/github/token.go",
+        "start": 54,
+        "end": 61,
+        "anchor": "contents"
+      },
+      "decision": "Scanner forge tokens are contents read and metadata read. The current DefaultPermissions write set is not a scanner token.",
+      "testOwner": "M9-H",
+      "positive": "INV-READONLY-TOKEN",
+      "negative": "INV-READONLY-TOKEN-BAD"
+    },
+    {
+      "invariant": "INV-UNTRUSTED",
+      "title": "An untrusted task gets no Docker socket, no foreign checkout write, and no broad secret mount.",
+      "consumer": "M10-S,M10-A",
+      "producer": "M9-H",
+      "method": "harness.TaskConstraints",
+      "fieldPath": "dockerSocket,foreignCheckoutWrite",
+      "baseline": {
+        "file": "internal/server/assign.go",
+        "start": 174,
+        "end": 178,
+        "anchor": "DockerImage"
+      },
+      "decision": "An untrusted task gets no Docker socket, no foreign checkout write, and no broad secret mount.",
+      "testOwner": "M9-H",
+      "positive": "INV-UNTRUSTED",
+      "negative": "INV-UNTRUSTED-BAD"
+    },
+    {
+      "invariant": "INV-TASK-REF",
+      "title": "Native scanner mode uses task_ref. linear_issue is null and Linear is not required.",
+      "consumer": "M10-A",
+      "producer": "M9-T",
+      "method": "scanner.NativeBrief",
+      "fieldPath": "taskRef",
+      "baseline": {
+        "file": "internal/normalize/linear/doc.go",
+        "start": 18,
+        "end": 18,
+        "anchor": "linear_issue"
+      },
+      "decision": "Native scanner mode uses task_ref. linear_issue is null and Linear is not required.",
+      "testOwner": "M10-A",
+      "positive": "INV-TASK-REF",
+      "negative": "INV-TASK-REF-BAD"
+    },
+    {
+      "invariant": "INV-LOCAL-CLI",
+      "title": "Local CLI mode stays available and does not require Linear or a Factory task ref.",
+      "consumer": "M10-A",
+      "producer": "M10-A",
+      "method": "scanner.LocalCLI",
+      "fieldPath": "mode",
+      "baseline": {
+        "file": "internal/harness/run.go",
+        "start": 117,
+        "end": 123,
+        "anchor": "not in this build"
+      },
+      "decision": "Local CLI mode stays available and does not require Linear or a Factory task ref.",
+      "testOwner": "M10-A",
+      "positive": "INV-LOCAL-CLI",
+      "negative": "INV-LOCAL-CLI-BAD"
+    },
+    {
+      "invariant": "INV-ART",
+      "title": "Each item gets its own workspace mount. There is no shared writable ART root.",
+      "consumer": "M10-A",
+      "producer": "M10-A",
+      "method": "scanner.MountWorkspace",
+      "fieldPath": "art.perItem",
+      "baseline": {
+        "file": "internal/server/terminal.go",
+        "start": 748,
+        "end": 760,
+        "anchor": "events.ndjson"
+      },
+      "decision": "Each item gets its own workspace mount. There is no shared writable ART root.",
+      "testOwner": "M10-A",
+      "positive": "INV-ART",
+      "negative": "INV-ART-BAD"
+    },
+    {
+      "invariant": "INV-RETENTION",
+      "title": "The durable result row outlives task-exit cleanup of the host workspace.",
+      "consumer": "M10-A",
+      "producer": "M8-I",
+      "method": "result.PutReport",
+      "fieldPath": "retention",
+      "baseline": {
+        "file": "internal/server/terminal.go",
+        "start": 748,
+        "end": 760,
+        "anchor": "events.ndjson"
+      },
+      "decision": "The durable result row outlives task-exit cleanup of the host workspace.",
+      "testOwner": "M8-I",
+      "positive": "INV-RETENTION",
+      "negative": "INV-RETENTION-BAD"
+    },
+    {
+      "invariant": "INV-BRIDGE",
+      "title": "One outbound owner. Default disabled. Outage queues reporting and does not block execution. A send without authorization does not send.",
+      "consumer": "M10-A",
+      "producer": "M10-A",
+      "method": "outbound.Enqueue",
+      "fieldPath": "owners,sendAuthorized",
+      "baseline": {
+        "file": "internal/automation/reply.go",
+        "start": 88,
+        "end": 92,
+        "anchor": "StageBuilding"
+      },
+      "decision": "One outbound owner. Default disabled. Outage queues reporting and does not block execution. A send without authorization does not send.",
+      "testOwner": "M10-A",
+      "positive": "INV-BRIDGE",
+      "negative": "INV-BRIDGE-BAD"
+    },
+    {
+      "invariant": "INV-SECURITY-GATE",
+      "title": "A paid probe stays closed until G14, G18, and the gateway cap are proved on the actual backend. Helm render and kind do not prove a Docker host.",
+      "consumer": "LIVE-10,M10-A",
+      "producer": "M10-G",
+      "method": "attestation.Gate",
+      "fieldPath": "g14ActualBackend,g18ActualBackend,gatewayCapProven",
+      "baseline": {
+        "file": "internal/server/assign.go",
+        "start": 174,
+        "end": 178,
+        "anchor": "SidecarImage"
+      },
+      "decision": "A paid probe stays closed until G14, G18, and the gateway cap are proved on the actual backend. Helm render and kind do not prove a Docker host.",
+      "testOwner": "M10-G",
+      "positive": "INV-SECURITY-GATE",
+      "negative": "INV-SECURITY-GATE-BAD"
+    },
+    {
+      "invariant": "INV-ATTESTATION",
+      "title": "The attestation matches bound to observed digests. A changed config, code, image, adapter, backend, or secret policy invalidates it.",
+      "consumer": "LIVE-10",
+      "producer": "M10-G",
+      "method": "attestation.Bind",
+      "fieldPath": "configDigest,codeDigest,imageDigest,adapterDigest,backendId",
+      "baseline": {
+        "file": "internal/server/m4_wire.go",
+        "start": 343,
+        "end": 356,
+        "anchor": "InstallationToken"
+      },
+      "decision": "The attestation matches bound to observed digests. A changed config, code, image, adapter, backend, or secret policy invalidates it.",
+      "testOwner": "M10-G",
+      "positive": "INV-ATTESTATION",
+      "negative": "INV-ATTESTATION-BAD"
+    },
+    {
+      "invariant": "INV-LEGACY-ROUTES",
+      "title": "POST /tasks keeps its work-item meaning. POST /agent/run stays a bare run. Neither becomes Invoke.",
+      "consumer": "M8-I",
+      "producer": "M8-I",
+      "method": "api.Handler",
+      "fieldPath": "POST /tasks,POST /agent/run",
+      "baseline": {
+        "file": "internal/api/handler.go",
+        "start": 75,
+        "end": 86,
+        "anchor": "handleCreateTask"
+      },
+      "decision": "POST /tasks keeps its work-item meaning. POST /agent/run stays a bare run. Neither becomes Invoke.",
+      "testOwner": "M8-I",
+      "positive": "INV-LEGACY-ROUTES",
+      "negative": "INV-LEGACY-ROUTES-BAD"
+    }
+  ]
+}

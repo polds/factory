@@ -1,0 +1,460 @@
+{
+  "contractVersion": "defined-factory/1",
+  "area": "traces",
+  "cases": [
+    {
+      "vectorId": "INV-DROP",
+      "invariant": "INV-DROP",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A dropped response leaves the delivery unacked. Redelivery applies the message once.",
+      "document": {
+        "applyCount": 1,
+        "deliveries": [
+          {
+            "acked": false,
+            "deliveryId": "ndlv_01ARZ3NDEKTSV4RRFFQ69G5FAF",
+            "responseDropped": true
+          },
+          {
+            "acked": true,
+            "deliveryId": "ndlv_01ARZ3NDEKTSV4RRFFQ69G5FAG",
+            "responseDropped": false
+          }
+        ],
+        "lost": false,
+        "messageId": "nmsg_01ARZ3NDEKTSV4RRFFQ69G5FAE"
+      }
+    },
+    {
+      "vectorId": "INV-DROP-BAD",
+      "invariant": "INV-DROP",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-DROP",
+      "schema": "scenario",
+      "title": "A dropped response leaves the delivery unacked. Redelivery applies the message once.",
+      "document": {
+        "applyCount": 1,
+        "deliveries": [
+          {
+            "acked": true,
+            "deliveryId": "ndlv_01ARZ3NDEKTSV4RRFFQ69G5FAF",
+            "responseDropped": true
+          },
+          {
+            "acked": true,
+            "deliveryId": "ndlv_01ARZ3NDEKTSV4RRFFQ69G5FAG",
+            "responseDropped": false
+          }
+        ],
+        "lost": false,
+        "messageId": "nmsg_01ARZ3NDEKTSV4RRFFQ69G5FAE"
+      }
+    },
+    {
+      "vectorId": "INV-LATE-COMMIT",
+      "invariant": "INV-LATE-COMMIT",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Lock the invocation ledger row and commit the event, state, and outbox together. factory_seq and run_events.seq are not invocation order.",
+      "document": {
+        "events": [
+          {
+            "ledgerSeq": 1,
+            "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAA",
+            "type": "task.created"
+          },
+          {
+            "ledgerSeq": 2,
+            "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAB",
+            "type": "task.created"
+          },
+          {
+            "ledgerSeq": 3,
+            "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+            "type": "task.assigned"
+          },
+          {
+            "ledgerSeq": 4,
+            "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+            "type": "result"
+          },
+          {
+            "ledgerSeq": 5,
+            "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+            "type": "task.completed"
+          }
+        ],
+        "factorySeqIsInvocationOrder": false,
+        "orderMechanism": "invocation_ledger_row_lock",
+        "runEventSeqScope": "per_run",
+        "runLocalSeqs": [
+          {
+            "runId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA4",
+            "seq": 1
+          },
+          {
+            "runId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA5",
+            "seq": 1
+          }
+        ],
+        "sseCursor": "run_events.seq"
+      }
+    },
+    {
+      "vectorId": "INV-LATE-COMMIT-BAD",
+      "invariant": "INV-LATE-COMMIT",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-LATE-COMMIT",
+      "schema": "scenario",
+      "title": "Lock the invocation ledger row and commit the event, state, and outbox together. factory_seq and run_events.seq are not invocation order.",
+      "document": {
+        "events": [
+          {
+            "ledgerSeq": 1,
+            "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAA",
+            "type": "task.created"
+          },
+          {
+            "ledgerSeq": 2,
+            "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAB",
+            "type": "task.created"
+          },
+          {
+            "ledgerSeq": 3,
+            "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+            "type": "task.assigned"
+          },
+          {
+            "ledgerSeq": 4,
+            "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+            "type": "task.completed"
+          },
+          {
+            "ledgerSeq": 5,
+            "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+            "type": "task.completed"
+          }
+        ],
+        "factorySeqIsInvocationOrder": false,
+        "orderMechanism": "invocation_ledger_row_lock",
+        "runEventSeqScope": "per_run",
+        "runLocalSeqs": [
+          {
+            "runId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA4",
+            "seq": 1
+          },
+          {
+            "runId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA5",
+            "seq": 1
+          }
+        ],
+        "sseCursor": "run_events.seq"
+      }
+    },
+    {
+      "vectorId": "INV-CAPACITY",
+      "invariant": "INV-CAPACITY",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Capacity 1 still finishes the tree because a manager parks and releases its slot before the child runs.",
+      "document": {
+        "capacity": 1,
+        "steps": [
+          {
+            "op": "claim",
+            "persona": "coordinator",
+            "slotsUsed": 1
+          },
+          {
+            "advancesPipeline": false,
+            "op": "park",
+            "persona": "coordinator",
+            "slotsUsed": 0
+          },
+          {
+            "op": "claim",
+            "persona": "lead",
+            "slotsUsed": 1
+          },
+          {
+            "advancesPipeline": false,
+            "op": "park",
+            "persona": "lead",
+            "slotsUsed": 0
+          },
+          {
+            "op": "claim",
+            "persona": "specialist-a",
+            "slotsUsed": 1
+          },
+          {
+            "advancesPipeline": false,
+            "op": "complete",
+            "persona": "specialist-a",
+            "slotsUsed": 0
+          },
+          {
+            "op": "claim",
+            "persona": "specialist-b",
+            "slotsUsed": 1
+          },
+          {
+            "advancesPipeline": false,
+            "op": "complete",
+            "persona": "specialist-b",
+            "slotsUsed": 0
+          },
+          {
+            "op": "claim",
+            "persona": "lead",
+            "slotsUsed": 1
+          },
+          {
+            "advancesPipeline": false,
+            "op": "complete",
+            "persona": "lead",
+            "slotsUsed": 0
+          },
+          {
+            "op": "claim",
+            "persona": "coordinator",
+            "slotsUsed": 1
+          },
+          {
+            "advancesPipeline": true,
+            "op": "complete",
+            "persona": "coordinator",
+            "slotsUsed": 0
+          }
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-CAPACITY-BAD",
+      "invariant": "INV-CAPACITY",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-CAPACITY",
+      "schema": "scenario",
+      "title": "Capacity 1 still finishes the tree because a manager parks and releases its slot before the child runs.",
+      "document": {
+        "capacity": 1,
+        "steps": [
+          {
+            "op": "claim",
+            "persona": "coordinator",
+            "slotsUsed": 1
+          },
+          {
+            "op": "claim",
+            "persona": "lead",
+            "slotsUsed": 2
+          }
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-COMPLETED-WAKE",
+      "invariant": "INV-COMPLETED-WAKE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Waking a completed task creates a new linked run. The prior terminal row stays immutable.",
+      "document": {
+        "linkedFromRunId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA4",
+        "newRunId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA5",
+        "priorRunId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA4",
+        "priorTerminal": "succeeded",
+        "priorTerminalMutated": false,
+        "sameRun": false
+      }
+    },
+    {
+      "vectorId": "INV-COMPLETED-WAKE-BAD",
+      "invariant": "INV-COMPLETED-WAKE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-COMPLETED-WAKE",
+      "schema": "scenario",
+      "title": "Waking a completed task creates a new linked run. The prior terminal row stays immutable.",
+      "document": {
+        "linkedFromRunId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA4",
+        "newRunId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA5",
+        "priorRunId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA4",
+        "priorTerminal": "succeeded",
+        "priorTerminalMutated": false,
+        "sameRun": true
+      }
+    },
+    {
+      "vectorId": "INV-ROLLUP",
+      "invariant": "INV-ROLLUP",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Each leaf charge rolls up once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
+      "document": {
+        "forbiddenInclusiveSum": 1600,
+        "leaves": [
+          {
+            "agent": "lead",
+            "attemptId": "a1",
+            "callId": "c1",
+            "cents": 100
+          },
+          {
+            "agent": "specialist-a",
+            "attemptId": "a1",
+            "callId": "c2",
+            "cents": 400
+          },
+          {
+            "agent": "specialist-a",
+            "attemptId": "a2",
+            "callId": "c2",
+            "cents": 50
+          },
+          {
+            "agent": "specialist-b",
+            "attemptId": "a1",
+            "callId": "c3",
+            "cents": 250
+          },
+          {
+            "agent": "specialist-b",
+            "attemptId": "a1",
+            "callId": "c3",
+            "cents": 250
+          }
+        ],
+        "rollups": {
+          "factory": 800,
+          "invocation": 800,
+          "lead": 800,
+          "leadAgent": 100,
+          "specialist-a": 450,
+          "specialist-b": 250
+        }
+      }
+    },
+    {
+      "vectorId": "INV-ROLLUP-BAD",
+      "invariant": "INV-ROLLUP",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-ROLLUP",
+      "schema": "scenario",
+      "title": "Each leaf charge rolls up once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
+      "document": {
+        "forbiddenInclusiveSum": 1600,
+        "leaves": [
+          {
+            "agent": "lead",
+            "attemptId": "a1",
+            "callId": "c1",
+            "cents": 100
+          },
+          {
+            "agent": "specialist-a",
+            "attemptId": "a1",
+            "callId": "c2",
+            "cents": 400
+          },
+          {
+            "agent": "specialist-a",
+            "attemptId": "a2",
+            "callId": "c2",
+            "cents": 50
+          },
+          {
+            "agent": "specialist-b",
+            "attemptId": "a1",
+            "callId": "c3",
+            "cents": 250
+          },
+          {
+            "agent": "specialist-b",
+            "attemptId": "a1",
+            "callId": "c3",
+            "cents": 250
+          }
+        ],
+        "rollups": {
+          "factory": 1600,
+          "invocation": 800,
+          "lead": 800,
+          "leadAgent": 100,
+          "specialist-a": 450,
+          "specialist-b": 250
+        }
+      }
+    },
+    {
+      "vectorId": "INV-CONCURRENT",
+      "invariant": "INV-CONCURRENT",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Two concurrent reservations that would pass a 2500 cent ceiling cannot both commit.",
+      "document": {
+        "attempts": [
+          {
+            "cents": 2000,
+            "committed": true,
+            "id": "nres_01ARZ3NDEKTSV4RRFFQ69G5FAK"
+          },
+          {
+            "cents": 2000,
+            "code": "budget_exceeded",
+            "committed": false,
+            "id": "nres_01ARZ3NDEKTSV4RRFFQ69G5FAM"
+          }
+        ],
+        "ceilingCents": 2500,
+        "partialReserve": false,
+        "reservedCents": 2000,
+        "spentCents": 0
+      }
+    },
+    {
+      "vectorId": "INV-CONCURRENT-BAD",
+      "invariant": "INV-CONCURRENT",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-CONCURRENT",
+      "schema": "scenario",
+      "title": "Two concurrent reservations that would pass a 2500 cent ceiling cannot both commit.",
+      "document": {
+        "attempts": [
+          {
+            "cents": 2000,
+            "committed": true,
+            "id": "nres_01ARZ3NDEKTSV4RRFFQ69G5FAK"
+          },
+          {
+            "cents": 2000,
+            "code": "budget_exceeded",
+            "committed": false,
+            "id": "nres_01ARZ3NDEKTSV4RRFFQ69G5FAM"
+          }
+        ],
+        "ceilingCents": 2500,
+        "partialReserve": false,
+        "reservedCents": 4000,
+        "spentCents": 0
+      }
+    }
+  ]
+}

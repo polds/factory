@@ -1,0 +1,210 @@
+{
+  "contractVersion": "defined-factory/1",
+  "area": "schedule",
+  "cases": [
+    {
+      "vectorId": "INV-SCHEDULE-KEY",
+      "invariant": "INV-SCHEDULE-KEY",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "The occurrence key is schedule id plus the due slot. Delivery time is not part of the key.",
+      "document": {
+        "deliveredAt": "2026-11-09T00:04:00Z",
+        "dueSlot": "2026-11-09T00:00:00Z",
+        "keyUsesDeliveredAt": false,
+        "keyUsesDueSlot": true,
+        "occurrenceKey": "schedule:sch_01ARZ3NDEKTSV4RRFFQ69G5FAH:slot:2026-11-09T00:00:00Z",
+        "scheduleId": "sch_01ARZ3NDEKTSV4RRFFQ69G5FAH"
+      }
+    },
+    {
+      "vectorId": "INV-SCHEDULE-KEY-BAD",
+      "invariant": "INV-SCHEDULE-KEY",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SCHEDULE-KEY",
+      "schema": "scenario",
+      "title": "The occurrence key is schedule id plus the due slot. Delivery time is not part of the key.",
+      "document": {
+        "deliveredAt": "2026-11-09T00:04:00Z",
+        "dueSlot": "2026-11-09T00:00:00Z",
+        "keyUsesDeliveredAt": true,
+        "keyUsesDueSlot": true,
+        "occurrenceKey": "schedule:sch_01ARZ3NDEKTSV4RRFFQ69G5FAH:slot:2026-11-09T00:00:00Z",
+        "scheduleId": "sch_01ARZ3NDEKTSV4RRFFQ69G5FAH"
+      }
+    },
+    {
+      "vectorId": "INV-SCHEDULE-REPLAY",
+      "invariant": "INV-SCHEDULE-REPLAY",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Redelivery of the same due slot returns the original receipt and does not start another run.",
+      "document": {
+        "createsRun": false,
+        "receiptIdsEqual": true,
+        "sameDueSlot": true,
+        "sameScheduleId": true
+      }
+    },
+    {
+      "vectorId": "INV-SCHEDULE-REPLAY-BAD",
+      "invariant": "INV-SCHEDULE-REPLAY",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SCHEDULE-REPLAY",
+      "schema": "scenario",
+      "title": "Redelivery of the same due slot returns the original receipt and does not start another run.",
+      "document": {
+        "createsRun": true,
+        "receiptIdsEqual": true,
+        "sameDueSlot": true,
+        "sameScheduleId": true
+      }
+    },
+    {
+      "vectorId": "INV-OVERLAP",
+      "invariant": "INV-OVERLAP",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Forbid overlap records skipped_overlap. It does not continue the busy item and it is not a completed scan.",
+      "document": {
+        "continuedWorkItemId": null,
+        "countsAsCompletedScan": false,
+        "outcome": "skipped_overlap",
+        "policy": "forbid",
+        "priorState": "running",
+        "runStarted": false,
+        "slotState": "skipped"
+      }
+    },
+    {
+      "vectorId": "INV-OVERLAP-BAD",
+      "invariant": "INV-OVERLAP",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-OVERLAP",
+      "schema": "scenario",
+      "title": "Forbid overlap records skipped_overlap. It does not continue the busy item and it is not a completed scan.",
+      "document": {
+        "continuedWorkItemId": "task_01ARZ3NDEKTSV4RRFFQ69G5FA2",
+        "countsAsCompletedScan": false,
+        "outcome": "skipped_overlap",
+        "policy": "forbid",
+        "priorState": "running",
+        "runStarted": false,
+        "slotState": "skipped"
+      }
+    },
+    {
+      "vectorId": "INV-TWO-SLOTS",
+      "invariant": "INV-TWO-SLOTS",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Two nonoverlapping due slots create two work items.",
+      "document": {
+        "distinct": true,
+        "itemCount": 2,
+        "priorFinished": true,
+        "slots": [
+          "2026-11-02T00:00:00Z",
+          "2026-11-09T00:00:00Z"
+        ],
+        "workItemIds": [
+          "task_01ARZ3NDEKTSV4RRFFQ69G5FA2",
+          "task_01ARZ3NDEKTSV4RRFFQ69G5FA3"
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-TWO-SLOTS-BAD",
+      "invariant": "INV-TWO-SLOTS",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-TWO-SLOTS",
+      "schema": "scenario",
+      "title": "Two nonoverlapping due slots create two work items.",
+      "document": {
+        "distinct": true,
+        "itemCount": 1,
+        "priorFinished": true,
+        "slots": [
+          "2026-11-02T00:00:00Z",
+          "2026-11-09T00:00:00Z"
+        ],
+        "workItemIds": [
+          "task_01ARZ3NDEKTSV4RRFFQ69G5FA2",
+          "task_01ARZ3NDEKTSV4RRFFQ69G5FA3"
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-LEGACY-CONTINUE",
+      "invariant": "INV-LEGACY-CONTINUE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Legacy schedule and coding-thread continuation stays the default until occurrenceMode is fresh.",
+      "document": {
+        "continuation": true,
+        "occurrenceMode": "legacy_continue",
+        "slotCount": 2,
+        "workItemCount": 1
+      }
+    },
+    {
+      "vectorId": "INV-LEGACY-CONTINUE-BAD",
+      "invariant": "INV-LEGACY-CONTINUE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-LEGACY-CONTINUE",
+      "schema": "scenario",
+      "title": "Legacy schedule and coding-thread continuation stays the default until occurrenceMode is fresh.",
+      "document": {
+        "continuation": true,
+        "occurrenceMode": "legacy_continue",
+        "slotCount": 2,
+        "workItemCount": 2
+      }
+    },
+    {
+      "vectorId": "INV-LEADER",
+      "invariant": "INV-LEADER",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "The due slot and receipt live in Postgres. Leader change and late delivery do not create a second receipt. A crash before commit inserts at most once.",
+      "document": {
+        "crashBeforeCommitCreatesAtMostOne": true,
+        "lateDeliverySameSlotCreatesAnother": false,
+        "receiptStable": true,
+        "store": "postgres"
+      }
+    },
+    {
+      "vectorId": "INV-LEADER-BAD",
+      "invariant": "INV-LEADER",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-LEADER",
+      "schema": "scenario",
+      "title": "The due slot and receipt live in Postgres. Leader change and late delivery do not create a second receipt. A crash before commit inserts at most once.",
+      "document": {
+        "crashBeforeCommitCreatesAtMostOne": true,
+        "lateDeliverySameSlotCreatesAnother": false,
+        "receiptStable": false,
+        "store": "postgres"
+      }
+    }
+  ]
+}

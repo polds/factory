@@ -1,0 +1,379 @@
+{
+  "contractVersion": "defined-factory/1",
+  "area": "results",
+  "cases": [
+    {
+      "vectorId": "INV-REPORT-ZERO",
+      "invariant": "INV-REPORT-ZERO",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A report with findingsCount 0 and coverage present is success.",
+      "document": {
+        "countsAsSuccess": true,
+        "coverageStatus": "present",
+        "findingsCount": 0,
+        "reportPresent": true,
+        "status": "succeeded"
+      }
+    },
+    {
+      "vectorId": "INV-REPORT-ZERO-BAD",
+      "invariant": "INV-REPORT-ZERO",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-REPORT-ZERO",
+      "schema": "scenario",
+      "title": "A report with findingsCount 0 and coverage present is success.",
+      "document": {
+        "countsAsSuccess": false,
+        "coverageStatus": "present",
+        "findingsCount": 0,
+        "reportPresent": true,
+        "status": "succeeded"
+      }
+    },
+    {
+      "vectorId": "INV-PR-SEPARATION",
+      "invariant": "INV-PR-SEPARATION",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "The input pull request never satisfies requires pullRequest.",
+      "document": {
+        "inputPullRequest": "https://github.com/example/atum-core/pull/2213",
+        "outputPullRequest": null,
+        "satisfiesPullRequestRequires": false
+      }
+    },
+    {
+      "vectorId": "INV-PR-SEPARATION-BAD",
+      "invariant": "INV-PR-SEPARATION",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-PR-SEPARATION",
+      "schema": "scenario",
+      "title": "The input pull request never satisfies requires pullRequest.",
+      "document": {
+        "inputPullRequest": "https://github.com/example/atum-core/pull/2213",
+        "outputPullRequest": null,
+        "satisfiesPullRequestRequires": true
+      }
+    },
+    {
+      "vectorId": "INV-REQUIRES-PR",
+      "invariant": "INV-REQUIRES-PR",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Opt-in requires pullRequest still fails closed with no_work_product when no output pull request was recorded.",
+      "document": {
+        "code": "no_work_product",
+        "inputPullRequest": "https://github.com/example/atum-core/pull/2213",
+        "outputPullRequest": null,
+        "requires": [
+          "pullRequest"
+        ],
+        "status": "failed"
+      }
+    },
+    {
+      "vectorId": "INV-REQUIRES-PR-BAD",
+      "invariant": "INV-REQUIRES-PR",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-REQUIRES-PR",
+      "schema": "scenario",
+      "title": "Opt-in requires pullRequest still fails closed with no_work_product when no output pull request was recorded.",
+      "document": {
+        "code": "no_work_product",
+        "inputPullRequest": "https://github.com/example/atum-core/pull/2213",
+        "outputPullRequest": null,
+        "requires": [
+          "pullRequest"
+        ],
+        "status": "succeeded"
+      }
+    },
+    {
+      "vectorId": "INV-REQUIRES-EMPTY",
+      "invariant": "INV-REQUIRES-EMPTY",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Omitted or empty requires does not demand a pull request or a report.",
+      "document": {
+        "pullRequestRequired": false,
+        "reportRequired": false,
+        "requires": [],
+        "status": "succeeded"
+      }
+    },
+    {
+      "vectorId": "INV-REQUIRES-EMPTY-BAD",
+      "invariant": "INV-REQUIRES-EMPTY",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-REQUIRES-EMPTY",
+      "schema": "scenario",
+      "title": "Omitted or empty requires does not demand a pull request or a report.",
+      "document": {
+        "pullRequestRequired": true,
+        "reportRequired": false,
+        "requires": [],
+        "status": "succeeded"
+      }
+    },
+    {
+      "vectorId": "INV-REQUIRES-REPORT",
+      "invariant": "INV-REQUIRES-REPORT",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "requires report ships only in the same change as durable storage and a real terminal validator.",
+      "document": {
+        "requires": [
+          "report"
+        ],
+        "storagePresent": true,
+        "validatorPresent": true
+      }
+    },
+    {
+      "vectorId": "INV-REQUIRES-REPORT-BAD",
+      "invariant": "INV-REQUIRES-REPORT",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-REQUIRES-REPORT",
+      "schema": "scenario",
+      "title": "requires report ships only in the same change as durable storage and a real terminal validator.",
+      "document": {
+        "requires": [
+          "report"
+        ],
+        "storagePresent": true,
+        "validatorPresent": false
+      }
+    },
+    {
+      "vectorId": "INV-NO-FINDINGS-ENUM",
+      "invariant": "INV-NO-FINDINGS-ENUM",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "requires findings and requires artifacts are not values.",
+      "document": {
+        "artifactsEnum": false,
+        "findingsEnum": false,
+        "allowedRequires": [
+          "pullRequest",
+          "report"
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-NO-FINDINGS-ENUM-BAD",
+      "invariant": "INV-NO-FINDINGS-ENUM",
+      "expect": "reject",
+      "rejectBy": "schema",
+      "code": "input_invalid",
+      "schema": "requires",
+      "title": "requires findings and requires artifacts are not values.",
+      "document": {
+        "requires": [
+          "findings"
+        ]
+      }
+    },
+    {
+      "vectorId": "INV-REPORT-MISSING",
+      "invariant": "INV-REPORT-MISSING",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Missing report when report is required fails with report_missing. It does not reuse no_work_product.",
+      "document": {
+        "code": "report_missing",
+        "reportPresent": false,
+        "requires": [
+          "report"
+        ],
+        "status": "failed",
+        "succeeded": false
+      }
+    },
+    {
+      "vectorId": "INV-REPORT-MISSING-BAD",
+      "invariant": "INV-REPORT-MISSING",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-REPORT-MISSING",
+      "schema": "scenario",
+      "title": "Missing report when report is required fails with report_missing. It does not reuse no_work_product.",
+      "document": {
+        "code": "report_missing",
+        "reportPresent": false,
+        "requires": [
+          "report"
+        ],
+        "status": "failed",
+        "succeeded": true
+      }
+    },
+    {
+      "vectorId": "INV-UNAUTH-READ",
+      "invariant": "INV-UNAUTH-READ",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "An unauthorized result read is 403 with an empty body.",
+      "document": {
+        "bodyBytes": 0,
+        "code": "result_unauthorized",
+        "httpStatus": 403
+      }
+    },
+    {
+      "vectorId": "INV-UNAUTH-READ-BAD",
+      "invariant": "INV-UNAUTH-READ",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-UNAUTH-READ",
+      "schema": "scenario",
+      "title": "An unauthorized result read is 403 with an empty body.",
+      "document": {
+        "bodyBytes": 12,
+        "code": "result_unauthorized",
+        "httpStatus": 403
+      }
+    },
+    {
+      "vectorId": "INV-PATH",
+      "invariant": "INV-PATH",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Publication rejects absolute paths, backslashes, and .. segments.",
+      "document": {
+        "code": null,
+        "path": "reports/scan.json",
+        "published": true
+      }
+    },
+    {
+      "vectorId": "INV-PATH-BAD",
+      "invariant": "INV-PATH",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-PATH",
+      "schema": "scenario",
+      "title": "Publication rejects absolute paths, backslashes, and .. segments.",
+      "document": {
+        "code": null,
+        "path": "../secret",
+        "published": true
+      }
+    },
+    {
+      "vectorId": "INV-SYMLINK",
+      "invariant": "INV-SYMLINK",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A lexically safe path that is a symlink is result_symlink_rejected.",
+      "document": {
+        "code": "result_symlink_rejected",
+        "path": "reports/scan.json",
+        "published": false,
+        "symlink": true
+      }
+    },
+    {
+      "vectorId": "INV-SYMLINK-BAD",
+      "invariant": "INV-SYMLINK",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SYMLINK",
+      "schema": "scenario",
+      "title": "A lexically safe path that is a symlink is result_symlink_rejected.",
+      "document": {
+        "code": "result_symlink_rejected",
+        "path": "reports/scan.json",
+        "published": true,
+        "symlink": true
+      }
+    },
+    {
+      "vectorId": "INV-SIZE",
+      "invariant": "INV-SIZE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Report bodies are at most 1 MiB. Artifact files are at most 16 MiB.",
+      "document": {
+        "artifactMaxBytes": 16777216,
+        "code": null,
+        "published": true,
+        "reportBytes": 1024,
+        "reportMaxBytes": 1048576
+      }
+    },
+    {
+      "vectorId": "INV-SIZE-BAD",
+      "invariant": "INV-SIZE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SIZE",
+      "schema": "scenario",
+      "title": "Report bodies are at most 1 MiB. Artifact files are at most 16 MiB.",
+      "document": {
+        "artifactMaxBytes": 16777216,
+        "code": null,
+        "published": true,
+        "reportBytes": 1048577,
+        "reportMaxBytes": 1048576
+      }
+    },
+    {
+      "vectorId": "INV-SECRET-PUB",
+      "invariant": "INV-SECRET-PUB",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A secret scan hit is not published. Fixtures use the synthetic canary label only.",
+      "document": {
+        "canary": "CANARY-SYNTHETIC",
+        "code": "secret_publication_rejected",
+        "published": false,
+        "scanHit": true
+      }
+    },
+    {
+      "vectorId": "INV-SECRET-PUB-BAD",
+      "invariant": "INV-SECRET-PUB",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SECRET-PUB",
+      "schema": "scenario",
+      "title": "A secret scan hit is not published. Fixtures use the synthetic canary label only.",
+      "document": {
+        "canary": "CANARY-SYNTHETIC",
+        "code": "secret_publication_rejected",
+        "published": true,
+        "scanHit": true
+      }
+    }
+  ]
+}
