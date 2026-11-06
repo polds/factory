@@ -170,6 +170,34 @@ func TestStatelessInstallToken(t *testing.T) {
 	}
 }
 
+func TestReadTokenCannotPushOrComment(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	const token = "ghs_testtokenvalue0123456789abcdef"
+	srv, err := newServer(token, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	status, _ := doJSON(t, ts, http.MethodPost, "/app/installations/7/access_tokens", "jwt-shaped", map[string]any{
+		"repositories": []string{"factory"},
+		"permissions":  map[string]string{"contents": "read", "metadata": "read"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("mint %d", status)
+	}
+	for _, path := range []string{
+		"/repos/polds/factory/issues/17/comments",
+		"/repos/polds/factory/pulls",
+		"/_spike/commits",
+	} {
+		code, body := doJSON(t, ts, http.MethodPost, path, token, map[string]string{"body": "nope", "message": "nope"})
+		if code != http.StatusForbidden || strings.Contains(string(body), token) {
+			t.Fatalf("%s %d %s", path, code, body)
+		}
+	}
+}
+
 func assertStatelessToken(t *testing.T, token string) {
 	t.Helper()
 	if strings.ContainsAny(token, " \t\r\n") {

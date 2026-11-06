@@ -188,7 +188,7 @@ Everything else is infrastructure, and must not enter scoring.
 
 | Adapter | Implementation |
 | --- | --- |
-| `claude-code` | Wraps the Claude Code CLI; maps NDJSON from its stream output; auth via `ANTHROPIC_API_KEY` or Bedrock/Vertex role |
+| `claude-code` | Wraps a pinned credential-free CLI fixture (`FACTORY_CLAUDE_BIN`). Maps NDJSON, including empty output, refusal, tool errors, malformed and partial streams, HTTP 400/401/429, timeout, signal, delayed usage, and resume. `negotiatedSteer` stays false unless a test proves steer. Unset binary is exit 20 |
 | `codex` | Wraps the Codex CLI; `reasoningLevel` → effort flag; auth via `OPENAI_API_KEY` |
 | `warp-agent` | Wraps Warp Agent CLI where an operator has a license; the one adapter we cannot ship an image for |
 | `generic-openai` | Minimal built-in loop against any OpenAI-compatible endpoint, with a fixed tool set (bash, read, write, edit, grep, glob, ask_input) — the escape hatch that keeps the system usable with local models |
@@ -279,7 +279,7 @@ OpenAI-compatible stub. They do not call a vendor.
 | Follow-up | While `--idle-on-complete` is a positive duration, read `{runtime}/followup.json` as `{"prompt":"..."}` |
 | Turn budget | FACTORY_MAX_TURNS, default 8, range 1..200. Invalid is code 20 |
 | Agent-reported failure | The whole assistant message is `{"status":"failed_by_agent","summary":"..."}`. Exit 10. Exhausting the turn budget uses the same code: the task did not finish, and the provider and the setup command did not fail |
-| Other `--harness` values | Exit 20. `claude-code` is not in this build |
+| Other `--harness` values | Exit 20. `claude-code` runs when `FACTORY_CLAUDE_BIN` is set; otherwise exit 20 |
 
 The M1 live run did not write `task.json`. `cmd/m0-spike` copied
 `FACTORY_TASK_PROMPT` and `FACTORY_SECRET_VALUES` into the assignment `env_vars`,
@@ -298,3 +298,45 @@ The task container is that boundary. Tool subprocesses do not receive
 Events go to `{runtime}/events.ndjson`. Secret values are replaced with
 `[REDACTED]` before a `tool.call` or assistant text is written. `tool.result`
 carries a digest, not the output.
+
+## Claude Code adapter
+
+`claude-code` is selected with `--harness claude-code`. The binary is
+`FACTORY_CLAUDE_BIN`. This build pins the credential-free help fixture in
+`internal/harness/testdata/claude-help.txt` and the same text in
+`spike/lib/fakes/claude/help.txt`. The fixture advertises `--print`,
+`--output-format stream-json`, and `--resume`. It does not advertise steer.
+`NegotiatePinned` therefore leaves `negotiatedSteer` false. A help line that
+mentions `--steer` still does not enable steer unless a test passes
+`Proven.Steer`.
+
+The adapter accounts each `call_id` once. A later `usage` object attaches to
+that call. Empty assistant text and empty tool output are successful attempts.
+Refusal and tool error are exit 10. Malformed JSON and HTTP 400 are exit 20.
+HTTP 401, HTTP 429, timeout, and a partial line are exit 21. A cancelled
+process with no stdout is one signal attempt and exit 30. Resume links the
+new session to `resume_of` and does not count the resumed call twice.
+
+Internal workers stay in-session. Workflow stays on the main loop. Neither is
+a roster node.
+
+`IssueRunToken` mints an `ntok_` token attenuated to one factory, task, and
+invocation. Child grants are a subset of the parent. A specialist or tool
+token omits `roster.dispatch`. A larger budget or a different task or
+invocation is rejected. Formatting, JSON, and logs redact the secret.
+
+MCP tools `native_task_create`, `native_task_get`, `native_comment`,
+`native_assign`, `native_inbox_read`, `native_apply`, `native_ack`,
+`native_redeliver`, `native_claim`, and `native_wake` call the ten client
+methods that already exist. `native_delegate` and `native_wait` return
+`evidence: contract`. Those two are the conformance fake until production
+delegate and wait routes exist. Their results are not production evidence.
+
+Bash and MCP probes for `ProveCredentialBoundary` use the adapter sandbox.
+An environment-only comparison returns `liveBlocked` and does not count as
+isolation. Untrusted tasks get no Docker socket, no foreign checkout write,
+and no broad secret mount.
+
+```bash
+go test -count=1 -timeout 120s -run 'TestNegotiatePinnedHelp|TestIssueRunTokenDeniesElevation|TestMapClaudeStreamShapes|TestProveCredentialBoundary' ./internal/harness/
+```

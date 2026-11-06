@@ -248,3 +248,21 @@ claimed/rejected/completed/failed by `failure_reason`; in-flight vs. `max_concur
 queue depth and time-to-assignment; image pull duration; unschedulable duration. Alert on
 `task_rejected` rate (capacity too small) and time-to-assignment (pool starved), not on
 individual run failures.
+
+## Scanner runner
+
+`deploy/scanner-runner` builds a stub plugin for public CI. The stub prints
+`scanner-stub plugin=stub fetch=forbidden` (`deploy/scanner-runner/stub/main.go:11`).
+`pin/provenance` records `plugin=stub`, `source=local`, and `fetch=forbidden`.
+`build.sh` refuses `SCANNER_PRIVATE_URL` and does not clone or download a
+scanner. Scanner and native assignment mint a forge token with `contents: read`
+and `metadata: read`. That token cannot push, open a pull request, or comment.
+The checkout must be the pinned commit SHA. An unrelated repository is rejected.
+Assignment reads each secret through `secrets.Resolver` at injection time.
+A missing or unsafe ref fails closed. Scanner, native, and `claude-code`
+assignments do not copy `OPENAI_API_KEY` or `OPENAI_BASE_URL`.
+
+```bash
+./deploy/scanner-runner/build.sh /tmp/scanner-stub
+/tmp/scanner-stub
+```

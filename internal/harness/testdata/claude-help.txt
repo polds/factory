@@ -1,0 +1,13 @@
+Claude Code fixture (credential-free pin)
+
+Usage:
+  claude [options]
+
+Options:
+      --help
+      --print
+      --output-format stream-json
+      --resume string
+      --model string
+      --max-turns int
+      --permission-mode string

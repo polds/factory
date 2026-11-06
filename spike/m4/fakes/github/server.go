@@ -156,6 +156,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.updateCheck(w, r, body)
 	case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
 		s.listComments(w, r)
+	case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/pulls") && !strings.Contains(r.URL.Path, "/comments"):
+		s.createPull(w, r)
 	case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
 		s.createComment(w, r, body)
 	case r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/issues/comments/"):
@@ -269,8 +271,15 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+func (s *server) createPull(w http.ResponseWriter, r *http.Request) {
+	if !s.allowRepo(w, r) || s.denyReadOnly(w) {
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"number": 1})
+}
+
 func (s *server) createComment(w http.ResponseWriter, r *http.Request, body []byte) {
-	if !s.allowRepo(w, r) {
+	if !s.allowRepo(w, r) || s.denyReadOnly(w) {
 		return
 	}
 	var req struct {
@@ -289,7 +298,7 @@ func (s *server) createComment(w http.ResponseWriter, r *http.Request, body []by
 }
 
 func (s *server) updateComment(w http.ResponseWriter, r *http.Request, body []byte) {
-	if !s.allowRepo(w, r) {
+	if !s.allowRepo(w, r) || s.denyReadOnly(w) {
 		return
 	}
 	id, ok := lastID(r.URL.Path)
@@ -321,7 +330,7 @@ func (s *server) updateComment(w http.ResponseWriter, r *http.Request, body []by
 }
 
 func (s *server) commit(w http.ResponseWriter, r *http.Request, body []byte) {
-	if !s.allowRepo(w, r) {
+	if !s.allowRepo(w, r) || s.denyReadOnly(w) {
 		return
 	}
 	var req struct {
@@ -365,6 +374,29 @@ func (s *server) allowApp(w http.ResponseWriter, r *http.Request) bool {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "unauthorized"})
 		return false
 	}
+	return true
+}
+
+func readOnlyPerms(perms map[string]string) bool {
+	if perms["contents"] != "read" {
+		return false
+	}
+	for _, level := range perms {
+		if level == "write" || level == "admin" {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *server) denyReadOnly(w http.ResponseWriter) bool {
+	s.mu.Lock()
+	readOnly := len(s.mints) > 0 && readOnlyPerms(s.mints[len(s.mints)-1].Permissions)
+	s.mu.Unlock()
+	if !readOnly {
+		return false
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"message": "read-only token"})
 	return true
 }
 
