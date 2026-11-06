@@ -176,7 +176,7 @@ receive these two variables.
 | --- | --- | --- |
 | `0` | Conversation completed | `task_completed` |
 | `10` | Agent completed with findings/failure it reports itself | `task_completed`, run marked `failed_by_agent` |
-| `20` | Configuration invalid (bad model, missing secret), or a provider HTTP 400 after an accepted call on that model and key | `task_failed`, no retry. `failure_reason=config_invalid`, except that later 400: harness status `request_rejected`, summary names the rejected request |
+| `20` | Configuration invalid (bad model, missing secret), or a provider HTTP 400 after an accepted call on that model and key | `task_failed`, no retry. `failure_reason=config_invalid`. A failure reason or harness status `request_rejected` is the same class (`configuration` / `config_invalid`, not retryable) even when the exit code is absent. Evidence includes `harness status request_rejected` when the harness reported it (`internal/failure/classify.go:97`). Exit 10 still wins |
 | `21` | Model provider unavailable | `task_failed`, `failure_reason=model_unavailable`, **retryable** |
 | `30` | Sandbox/environment setup failed | `task_failed`, `failure_reason=environment_setup_failed` |
 | `130`+ | Signalled (`128+signal`) | matches the worker's normalization (O3) |

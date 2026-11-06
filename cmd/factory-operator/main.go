@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -104,7 +105,13 @@ func run(ctx context.Context, log *slog.Logger, metricsAddr, probeAddr string) e
 	if err != nil {
 		return err
 	}
-	api := &fclient.Client{BaseURL: factoryURL, APIKey: apiKey}
+	idle, err := watchIdle()
+	if err != nil {
+		return err
+	}
+	// StreamIdle 0 keeps the client default (60s). FACTORY_OPERATOR_WATCH_IDLE
+	// overrides that inactivity deadline. Empty means the default.
+	api := &fclient.Client{BaseURL: factoryURL, APIKey: apiKey, StreamIdle: idle}
 	reconcilers := []interface{ SetupWithManager(ctrl.Manager) error }{
 		&operator.FactoryReconciler{Client: mgr.GetClient(), API: api},
 		&operator.AgentRunReconciler{Client: mgr.GetClient(), API: api, Base: ctx},
@@ -196,6 +203,18 @@ func splitList(raw string) []string {
 		}
 	}
 	return out
+}
+
+func watchIdle() (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv("FACTORY_OPERATOR_WATCH_IDLE"))
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("FACTORY_OPERATOR_WATCH_IDLE must be a positive duration")
+	}
+	return d, nil
 }
 
 func envOr(name, fallback string) string {

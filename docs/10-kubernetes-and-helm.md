@@ -85,9 +85,10 @@ status:
       status: "True"
       reason: Validated
       lastTransitionTime: "2026-10-12T19:04:11Z"
-    - type: ControlPlaneSynced
+    - type: Ready
       status: "True"
-      reason: Applied
+      reason: Ready
+      message: factoryd is serving this definition
 ```
 
 ### `FactoryAgent`
@@ -365,6 +366,11 @@ Shipped behavior where it differs from the sketch above:
   last good generation serving. The control plane is API-backed only when
   `FACTORY_DEFINITION_SOURCE=api` and there is no git URL. See
   [04](04-protocols-and-apis.md#factories-and-definitions).
+  The status condition the operator sets is `Ready`
+  (`internal/operator/factory.go:31`, `condReady`), not `ControlPlaneSynced`.
+  When the definition is valid, `factoryStatus` sets that condition's reason
+  to `Ready` and its message to `factoryd is serving this definition`
+  (`internal/operator/factory.go:216`).
 - **D2.** Deleting an AgentRun cancels the run and waits up to 120s
   (`cancelGrace` in `internal/operator/agentrun.go`). If the run is still not
   terminal, the condition is `CancelTimedOut` and the finalizer is removed.

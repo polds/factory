@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -27,4 +29,18 @@ func collect[T any](rows pgx.Rows, err error, op string, scan func(pgx.Row) (T, 
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	return out, nil
+}
+
+// requireRow checks that id exists. query is the caller's literal SELECT 1.
+// No rows returns ErrNotFound unwrapped. Any other error is op + ": " + err.
+func requireRow(ctx context.Context, q rowQuery, op, query, id string) error {
+	var one int
+	err := q.QueryRow(ctx, query, id).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	return nil
 }

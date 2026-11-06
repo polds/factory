@@ -6,16 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
-	"strconv"
 )
 
 // Watch streams a run's events, rendering each transcript line to out.
 // fromSeq, when non-nil, is sent as from_seq (events with seq greater than
 // that value). After a dropped connection Watch reconnects with
 // Last-Event-ID set to the last dispatched id and from_seq set to that seq.
-// The returned code is 0 succeeded, 1 failed, 2 cancelled.
+// A harness terminal is rendered and is not the end of the watch. The
+// returned code is taken from control-plane run.terminal: 0 succeeded,
+// 1 failed, 2 cancelled. A read error still returns (1, err) without
+// reconnecting. Idle silence is the exception: it reconnects from the cursor.
 func (c *Client) Watch(ctx context.Context, runID string, fromSeq *int64, out io.Writer) (int, error) {
 	if err := c.requireKey(); err != nil {
 		return 1, err
@@ -23,42 +23,45 @@ func (c *Client) Watch(ctx context.Context, runID string, fromSeq *int64, out io
 	if out == nil {
 		out = io.Discard
 	}
-	var (
-		lastID  string
-		seq     int64
-		haveSeq bool
-		seen    = map[string]struct{}{}
-		attempt int
-	)
+	cur := &eventCursor{seen: map[string]struct{}{}}
 	if fromSeq != nil {
-		seq = *fromSeq
-		haveSeq = true
+		cur.seq = *fromSeq
+		cur.haveSeq = true
 	}
+	attempt := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return 1, err
 		}
-		q := url.Values{}
-		if haveSeq {
-			q.Set("from_seq", strconv.FormatInt(seq, 10))
-		}
-		endpoint, err := c.endpoint("/api/v1/agent/runs/"+url.PathEscape(runID)+"/events", q)
+		resp, err := c.openRunEvents(ctx, runID, cur)
 		if err != nil {
+			var transport *streamTransportError
+			if errors.As(err, &transport) {
+				if ctx.Err() != nil {
+					return 1, ctx.Err()
+				}
+				attempt++
+				if err := c.sleep(ctx, attempt); err != nil {
+					return 1, err
+				}
+				continue
+			}
 			return 1, err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-		if err != nil {
-			return 1, err
-		}
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-		req.Header.Set("Accept", "text/event-stream")
-		if lastID != "" {
-			req.Header.Set("Last-Event-ID", lastID)
-		}
-		resp, err := c.http().Do(req)
-		if err != nil {
+		code, done, err := readEvents(resp.Body, out, cur)
+		_ = resp.Body.Close()
+		if errors.Is(err, errStreamIdle) {
 			if ctx.Err() != nil {
 				return 1, ctx.Err()
+			}
+			if err := c.notifyIdle(ctx, runID); err != nil {
+				if errors.Is(err, ErrStreamSettled) {
+					return 0, nil
+				}
+				if ctx.Err() != nil {
+					return 1, ctx.Err()
+				}
+				return 1, err
 			}
 			attempt++
 			if err := c.sleep(ctx, attempt); err != nil {
@@ -66,16 +69,6 @@ func (c *Client) Watch(ctx context.Context, runID string, fromSeq *int64, out io
 			}
 			continue
 		}
-		if resp.StatusCode != http.StatusOK {
-			raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			_ = resp.Body.Close()
-			if readErr != nil {
-				return 1, readErr
-			}
-			return 1, problemError(resp.StatusCode, raw)
-		}
-		code, done, err := readEvents(resp.Body, out, &lastID, &seq, &haveSeq, seen)
-		_ = resp.Body.Close()
 		if err != nil {
 			if ctx.Err() != nil {
 				return 1, ctx.Err()
@@ -92,27 +85,21 @@ func (c *Client) Watch(ctx context.Context, runID string, fromSeq *int64, out io
 	}
 }
 
-func readEvents(body io.Reader, out io.Writer, lastID *string, seq *int64, haveSeq *bool, seen map[string]struct{}) (int, bool, error) {
+func readEvents(body io.Reader, out io.Writer, cur *eventCursor) (int, bool, error) {
 	r := newSSEReader(body)
 	for {
 		ev, err := r.Next()
 		if err != nil {
+			if errors.Is(err, errStreamIdle) {
+				return 0, false, err
+			}
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return 0, false, nil
 			}
 			return 0, false, err
 		}
-		if ev.ID != "" {
-			if _, ok := seen[ev.ID]; ok {
-				continue
-			}
-			seen[ev.ID] = struct{}{}
-			*lastID = ev.ID
-			n, convErr := strconv.ParseInt(ev.ID, 10, 64)
-			if convErr == nil {
-				*seq = n
-				*haveSeq = true
-			}
+		if !cur.accept(ev) {
+			continue
 		}
 		if line, ok := RenderLine(ev); ok {
 			if _, err := fmt.Fprintln(out, line); err != nil {
@@ -130,7 +117,9 @@ func readEvents(body io.Reader, out io.Writer, lastID *string, seq *int64, haveS
 }
 
 func terminalExit(ev Event) (int, bool, error) {
-	if ev.Type != "terminal" && ev.Type != "run.terminal" {
+	// The harness event type "terminal" is rendered above and is not the
+	// end of the watch. factoryd flushes it before the run decision.
+	if ev.Type != "run.terminal" {
 		return 0, false, nil
 	}
 	var p struct {
@@ -145,8 +134,8 @@ func terminalExit(ev Event) (int, bool, error) {
 	case "cancelled":
 		return 2, true, nil
 	default:
-		// failed, and harness statuses such as model_unavailable and
-		// config_invalid. The status line is already on stdout.
+		// failed, and control-plane statuses such as model_unavailable
+		// and config_invalid. The status line is already on stdout.
 		return 1, true, nil
 	}
 }

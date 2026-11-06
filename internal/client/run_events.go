@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net/http"
-	"net/url"
-	"strconv"
 )
 
 // errRunStreamDone ends StreamRunEvents after factoryd's run.terminal.
@@ -25,57 +22,50 @@ func (c *Client) StreamRunEvents(ctx context.Context, runID string, yield func(E
 	if yield == nil {
 		yield = func(Event) error { return nil }
 	}
-	var (
-		lastID  string
-		seq     int64
-		haveSeq bool
-		seen    = map[string]struct{}{}
-		attempt int
-	)
+	cur := &eventCursor{seen: map[string]struct{}{}}
+	attempt := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		q := url.Values{}
-		if haveSeq {
-			q.Set("from_seq", strconv.FormatInt(seq, 10))
-		}
-		endpoint, err := c.endpoint("/api/v1/agent/runs/"+url.PathEscape(runID)+"/events", q)
+		resp, err := c.openRunEvents(ctx, runID, cur)
 		if err != nil {
+			var transport *streamTransportError
+			if errors.As(err, &transport) {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				attempt++
+				if err := c.sleep(ctx, attempt); err != nil {
+					return err
+				}
+				continue
+			}
 			return err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-		req.Header.Set("Accept", "text/event-stream")
-		if lastID != "" {
-			req.Header.Set("Last-Event-ID", lastID)
-		}
-		resp, err := c.http().Do(req)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			attempt++
-			if err := c.sleep(ctx, attempt); err != nil {
-				return err
-			}
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			_ = resp.Body.Close()
-			if readErr != nil {
-				return readErr
-			}
-			return problemError(resp.StatusCode, raw)
-		}
-		err = readRunEvents(resp.Body, yield, &lastID, &seq, &haveSeq, seen)
+		err = readRunEvents(resp.Body, yield, cur)
 		_ = resp.Body.Close()
 		if errors.Is(err, errRunStreamDone) {
 			return nil
+		}
+		if errors.Is(err, errStreamIdle) {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err := c.notifyIdle(ctx, runID); err != nil {
+				if errors.Is(err, ErrStreamSettled) {
+					return nil
+				}
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return err
+			}
+			attempt++
+			if sleepErr := c.sleep(ctx, attempt); sleepErr != nil {
+				return sleepErr
+			}
+			continue
 		}
 		if err != nil && ctx.Err() != nil {
 			return ctx.Err()
@@ -87,27 +77,21 @@ func (c *Client) StreamRunEvents(ctx context.Context, runID string, yield func(E
 	}
 }
 
-func readRunEvents(body io.Reader, yield func(Event) error, lastID *string, seq *int64, haveSeq *bool, seen map[string]struct{}) error {
+func readRunEvents(body io.Reader, yield func(Event) error, cur *eventCursor) error {
 	r := newSSEReader(body)
 	for {
 		ev, err := r.Next()
 		if err != nil {
+			if errors.Is(err, errStreamIdle) {
+				return err
+			}
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return nil
 			}
 			return err
 		}
-		if ev.ID != "" {
-			if _, ok := seen[ev.ID]; ok {
-				continue
-			}
-			seen[ev.ID] = struct{}{}
-			*lastID = ev.ID
-			n, convErr := strconv.ParseInt(ev.ID, 10, 64)
-			if convErr == nil {
-				*seq = n
-				*haveSeq = true
-			}
+		if !cur.accept(ev) {
+			continue
 		}
 		if err := yield(ev); err != nil {
 			return err
