@@ -37,7 +37,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "Inbox and comment bodies are at most 8192 bytes.",
+      "title": "Inbox and comment bodies are at most 8192 bytes. DeliveryBodyCap is 256 KiB (256 << 10). maxBodyBytes is 1 MiB. Neither constant is 8192.",
       "document": {
         "accepted": true,
         "bodyByteLength": 8192,
@@ -51,7 +51,7 @@
       "rejectBy": "formula",
       "code": "INV-BODY",
       "schema": "scenario",
-      "title": "Inbox and comment bodies are at most 8192 bytes.",
+      "title": "Inbox and comment bodies are at most 8192 bytes. DeliveryBodyCap is 256 KiB (256 << 10). maxBodyBytes is 1 MiB. Neither constant is 8192.",
       "document": {
         "accepted": true,
         "bodyByteLength": 8193,

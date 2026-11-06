@@ -35,15 +35,28 @@
           "method": {"type": "string", "minLength": 1},
           "fieldPath": {"type": "string", "minLength": 1},
           "baseline": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["file", "start", "end", "anchor"],
-            "properties": {
-              "file": {"type": "string", "minLength": 1},
-              "start": {"type": "integer", "minimum": 1},
-              "end": {"type": "integer", "minimum": 1},
-              "anchor": {"type": "string", "minLength": 1}
-            }
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["file", "start", "end", "anchor"],
+                "properties": {
+                  "file": {"type": "string", "minLength": 1},
+                  "start": {"type": "integer", "minimum": 1},
+                  "end": {"type": "integer", "minimum": 1},
+                  "anchor": {"type": "string", "minLength": 1}
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["status", "gap"],
+                "properties": {
+                  "status": {"const": "gap"},
+                  "gap": {"type": "string", "minLength": 20}
+                }
+              }
+            ]
           },
           "decision": {"type": "string", "minLength": 1},
           "testOwner": {"type": "string", "minLength": 1},

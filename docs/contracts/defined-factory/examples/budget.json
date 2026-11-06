@@ -39,7 +39,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "Usage is integer cents deduplicated by call and attempt, including a failed attempt. A duplicate attempt is not counted twice.",
+      "title": "RunUsage adds CostCents for every usage event and does not dedup by call and attempt. The contract counts integer cents once per call and attempt, including a failed attempt.",
       "document": {
         "countedCents": 250,
         "duplicateAttemptCounted": false,
@@ -54,7 +54,7 @@
       "rejectBy": "formula",
       "code": "INV-BUDGET-DEDUP",
       "schema": "scenario",
-      "title": "Usage is integer cents deduplicated by call and attempt, including a failed attempt. A duplicate attempt is not counted twice.",
+      "title": "RunUsage adds CostCents for every usage event and does not dedup by call and attempt. The contract counts integer cents once per call and attempt, including a failed attempt.",
       "document": {
         "countedCents": 250,
         "duplicateAttemptCounted": true,
@@ -69,7 +69,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "Ancestor reservation is one transaction. Scope rows lock in scope id order. Failure leaves no partial reserve.",
+      "title": "GAP: ancestor reservation is one transaction with scope rows locked in scope id order. RunUsage adds CostCents and does not lock scopes.",
       "document": {
         "atomic": true,
         "lockOrder": "scope_id",
@@ -89,7 +89,7 @@
       "rejectBy": "formula",
       "code": "INV-RESERVE",
       "schema": "scenario",
-      "title": "Ancestor reservation is one transaction. Scope rows lock in scope id order. Failure leaves no partial reserve.",
+      "title": "GAP: ancestor reservation is one transaction with scope rows locked in scope id order. RunUsage adds CostCents and does not lock scopes.",
       "document": {
         "atomic": true,
         "lockOrder": "scope_id",
@@ -109,7 +109,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "An 80 percent crossing emits one alert per episode. A refund below the line starts a new episode.",
+      "title": "GAP: an 80 percent crossing emits one alert per episode. A refund below the line starts a new episode. RunUsage adds CostCents and emits no alert.",
       "document": {
         "alerts": 2,
         "ceilingCents": 1000,
@@ -128,7 +128,7 @@
       "rejectBy": "formula",
       "code": "INV-ALERT80",
       "schema": "scenario",
-      "title": "An 80 percent crossing emits one alert per episode. A refund below the line starts a new episode.",
+      "title": "GAP: an 80 percent crossing emits one alert per episode. A refund below the line starts a new episode. RunUsage adds CostCents and emits no alert.",
       "document": {
         "alerts": 1,
         "ceilingCents": 1000,
@@ -181,7 +181,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "Spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. The gateway cap is at most the ceiling.",
+      "title": "GAP: spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. RunUsage adds reported CostCents and does not keep that account.",
       "document": {
         "ceilingCents": 2500,
         "gatewayCapCents": 2500,
@@ -196,7 +196,7 @@
       "rejectBy": "formula",
       "code": "INV-OVERSHOOT",
       "schema": "scenario",
-      "title": "Spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. The gateway cap is at most the ceiling.",
+      "title": "GAP: spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. RunUsage adds reported CostCents and does not keep that account.",
       "document": {
         "ceilingCents": 2500,
         "gatewayCapCents": 2500,
@@ -211,7 +211,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "A late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation.",
+      "title": "GAP: a late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation. RunUsage adds the reported CostCents.",
       "document": {
         "code": "usage_late_over_reservation",
         "paused": true,
@@ -228,7 +228,7 @@
       "rejectBy": "formula",
       "code": "INV-LATE-CHARGE",
       "schema": "scenario",
-      "title": "A late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation.",
+      "title": "GAP: a late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation. RunUsage adds the reported CostCents.",
       "document": {
         "code": "usage_late_over_reservation",
         "paused": true,
@@ -245,7 +245,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "Each engagement has its own gateway allocation at most the ceiling. A shared key is not this allocation.",
+      "title": "GAP: each engagement has its own gateway allocation at most the ceiling. RunUsage adds CostCents and is not that allocation.",
       "document": {
         "engagementCapCents": 2500,
         "gatewayCapCents": 2500,
@@ -261,7 +261,7 @@
       "rejectBy": "formula",
       "code": "INV-GATEWAY",
       "schema": "scenario",
-      "title": "Each engagement has its own gateway allocation at most the ceiling. A shared key is not this allocation.",
+      "title": "GAP: each engagement has its own gateway allocation at most the ceiling. RunUsage adds CostCents and is not that allocation.",
       "document": {
         "engagementCapCents": 2500,
         "gatewayCapCents": 5000,
@@ -309,7 +309,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "An authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing.",
+      "title": "GAP: an authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing. RunUsage sums usage and does not raise a ceiling.",
       "document": {
         "accepted": true,
         "actor": "api_key:ops",
@@ -328,7 +328,7 @@
       "rejectBy": "formula",
       "code": "INV-BUDGET-OVERRIDE",
       "schema": "scenario",
-      "title": "An authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing.",
+      "title": "GAP: an authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing. RunUsage sums usage and does not raise a ceiling.",
       "document": {
         "accepted": true,
         "actor": "api_key:ops",

@@ -164,6 +164,9 @@
         },
         "imageDigest": {
           "type": "string"
+        },
+        "secretPolicy": {
+          "type": "string"
         }
       },
       "required": [
@@ -171,7 +174,8 @@
         "backendId",
         "codeDigest",
         "configDigest",
-        "imageDigest"
+        "imageDigest",
+        "secretPolicy"
       ],
       "type": "object"
     },
@@ -765,6 +769,9 @@
         },
         "imageDigest": {
           "type": "string"
+        },
+        "secretPolicy": {
+          "type": "string"
         }
       },
       "required": [
@@ -772,7 +779,8 @@
         "backendId",
         "codeDigest",
         "configDigest",
-        "imageDigest"
+        "imageDigest",
+        "secretPolicy"
       ],
       "type": "object"
     },

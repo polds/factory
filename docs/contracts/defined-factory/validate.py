@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 
 import audits
-import rows
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -77,9 +76,14 @@ def main() -> int:
     mutations = _selftest(problems)
     doc = REPO / "docs" / "13-defined-factory-contracts.md"
     text = doc.read_text(encoding="utf-8") if doc.is_file() else ""
-    for inv in audits.EXPECT:
-        if inv not in text:
-            problems.append(f"docs/13-defined-factory-contracts.md omits {inv}")
+    if "docs/contracts/defined-factory/matrix.json" not in text:
+        problems.append(
+            "docs/13-defined-factory-contracts.md does not link matrix.json"
+        )
+    if "## Decisions and seams" in text or "## Producer table" in text:
+        problems.append(
+            "docs/13-defined-factory-contracts.md reprints the producer map"
+        )
     if problems:
         for item in problems:
             print(item, file=sys.stderr)
@@ -250,8 +254,6 @@ def _check_matrix(cases: list[dict], matrix: dict, problems: list[str]) -> None:
         problems.append("matrix baseline")
     by_vector = {case["vectorId"]: case for case in cases}
     invariants = [row["invariant"] for row in matrix.get("rows", [])]
-    if [row[0] for row in rows.ROWS] != list(audits.EXPECT):
-        problems.append("rows order drifted from EXPECT")
     if invariants != list(audits.EXPECT):
         problems.append("matrix row order drifted from EXPECT")
     for row in matrix.get("rows", []):
@@ -270,6 +272,10 @@ def _check_matrix(cases: list[dict], matrix: dict, problems: list[str]) -> None:
             or negative["invariant"] != inv
         ):
             problems.append(f"{inv} negative vector")
+        if positive is not None and positive.get("title") != row["decision"]:
+            problems.append(f"{inv} positive title drifted from the decision")
+        if negative is not None and negative.get("title") != row["decision"]:
+            problems.append(f"{inv} negative title drifted from the decision")
     referenced = set()
     for row in matrix.get("rows", []):
         referenced.add(row["positive"])
@@ -282,6 +288,12 @@ def _check_matrix(cases: list[dict], matrix: dict, problems: list[str]) -> None:
 def _check_seams(matrix: dict, problems: list[str]) -> None:
     for row in matrix.get("rows", []):
         baseline = row["baseline"]
+        if baseline.get("status") == "gap":
+            if "file" in baseline or "anchor" in baseline:
+                problems.append(f"{row['invariant']} gap seam still cites a file")
+            if "GAP" not in row["decision"]:
+                problems.append(f"{row['invariant']} gap decision must say GAP")
+            continue
         path = REPO / baseline["file"]
         if not path.is_file():
             problems.append(f"{row['invariant']} missing seam file {baseline['file']}")

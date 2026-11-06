@@ -303,7 +303,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "Each leaf charge rolls up once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
+      "title": "RunUsage sums one run. The contract rolls each leaf charge once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
       "document": {
         "forbiddenInclusiveSum": 1600,
         "leaves": [
@@ -355,7 +355,7 @@
       "rejectBy": "formula",
       "code": "INV-ROLLUP",
       "schema": "scenario",
-      "title": "Each leaf charge rolls up once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
+      "title": "RunUsage sums one run. The contract rolls each leaf charge once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
       "document": {
         "forbiddenInclusiveSum": 1600,
         "leaves": [
@@ -407,7 +407,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "Two concurrent reservations that would pass a 2500 cent ceiling cannot both commit.",
+      "title": "GAP: two concurrent reservations that would pass a 2500 cent ceiling cannot both commit. RunUsage adds CostCents and is not that transaction.",
       "document": {
         "attempts": [
           {
@@ -435,7 +435,7 @@
       "rejectBy": "formula",
       "code": "INV-CONCURRENT",
       "schema": "scenario",
-      "title": "Two concurrent reservations that would pass a 2500 cent ceiling cannot both commit.",
+      "title": "GAP: two concurrent reservations that would pass a 2500 cent ceiling cannot both commit. RunUsage adds CostCents and is not that transaction.",
       "document": {
         "attempts": [
           {

@@ -919,6 +919,7 @@ EXPECT: dict[str, dict] = {
                 "codeDigest": SHA_B,
                 "configDigest": SHA_C,
                 "imageDigest": SHA_A,
+                "secretPolicy": "allowlist:SCAN_GITHUB_TOKEN",
             },
             "invalidatesOn": [
                 "adapterDigest",
@@ -934,6 +935,7 @@ EXPECT: dict[str, dict] = {
                 "codeDigest": SHA_B,
                 "configDigest": SHA_C,
                 "imageDigest": SHA_A,
+                "secretPolicy": "allowlist:SCAN_GITHUB_TOKEN",
             },
             "valid": True,
         }
@@ -1075,7 +1077,9 @@ NEGATIVES: dict[str, dict] = {
     "INV-BRIDGE": _flip("INV-BRIDGE", "sendCount", 1),
     "INV-SECURITY-GATE": _flip("INV-SECURITY-GATE", "paidProbeAllowed", True),
     "INV-ATTESTATION": _nested_flip(
-        "INV-ATTESTATION", ("observed", "configDigest"), SHA_A
+        "INV-ATTESTATION",
+        ("observed", "secretPolicy"),
+        "allowlist:OPENAI_API_KEY",
     ),
     "INV-LEGACY-ROUTES": _flip("INV-LEGACY-ROUTES", "postTasksRemainsWorkItem", False),
 }
@@ -1524,7 +1528,11 @@ def _formula(inv: str, doc: dict) -> bool:
             "imageDigest",
             "secretPolicy",
         }
-        return doc["valid"] is match and set(doc["invalidatesOn"]) == required
+        return (
+            doc["valid"] is match
+            and set(doc["invalidatesOn"]) == required
+            and doc["bound"]["secretPolicy"] == "allowlist:SCAN_GITHUB_TOKEN"
+        )
     if inv == "INV-TOKEN":
         child = set(doc["childGrants"])
         parent = set(doc["parentGrants"])

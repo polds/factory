@@ -184,18 +184,16 @@
     },
     {
       "invariant": "INV-PROFILE",
-      "title": "A profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected with no writes.",
+      "title": "GAP: a profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected and write nothing. WeakensApprovals compares approval gates and does not see a profile.",
       "consumer": "M8-I",
       "producer": "M8-I",
       "method": "invocation.Service.Invoke",
       "fieldPath": "profile.name",
       "baseline": {
-        "file": "internal/definition/guardrails.go",
-        "start": 83,
-        "end": 90,
-        "anchor": "WeakensApprovals"
+        "status": "gap",
+        "gap": "No profile admission check exists. WeakensApprovals compares approval gates."
       },
-      "decision": "A profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected with no writes.",
+      "decision": "GAP: a profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected and write nothing. WeakensApprovals compares approval gates and does not see a profile.",
       "testOwner": "M8-I",
       "positive": "INV-PROFILE",
       "negative": "INV-PROFILE-BAD"
@@ -220,18 +218,16 @@
     },
     {
       "invariant": "INV-GRANT",
-      "title": "execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing.",
+      "title": "GAP: execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing. WeakensApprovals compares approval gates and is not that check.",
       "consumer": "M9-N,M10-A",
       "producer": "M8-I",
       "method": "invocation.Service.Invoke",
       "fieldPath": "grants.executeTarget",
       "baseline": {
-        "file": "internal/definition/guardrails.go",
-        "start": 83,
-        "end": 90,
-        "anchor": "WeakensApprovals"
+        "status": "gap",
+        "gap": "No execute_target grant check exists. WeakensApprovals compares approval gates."
       },
-      "decision": "execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing.",
+      "decision": "GAP: execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing. WeakensApprovals compares approval gates and is not that check.",
       "testOwner": "M8-I",
       "positive": "INV-GRANT",
       "negative": "INV-GRANT-BAD"
@@ -346,18 +342,18 @@
     },
     {
       "invariant": "INV-REPORT-ZERO",
-      "title": "A report with findingsCount 0 and coverage present is success.",
+      "title": "checkRequires accepts only the pullRequest token and rejects every other token. A report product does not exist at this baseline. findingsCount 0 with coverage present is success once that product exists.",
       "consumer": "M10-A",
       "producer": "M8-I",
       "method": "result.PutReport",
       "fieldPath": "products.report.findingsCount",
       "baseline": {
-        "file": "internal/definition/types.go",
-        "start": 276,
-        "end": 286,
-        "anchor": "RequirePullRequest"
+        "file": "internal/definition/validate.go",
+        "start": 96,
+        "end": 113,
+        "anchor": "checkRequires"
       },
-      "decision": "A report with findingsCount 0 and coverage present is success.",
+      "decision": "checkRequires accepts only the pullRequest token and rejects every other token. A report product does not exist at this baseline. findingsCount 0 with coverage present is success once that product exists.",
       "testOwner": "M8-I",
       "positive": "INV-REPORT-ZERO",
       "negative": "INV-REPORT-ZERO-BAD"
@@ -490,54 +486,48 @@
     },
     {
       "invariant": "INV-PATH",
-      "title": "Publication rejects absolute paths, backslashes, and .. segments.",
+      "title": "GAP: publication rejects absolute paths, backslashes, and .. segments. No result publisher exists. archive writes runs/{run}/{exec}/events.ndjson and does not check paths.",
       "consumer": "M8-I",
       "producer": "M8-I",
       "method": "result.Publish",
       "fieldPath": "storageRef",
       "baseline": {
-        "file": "internal/server/terminal.go",
-        "start": 748,
-        "end": 760,
-        "anchor": "events.ndjson"
+        "status": "gap",
+        "gap": "No result-path publisher exists. terminal.go archive stores events.ndjson."
       },
-      "decision": "Publication rejects absolute paths, backslashes, and .. segments.",
+      "decision": "GAP: publication rejects absolute paths, backslashes, and .. segments. No result publisher exists. archive writes runs/{run}/{exec}/events.ndjson and does not check paths.",
       "testOwner": "M8-I",
       "positive": "INV-PATH",
       "negative": "INV-PATH-BAD"
     },
     {
       "invariant": "INV-SYMLINK",
-      "title": "A lexically safe path that is a symlink is result_symlink_rejected.",
+      "title": "GAP: a lexically safe path that is a symlink is result_symlink_rejected. defsync.rejectSymlinks rejects symlinks in a definition tree, not a result path.",
       "consumer": "M8-I",
       "producer": "M8-I",
       "method": "result.Publish",
       "fieldPath": "storageRef",
       "baseline": {
-        "file": "internal/server/terminal.go",
-        "start": 748,
-        "end": 760,
-        "anchor": "events.ndjson"
+        "status": "gap",
+        "gap": "No result symlink check exists. defsync.rejectSymlinks covers definition trees."
       },
-      "decision": "A lexically safe path that is a symlink is result_symlink_rejected.",
+      "decision": "GAP: a lexically safe path that is a symlink is result_symlink_rejected. defsync.rejectSymlinks rejects symlinks in a definition tree, not a result path.",
       "testOwner": "M8-I",
       "positive": "INV-SYMLINK",
       "negative": "INV-SYMLINK-BAD"
     },
     {
       "invariant": "INV-SIZE",
-      "title": "Report bodies are at most 1 MiB. Artifact files are at most 16 MiB.",
+      "title": "GAP: report bodies are at most 1 MiB and artifact files at most 16 MiB. archive stores the events transcript with no result size cap.",
       "consumer": "M8-I",
       "producer": "M8-I",
       "method": "result.Publish",
       "fieldPath": "reportMaxBytes,artifactMaxBytes",
       "baseline": {
-        "file": "internal/server/terminal.go",
-        "start": 748,
-        "end": 760,
-        "anchor": "events.ndjson"
+        "status": "gap",
+        "gap": "No 1 MiB report cap or 16 MiB artifact cap exists on a result publisher."
       },
-      "decision": "Report bodies are at most 1 MiB. Artifact files are at most 16 MiB.",
+      "decision": "GAP: report bodies are at most 1 MiB and artifact files at most 16 MiB. archive stores the events transcript with no result size cap.",
       "testOwner": "M8-I",
       "positive": "INV-SIZE",
       "negative": "INV-SIZE-BAD"
@@ -724,18 +714,18 @@
     },
     {
       "invariant": "INV-BODY",
-      "title": "Inbox and comment bodies are at most 8192 bytes.",
+      "title": "Inbox and comment bodies are at most 8192 bytes. DeliveryBodyCap is 256 KiB (256 << 10). maxBodyBytes is 1 MiB. Neither constant is 8192.",
       "consumer": "M9-H",
       "producer": "M9-T",
       "method": "store.AppendLedger",
       "fieldPath": "body",
       "baseline": {
-        "file": "internal/api/handler.go",
-        "start": 18,
-        "end": 20,
-        "anchor": "maxBodyBytes"
+        "file": "internal/store/types.go",
+        "start": 90,
+        "end": 91,
+        "anchor": "DeliveryBodyCap"
       },
-      "decision": "Inbox and comment bodies are at most 8192 bytes.",
+      "decision": "Inbox and comment bodies are at most 8192 bytes. DeliveryBodyCap is 256 KiB (256 << 10). maxBodyBytes is 1 MiB. Neither constant is 8192.",
       "testOwner": "M9-T",
       "positive": "INV-BODY",
       "negative": "INV-BODY-BAD"
@@ -1120,7 +1110,7 @@
     },
     {
       "invariant": "INV-BUDGET-DEDUP",
-      "title": "Usage is integer cents deduplicated by call and attempt, including a failed attempt. A duplicate attempt is not counted twice.",
+      "title": "RunUsage adds CostCents for every usage event and does not dedup by call and attempt. The contract counts integer cents once per call and attempt, including a failed attempt.",
       "consumer": "M9-H,M10-G",
       "producer": "M9-N",
       "method": "coordination.SettleUsage",
@@ -1131,14 +1121,14 @@
         "end": 139,
         "anchor": "CostCents"
       },
-      "decision": "Usage is integer cents deduplicated by call and attempt, including a failed attempt. A duplicate attempt is not counted twice.",
+      "decision": "RunUsage adds CostCents for every usage event and does not dedup by call and attempt. The contract counts integer cents once per call and attempt, including a failed attempt.",
       "testOwner": "M9-N",
       "positive": "INV-BUDGET-DEDUP",
       "negative": "INV-BUDGET-DEDUP-BAD"
     },
     {
       "invariant": "INV-ROLLUP",
-      "title": "Each leaf charge rolls up once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
+      "title": "RunUsage sums one run. The contract rolls each leaf charge once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
       "consumer": "M9-N,M10-G",
       "producer": "M9-N",
       "method": "coordination.Rollup",
@@ -1149,61 +1139,55 @@
         "end": 116,
         "anchor": "RunUsage"
       },
-      "decision": "Each leaf charge rolls up once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
+      "decision": "RunUsage sums one run. The contract rolls each leaf charge once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
       "testOwner": "M9-N",
       "positive": "INV-ROLLUP",
       "negative": "INV-ROLLUP-BAD"
     },
     {
       "invariant": "INV-RESERVE",
-      "title": "Ancestor reservation is one transaction. Scope rows lock in scope id order. Failure leaves no partial reserve.",
+      "title": "GAP: ancestor reservation is one transaction with scope rows locked in scope id order. RunUsage adds CostCents and does not lock scopes.",
       "consumer": "M9-H",
       "producer": "M9-N",
       "method": "coordination.ReserveAncestors",
       "fieldPath": "reservation",
       "baseline": {
-        "file": "internal/store/m5_read.go",
-        "start": 137,
-        "end": 139,
-        "anchor": "CostCents"
+        "status": "gap",
+        "gap": "No ancestor reservation exists. RunUsage adds CostCents per usage event."
       },
-      "decision": "Ancestor reservation is one transaction. Scope rows lock in scope id order. Failure leaves no partial reserve.",
+      "decision": "GAP: ancestor reservation is one transaction with scope rows locked in scope id order. RunUsage adds CostCents and does not lock scopes.",
       "testOwner": "M9-N",
       "positive": "INV-RESERVE",
       "negative": "INV-RESERVE-BAD"
     },
     {
       "invariant": "INV-CONCURRENT",
-      "title": "Two concurrent reservations that would pass a 2500 cent ceiling cannot both commit.",
+      "title": "GAP: two concurrent reservations that would pass a 2500 cent ceiling cannot both commit. RunUsage adds CostCents and is not that transaction.",
       "consumer": "M9-N",
       "producer": "M9-N",
       "method": "coordination.ReserveAncestors",
       "fieldPath": "ceilingCents",
       "baseline": {
-        "file": "internal/store/m5_read.go",
-        "start": 137,
-        "end": 139,
-        "anchor": "CostCents"
+        "status": "gap",
+        "gap": "No concurrent reservation transaction exists. RunUsage adds CostCents."
       },
-      "decision": "Two concurrent reservations that would pass a 2500 cent ceiling cannot both commit.",
+      "decision": "GAP: two concurrent reservations that would pass a 2500 cent ceiling cannot both commit. RunUsage adds CostCents and is not that transaction.",
       "testOwner": "M9-N",
       "positive": "INV-CONCURRENT",
       "negative": "INV-CONCURRENT-BAD"
     },
     {
       "invariant": "INV-ALERT80",
-      "title": "An 80 percent crossing emits one alert per episode. A refund below the line starts a new episode.",
+      "title": "GAP: an 80 percent crossing emits one alert per episode. A refund below the line starts a new episode. RunUsage adds CostCents and emits no alert.",
       "consumer": "M9-N",
       "producer": "M9-N",
       "method": "coordination.NoteThreshold",
       "fieldPath": "thresholdPercent",
       "baseline": {
-        "file": "internal/store/m5_read.go",
-        "start": 137,
-        "end": 139,
-        "anchor": "CostCents"
+        "status": "gap",
+        "gap": "No 80 percent budget alert exists. RunUsage adds CostCents."
       },
-      "decision": "An 80 percent crossing emits one alert per episode. A refund below the line starts a new episode.",
+      "decision": "GAP: an 80 percent crossing emits one alert per episode. A refund below the line starts a new episode. RunUsage adds CostCents and emits no alert.",
       "testOwner": "M9-N",
       "positive": "INV-ALERT80",
       "negative": "INV-ALERT80-BAD"
@@ -1228,54 +1212,48 @@
     },
     {
       "invariant": "INV-OVERSHOOT",
-      "title": "Spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. The gateway cap is at most the ceiling.",
+      "title": "GAP: spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. RunUsage adds reported CostCents and does not keep that account.",
       "consumer": "M10-G",
       "producer": "M9-N",
       "method": "coordination.Admit",
       "fieldPath": "overshootBeyondCeilingCents",
       "baseline": {
-        "file": "internal/store/m5_read.go",
-        "start": 137,
-        "end": 139,
-        "anchor": "CostCents"
+        "status": "gap",
+        "gap": "No ceiling-overshoot account exists. RunUsage adds reported CostCents."
       },
-      "decision": "Spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. The gateway cap is at most the ceiling.",
+      "decision": "GAP: spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. RunUsage adds reported CostCents and does not keep that account.",
       "testOwner": "M9-N",
       "positive": "INV-OVERSHOOT",
       "negative": "INV-OVERSHOOT-BAD"
     },
     {
       "invariant": "INV-LATE-CHARGE",
-      "title": "A late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation.",
+      "title": "GAP: a late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation. RunUsage adds the reported CostCents.",
       "consumer": "M10-G",
       "producer": "M9-N",
       "method": "coordination.SettleUsage",
       "fieldPath": "quarantinedCents",
       "baseline": {
-        "file": "internal/store/m5_read.go",
-        "start": 137,
-        "end": 139,
-        "anchor": "CostCents"
+        "status": "gap",
+        "gap": "No late-charge quarantine exists. RunUsage adds every usage event."
       },
-      "decision": "A late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation.",
+      "decision": "GAP: a late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation. RunUsage adds the reported CostCents.",
       "testOwner": "M9-N",
       "positive": "INV-LATE-CHARGE",
       "negative": "INV-LATE-CHARGE-BAD"
     },
     {
       "invariant": "INV-GATEWAY",
-      "title": "Each engagement has its own gateway allocation at most the ceiling. A shared key is not this allocation.",
+      "title": "GAP: each engagement has its own gateway allocation at most the ceiling. RunUsage adds CostCents and is not that allocation.",
       "consumer": "M10-G,M10-A",
       "producer": "M10-S",
       "method": "gateway.AllocateEngagement",
       "fieldPath": "gatewayCapCents",
       "baseline": {
-        "file": "internal/store/m5_read.go",
-        "start": 137,
-        "end": 139,
-        "anchor": "CostCents"
+        "status": "gap",
+        "gap": "No per-engagement gateway allocation exists. RunUsage adds CostCents."
       },
-      "decision": "Each engagement has its own gateway allocation at most the ceiling. A shared key is not this allocation.",
+      "decision": "GAP: each engagement has its own gateway allocation at most the ceiling. RunUsage adds CostCents and is not that allocation.",
       "testOwner": "M10-G",
       "positive": "INV-GATEWAY",
       "negative": "INV-GATEWAY-BAD"
@@ -1300,18 +1278,16 @@
     },
     {
       "invariant": "INV-BUDGET-OVERRIDE",
-      "title": "An authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing.",
+      "title": "GAP: an authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing. RunUsage sums usage and does not raise a ceiling.",
       "consumer": "M9-N",
       "producer": "M9-N",
       "method": "coordination.AuthorizeCeiling",
       "fieldPath": "ceilingCents,audit",
       "baseline": {
-        "file": "internal/store/m5_read.go",
-        "start": 109,
-        "end": 116,
-        "anchor": "RunUsage"
+        "status": "gap",
+        "gap": "No audited ceiling override exists. RunUsage sums usage events."
       },
-      "decision": "An authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing.",
+      "decision": "GAP: an authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing. RunUsage sums usage and does not raise a ceiling.",
       "testOwner": "M9-N",
       "positive": "INV-BUDGET-OVERRIDE",
       "negative": "INV-BUDGET-OVERRIDE-BAD"
@@ -1516,108 +1492,96 @@
     },
     {
       "invariant": "INV-LOCAL-CLI",
-      "title": "Local CLI mode stays available and does not require Linear or a Factory task ref.",
+      "title": "GAP: local CLI mode stays available and does not require Linear or a Factory task ref. harness/run.go rejects an unknown harness adapter and does not implement that mode.",
       "consumer": "M10-A",
       "producer": "M10-A",
       "method": "scanner.LocalCLI",
       "fieldPath": "mode",
       "baseline": {
-        "file": "internal/harness/run.go",
-        "start": 117,
-        "end": 123,
-        "anchor": "not in this build"
+        "status": "gap",
+        "gap": "No scanner local-CLI mode exists in this repository."
       },
-      "decision": "Local CLI mode stays available and does not require Linear or a Factory task ref.",
+      "decision": "GAP: local CLI mode stays available and does not require Linear or a Factory task ref. harness/run.go rejects an unknown harness adapter and does not implement that mode.",
       "testOwner": "M10-A",
       "positive": "INV-LOCAL-CLI",
       "negative": "INV-LOCAL-CLI-BAD"
     },
     {
       "invariant": "INV-ART",
-      "title": "Each item gets its own workspace mount. There is no shared writable ART root.",
+      "title": "GAP: each item gets its own workspace mount and there is no shared writable ART root. This tree has no ART mounter.",
       "consumer": "M10-A",
       "producer": "M10-A",
       "method": "scanner.MountWorkspace",
       "fieldPath": "art.perItem",
       "baseline": {
-        "file": "internal/server/terminal.go",
-        "start": 748,
-        "end": 760,
-        "anchor": "events.ndjson"
+        "status": "gap",
+        "gap": "No per-item ART mount exists in this repository."
       },
-      "decision": "Each item gets its own workspace mount. There is no shared writable ART root.",
+      "decision": "GAP: each item gets its own workspace mount and there is no shared writable ART root. This tree has no ART mounter.",
       "testOwner": "M10-A",
       "positive": "INV-ART",
       "negative": "INV-ART-BAD"
     },
     {
       "invariant": "INV-RETENTION",
-      "title": "The durable result row outlives task-exit cleanup of the host workspace.",
+      "title": "GAP: the durable result row outlives workspace cleanup. archive stores events.ndjson and is not that row.",
       "consumer": "M10-A",
       "producer": "M8-I",
       "method": "result.PutReport",
       "fieldPath": "retention",
       "baseline": {
-        "file": "internal/server/terminal.go",
-        "start": 748,
-        "end": 760,
-        "anchor": "events.ndjson"
+        "status": "gap",
+        "gap": "No durable result row exists. archive stores the events transcript."
       },
-      "decision": "The durable result row outlives task-exit cleanup of the host workspace.",
+      "decision": "GAP: the durable result row outlives workspace cleanup. archive stores events.ndjson and is not that row.",
       "testOwner": "M8-I",
       "positive": "INV-RETENTION",
       "negative": "INV-RETENTION-BAD"
     },
     {
       "invariant": "INV-BRIDGE",
-      "title": "One outbound owner. Default disabled. Outage queues reporting and does not block execution. A send without authorization does not send.",
+      "title": "GAP: one outbound owner, disabled unless a send is authorized. Outage queues reporting and does not block execution. followUp sets StageBuilding. internal/outbound posts work-item status cards. Neither is factory-outbound-bridge.",
       "consumer": "M10-A",
       "producer": "M10-A",
       "method": "outbound.Enqueue",
       "fieldPath": "owners,sendAuthorized",
       "baseline": {
-        "file": "internal/automation/reply.go",
-        "start": 88,
-        "end": 92,
-        "anchor": "StageBuilding"
+        "status": "gap",
+        "gap": "No scanner outbound bridge exists. followUp sets StageBuilding."
       },
-      "decision": "One outbound owner. Default disabled. Outage queues reporting and does not block execution. A send without authorization does not send.",
+      "decision": "GAP: one outbound owner, disabled unless a send is authorized. Outage queues reporting and does not block execution. followUp sets StageBuilding. internal/outbound posts work-item status cards. Neither is factory-outbound-bridge.",
       "testOwner": "M10-A",
       "positive": "INV-BRIDGE",
       "negative": "INV-BRIDGE-BAD"
     },
     {
       "invariant": "INV-SECURITY-GATE",
-      "title": "A paid probe stays closed until G14, G18, and the gateway cap are proved on the actual backend. Helm render and kind do not prove a Docker host.",
+      "title": "GAP: a paid probe stays closed until G14, G18, and the gateway cap are proved on the actual backend. assign.go fills SidecarImage. docs/11 records the intended NetworkPolicy and host-firewall posture and does not implement the gate.",
       "consumer": "LIVE-10,M10-A",
       "producer": "M10-G",
       "method": "attestation.Gate",
       "fieldPath": "g14ActualBackend,g18ActualBackend,gatewayCapProven",
       "baseline": {
-        "file": "internal/server/assign.go",
-        "start": 174,
-        "end": 178,
-        "anchor": "SidecarImage"
+        "status": "gap",
+        "gap": "No G14, G18, or paid-probe gate exists. assign.go sets SidecarImage."
       },
-      "decision": "A paid probe stays closed until G14, G18, and the gateway cap are proved on the actual backend. Helm render and kind do not prove a Docker host.",
+      "decision": "GAP: a paid probe stays closed until G14, G18, and the gateway cap are proved on the actual backend. assign.go fills SidecarImage. docs/11 records the intended NetworkPolicy and host-firewall posture and does not implement the gate.",
       "testOwner": "M10-G",
       "positive": "INV-SECURITY-GATE",
       "negative": "INV-SECURITY-GATE-BAD"
     },
     {
       "invariant": "INV-ATTESTATION",
-      "title": "The attestation matches bound to observed digests. A changed config, code, image, adapter, backend, or secret policy invalidates it.",
+      "title": "GAP: the witness is valid only when bound and observed match, including secretPolicy. mintGitHubToken calls InstallationToken with DefaultPermissions and does not bind digests or secret policy.",
       "consumer": "LIVE-10",
       "producer": "M10-G",
       "method": "attestation.Bind",
       "fieldPath": "configDigest,codeDigest,imageDigest,adapterDigest,backendId",
       "baseline": {
-        "file": "internal/server/m4_wire.go",
-        "start": 343,
-        "end": 356,
-        "anchor": "InstallationToken"
+        "status": "gap",
+        "gap": "No attestation binder exists. InstallationToken mints a forge token."
       },
-      "decision": "The attestation matches bound to observed digests. A changed config, code, image, adapter, backend, or secret policy invalidates it.",
+      "decision": "GAP: the witness is valid only when bound and observed match, including secretPolicy. mintGitHubToken calls InstallationToken with DefaultPermissions and does not bind digests or secret policy.",
       "testOwner": "M10-G",
       "positive": "INV-ATTESTATION",
       "negative": "INV-ATTESTATION-BAD"
