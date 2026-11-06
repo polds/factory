@@ -23,6 +23,9 @@ if [[ "${mode}" == "all" || "${mode}" == "g14" ]]; then
   run_check g14_deny_default || fail=1
   run_check g14_no_docker_socket_mount || fail=1
   run_check g14_metadata_denied || fail=1
+  run_check g14_direct_ip_denied || fail=1
+  run_check g14_dns_connect_denied || fail=1
+  run_check g14_matrix_probe || fail=1
 fi
 if [[ "${mode}" == "all" || "${mode}" == "g18" ]]; then
   run_check g18_resolver_matrix || fail=1

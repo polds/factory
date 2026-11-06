@@ -1,0 +1,15 @@
+# Example narrow egress routes for synthetic acceptance (not production defaults).
+# Tasks reach only these host:port patterns via sidecar/proxy enforcement (M10-A/G).
+
+routes:
+  - name: forge-api
+    host: api.github.com
+    port: 443
+  - name: control-plane
+    host: factory.example.internal
+    port: 443
+
+deny:
+  - metadata: 169.254.169.254/32
+  - direct_ip_bypass: true
+  - dns_connect_upgrade: true

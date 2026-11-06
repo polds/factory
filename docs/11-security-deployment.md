@@ -30,7 +30,7 @@ FACTORY_EGRESS_KIND_SKIP=1 ./scripts/ci/egress-kind-smoke.sh
 
 Default posture in `deploy/scan-security/matrices/g14-default.env`: deny by default; narrow gateway/forge/control-plane routes; deny direct-IP bypass, DNS/CONNECT tricks, metadata (`169.254.169.254`), and cross-engagement traffic. Denials attribute to trusted task identity in probe logs (never secret values).
 
-Helm opt-in: `scanSecurity.enabled` and `scanSecurity.egress.networkPolicy`. This renders a baseline NetworkPolicy; **kind/Helm success is not host-firewall attestation**.
+Helm opt-in: `scanSecurity.enabled`, `scanSecurity.egress.networkPolicy`, and `scanSecurity.egress.requireCNI` (adds `factory.dev/require-cni` and a CNI requirement ConfigMap). These renders are **not** host-firewall or live-cluster CNI attestation.
 
 ## Residual allowlist exfiltration risk
 

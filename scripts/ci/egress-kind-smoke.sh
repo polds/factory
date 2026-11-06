@@ -22,6 +22,7 @@ echo "egress-kind-smoke: helm template scanSecurity"
   --set global.image.tag=test \
   --set scanSecurity.enabled=true \
   --set scanSecurity.egress.networkPolicy=true \
+  --set scanSecurity.egress.requireCNI=true \
   >"${work}/render.yaml"
 
 if ! grep -q 'kind: NetworkPolicy' "${work}/render.yaml"; then
@@ -30,6 +31,10 @@ if ! grep -q 'kind: NetworkPolicy' "${work}/render.yaml"; then
 fi
 if ! grep -q '169.254.169.254/32' "${work}/render.yaml"; then
   echo "egress-kind-smoke: FAIL metadata CIDR not excluded" >&2
+  exit 1
+fi
+if ! grep -q 'factory.dev/require-cni' "${work}/render.yaml"; then
+  echo "egress-kind-smoke: FAIL missing require-cni annotation" >&2
   exit 1
 fi
 

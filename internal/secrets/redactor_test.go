@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/polds/factory/internal/harness"
 	"github.com/polds/factory/internal/secrets"
 )
 
@@ -95,5 +96,28 @@ func TestRedactionJSONRoundTrip(t *testing.T) {
 	out := r.JSON(string(raw))
 	if strings.Contains(out, "CANARY-SYNTHETIC") {
 		t.Fatalf("json leak: %s", out)
+	}
+}
+
+func TestRedactionHarnessAuthNeedles(t *testing.T) {
+	r := secrets.NewRedactor()
+	harnessSecret := "CANARY-SYNTHETIC-harness-auth"
+	r.Observe("HARNESS_AUTH", harnessSecret)
+	combined := harness.Redact("Authorization: Bearer "+harnessSecret, r.Needles())
+	combined = r.Text(combined)
+	if strings.Contains(combined, harnessSecret) {
+		t.Fatalf("harness-auth path leaked: %q", combined)
+	}
+}
+
+func TestRedactionDelayedErrorArtifact(t *testing.T) {
+	r := secrets.NewRedactor()
+	oldVal, newVal := "CANARY-OLD", "CANARY-NEW"
+	r.Observe("T", oldVal)
+	r.Observe("T", newVal)
+	delayed := fmt.Sprintf(`{"error":"failed after retry","context":"%s then %s"}`, oldVal, newVal)
+	out := r.JSON(delayed)
+	if strings.Contains(out, oldVal) || strings.Contains(out, newVal) {
+		t.Fatalf("delayed artifact leak: %s", out)
 	}
 }

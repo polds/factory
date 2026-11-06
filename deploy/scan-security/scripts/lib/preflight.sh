@@ -30,6 +30,24 @@ g14_metadata_denied() {
   grep -q 'metadata=deny' "${matrix}"
 }
 
+g14_matrix_probe() {
+  local matrix="${SCAN_SECURITY_MATRIX:-}"
+  [[ -z "${matrix}" ]] && return 0
+  bash "${REPO_ROOT}/deploy/scan-security/probes/g14-matrix.sh" "${matrix}" >/dev/null
+}
+
+g14_direct_ip_denied() {
+  local matrix="${SCAN_SECURITY_MATRIX:-}"
+  [[ -z "${matrix}" ]] && return 0
+  grep -q 'direct_ip=deny' "${matrix}"
+}
+
+g14_dns_connect_denied() {
+  local matrix="${SCAN_SECURITY_MATRIX:-}"
+  [[ -z "${matrix}" ]] && return 0
+  grep -q 'dns_connect_tricks=deny' "${matrix}"
+}
+
 g18_resolver_matrix() {
   command -v go >/dev/null 2>&1 || return 0
   (cd "${REPO_ROOT:-.}" && go test ./internal/secrets/... -run 'TestResolve' -count=1 >/dev/null)

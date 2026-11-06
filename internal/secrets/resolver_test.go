@@ -93,6 +93,32 @@ func TestResolveEnvFallback(t *testing.T) {
 	}
 }
 
+func TestResolveWorldWritableRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SCAN_GITHUB_TOKEN")
+	if err := os.WriteFile(path, []byte("CANARY-SYNTHETIC"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	r := resolver(t, dir, []string{"SCAN_GITHUB_TOKEN"}, nil)
+	_, err := r.Resolve(context.Background(), "SCAN_GITHUB_TOKEN", "inj")
+	if !secrets.IsRefRejected(err) || !strings.Contains(err.Error(), "writable") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestResolveSubPathNotUsed(t *testing.T) {
+	// Resolver reads basename files only; Kubernetes subPath mounts are not a rotation mechanism.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SCAN_GITHUB_TOKEN"), []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := resolver(t, dir, []string{"SCAN_GITHUB_TOKEN"}, nil)
+	h, err := r.Resolve(context.Background(), "SCAN_GITHUB_TOKEN", "inj-a")
+	if err != nil || h.Value() != "v1" {
+		t.Fatalf("first resolve: %v %q", err, h.Value())
+	}
+}
+
 func TestHandleRedactsFmtVerbs(t *testing.T) {
 	h := secrets.HandleForTest("NAME", "CANARY-SYNTHETIC")
 	for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
