@@ -1,0 +1,288 @@
+{
+  "contractVersion": "defined-factory/1",
+  "area": "activation",
+  "cases": [
+    {
+      "vectorId": "INV-PARK",
+      "invariant": "INV-PARK",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Park is per task, records blockers, and releases worker capacity. Today's suspension is one per work item.",
+      "document": {
+        "capacityReleased": true,
+        "durableBlockers": true,
+        "state": "parked"
+      }
+    },
+    {
+      "vectorId": "INV-PARK-BAD",
+      "invariant": "INV-PARK",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-PARK",
+      "schema": "scenario",
+      "title": "Park is per task, records blockers, and releases worker capacity. Today's suspension is one per work item.",
+      "document": {
+        "capacityReleased": false,
+        "durableBlockers": true,
+        "state": "parked"
+      }
+    },
+    {
+      "vectorId": "INV-STEER",
+      "invariant": "INV-STEER",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A running recipient is steered only when steer was negotiated. Otherwise the input stays pending.",
+      "document": {
+        "delivery": "pending",
+        "negotiatedSteer": false,
+        "running": true
+      }
+    },
+    {
+      "vectorId": "INV-STEER-BAD",
+      "invariant": "INV-STEER",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-STEER",
+      "schema": "scenario",
+      "title": "A running recipient is steered only when steer was negotiated. Otherwise the input stays pending.",
+      "document": {
+        "delivery": "steer",
+        "negotiatedSteer": false,
+        "running": true
+      }
+    },
+    {
+      "vectorId": "INV-RETRY-EXEC",
+      "invariant": "INV-RETRY-EXEC",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Infrastructure retry creates a new execution of the same run.",
+      "document": {
+        "newExecutionId": "exec_01ARZ3NDEKTSV4RRFFQ69G5FA8",
+        "priorExecutionId": "exec_01ARZ3NDEKTSV4RRFFQ69G5FA7",
+        "runId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA4",
+        "sameExecution": false,
+        "sameRun": true
+      }
+    },
+    {
+      "vectorId": "INV-RETRY-EXEC-BAD",
+      "invariant": "INV-RETRY-EXEC",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-RETRY-EXEC",
+      "schema": "scenario",
+      "title": "Infrastructure retry creates a new execution of the same run.",
+      "document": {
+        "newExecutionId": "exec_01ARZ3NDEKTSV4RRFFQ69G5FA8",
+        "priorExecutionId": "exec_01ARZ3NDEKTSV4RRFFQ69G5FA7",
+        "runId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA4",
+        "sameExecution": false,
+        "sameRun": false
+      }
+    },
+    {
+      "vectorId": "INV-PARK-CONTINUE",
+      "invariant": "INV-PARK-CONTINUE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Park continuation creates a new execution of the same run.",
+      "document": {
+        "newExecution": true,
+        "newExecutionId": "exec_01ARZ3NDEKTSV4RRFFQ69G5FA9",
+        "runId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA6",
+        "sameRun": true
+      }
+    },
+    {
+      "vectorId": "INV-PARK-CONTINUE-BAD",
+      "invariant": "INV-PARK-CONTINUE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-PARK-CONTINUE",
+      "schema": "scenario",
+      "title": "Park continuation creates a new execution of the same run.",
+      "document": {
+        "newExecution": true,
+        "newExecutionId": "exec_01ARZ3NDEKTSV4RRFFQ69G5FA9",
+        "runId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA6",
+        "sameRun": false
+      }
+    },
+    {
+      "vectorId": "INV-NO-RESURRECT",
+      "invariant": "INV-NO-RESURRECT",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A cancelled task does not auto-resurrect.",
+      "document": {
+        "autoResurrect": false,
+        "code": "cancelled_no_resurrect",
+        "newRun": false
+      }
+    },
+    {
+      "vectorId": "INV-NO-RESURRECT-BAD",
+      "invariant": "INV-NO-RESURRECT",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-NO-RESURRECT",
+      "schema": "scenario",
+      "title": "A cancelled task does not auto-resurrect.",
+      "document": {
+        "autoResurrect": true,
+        "code": "cancelled_no_resurrect",
+        "newRun": false
+      }
+    },
+    {
+      "vectorId": "INV-SUBTREE-CANCEL",
+      "invariant": "INV-SUBTREE-CANCEL",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Cancel and pause cascade over the chosen subtree and later spawn is spawn_denied.",
+      "document": {
+        "action": "cancel",
+        "childAdvancesPipeline": false,
+        "descendants": [
+          "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAB",
+          "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+          "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAD"
+        ],
+        "laterSpawn": "spawn_denied",
+        "resulting": "cancelled",
+        "root": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAA"
+      }
+    },
+    {
+      "vectorId": "INV-SUBTREE-CANCEL-BAD",
+      "invariant": "INV-SUBTREE-CANCEL",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SUBTREE-CANCEL",
+      "schema": "scenario",
+      "title": "Cancel and pause cascade over the chosen subtree and later spawn is spawn_denied.",
+      "document": {
+        "action": "cancel",
+        "childAdvancesPipeline": false,
+        "descendants": [
+          "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAB",
+          "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+          "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAD"
+        ],
+        "laterSpawn": "allowed",
+        "resulting": "cancelled",
+        "root": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAA"
+      }
+    },
+    {
+      "vectorId": "INV-BOARD-RESUME",
+      "invariant": "INV-BOARD-RESUME",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Board resume is an authorized audited transition. It does not mutate the cancelled run's terminal evidence.",
+      "document": {
+        "actor": "api_key:ops",
+        "audited": true,
+        "authorized": true,
+        "createsLinkedRun": true,
+        "from": "cancelled",
+        "priorTerminalMutated": false
+      }
+    },
+    {
+      "vectorId": "INV-BOARD-RESUME-BAD",
+      "invariant": "INV-BOARD-RESUME",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-BOARD-RESUME",
+      "schema": "scenario",
+      "title": "Board resume is an authorized audited transition. It does not mutate the cancelled run's terminal evidence.",
+      "document": {
+        "actor": "api_key:ops",
+        "audited": false,
+        "authorized": true,
+        "createsLinkedRun": true,
+        "from": "cancelled",
+        "priorTerminalMutated": false
+      }
+    },
+    {
+      "vectorId": "INV-FAIL-CHILD",
+      "invariant": "INV-FAIL-CHILD",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "fail_parent does not synthesize and does not spawn a replacement.",
+      "document": {
+        "childStatus": "failed",
+        "parentStatus": "failed",
+        "policy": "fail_parent",
+        "replacementSpawned": false,
+        "synthesized": false
+      }
+    },
+    {
+      "vectorId": "INV-FAIL-CHILD-BAD",
+      "invariant": "INV-FAIL-CHILD",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-FAIL-CHILD",
+      "schema": "scenario",
+      "title": "fail_parent does not synthesize and does not spawn a replacement.",
+      "document": {
+        "childStatus": "failed",
+        "parentStatus": "failed",
+        "policy": "fail_parent",
+        "replacementSpawned": false,
+        "synthesized": true
+      }
+    },
+    {
+      "vectorId": "INV-JOIN",
+      "invariant": "INV-JOIN",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Join does not synthesize while a required child is live or unresolved.",
+      "document": {
+        "requiredChildrenLive": true,
+        "synthesized": false,
+        "unresolvedChild": true
+      }
+    },
+    {
+      "vectorId": "INV-JOIN-BAD",
+      "invariant": "INV-JOIN",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-JOIN",
+      "schema": "scenario",
+      "title": "Join does not synthesize while a required child is live or unresolved.",
+      "document": {
+        "requiredChildrenLive": true,
+        "synthesized": true,
+        "unresolvedChild": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,1407 @@
+{
+  "$id": "https://factory.internal/contracts/defined-factory/scenario.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Closed witness objects for defined-factory/1. Order, identity, and budget invariants are enforced by validate.py.",
+  "properties": {
+    "absoluteMaxDepth": {
+      "type": "integer"
+    },
+    "accepted": {
+      "type": "boolean"
+    },
+    "accessFromReporting": {
+      "type": "boolean"
+    },
+    "ackAfterDurableApply": {
+      "type": "boolean"
+    },
+    "ackCount": {
+      "type": "integer"
+    },
+    "acked": {
+      "type": "boolean"
+    },
+    "action": {
+      "type": "string"
+    },
+    "activationId": {
+      "type": "string"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "acyclic": {
+      "type": "boolean"
+    },
+    "admitNew": {
+      "type": "boolean"
+    },
+    "agentRunPath": {
+      "type": "string"
+    },
+    "agentRunRemainsBare": {
+      "type": "boolean"
+    },
+    "alerts": {
+      "type": "integer"
+    },
+    "allowAncestorShortcut": {
+      "type": "boolean"
+    },
+    "allowed": {
+      "type": "boolean"
+    },
+    "allowedRequires": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "allowlist": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "allowlisted": {
+      "type": "boolean"
+    },
+    "applyCount": {
+      "type": "integer"
+    },
+    "artifactMaxBytes": {
+      "type": "integer"
+    },
+    "artifactsEnum": {
+      "type": "boolean"
+    },
+    "assignee": {
+      "type": "string"
+    },
+    "atomic": {
+      "type": "boolean"
+    },
+    "attempts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "cents": {
+            "type": "integer"
+          },
+          "code": {
+            "type": "string"
+          },
+          "committed": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cents",
+          "committed",
+          "id"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "atumRoster": {
+      "type": "boolean"
+    },
+    "auditCommitted": {
+      "type": "boolean"
+    },
+    "audited": {
+      "type": "boolean"
+    },
+    "authenticated": {
+      "type": "boolean"
+    },
+    "authorized": {
+      "type": "boolean"
+    },
+    "autoResurrect": {
+      "type": "boolean"
+    },
+    "backend": {
+      "type": "string"
+    },
+    "blockerIds": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "blocksExecution": {
+      "type": "boolean"
+    },
+    "bodyByteLength": {
+      "type": "integer"
+    },
+    "bodyBytes": {
+      "type": "integer"
+    },
+    "bodyPrincipalIgnored": {
+      "type": "boolean"
+    },
+    "bound": {
+      "additionalProperties": false,
+      "properties": {
+        "adapterDigest": {
+          "type": "string"
+        },
+        "backendId": {
+          "type": "string"
+        },
+        "codeDigest": {
+          "type": "string"
+        },
+        "configDigest": {
+          "type": "string"
+        },
+        "imageDigest": {
+          "type": "string"
+        },
+        "secretPolicy": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "adapterDigest",
+        "backendId",
+        "codeDigest",
+        "configDigest",
+        "imageDigest",
+        "secretPolicy"
+      ],
+      "type": "object"
+    },
+    "broadSecretMount": {
+      "type": "boolean"
+    },
+    "canary": {
+      "type": "string"
+    },
+    "canonicalBody": {
+      "additionalProperties": false,
+      "properties": {
+        "correlation": {
+          "additionalProperties": false,
+          "properties": {
+            "threadRef": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "threadRef"
+          ],
+          "type": "object"
+        },
+        "definitionRevision": {
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": false,
+          "properties": {
+            "instruction": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "instruction"
+          ],
+          "type": "object"
+        },
+        "intent": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "string"
+        },
+        "profile": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "sourceOccurrenceKey": {
+          "type": "string"
+        },
+        "target": {
+          "additionalProperties": false,
+          "properties": {
+            "pullRequest": {
+              "type": "integer"
+            },
+            "repository": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pullRequest",
+            "repository"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "correlation",
+        "definitionRevision",
+        "inputs",
+        "intent",
+        "priority",
+        "profile",
+        "sourceOccurrenceKey",
+        "target"
+      ],
+      "type": "object"
+    },
+    "canonicalDigest": {
+      "type": "string"
+    },
+    "capacity": {
+      "type": "integer"
+    },
+    "capacityReleased": {
+      "type": "boolean"
+    },
+    "ceilingCents": {
+      "type": "integer"
+    },
+    "charges": {
+      "items": {
+        "type": "integer"
+      },
+      "type": "array"
+    },
+    "childAdvances": {
+      "type": "boolean"
+    },
+    "childAdvancesPipeline": {
+      "type": "boolean"
+    },
+    "childCanDispatch": {
+      "type": "boolean"
+    },
+    "childCount": {
+      "type": "integer"
+    },
+    "childGrants": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "childStageEqualsWorkItemStage": {
+      "type": "boolean"
+    },
+    "childStatus": {
+      "type": "string"
+    },
+    "cniProved": {
+      "type": "boolean"
+    },
+    "code": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "connected": {
+      "type": "boolean"
+    },
+    "contents": {
+      "type": "string"
+    },
+    "continuation": {
+      "type": "boolean"
+    },
+    "continuedWorkItemId": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "countedCents": {
+      "type": "integer"
+    },
+    "countsAsCompletedScan": {
+      "type": "boolean"
+    },
+    "countsAsSuccess": {
+      "type": "boolean"
+    },
+    "coverageStatus": {
+      "type": "string"
+    },
+    "coversMcp": {
+      "type": "boolean"
+    },
+    "crashBeforeCommitCreatesAtMostOne": {
+      "type": "boolean"
+    },
+    "createsLinkedRun": {
+      "type": "boolean"
+    },
+    "createsRun": {
+      "type": "boolean"
+    },
+    "crossInvocation": {
+      "type": "boolean"
+    },
+    "cursor": {
+      "type": "string"
+    },
+    "cursorOpaque": {
+      "type": "boolean"
+    },
+    "deadlinePassed": {
+      "type": "boolean"
+    },
+    "defaultLimit": {
+      "type": "integer"
+    },
+    "delegation": {
+      "type": "string"
+    },
+    "delegationEdgeId": {
+      "type": "string"
+    },
+    "delegator": {
+      "type": "string"
+    },
+    "deliveredAt": {
+      "type": "string"
+    },
+    "deliveries": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "acked": {
+            "type": "boolean"
+          },
+          "deliveryId": {
+            "type": "string"
+          },
+          "responseDropped": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "acked",
+          "deliveryId",
+          "responseDropped"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "delivery": {
+      "type": "string"
+    },
+    "depth": {
+      "type": "integer"
+    },
+    "descendants": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "dispatchAllowed": {
+      "type": "boolean"
+    },
+    "dispatcherRole": {
+      "type": "string"
+    },
+    "distinct": {
+      "type": "boolean"
+    },
+    "dockerSocket": {
+      "type": "boolean"
+    },
+    "dueSlot": {
+      "type": "string"
+    },
+    "duplicateAttemptCounted": {
+      "type": "boolean"
+    },
+    "duplicateDelivery": {
+      "type": "boolean"
+    },
+    "durableBlockers": {
+      "type": "boolean"
+    },
+    "durableWakeRecords": {
+      "type": "integer"
+    },
+    "echoSuppressed": {
+      "type": "boolean"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "enforced": {
+      "type": "boolean"
+    },
+    "enforcesCheckout": {
+      "type": "boolean"
+    },
+    "engagementCapCents": {
+      "type": "integer"
+    },
+    "envOnlyIsolationAccepted": {
+      "type": "boolean"
+    },
+    "events": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "ledgerSeq": {
+            "type": "integer"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ledgerSeq",
+          "taskId",
+          "type"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "evidenceClass": {
+      "type": "string"
+    },
+    "executeTargetRequested": {
+      "type": "boolean"
+    },
+    "executionId": {
+      "type": "string"
+    },
+    "factorySeqIsInvocationOrder": {
+      "type": "boolean"
+    },
+    "failedAttemptCounted": {
+      "type": "boolean"
+    },
+    "fenceAfter": {
+      "type": "integer"
+    },
+    "findingsCount": {
+      "type": "integer"
+    },
+    "findingsEnum": {
+      "type": "boolean"
+    },
+    "firstFence": {
+      "type": "integer"
+    },
+    "forbiddenInclusiveSum": {
+      "type": "integer"
+    },
+    "foreignCheckoutWrite": {
+      "type": "boolean"
+    },
+    "forgeTokenMinted": {
+      "type": "boolean"
+    },
+    "from": {
+      "type": "string"
+    },
+    "g14ActualBackend": {
+      "type": "boolean"
+    },
+    "g18ActualBackend": {
+      "type": "boolean"
+    },
+    "gatewayCapCents": {
+      "type": "integer"
+    },
+    "gatewayCapLeqCeiling": {
+      "type": "boolean"
+    },
+    "gatewayCapProven": {
+      "type": "boolean"
+    },
+    "granted": {
+      "type": "boolean"
+    },
+    "guaranteesCeiling": {
+      "type": "boolean"
+    },
+    "helmRenderPassed": {
+      "type": "boolean"
+    },
+    "holderAfter": {
+      "type": "string"
+    },
+    "hostFirewallEnforced": {
+      "type": "boolean"
+    },
+    "httpStatus": {
+      "type": "integer"
+    },
+    "human": {
+      "type": "string"
+    },
+    "idempotent": {
+      "type": "boolean"
+    },
+    "inFlightUncapped": {
+      "type": "boolean"
+    },
+    "injectionRejected": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "code": {
+          "type": "string"
+        },
+        "injected": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "writes": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "accepted",
+        "code",
+        "injected",
+        "writes"
+      ],
+      "type": "object"
+    },
+    "inputPullRequest": {
+      "type": "string"
+    },
+    "intents": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "internalWorkersAreRoster": {
+      "type": "boolean"
+    },
+    "internalWorkersInSession": {
+      "type": "boolean"
+    },
+    "invalidatesOn": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "invocationIds": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "invocationIdsDistinct": {
+      "type": "boolean"
+    },
+    "invocationPath": {
+      "type": "string"
+    },
+    "isolation": {
+      "type": "string"
+    },
+    "itemCount": {
+      "type": "integer"
+    },
+    "keyUsesDeliveredAt": {
+      "type": "boolean"
+    },
+    "keyUsesDueSlot": {
+      "type": "boolean"
+    },
+    "kindPassed": {
+      "type": "boolean"
+    },
+    "lateDeliverySameSlotCreatesAnother": {
+      "type": "boolean"
+    },
+    "laterSpawn": {
+      "type": "string"
+    },
+    "leadMayDispatch": {
+      "type": "boolean"
+    },
+    "leaves": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "attemptId": {
+            "type": "string"
+          },
+          "callId": {
+            "type": "string"
+          },
+          "cents": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent",
+          "attemptId",
+          "callId",
+          "cents"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "linearIssue": {
+      "type": "null"
+    },
+    "linkedFromRunId": {
+      "type": "string"
+    },
+    "liveBlockedIfUnproven": {
+      "type": "boolean"
+    },
+    "lockOrder": {
+      "type": "string"
+    },
+    "longPoll": {
+      "type": "boolean"
+    },
+    "lookupPerInjection": {
+      "type": "boolean"
+    },
+    "lookups": {
+      "type": "integer"
+    },
+    "lost": {
+      "type": "boolean"
+    },
+    "maxBytes": {
+      "type": "integer"
+    },
+    "maxDepth": {
+      "type": "integer"
+    },
+    "maxLimit": {
+      "type": "integer"
+    },
+    "messageId": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "string"
+    },
+    "missingRef": {
+      "type": "boolean"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "movedRefSha": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "nativeHierarchy": {
+      "type": "boolean"
+    },
+    "negotiatedSteer": {
+      "type": "boolean"
+    },
+    "newExecution": {
+      "type": "boolean"
+    },
+    "newExecutionId": {
+      "type": "string"
+    },
+    "newRun": {
+      "type": "boolean"
+    },
+    "newRunId": {
+      "type": "string"
+    },
+    "note": {
+      "type": "string"
+    },
+    "observed": {
+      "additionalProperties": false,
+      "properties": {
+        "adapterDigest": {
+          "type": "string"
+        },
+        "backendId": {
+          "type": "string"
+        },
+        "codeDigest": {
+          "type": "string"
+        },
+        "configDigest": {
+          "type": "string"
+        },
+        "imageDigest": {
+          "type": "string"
+        },
+        "secretPolicy": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "adapterDigest",
+        "backendId",
+        "codeDigest",
+        "configDigest",
+        "imageDigest",
+        "secretPolicy"
+      ],
+      "type": "object"
+    },
+    "occurrenceKey": {
+      "type": "string"
+    },
+    "occurrenceMode": {
+      "type": "string"
+    },
+    "oneCanonicalRecord": {
+      "type": "boolean"
+    },
+    "orderMechanism": {
+      "type": "string"
+    },
+    "originalDefinitionDigest": {
+      "type": "string"
+    },
+    "originalReceiptUnchanged": {
+      "type": "boolean"
+    },
+    "originalTargetSha": {
+      "type": "string"
+    },
+    "outageQueues": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string"
+    },
+    "outputPullRequest": {
+      "type": "null"
+    },
+    "overshootBeyondCeilingCents": {
+      "type": "integer"
+    },
+    "overshootBoundCents": {
+      "type": "integer"
+    },
+    "owners": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "paidProbeAllowed": {
+      "type": "boolean"
+    },
+    "parallelStores": {
+      "type": "boolean"
+    },
+    "parentGrants": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "parentRunId": {
+      "type": "string"
+    },
+    "parentStatus": {
+      "type": "string"
+    },
+    "partialOnFailure": {
+      "type": "boolean"
+    },
+    "partialReserve": {
+      "type": "boolean"
+    },
+    "path": {
+      "type": "string"
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "perEngagementAllocation": {
+      "type": "boolean"
+    },
+    "perItemMount": {
+      "type": "boolean"
+    },
+    "perRunSeqPreserved": {
+      "type": "boolean"
+    },
+    "personas": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "reportsTo": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "spawnableBy": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "reportsTo",
+          "role",
+          "spawnableBy"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pins": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "baseSha": {
+            "type": "string"
+          },
+          "checkoutSha": {
+            "type": "string"
+          },
+          "headSha": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "promptTextSha": {
+            "type": "string"
+          },
+          "refSha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "checkoutSha",
+          "kind",
+          "promptTextSha"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "policy": {
+      "type": "string"
+    },
+    "postTasksRemainsWorkItem": {
+      "type": "boolean"
+    },
+    "principalFromBody": {
+      "type": "boolean"
+    },
+    "principalScoped": {
+      "type": "boolean"
+    },
+    "priorCeilingCents": {
+      "type": "integer"
+    },
+    "priorExecutionId": {
+      "type": "string"
+    },
+    "priorFinished": {
+      "type": "boolean"
+    },
+    "priorRunId": {
+      "type": "string"
+    },
+    "priorState": {
+      "type": "string"
+    },
+    "priorTerminal": {
+      "type": "string"
+    },
+    "priorTerminalMutated": {
+      "type": "boolean"
+    },
+    "projection": {
+      "type": "string"
+    },
+    "published": {
+      "type": "boolean"
+    },
+    "pullRequest": {
+      "type": "string"
+    },
+    "pullRequestRequired": {
+      "type": "boolean"
+    },
+    "pullRequests": {
+      "type": "string"
+    },
+    "quarantinedCents": {
+      "type": "integer"
+    },
+    "read": {
+      "type": "boolean"
+    },
+    "readAcks": {
+      "type": "boolean"
+    },
+    "receiptIdsEqual": {
+      "type": "boolean"
+    },
+    "receiptStable": {
+      "type": "boolean"
+    },
+    "reloadedDefinitionDigest": {
+      "type": "string"
+    },
+    "replacementSpawned": {
+      "type": "boolean"
+    },
+    "replaySuppressed": {
+      "type": "boolean"
+    },
+    "repoGrant": {
+      "type": "boolean"
+    },
+    "reportBytes": {
+      "type": "integer"
+    },
+    "reportMaxBytes": {
+      "type": "integer"
+    },
+    "reportPresent": {
+      "type": "boolean"
+    },
+    "reportRequired": {
+      "type": "boolean"
+    },
+    "reportSurvivesWorkspaceCleanup": {
+      "type": "boolean"
+    },
+    "reportedCents": {
+      "type": "integer"
+    },
+    "reportsTo": {
+      "type": "string"
+    },
+    "reportsToOmitted": {
+      "type": "boolean"
+    },
+    "requiredChildrenLive": {
+      "type": "boolean"
+    },
+    "requires": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "requiresLinear": {
+      "type": "boolean"
+    },
+    "requiresRepository": {
+      "type": "boolean"
+    },
+    "requiresTaskRef": {
+      "type": "boolean"
+    },
+    "reservationCount": {
+      "type": "integer"
+    },
+    "reservedCents": {
+      "type": "integer"
+    },
+    "reservedInFlightCents": {
+      "type": "integer"
+    },
+    "resolved": {
+      "type": "boolean"
+    },
+    "resulting": {
+      "type": "string"
+    },
+    "retainedLiterals": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "retention": {
+      "type": "string"
+    },
+    "returnedDefinitionDigest": {
+      "type": "string"
+    },
+    "returnedTargetSha": {
+      "type": "string"
+    },
+    "rollups": {
+      "additionalProperties": false,
+      "properties": {
+        "factory": {
+          "type": "integer"
+        },
+        "invocation": {
+          "type": "integer"
+        },
+        "lead": {
+          "type": "integer"
+        },
+        "leadAgent": {
+          "type": "integer"
+        },
+        "specialist-a": {
+          "type": "integer"
+        },
+        "specialist-b": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "factory",
+        "invocation",
+        "lead",
+        "leadAgent",
+        "specialist-a",
+        "specialist-b"
+      ],
+      "type": "object"
+    },
+    "root": {
+      "type": "string"
+    },
+    "rootAdvances": {
+      "type": "boolean"
+    },
+    "rootCount": {
+      "type": "integer"
+    },
+    "rotatesRunningProcess": {
+      "type": "boolean"
+    },
+    "runEventSeqScope": {
+      "type": "string"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "runLocalSeqs": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "runId",
+          "seq"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "runStarted": {
+      "type": "boolean"
+    },
+    "running": {
+      "type": "boolean"
+    },
+    "sameCanonical": {
+      "type": "boolean"
+    },
+    "sameDueSlot": {
+      "type": "boolean"
+    },
+    "sameExecution": {
+      "type": "boolean"
+    },
+    "sameIdentifier": {
+      "type": "boolean"
+    },
+    "sameKey": {
+      "type": "boolean"
+    },
+    "sameRun": {
+      "type": "boolean"
+    },
+    "sameScheduleId": {
+      "type": "boolean"
+    },
+    "sameThreadRef": {
+      "type": "string"
+    },
+    "satisfiesPullRequestRequires": {
+      "type": "boolean"
+    },
+    "scanHit": {
+      "type": "boolean"
+    },
+    "scannerTask": {
+      "type": "boolean"
+    },
+    "schedule": {
+      "type": "string"
+    },
+    "scheduleId": {
+      "type": "string"
+    },
+    "scopes": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "secondAccepted": {
+      "type": "boolean"
+    },
+    "secondIdempotent": {
+      "type": "boolean"
+    },
+    "secretGrant": {
+      "type": "boolean"
+    },
+    "selectionAccepted": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "fields": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "accepted",
+        "fields"
+      ],
+      "type": "object"
+    },
+    "sendAuthorized": {
+      "type": "boolean"
+    },
+    "sendCount": {
+      "type": "integer"
+    },
+    "sharedKey": {
+      "type": "boolean"
+    },
+    "sharedWritableRoot": {
+      "type": "boolean"
+    },
+    "slotCount": {
+      "type": "integer"
+    },
+    "slotState": {
+      "type": "string"
+    },
+    "slots": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "sourceOccurrenceKeys": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "spawnRefused": {
+      "type": "boolean"
+    },
+    "spawnableBy": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "specialistDispatch": {
+      "type": "boolean"
+    },
+    "spentCents": {
+      "type": "integer"
+    },
+    "spentDeltaCents": {
+      "type": "integer"
+    },
+    "sseCursor": {
+      "type": "string"
+    },
+    "stageOwner": {
+      "type": "string"
+    },
+    "stagePredecessor": {
+      "type": "boolean"
+    },
+    "state": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "steps": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "advancesPipeline": {
+            "type": "boolean"
+          },
+          "op": {
+            "type": "string"
+          },
+          "persona": {
+            "type": "string"
+          },
+          "slotsUsed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "op",
+          "persona",
+          "slotsUsed"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "storagePresent": {
+      "type": "boolean"
+    },
+    "store": {
+      "type": "string"
+    },
+    "subPathMount": {
+      "type": "boolean"
+    },
+    "succeeded": {
+      "type": "boolean"
+    },
+    "switchesToInvocationLedger": {
+      "type": "boolean"
+    },
+    "symlink": {
+      "type": "boolean"
+    },
+    "synthesized": {
+      "type": "boolean"
+    },
+    "synthetic": {
+      "type": "boolean"
+    },
+    "target": {
+      "type": "string"
+    },
+    "targetPresent": {
+      "type": "boolean"
+    },
+    "taskId": {
+      "type": "string"
+    },
+    "taskRef": {
+      "type": "string"
+    },
+    "taskScoped": {
+      "type": "boolean"
+    },
+    "tasksPath": {
+      "type": "string"
+    },
+    "threadRefIsIdentity": {
+      "type": "boolean"
+    },
+    "thresholdPercent": {
+      "type": "integer"
+    },
+    "unit": {
+      "type": "string"
+    },
+    "unresolvedChild": {
+      "type": "boolean"
+    },
+    "unsafePath": {
+      "type": "string"
+    },
+    "usageArrived": {
+      "type": "boolean"
+    },
+    "valid": {
+      "type": "boolean"
+    },
+    "validatorPresent": {
+      "type": "boolean"
+    },
+    "wakeIntents": {
+      "type": "integer"
+    },
+    "workItemCount": {
+      "type": "integer"
+    },
+    "workItemIds": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "workflowMainLoopOnly": {
+      "type": "boolean"
+    },
+    "writes": {
+      "type": "integer"
+    },
+    "writesOnReplay": {
+      "type": "integer"
+    }
+  },
+  "title": "Defined-factory scenario witness",
+  "type": "object"
+}

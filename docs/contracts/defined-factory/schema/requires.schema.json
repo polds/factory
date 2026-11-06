@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.internal/contracts/defined-factory/requires.schema.json",
+  "title": "Opt-in work-product requirements",
+  "description": "The only contract values are pullRequest and report. findings and artifacts are rejected. report is implementable only together with durable storage and a terminal validator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["requires"],
+  "properties": {
+    "requires": {
+      "type": "array",
+      "items": {
+        "enum": ["pullRequest", "report"]
+      }
+    }
+  }
+}

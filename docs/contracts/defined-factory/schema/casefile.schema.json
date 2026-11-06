@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://factory.internal/contracts/defined-factory/casefile.schema.json",
+  "title": "Defined-factory fixture file",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "area", "cases"],
+  "properties": {
+    "contractVersion": {"const": "defined-factory/1"},
+    "area": {"type": "string", "minLength": 1},
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["vectorId", "invariant", "expect", "rejectBy", "schema", "title", "document"],
+        "properties": {
+          "vectorId": {"type": "string", "minLength": 1},
+          "invariant": {"type": "string", "pattern": "^INV-[A-Z0-9-]+$"},
+          "expect": {"enum": ["accept", "reject"]},
+          "rejectBy": {"enum": ["formula", "schema"]},
+          "code": {"type": ["string", "null"]},
+          "schema": {"enum": ["scenario", "request", "requires"]},
+          "title": {"type": "string", "minLength": 1},
+          "document": {"type": "object"}
+        }
+      }
+    }
+  }
+}

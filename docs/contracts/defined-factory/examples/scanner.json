@@ -1,0 +1,270 @@
+{
+  "contractVersion": "defined-factory/1",
+  "area": "scanner",
+  "cases": [
+    {
+      "vectorId": "INV-TASK-REF",
+      "invariant": "INV-TASK-REF",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Native scanner mode uses task_ref. linear_issue is null and Linear is not required.",
+      "document": {
+        "linearIssue": null,
+        "mode": "native",
+        "requiresLinear": false,
+        "taskRef": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAA"
+      }
+    },
+    {
+      "vectorId": "INV-TASK-REF-BAD",
+      "invariant": "INV-TASK-REF",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-TASK-REF",
+      "schema": "scenario",
+      "title": "Native scanner mode uses task_ref. linear_issue is null and Linear is not required.",
+      "document": {
+        "linearIssue": null,
+        "mode": "native",
+        "requiresLinear": true,
+        "taskRef": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAA"
+      }
+    },
+    {
+      "vectorId": "INV-LOCAL-CLI",
+      "invariant": "INV-LOCAL-CLI",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "GAP: local CLI mode stays available and does not require Linear or a Factory task ref. harness/run.go rejects an unknown harness adapter and does not implement that mode.",
+      "document": {
+        "mode": "local_cli",
+        "requiresLinear": false,
+        "requiresTaskRef": false
+      }
+    },
+    {
+      "vectorId": "INV-LOCAL-CLI-BAD",
+      "invariant": "INV-LOCAL-CLI",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-LOCAL-CLI",
+      "schema": "scenario",
+      "title": "GAP: local CLI mode stays available and does not require Linear or a Factory task ref. harness/run.go rejects an unknown harness adapter and does not implement that mode.",
+      "document": {
+        "mode": "local_cli",
+        "requiresLinear": true,
+        "requiresTaskRef": false
+      }
+    },
+    {
+      "vectorId": "INV-ART",
+      "invariant": "INV-ART",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "GAP: each item gets its own workspace mount and there is no shared writable ART root. This tree has no ART mounter.",
+      "document": {
+        "perItemMount": true,
+        "sharedWritableRoot": false
+      }
+    },
+    {
+      "vectorId": "INV-ART-BAD",
+      "invariant": "INV-ART",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-ART",
+      "schema": "scenario",
+      "title": "GAP: each item gets its own workspace mount and there is no shared writable ART root. This tree has no ART mounter.",
+      "document": {
+        "perItemMount": true,
+        "sharedWritableRoot": true
+      }
+    },
+    {
+      "vectorId": "INV-RETENTION",
+      "invariant": "INV-RETENTION",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "GAP: the durable result row outlives workspace cleanup. archive stores events.ndjson and is not that row.",
+      "document": {
+        "reportSurvivesWorkspaceCleanup": true,
+        "retention": "durable_result_row"
+      }
+    },
+    {
+      "vectorId": "INV-RETENTION-BAD",
+      "invariant": "INV-RETENTION",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-RETENTION",
+      "schema": "scenario",
+      "title": "GAP: the durable result row outlives workspace cleanup. archive stores events.ndjson and is not that row.",
+      "document": {
+        "reportSurvivesWorkspaceCleanup": false,
+        "retention": "durable_result_row"
+      }
+    },
+    {
+      "vectorId": "INV-BRIDGE",
+      "invariant": "INV-BRIDGE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "GAP: one outbound owner, disabled unless a send is authorized. Outage queues reporting and does not block execution. followUp sets StageBuilding. internal/outbound posts work-item status cards. Neither is factory-outbound-bridge.",
+      "document": {
+        "blocksExecution": false,
+        "echoSuppressed": true,
+        "enabled": false,
+        "outageQueues": "reporting",
+        "owners": [
+          "factory-outbound-bridge"
+        ],
+        "replaySuppressed": true,
+        "sendAuthorized": false,
+        "sendCount": 0
+      }
+    },
+    {
+      "vectorId": "INV-BRIDGE-BAD",
+      "invariant": "INV-BRIDGE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-BRIDGE",
+      "schema": "scenario",
+      "title": "GAP: one outbound owner, disabled unless a send is authorized. Outage queues reporting and does not block execution. followUp sets StageBuilding. internal/outbound posts work-item status cards. Neither is factory-outbound-bridge.",
+      "document": {
+        "blocksExecution": false,
+        "echoSuppressed": true,
+        "enabled": false,
+        "outageQueues": "reporting",
+        "owners": [
+          "factory-outbound-bridge"
+        ],
+        "replaySuppressed": true,
+        "sendAuthorized": false,
+        "sendCount": 1
+      }
+    },
+    {
+      "vectorId": "INV-SECURITY-GATE",
+      "invariant": "INV-SECURITY-GATE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "GAP: a paid probe stays closed until G14, G18, and the gateway cap are proved on the actual backend. assign.go fills SidecarImage. docs/11 records the intended NetworkPolicy and host-firewall posture and does not implement the gate.",
+      "document": {
+        "backend": "docker",
+        "cniProved": false,
+        "g14ActualBackend": false,
+        "g18ActualBackend": false,
+        "gatewayCapProven": false,
+        "helmRenderPassed": true,
+        "hostFirewallEnforced": false,
+        "kindPassed": true,
+        "paidProbeAllowed": false
+      }
+    },
+    {
+      "vectorId": "INV-SECURITY-GATE-BAD",
+      "invariant": "INV-SECURITY-GATE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SECURITY-GATE",
+      "schema": "scenario",
+      "title": "GAP: a paid probe stays closed until G14, G18, and the gateway cap are proved on the actual backend. assign.go fills SidecarImage. docs/11 records the intended NetworkPolicy and host-firewall posture and does not implement the gate.",
+      "document": {
+        "backend": "docker",
+        "cniProved": false,
+        "g14ActualBackend": false,
+        "g18ActualBackend": false,
+        "gatewayCapProven": false,
+        "helmRenderPassed": true,
+        "hostFirewallEnforced": false,
+        "kindPassed": true,
+        "paidProbeAllowed": true
+      }
+    },
+    {
+      "vectorId": "INV-ATTESTATION",
+      "invariant": "INV-ATTESTATION",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "GAP: the witness is valid only when bound and observed match, including secretPolicy. mintGitHubToken calls InstallationToken with DefaultPermissions and does not bind digests or secret policy.",
+      "document": {
+        "bound": {
+          "adapterDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "backendId": "docker-host-a",
+          "codeDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "configDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "imageDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "secretPolicy": "allowlist:SCAN_GITHUB_TOKEN"
+        },
+        "invalidatesOn": [
+          "adapterDigest",
+          "backendId",
+          "codeDigest",
+          "configDigest",
+          "imageDigest",
+          "secretPolicy"
+        ],
+        "observed": {
+          "adapterDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "backendId": "docker-host-a",
+          "codeDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "configDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "imageDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "secretPolicy": "allowlist:SCAN_GITHUB_TOKEN"
+        },
+        "valid": true
+      }
+    },
+    {
+      "vectorId": "INV-ATTESTATION-BAD",
+      "invariant": "INV-ATTESTATION",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-ATTESTATION",
+      "schema": "scenario",
+      "title": "GAP: the witness is valid only when bound and observed match, including secretPolicy. mintGitHubToken calls InstallationToken with DefaultPermissions and does not bind digests or secret policy.",
+      "document": {
+        "bound": {
+          "adapterDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "backendId": "docker-host-a",
+          "codeDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "configDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "imageDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "secretPolicy": "allowlist:SCAN_GITHUB_TOKEN"
+        },
+        "invalidatesOn": [
+          "adapterDigest",
+          "backendId",
+          "codeDigest",
+          "configDigest",
+          "imageDigest",
+          "secretPolicy"
+        ],
+        "observed": {
+          "adapterDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "backendId": "docker-host-a",
+          "codeDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "configDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "imageDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "secretPolicy": "allowlist:OPENAI_API_KEY"
+        },
+        "valid": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,270 @@
+{
+  "contractVersion": "defined-factory/1",
+  "area": "inbox",
+  "cases": [
+    {
+      "vectorId": "INV-CANONICAL",
+      "invariant": "INV-CANONICAL",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "One canonical event record per invocation. The inbox is a per-assignee projection, not a second store.",
+      "document": {
+        "oneCanonicalRecord": true,
+        "parallelStores": false,
+        "projection": "per_assignee_inbox"
+      }
+    },
+    {
+      "vectorId": "INV-CANONICAL-BAD",
+      "invariant": "INV-CANONICAL",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-CANONICAL",
+      "schema": "scenario",
+      "title": "One canonical event record per invocation. The inbox is a per-assignee projection, not a second store.",
+      "document": {
+        "oneCanonicalRecord": true,
+        "parallelStores": true,
+        "projection": "per_assignee_inbox"
+      }
+    },
+    {
+      "vectorId": "INV-BODY",
+      "invariant": "INV-BODY",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Inbox and comment bodies are at most 8192 bytes. DeliveryBodyCap is 256 KiB (256 << 10). maxBodyBytes is 1 MiB. Neither constant is 8192.",
+      "document": {
+        "accepted": true,
+        "bodyByteLength": 8192,
+        "maxBytes": 8192
+      }
+    },
+    {
+      "vectorId": "INV-BODY-BAD",
+      "invariant": "INV-BODY",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-BODY",
+      "schema": "scenario",
+      "title": "Inbox and comment bodies are at most 8192 bytes. DeliveryBodyCap is 256 KiB (256 << 10). maxBodyBytes is 1 MiB. Neither constant is 8192.",
+      "document": {
+        "accepted": true,
+        "bodyByteLength": 8193,
+        "maxBytes": 8192
+      }
+    },
+    {
+      "vectorId": "INV-ACK",
+      "invariant": "INV-ACK",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Ack is explicit, idempotent, and scoped to task and principal. It runs only after durable apply.",
+      "document": {
+        "ackAfterDurableApply": true,
+        "idempotent": true,
+        "principalScoped": true,
+        "readAcks": false,
+        "taskScoped": true
+      }
+    },
+    {
+      "vectorId": "INV-ACK-BAD",
+      "invariant": "INV-ACK",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-ACK",
+      "schema": "scenario",
+      "title": "Ack is explicit, idempotent, and scoped to task and principal. It runs only after durable apply.",
+      "document": {
+        "ackAfterDurableApply": true,
+        "idempotent": true,
+        "principalScoped": true,
+        "readAcks": true,
+        "taskScoped": true
+      }
+    },
+    {
+      "vectorId": "INV-READ-NOT-ACK",
+      "invariant": "INV-READ-NOT-ACK",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Read and long-poll do not acknowledge.",
+      "document": {
+        "acked": false,
+        "longPoll": true,
+        "read": true
+      }
+    },
+    {
+      "vectorId": "INV-READ-NOT-ACK-BAD",
+      "invariant": "INV-READ-NOT-ACK",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-READ-NOT-ACK",
+      "schema": "scenario",
+      "title": "Read and long-poll do not acknowledge.",
+      "document": {
+        "acked": true,
+        "longPoll": true,
+        "read": true
+      }
+    },
+    {
+      "vectorId": "INV-DUP-ACK",
+      "invariant": "INV-DUP-ACK",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A duplicate ack does not apply the message twice.",
+      "document": {
+        "ackCount": 2,
+        "applyCount": 1,
+        "secondIdempotent": true
+      }
+    },
+    {
+      "vectorId": "INV-DUP-ACK-BAD",
+      "invariant": "INV-DUP-ACK",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-DUP-ACK",
+      "schema": "scenario",
+      "title": "A duplicate ack does not apply the message twice.",
+      "document": {
+        "ackCount": 2,
+        "applyCount": 2,
+        "secondIdempotent": true
+      }
+    },
+    {
+      "vectorId": "INV-SSE",
+      "invariant": "INV-SSE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Per-run SSE cursors stay on run_events.seq.",
+      "document": {
+        "cursor": "Last-Event-ID",
+        "perRunSeqPreserved": true,
+        "switchesToInvocationLedger": false
+      }
+    },
+    {
+      "vectorId": "INV-SSE-BAD",
+      "invariant": "INV-SSE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-SSE",
+      "schema": "scenario",
+      "title": "Per-run SSE cursors stay on run_events.seq.",
+      "document": {
+        "cursor": "Last-Event-ID",
+        "perRunSeqPreserved": true,
+        "switchesToInvocationLedger": true
+      }
+    },
+    {
+      "vectorId": "INV-CLAIM",
+      "invariant": "INV-CLAIM",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "A second claim loses the fence. The holder and fence stay unchanged.",
+      "document": {
+        "code": "claim_fenced",
+        "fenceAfter": 1,
+        "firstFence": 1,
+        "holderAfter": "lead",
+        "secondAccepted": false
+      }
+    },
+    {
+      "vectorId": "INV-CLAIM-BAD",
+      "invariant": "INV-CLAIM",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-CLAIM",
+      "schema": "scenario",
+      "title": "A second claim loses the fence. The holder and fence stay unchanged.",
+      "document": {
+        "code": "claim_fenced",
+        "fenceAfter": 1,
+        "firstFence": 1,
+        "holderAfter": "lead",
+        "secondAccepted": true
+      }
+    },
+    {
+      "vectorId": "INV-PAGINATION",
+      "invariant": "INV-PAGINATION",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Inbox pages use an opaque cursor. Limit is 1 through 100 and defaults to 50.",
+      "document": {
+        "accepted": true,
+        "cursorOpaque": true,
+        "defaultLimit": 50,
+        "limit": 50,
+        "maxLimit": 100
+      }
+    },
+    {
+      "vectorId": "INV-PAGINATION-BAD",
+      "invariant": "INV-PAGINATION",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-PAGINATION",
+      "schema": "scenario",
+      "title": "Inbox pages use an opaque cursor. Limit is 1 through 100 and defaults to 50.",
+      "document": {
+        "accepted": true,
+        "cursorOpaque": true,
+        "defaultLimit": 50,
+        "limit": 101,
+        "maxLimit": 100
+      }
+    },
+    {
+      "vectorId": "INV-COALESCE",
+      "invariant": "INV-COALESCE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Repeated wake intents for one task collapse to one durable wake record.",
+      "document": {
+        "durableWakeRecords": 1,
+        "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+        "wakeIntents": 3
+      }
+    },
+    {
+      "vectorId": "INV-COALESCE-BAD",
+      "invariant": "INV-COALESCE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-COALESCE",
+      "schema": "scenario",
+      "title": "Repeated wake intents for one task collapse to one durable wake record.",
+      "document": {
+        "durableWakeRecords": 3,
+        "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+        "wakeIntents": 3
+      }
+    }
+  ]
+}

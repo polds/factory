@@ -1,0 +1,342 @@
+{
+  "contractVersion": "defined-factory/1",
+  "area": "hierarchy",
+  "cases": [
+    {
+      "vectorId": "INV-TREE",
+      "invariant": "INV-TREE",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Native mode freezes one synthetic root, an acyclic connected depth-2 tree, direct-manager delegation, and no ancestor shortcut. It is not an Atum roster.",
+      "document": {
+        "absoluteMaxDepth": 8,
+        "acyclic": true,
+        "allowAncestorShortcut": false,
+        "atumRoster": false,
+        "connected": true,
+        "delegation": "direct_manager",
+        "maxDepth": 2,
+        "nativeHierarchy": true,
+        "note": "synthetic coordinator/lead/two-specialist tree; not an Atum roster",
+        "personas": [
+          {
+            "name": "coordinator",
+            "reportsTo": null,
+            "role": "root",
+            "spawnableBy": []
+          },
+          {
+            "name": "lead",
+            "reportsTo": "coordinator",
+            "role": "lead",
+            "spawnableBy": [
+              "coordinator"
+            ]
+          },
+          {
+            "name": "specialist-a",
+            "reportsTo": "lead",
+            "role": "specialist",
+            "spawnableBy": [
+              "lead"
+            ]
+          },
+          {
+            "name": "specialist-b",
+            "reportsTo": "lead",
+            "role": "specialist",
+            "spawnableBy": [
+              "lead"
+            ]
+          }
+        ],
+        "rootCount": 1,
+        "synthetic": true
+      }
+    },
+    {
+      "vectorId": "INV-TREE-BAD",
+      "invariant": "INV-TREE",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-TREE",
+      "schema": "scenario",
+      "title": "Native mode freezes one synthetic root, an acyclic connected depth-2 tree, direct-manager delegation, and no ancestor shortcut. It is not an Atum roster.",
+      "document": {
+        "absoluteMaxDepth": 8,
+        "acyclic": false,
+        "allowAncestorShortcut": false,
+        "atumRoster": false,
+        "connected": true,
+        "delegation": "direct_manager",
+        "maxDepth": 2,
+        "nativeHierarchy": true,
+        "note": "synthetic coordinator/lead/two-specialist tree; not an Atum roster",
+        "personas": [
+          {
+            "name": "coordinator",
+            "reportsTo": null,
+            "role": "root",
+            "spawnableBy": []
+          },
+          {
+            "name": "lead",
+            "reportsTo": "coordinator",
+            "role": "lead",
+            "spawnableBy": [
+              "coordinator"
+            ]
+          },
+          {
+            "name": "specialist-a",
+            "reportsTo": "lead",
+            "role": "specialist",
+            "spawnableBy": [
+              "lead"
+            ]
+          },
+          {
+            "name": "specialist-b",
+            "reportsTo": "lead",
+            "role": "specialist",
+            "spawnableBy": [
+              "lead"
+            ]
+          }
+        ],
+        "rootCount": 1,
+        "synthetic": true
+      }
+    },
+    {
+      "vectorId": "INV-LEGACY-HIERARCHY",
+      "invariant": "INV-LEGACY-HIERARCHY",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Legacy factories may omit reportsTo. The field is not enforced unless native hierarchy is on.",
+      "document": {
+        "enforced": false,
+        "nativeHierarchy": false,
+        "reportsToOmitted": true,
+        "valid": true
+      }
+    },
+    {
+      "vectorId": "INV-LEGACY-HIERARCHY-BAD",
+      "invariant": "INV-LEGACY-HIERARCHY",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-LEGACY-HIERARCHY",
+      "schema": "scenario",
+      "title": "Legacy factories may omit reportsTo. The field is not enforced unless native hierarchy is on.",
+      "document": {
+        "enforced": true,
+        "nativeHierarchy": false,
+        "reportsToOmitted": true,
+        "valid": true
+      }
+    },
+    {
+      "vectorId": "INV-DEPTH",
+      "invariant": "INV-DEPTH",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "The proof profile max depth is 2. The absolute max depth is 8. A deeper spawn is depth_exceeded.",
+      "document": {
+        "absoluteMaxDepth": 8,
+        "accepted": true,
+        "code": null,
+        "depth": 2,
+        "maxDepth": 2
+      }
+    },
+    {
+      "vectorId": "INV-DEPTH-BAD",
+      "invariant": "INV-DEPTH",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-DEPTH",
+      "schema": "scenario",
+      "title": "The proof profile max depth is 2. The absolute max depth is 8. A deeper spawn is depth_exceeded.",
+      "document": {
+        "absoluteMaxDepth": 8,
+        "accepted": true,
+        "code": null,
+        "depth": 3,
+        "maxDepth": 2
+      }
+    },
+    {
+      "vectorId": "INV-DELEGATION",
+      "invariant": "INV-DELEGATION",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Direct-manager delegation requires the delegator to be reportsTo and listed in spawnableBy. spawnableBy stays parsed until M9-N enforces it.",
+      "document": {
+        "allowAncestorShortcut": false,
+        "allowed": true,
+        "code": null,
+        "delegator": "lead",
+        "reportsTo": "lead",
+        "spawnableBy": [
+          "lead"
+        ],
+        "target": "specialist-a"
+      }
+    },
+    {
+      "vectorId": "INV-DELEGATION-BAD",
+      "invariant": "INV-DELEGATION",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-DELEGATION",
+      "schema": "scenario",
+      "title": "Direct-manager delegation requires the delegator to be reportsTo and listed in spawnableBy. spawnableBy stays parsed until M9-N enforces it.",
+      "document": {
+        "allowAncestorShortcut": false,
+        "allowed": true,
+        "code": null,
+        "delegator": "coordinator",
+        "reportsTo": "lead",
+        "spawnableBy": [
+          "lead"
+        ],
+        "target": "specialist-a"
+      }
+    },
+    {
+      "vectorId": "INV-NOT-PARENT-RUN",
+      "invariant": "INV-NOT-PARENT-RUN",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
+      "document": {
+        "delegationEdgeId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+        "parentRunId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA4",
+        "sameIdentifier": false,
+        "stagePredecessor": true
+      }
+    },
+    {
+      "vectorId": "INV-NOT-PARENT-RUN-BAD",
+      "invariant": "INV-NOT-PARENT-RUN",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-NOT-PARENT-RUN",
+      "schema": "scenario",
+      "title": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
+      "document": {
+        "delegationEdgeId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC",
+        "parentRunId": "run_01ARZ3NDEKTSV4RRFFQ69G5FA4",
+        "sameIdentifier": true,
+        "stagePredecessor": true
+      }
+    },
+    {
+      "vectorId": "INV-NO-SECRET-FROM-REPORTS",
+      "invariant": "INV-NO-SECRET-FROM-REPORTS",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Reporting line does not grant secret or repository access.",
+      "document": {
+        "accessFromReporting": false,
+        "repoGrant": false,
+        "reportsTo": "lead",
+        "secretGrant": false
+      }
+    },
+    {
+      "vectorId": "INV-NO-SECRET-FROM-REPORTS-BAD",
+      "invariant": "INV-NO-SECRET-FROM-REPORTS",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-NO-SECRET-FROM-REPORTS",
+      "schema": "scenario",
+      "title": "Reporting line does not grant secret or repository access.",
+      "document": {
+        "accessFromReporting": true,
+        "repoGrant": false,
+        "reportsTo": "lead",
+        "secretGrant": false
+      }
+    },
+    {
+      "vectorId": "INV-IDENTITIES",
+      "invariant": "INV-IDENTITIES",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Task, assignee, blockers, activation, and execution are distinct identities.",
+      "document": {
+        "activationId": "nact_01ARZ3NDEKTSV4RRFFQ69G5FAJ",
+        "assignee": "specialist-a",
+        "blockerIds": [
+          "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAD"
+        ],
+        "executionId": "exec_01ARZ3NDEKTSV4RRFFQ69G5FA7",
+        "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC"
+      }
+    },
+    {
+      "vectorId": "INV-IDENTITIES-BAD",
+      "invariant": "INV-IDENTITIES",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-IDENTITIES",
+      "schema": "scenario",
+      "title": "Task, assignee, blockers, activation, and execution are distinct identities.",
+      "document": {
+        "activationId": "exec_01ARZ3NDEKTSV4RRFFQ69G5FA7",
+        "assignee": "specialist-a",
+        "blockerIds": [
+          "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAD"
+        ],
+        "executionId": "exec_01ARZ3NDEKTSV4RRFFQ69G5FA7",
+        "taskId": "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAC"
+      }
+    },
+    {
+      "vectorId": "INV-STAGE-OWNER",
+      "invariant": "INV-STAGE-OWNER",
+      "expect": "accept",
+      "rejectBy": "formula",
+      "code": null,
+      "schema": "scenario",
+      "title": "Only the stage owner advances the pipeline. A child with the same stage string does not.",
+      "document": {
+        "childAdvances": false,
+        "childStageEqualsWorkItemStage": true,
+        "rootAdvances": true,
+        "stageOwner": "coordinator"
+      }
+    },
+    {
+      "vectorId": "INV-STAGE-OWNER-BAD",
+      "invariant": "INV-STAGE-OWNER",
+      "expect": "reject",
+      "rejectBy": "formula",
+      "code": "INV-STAGE-OWNER",
+      "schema": "scenario",
+      "title": "Only the stage owner advances the pipeline. A child with the same stage string does not.",
+      "document": {
+        "childAdvances": true,
+        "childStageEqualsWorkItemStage": true,
+        "rootAdvances": true,
+        "stageOwner": "coordinator"
+      }
+    }
+  ]
+}
