@@ -340,7 +340,7 @@ func (s *Server) githubCollaborator(ctx context.Context, owner, name, handle str
 	}
 }
 
-func (s *Server) mintGitHubToken(ctx context.Context, run store.Run) (string, error) {
+func (s *Server) mintGitHubToken(ctx context.Context, run store.Run, bound boundAgent) (string, error) {
 	if s.integ.githubApp == nil {
 		return "", errors.New("server: github token: app is not configured")
 	}
@@ -352,7 +352,7 @@ func (s *Server) mintGitHubToken(ctx context.Context, run store.Run) (string, er
 	if err != nil {
 		return "", fmt.Errorf("server: github token: %w", err)
 	}
-	tok, err := s.installToken(ctx, id, repos, run, ghclient.DefaultPermissions)
+	tok, err := s.installToken(ctx, id, repos, run, bound, ghclient.DefaultPermissions)
 	if err != nil {
 		return "", fmt.Errorf("server: github token: %w", err)
 	}

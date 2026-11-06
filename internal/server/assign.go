@@ -53,7 +53,7 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 			return nil, fmt.Errorf("server: secret %s is not configured: %w", name, err)
 		}
 		if name == "GH_TOKEN" && s.cfg.GitHubTokenMode == tokenModeApp {
-			minted, err := s.mintRunToken(ctx, run)
+			minted, err := s.mintRunToken(ctx, run, bound)
 			if err != nil {
 				return nil, err
 			}

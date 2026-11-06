@@ -161,11 +161,15 @@ func (s *Server) checkoutOverrides(ctx context.Context, workItemID string) ([]pr
 	return s.invocationCheckoutOverrides(ctx, workItemID)
 }
 
-func (s *Server) installToken(ctx context.Context, id int64, repos []string, run store.Run, writeBundle func() map[string]string) (ghclient.Token, error) {
-	if s.readOnlyForgeTarget(run) {
+func (s *Server) installToken(ctx context.Context, id int64, repos []string, run store.Run, bound boundAgent, writeBundle func() map[string]string) (ghclient.Token, error) {
+	if s.mustReadMint(run, bound) {
 		return s.mintScannerToken(ctx, id, repos, run)
 	}
 	return s.integ.githubApp.InstallationToken(ctx, id, repos, writeBundle())
+}
+
+func (s *Server) mustReadMint(run store.Run, bound boundAgent) bool {
+	return s.readOnlyForgeTarget(run) || readOnlyHarness(bound.agent.Harness)
 }
 
 func (s *Server) mintScannerToken(ctx context.Context, id int64, repos []string, run store.Run) (ghclient.Token, error) {

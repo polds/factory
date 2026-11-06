@@ -11,4 +11,5 @@ if [ "$#" -ne 1 ]; then
   echo "usage: deploy/scanner-runner/build.sh <output>" >&2
   exit 2
 fi
-GOOS=linux GOARCH=amd64 go build -trimpath -o "$1" ./deploy/scanner-runner/stub
+# Host smoke builds for this machine. The image build pins linux in the Dockerfile.
+go build -trimpath -o "$1" ./deploy/scanner-runner/stub

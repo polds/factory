@@ -254,8 +254,9 @@ individual run failures.
 `deploy/scanner-runner` builds a stub plugin for public CI. The stub prints
 `scanner-stub plugin=stub fetch=forbidden` (`deploy/scanner-runner/stub/main.go:11`).
 `pin/provenance` records `plugin=stub`, `source=local`, and `fetch=forbidden`.
-`build.sh` refuses `SCANNER_PRIVATE_URL` and does not clone or download a
-scanner. Scanner and native assignment mint a forge token with `contents: read`
+`build.sh` builds the stub for the host GOOS and GOARCH. It refuses
+`SCANNER_PRIVATE_URL` and does not clone or download a scanner. The
+Dockerfile build stays linux. Scanner and native assignment mint a forge token with `contents: read`
 and `metadata: read`. That token cannot push, open a pull request, or comment.
 The checkout must be the pinned commit SHA. An unrelated repository is rejected.
 Assignment reads each secret through `secrets.Resolver` at injection time.

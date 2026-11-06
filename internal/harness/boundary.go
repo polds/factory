@@ -1,12 +1,7 @@
 package harness
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"log/slog"
-	"os/exec"
 	"strings"
 )
 
@@ -53,8 +48,9 @@ type BoundaryResult struct {
 	MCP                      string
 }
 
-// ProveCredentialBoundary runs the adapter bash and MCP paths, or records
-// that an env-only check is not accepted. Env-only evidence never returns isolated.
+// ProveCredentialBoundary runs toolbox.bash and the pinned CLI, or records
+// that an env-only check is not accepted. A secret visible to sh -c env is
+// not isolated. Env-only evidence never returns isolated.
 func ProveCredentialBoundary(ctx context.Context, req BoundaryRequest) (BoundaryResult, error) {
 	result := BoundaryResult{
 		Outcome:                  OutcomeLiveBlocked,
@@ -66,55 +62,49 @@ func ProveCredentialBoundary(ctx context.Context, req BoundaryRequest) (Boundary
 		result.EvidenceClass = EvidenceEnv
 		return result, nil
 	}
+	result.EvidenceClass = EvidenceAdapter
+	env := scrubEnv(req.Parent, nil)
+	if env == nil {
+		env = []string{}
+	}
+	bash := toolbox{env: env}.bash(ctx, "env")
+	result.Bash = bash.Output
+	bin := lookupEnv(req.Parent, "FACTORY_CLAUDE_BIN")
+	spawned := false
+	if bin != "" {
+		scenario := lookupEnv(req.Parent, "FACTORY_CLAUDE_SCENARIO")
+		if scenario == "" {
+			scenario = "empty-text"
+		}
+		cli, cliErr := execClaude(ctx, bin, req.Parent, boundaryNeedles(req), "--print", "--output-format", "stream-json", "--scenario", scenario)
+		result.MCP = cli.Stdout + cli.Stderr
+		spawned = cliErr == nil
+	}
+	if !bash.OK || !spawned || secretVisible(result.Bash+"\n"+result.MCP, req) {
+		return result, nil
+	}
+	result.Outcome = OutcomeIsolated
+	return result, nil
+}
+
+func boundaryNeedles(req BoundaryRequest) []string {
 	needles := append([]string{}, req.Needles...)
 	if req.Secret != "" {
 		needles = append(needles, req.Secret)
 	}
-	bashOut, bashOK := adapterBash(ctx, req.Parent, needles)
-	if !bashOK {
-		return result, nil
-	}
-	mcpOut := adapterMCP(req.Parent, "payload "+req.Secret, needles)
-	eventRaw, eventOK := redactedEvent(req.Secret, needles)
-	if !eventOK {
-		return result, nil
-	}
-	holder := secretValue(req.Secret)
-	var log bytes.Buffer
-	slog.New(slog.NewTextHandler(&log, nil)).Info("boundary", "secret", holder)
-	printed := fmt.Sprintf("%v %+v %#v", holder, holder, &holder)
-	blob := bashOut + "\n" + mcpOut + "\n" + eventRaw + "\n" + printed + "\n" + log.String()
-	result.Bash = bashOut
-	result.MCP = mcpOut
+	return needles
+}
+
+func secretVisible(blob string, req BoundaryRequest) bool {
 	if req.Secret != "" && strings.Contains(blob, req.Secret) {
-		return result, nil
+		return true
 	}
-	result.Outcome = OutcomeIsolated
-	result.EvidenceClass = EvidenceAdapter
-	return result, nil
-}
-
-func adapterBash(ctx context.Context, parent, needles []string) (string, bool) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", "env")
-	cmd.Env = isolateEnv(parent, needles)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", false
+	for _, needle := range req.Needles {
+		if needle != "" && strings.Contains(blob, needle) {
+			return true
+		}
 	}
-	return string(out), true
-}
-
-func redactedEvent(secret string, needles []string) (string, bool) {
-	raw, err := json.Marshal(Event{Type: "message.delta", Text: Redact("saw "+secret, needles)})
-	if err != nil {
-		return "", false
-	}
-	return string(raw), true
-}
-
-func adapterMCP(parent []string, payload string, needles []string) string {
-	env := isolateEnv(parent, needles)
-	return Redact(payload, needles) + "\n" + strings.Join(env, "\n")
+	return false
 }
 
 func isolateEnv(parent, needles []string) []string {

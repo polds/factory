@@ -332,10 +332,11 @@ methods that already exist. `native_delegate` and `native_wait` return
 `evidence: contract`. Those two are the conformance fake until production
 delegate and wait routes exist. Their results are not production evidence.
 
-Bash and MCP probes for `ProveCredentialBoundary` use the adapter sandbox.
-An environment-only comparison returns `liveBlocked` and does not count as
-isolation. Untrusted tasks get no Docker socket, no foreign checkout write,
-and no broad secret mount.
+`ProveCredentialBoundary` runs `toolbox.bash` (`sh -c env`) and the pinned
+CLI at `FACTORY_CLAUDE_BIN`. A planted secret that `sh -c env` can see is
+`liveBlocked`. An environment-only comparison is also `liveBlocked`.
+Untrusted tasks get no Docker socket, no foreign checkout write, and no
+broad secret mount.
 
 ```bash
 go test -count=1 -timeout 120s -run 'TestNegotiatePinnedHelp|TestIssueRunTokenDeniesElevation|TestMapClaudeStreamShapes|TestProveCredentialBoundary' ./internal/harness/

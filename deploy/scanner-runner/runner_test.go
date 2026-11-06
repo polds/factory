@@ -34,7 +34,6 @@ func TestScannerRunnerStub(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "scanner-stub")
 	cmd := exec.Command("./deploy/scanner-runner/build.sh", out)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64")
 	raw, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("build: %v %s", err, raw)

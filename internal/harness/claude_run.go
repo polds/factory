@@ -10,23 +10,24 @@ import (
 	"strings"
 )
 
-func routeAdapter(ctx context.Context, name string, opt Options, inv Invocation, log *Log, finish func(int, string, string) int) (int, bool) {
+func routeAdapter(ctx context.Context, name string, opt Options, inv Invocation, task TaskFile, log *Log, finish func(int, string, string) int) (int, bool) {
 	switch name {
 	case adapterName:
 		return 0, false
 	case claudeAdapterName:
-		return runClaude(ctx, opt, inv, log, finish), true
+		return runClaude(ctx, opt, inv, task, log, finish), true
 	default:
 		return finish(ExitConfigInvalid, "config_invalid", fmt.Sprintf("harness adapter %q is not in this build", name)), true
 	}
 }
 
-func runClaude(ctx context.Context, opt Options, inv Invocation, log *Log, finish func(int, string, string) int) int {
+func runClaude(ctx context.Context, opt Options, inv Invocation, task TaskFile, log *Log, finish func(int, string, string) int) int {
 	bin := lookupEnv(opt.Env, "FACTORY_CLAUDE_BIN")
 	if bin == "" {
 		return finish(ExitConfigInvalid, "config_invalid", "claude binary is not configured")
 	}
-	help, err := execClaude(ctx, bin, opt.Env, "--help")
+	needles := secretList(task, opt.Env)
+	help, err := execClaude(ctx, bin, opt.Env, needles, "--help")
 	if err != nil {
 		return finish(ExitConfigInvalid, "config_invalid", "claude help: "+err.Error())
 	}
@@ -46,8 +47,7 @@ func runClaude(ctx context.Context, opt Options, inv Invocation, log *Log, finis
 	if resume := lookupEnv(opt.Env, "FACTORY_CLAUDE_RESUME"); resume != "" && caps.Resume {
 		args = append(args, "--resume", resume)
 	}
-	out, err := execClaude(ctx, bin, opt.Env, args...)
-	needles := secretList(TaskFile{}, opt.Env)
+	out, err := execClaude(ctx, bin, opt.Env, needles, args...)
 	if ctx.Err() != nil && strings.TrimSpace(out.Stdout) == "" {
 		result := SessionResult{Attempts: []Attempt{{ID: "signal", Kind: "signal", Status: "signal"}}}
 		return finishClaude(log, finish, result, needles, inv.TaskID())
@@ -138,9 +138,9 @@ type claudeExec struct {
 	Stderr string
 }
 
-func execClaude(ctx context.Context, bin string, parent []string, args ...string) (claudeExec, error) {
+func execClaude(ctx context.Context, bin string, parent, needles []string, args ...string) (claudeExec, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Env = isolateEnv(parent, secretList(TaskFile{}, parent))
+	cmd.Env = isolateEnv(parent, needles)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -153,13 +153,13 @@ func execClaude(ctx context.Context, bin string, parent []string, args ...string
 func RunClaudeOnce(ctx context.Context, bin, scenario string) (SessionResult, error) {
 	parent := []string{"PATH=" + os.Getenv("PATH")}
 	if scenario == "hold" {
-		_, execErr := execClaude(ctx, bin, parent, "--scenario", "hold")
+		_, execErr := execClaude(ctx, bin, parent, nil, "--scenario", "hold")
 		if result, ok := cancelledSignal(ctx); ok {
 			return result, nil
 		}
 		return SessionResult{}, execErr
 	}
-	out, err := execClaude(ctx, bin, parent, "--print", "--output-format", "stream-json", "--scenario", scenario)
+	out, err := execClaude(ctx, bin, parent, nil, "--print", "--output-format", "stream-json", "--scenario", scenario)
 	result, mapErr := MapClaudeStream(strings.NewReader(out.Stdout))
 	if mapErr != nil && !errors.Is(mapErr, ErrMalformed) {
 		return result, mapErr

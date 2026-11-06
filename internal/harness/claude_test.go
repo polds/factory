@@ -203,11 +203,11 @@ func TestProveCredentialBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Outcome != OutcomeIsolated || got.EvidenceClass != EvidenceAdapter || got.EnvOnlyIsolationAccepted {
-		t.Fatalf("adapter %+v", got)
+	if got.Outcome == OutcomeIsolated || got.EnvOnlyIsolationAccepted {
+		t.Fatalf("visible secret was treated as isolated: %+v", got)
 	}
-	if strings.Contains(got.Bash, secret) || strings.Contains(got.MCP, secret) {
-		t.Fatal("planted secret left the adapter")
+	if !strings.Contains(got.Bash, secret) {
+		t.Fatalf("bash did not show the planted secret: %q", got.Bash)
 	}
 	if !strings.Contains(got.Bash, "FOO=bar") {
 		t.Fatalf("bash dropped an ordinary variable: %q", got.Bash)
@@ -295,6 +295,35 @@ func TestClaudeSignalAccountsOnce(t *testing.T) {
 	}
 }
 
+func TestProveCredentialBoundaryIsolatesPinnedCLI(t *testing.T) {
+	const secret = "CANARY-PLANTED-SECRET-VALUE"
+	bin := claudeFake(t)
+	parent := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"OPENAI_API_KEY=" + secret,
+		"FOO=bar",
+		"FACTORY_CLAUDE_BIN=" + bin,
+		"FACTORY_CLAUDE_SCENARIO=empty-text",
+	}
+	got, err := ProveCredentialBoundary(context.Background(), BoundaryRequest{
+		Evidence: EvidenceAdapter,
+		Secret:   secret,
+		Parent:   parent,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != OutcomeIsolated || got.EvidenceClass != EvidenceAdapter {
+		t.Fatalf("adapter %+v", got)
+	}
+	if strings.Contains(got.Bash, secret) || strings.Contains(got.MCP, secret) {
+		t.Fatal("planted secret left the spawn path")
+	}
+	if !strings.Contains(got.Bash, "FOO=bar") || got.MCP == "" {
+		t.Fatalf("spawn path missing bash or cli: bash %q mcp %q", got.Bash, got.MCP)
+	}
+}
+
 func TestClaudeRunUsesPinnedFixture(t *testing.T) {
 	bin := claudeFake(t)
 	dir := t.TempDir()
@@ -330,6 +359,39 @@ func TestClaudeRunUsesPinnedFixture(t *testing.T) {
 	}
 	if string(helpOut) != PinnedClaudeHelp() && !strings.Contains(string(helpOut), strings.TrimSpace(PinnedClaudeHelp())) {
 		t.Fatalf("fake help drifted: %s", helpOut)
+	}
+}
+
+func TestClaudeRunRedactsTaskFileSecrets(t *testing.T) {
+	bin := claudeFake(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "task.json"), []byte(`{"secrets":["refused"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	code := Run(context.Background(), Options{
+		Args: []string{"agent", "run", "--task-id", "run_claude", "--harness", "claude-code"},
+		Env: []string{
+			"FACTORY_CLAUDE_BIN=" + bin,
+			"FACTORY_CLAUDE_SCENARIO=refusal",
+			"PATH=" + os.Getenv("PATH"),
+		},
+		RuntimeDir: dir,
+		Workspace:  dir,
+		Stderr:     &stderr,
+	})
+	if code != ExitAgentReported {
+		t.Fatalf("exit %d stderr %s", code, stderr.String())
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "events.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "refused") {
+		t.Fatalf("events %s", raw)
+	}
+	if !strings.Contains(string(raw), "[REDACTED]") {
+		t.Fatalf("events %s", raw)
 	}
 }
 

@@ -36,11 +36,11 @@ func improvementPRPermissions() map[string]string {
 	}
 }
 
-func (s *Server) mintRunToken(ctx context.Context, run store.Run) (string, error) {
+func (s *Server) mintRunToken(ctx context.Context, run store.Run, bound boundAgent) (string, error) {
 	if run.Purpose == api.PurposeImprovement {
 		return s.mintImprovementTaskToken(ctx, run)
 	}
-	return s.mintGitHubToken(ctx, run)
+	return s.mintGitHubToken(ctx, run, bound)
 }
 
 func (s *Server) mintImprovementTaskToken(ctx context.Context, _ store.Run) (string, error) {
