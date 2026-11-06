@@ -4,6 +4,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=helm-lib.sh
 source "${root}/scripts/ci/helm-lib.sh"
 install_helm

@@ -5,6 +5,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT="${root}"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=scripts/lib/preflight.sh
 source "${root}/deploy/scan-security/scripts/lib/preflight.sh"
 
