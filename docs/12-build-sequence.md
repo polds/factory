@@ -36,7 +36,9 @@ JSON message, and the harness argv begins with `agent run` positionals. See
 - NDJSON event emission, redaction against the injected secret set, the exit-code taxonomy.
   **Landed.** `factoryctl harness verify` runs the cases that do not need a live vendor
   ([05](05-harness-contract.md#shipped-adapter)).
-- `claude-code` adapter. **Not in this build.** `--harness claude-code` exits 20.
+- `claude-code` adapter. **Landed.** `--harness claude-code` runs the pinned
+  credential-free fixture when `FACTORY_CLAUDE_BIN` is set. An unset binary
+  exits 20. See [05](05-harness-contract.md#claude-code-adapter).
 - A real agent run that clones a repo, changes a file, runs tests, and opens a PR,
   driven by the unmodified upstream worker and the M0 stub server. **Done.**
   [PR #12](https://github.com/polds/factory/pull/12), upstream worker `63dbb8a`.
@@ -440,7 +442,7 @@ not reproduce under manual testing.
 
 ## M9-N — Native activation and budgets
 
-Native mode freezes `reportsTo` and `spawnableBy` on the invocation. Delegate, park, wake, join, and cancel run in one transaction with the refusal. Only the stage owner reaches `advanceAfterTerminal`. Ancestor budgets reserve, settle, and alert in integer cents. `spike/m9/run.sh` is offline only.
+Native mode freezes `reportsTo` and `spawnableBy` on the invocation. Delegate, park, wake, join, and cancel run in one transaction with the refusal. Only the stage owner reaches `advanceAfterTerminal`. Ancestor budgets reserve, settle, and alert in integer cents. The Claude Code tools `native_delegate` and `native_wait` call those production routes. `spike/m9/run.sh` is offline only and drives the adapter through the real server with Linear absent.
 
 ## Open questions to resolve with measurement
 

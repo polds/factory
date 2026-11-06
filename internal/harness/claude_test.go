@@ -256,12 +256,15 @@ func TestNativeToolsProductionAndContract(t *testing.T) {
 		t.Fatalf("api calls %+v", api)
 	}
 	delegated, err := tools.Dispatch(ctx, lead, "native_delegate", map[string]string{"taskId": "ntask_1", "invocationId": "inv_1"})
-	if err != nil || delegated.Evidence != EvidenceContract {
+	if err != nil || delegated.Evidence != EvidenceProduction || strings.Contains(delegated.Payload, planted) || !strings.Contains(delegated.Payload, "[REDACTED]") {
 		t.Fatalf("delegate %+v %v", delegated, err)
 	}
 	waited, err := tools.Dispatch(ctx, lead, "native_wait", map[string]string{"taskId": "ntask_1", "invocationId": "inv_1"})
-	if err != nil || waited.Evidence != EvidenceContract {
+	if err != nil || waited.Evidence != EvidenceProduction || strings.Contains(waited.Payload, planted) || !strings.Contains(waited.Payload, "[REDACTED]") {
 		t.Fatalf("wait %+v %v", waited, err)
+	}
+	if api.delegates != 1 || api.parks != 1 || api.joins != 1 || api.gets != 2 {
+		t.Fatalf("delegate/wait calls %+v", api)
 	}
 	spec, err := IssueRunToken(ctx, lead.Scope(), Attenuation{Role: RoleSpecialist, Grants: []string{GrantInboxRead, GrantRosterDispatch}})
 	if err != nil {
@@ -269,6 +272,9 @@ func TestNativeToolsProductionAndContract(t *testing.T) {
 	}
 	if _, err := tools.Dispatch(ctx, spec, "native_delegate", map[string]string{"taskId": "ntask_1", "invocationId": "inv_1"}); err == nil {
 		t.Fatal("specialist delegated")
+	}
+	if api.delegates != 1 {
+		t.Fatalf("denied delegate called production %+v", api)
 	}
 	if _, err := tools.Dispatch(ctx, lead, "native_task_get", map[string]string{"taskId": "ntask_other"}); err == nil {
 		t.Fatal("cross-task get succeeded")
@@ -403,6 +409,12 @@ type fakeNative struct {
 	comments  int
 	inbox     int
 	acks      int
+	delegates int
+	parks     int
+	joins     int
+	wakes     int
+	activates int
+	completes int
 }
 
 func (f *fakeNative) CreateNativeTask(context.Context, string, client.NativeTaskRequest) (client.NativeTask, error) {
@@ -448,6 +460,36 @@ func (f *fakeNative) ClaimNativeInbox(context.Context, string, string, string) (
 
 func (f *fakeNative) GetNativeWake(context.Context, string, string) (client.NativeWake, error) {
 	return client.NativeWake{TaskID: "ntask_1"}, nil
+}
+
+func (f *fakeNative) DelegateNative(context.Context, string, string, client.NativeDelegateRequest) (client.NativeDelegateResult, error) {
+	f.delegates++
+	return client.NativeDelegateResult{ChildID: "ntask_" + f.messageID}, nil
+}
+
+func (f *fakeNative) ActivateNative(context.Context, string, string, client.NativeActivateRequest) (client.NativeActivation, error) {
+	f.activates++
+	return client.NativeActivation{RunID: "run_1"}, nil
+}
+
+func (f *fakeNative) CompleteNative(context.Context, string, string, client.NativeCompleteRequest) (client.NativeActivation, error) {
+	f.completes++
+	return client.NativeActivation{RunID: "run_1"}, nil
+}
+
+func (f *fakeNative) ParkNative(context.Context, string, string, client.NativeParkRequest) (client.NativeActivation, error) {
+	f.parks++
+	return client.NativeActivation{State: "parked", TaskID: f.taskID}, nil
+}
+
+func (f *fakeNative) JoinNative(context.Context, string, string) (client.NativeJoinResult, error) {
+	f.joins++
+	return client.NativeJoinResult{Status: "running", RunID: "run_" + f.messageID}, nil
+}
+
+func (f *fakeNative) WakeNativeRun(context.Context, string, string, client.NativeWakeRunRequest) (client.NativeWakeRunResult, error) {
+	f.wakes++
+	return client.NativeWakeRunResult{Delivery: "linked", LinkedRunID: "run_linked"}, nil
 }
 
 func readRepo(t *testing.T, rel string) string {

@@ -101,3 +101,71 @@ func (c *Client) ActivateNative(ctx context.Context, factoryUID, taskID string, 
 	err := c.doJSON(ctx, http.MethodPost, path, req, &out, http.StatusOK)
 	return out, err
 }
+
+// NativeParkRequest records blockers and releases the worker slot.
+type NativeParkRequest struct {
+	BlockerIDs []string `json:"blockerIds"`
+}
+
+// NativeWakeRunRequest delivers input to a live task.
+type NativeWakeRunRequest struct {
+	NegotiatedSteer bool `json:"negotiatedSteer"`
+}
+
+// NativeWakeRunResult is how the wake was applied.
+type NativeWakeRunResult struct {
+	Delivery    string           `json:"delivery"`
+	Activation  NativeActivation `json:"activation"`
+	PriorRunID  string           `json:"priorRunId,omitempty"`
+	PriorStatus string           `json:"priorStatus,omitempty"`
+	LinkedRunID string           `json:"linkedRunId,omitempty"`
+}
+
+// NativeJoinResult does not include a synthesized child.
+type NativeJoinResult struct {
+	ParentTaskID       string   `json:"parentTaskId"`
+	Policy             string   `json:"policy"`
+	Status             string   `json:"status"`
+	Synthesized        bool     `json:"synthesized"`
+	SpawnedReplacement bool     `json:"spawnedReplacement"`
+	Unresolved         []string `json:"unresolved"`
+	RunID              string   `json:"runId,omitempty"`
+	StageOwner         bool     `json:"stageOwner"`
+}
+
+// NativeCompleteRequest marks the task succeeded or failed.
+type NativeCompleteRequest struct {
+	Failed bool `json:"failed"`
+}
+
+// ParkNative releases the slot and records blockers.
+func (c *Client) ParkNative(ctx context.Context, factoryUID, taskID string, req NativeParkRequest) (NativeActivation, error) {
+	var out NativeActivation
+	path := nativeTaskPath(factoryUID, taskID) + "/park"
+	err := c.doJSON(ctx, http.MethodPost, path, req, &out, http.StatusOK)
+	return out, err
+}
+
+// JoinNative applies the frozen join edges. A parked parent with finished children resumes.
+func (c *Client) JoinNative(ctx context.Context, factoryUID, taskID string) (NativeJoinResult, error) {
+	var out NativeJoinResult
+	path := nativeTaskPath(factoryUID, taskID) + "/join"
+	err := c.doJSON(ctx, http.MethodPost, path, struct{}{}, &out, http.StatusOK)
+	return out, err
+}
+
+// WakeNativeRun posts one durable wake. A completed task opens a linked run.
+func (c *Client) WakeNativeRun(ctx context.Context, factoryUID, taskID string, req NativeWakeRunRequest) (NativeWakeRunResult, error) {
+	var out NativeWakeRunResult
+	path := nativeTaskPath(factoryUID, taskID) + "/wake-run"
+	err := c.doJSON(ctx, http.MethodPost, path, req, &out, http.StatusOK)
+	return out, err
+}
+
+// CompleteNative marks the task succeeded or failed.
+func (c *Client) CompleteNative(ctx context.Context, factoryUID, taskID string, req NativeCompleteRequest) (NativeActivation, error) {
+	var out NativeActivation
+	path := nativeTaskPath(factoryUID, taskID) + "/complete"
+	err := c.doJSON(ctx, http.MethodPost, path, req, &out, http.StatusOK)
+	return out, err
+}

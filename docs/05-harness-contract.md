@@ -327,10 +327,17 @@ invocation is rejected. Formatting, JSON, and logs redact the secret.
 
 MCP tools `native_task_create`, `native_task_get`, `native_comment`,
 `native_assign`, `native_inbox_read`, `native_apply`, `native_ack`,
-`native_redeliver`, `native_claim`, and `native_wake` call the ten client
-methods that already exist. `native_delegate` and `native_wait` return
-`evidence: contract`. Those two are the conformance fake until production
-delegate and wait routes exist. Their results are not production evidence.
+`native_redeliver`, `native_claim`, and `native_wake` call the client.
+`native_delegate` calls `DelegateNative`. `native_activate` and
+`native_complete` call the activation and completion routes.
+`native_wait` is park-until-join on the production routes: a running task
+parks and then joins, a parked task joins (which resumes it once required
+children are finished), and a completed task calls `wake-run` to open a
+linked run. There is no separate wait route. Those results are
+`evidence: production`. A test that sets `NativeTools.Contract` still
+receives `evidence: contract` for delegate and wait. Authorize still rejects
+a specialist `native_delegate`, a crossed task, and a crossed invocation.
+Payloads are redacted.
 
 `ProveCredentialBoundary` runs `toolbox.bash` (`sh -c env`) and the pinned
 CLI at `FACTORY_CLAUDE_BIN`. A planted secret that `sh -c env` can see is
