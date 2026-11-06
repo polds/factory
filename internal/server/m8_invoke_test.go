@@ -207,13 +207,94 @@ func TestM8ReplayFinishesMissingWorkItem(t *testing.T) {
 	if _, err := env.raw.Exec(context.Background(), `UPDATE work_items SET invocation_id = NULL WHERE id = $1`, itemID); err != nil {
 		t.Fatal(err)
 	}
+	var runsBefore int
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM runs WHERE work_item_id = $1`, itemID).Scan(&runsBefore); err != nil {
+		t.Fatal(err)
+	}
 	again := env.postJSON(t, "/api/v1/factory/pipe/invocations", map[string]any{
 		"sourceOccurrenceKey": key,
 		"intent":              "new",
 		"priority":            "interactive",
 	}, http.StatusOK)
-	if again["workItemId"] == "" || again["workItemId"] == itemID {
-		t.Fatalf("replay did not finish provisioning: %+v", again)
+	if again["workItemId"] != itemID {
+		t.Fatalf("replay minted a second work item: %+v", again)
+	}
+	var runsAfter int
+	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM runs WHERE work_item_id = $1`, itemID).Scan(&runsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if runsBefore == 0 || runsAfter != runsBefore {
+		t.Fatalf("stage runs %d -> %d", runsBefore, runsAfter)
+	}
+}
+
+func TestOrphanInvocationRepairStartsOnce(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 1)
+	}})
+	key := "probe:crash-before-run"
+	got := env.postJSON(t, "/api/v1/factory/pipe/invocations", map[string]any{
+		"sourceOccurrenceKey": key,
+		"intent":              "new",
+		"priority":            "interactive",
+	}, http.StatusCreated)
+	itemID, _ := got["workItemId"].(string)
+	if itemID == "" {
+		t.Fatal("missing work item")
+	}
+	ctx := context.Background()
+	if _, err := env.raw.Exec(ctx, `DELETE FROM run_lifecycle_events WHERE run_id IN (SELECT id FROM runs WHERE work_item_id = $1)`, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.raw.Exec(ctx, `DELETE FROM run_queue WHERE run_id IN (SELECT id FROM runs WHERE work_item_id = $1)`, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.raw.Exec(ctx, `DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE work_item_id = $1)`, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.raw.Exec(ctx, `DELETE FROM executions WHERE run_id IN (SELECT id FROM runs WHERE work_item_id = $1)`, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.raw.Exec(ctx, `DELETE FROM runs WHERE work_item_id = $1`, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.raw.Exec(ctx, `UPDATE invocations SET work_item_id = NULL WHERE source_occurrence_key = $1`, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.raw.Exec(ctx, `UPDATE work_items SET invocation_id = NULL WHERE id = $1`, itemID); err != nil {
+		t.Fatal(err)
+	}
+	again := env.postJSON(t, "/api/v1/factory/pipe/invocations", map[string]any{
+		"sourceOccurrenceKey": key,
+		"intent":              "new",
+		"priority":            "interactive",
+	}, http.StatusOK)
+	if again["workItemId"] != itemID {
+		t.Fatalf("repair created a second item: %+v", again)
+	}
+	var runs int
+	if err := env.raw.QueryRow(ctx, `SELECT count(*) FROM runs WHERE work_item_id = $1`, itemID).Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 {
+		t.Fatalf("stage runs %d", runs)
+	}
+	third := env.postJSON(t, "/api/v1/factory/pipe/invocations", map[string]any{
+		"sourceOccurrenceKey": key,
+		"intent":              "new",
+		"priority":            "interactive",
+	}, http.StatusOK)
+	if third["workItemId"] != itemID {
+		t.Fatalf("third replay %+v", third)
+	}
+	if err := env.raw.QueryRow(ctx, `SELECT count(*) FROM runs WHERE work_item_id = $1`, itemID).Scan(&runs); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 {
+		t.Fatalf("stage runs after replay %d", runs)
 	}
 }
 

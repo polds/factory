@@ -370,4 +370,5 @@ var (
 	_ api.DefinitionTreeApplier  = apiFacade{}
 	_ api.SteerHistory           = apiFacade{}
 	_ api.WebhookDeliveryBackend = apiFacade{}
+	_ api.NativeBackend          = apiFacade{}
 )

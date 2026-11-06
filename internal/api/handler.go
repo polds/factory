@@ -115,6 +115,7 @@ func (h *handler) route() {
 
 	h.registerConsole(m)
 	h.registerMeasure(m)
+	h.registerNative(m)
 
 	var schemas http.Handler
 	if cat, ok := h.backend.(SchemaCatalog); ok {
