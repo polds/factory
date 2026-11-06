@@ -16,7 +16,8 @@ The in-repo scanner runner remains the public stub (`plugin=stub`, `fetch=forbid
 - a planted finding `synthetic-finding` is retrieved the same way
 - Linear configuration is refused before any test runs, and the acceptance path makes no Linear call
 - the definition requires `report` only. The driver does not open a pull request
-- report and coverage stay under `retention/` after the item workspace is removed. The authorized API is `GET /api/v1/scans/{id}/report` and `GET /api/v1/scans/{id}/coverage`. A missing bearer token is HTTP 403 with an empty body
+- report and coverage are read from `GET /api/v1/factory/scan/invocations/{id}/result` after the task workspace is removed. The response carries `coverageStatus` and `findingsCount`. A missing bearer token is HTTP 403 with an empty body
+- `retention/<id>/report.json` is the file `commit` and `PublishCandidate` write. A publication failure leaves that file absent. `ExpireRetention` removes a file once `publishedAt` is 168 hours old
 - publication rejects symlink, `..`, oversize, and `CANARY-SYNTHETIC` bodies and stores nothing for those failures
 - cancel removes the item workspace, writes no report, and creates no pull request. Cleanup rejects an id that escapes the item root
 - a crash before commit retries once. A second retry does not write a second report
@@ -24,7 +25,7 @@ The in-repo scanner runner remains the public stub (`plugin=stub`, `fetch=forbid
 
 Retention is 168 hours. Each item has its own workspace mount and its own art mount. There is no shared writable checkout and no shared `/art` root. The compose sample is `deploy/native-scan/compose.yaml`. It sets `network_mode: none` so that file is not a live schedule. The offline driver does not apply it.
 
-Local CLI mode is `local_cli`. It does not require Linear or a Factory task ref. Synthetic native briefs use Factory `task_ref` (an `ntask_` id). `linear_issue` on that brief is null. The scanner baseline that still says `linear_issue` is `internal/normalize/linear/doc.go`. The matrix row INV-TASK-REF now points at `internal/normalize/linear/native_brief.go`. Its producer label remains M9-T. The test owner is M10-A.
+Local CLI mode is `local_cli`. It does not require Linear or a Factory task ref. Synthetic native briefs use Factory `task_ref` (an `ntask_` id). `linear_issue` on that brief is null. The scanner baseline that still says `linear_issue` is `internal/normalize/linear/doc.go`. The matrix row INV-TASK-REF points at `SyntheticNativeBrief` in `internal/normalize/linear/native_brief.go`. Its producer label remains M9-T. The test owner is M10-A. INV-ART points at `sharedArtRoot` in `ValidateSample`.
 
 ## Commands
 
@@ -87,7 +88,7 @@ Synthetic security checks are `scripts/ci/scan-security-check.sh`, invoked by th
 
 ## Live gate
 
-`.github/workflows/m10-live.yml` is `workflow_dispatch` only. Its only step is `bash spike/m10/preflight.sh live`. It does not read secrets, pull an image, deploy a schedule, or start a model. Do not dispatch it.
+`.github/workflows/m10-live.yml` is `workflow_dispatch` only. Job `gate` uses environment `m10-live` and refuses to continue unless the `confirm` input is `m10-live`. The following step is `bash spike/m10/preflight.sh live`. It does not read secrets, pull an image, deploy a schedule, or start a model. Do not dispatch it.
 
 Blocked live rows. No run id exists for this slice:
 

@@ -1503,9 +1503,9 @@
       "fieldPath": "taskRef",
       "baseline": {
         "file": "internal/normalize/linear/native_brief.go",
-        "start": 5,
-        "end": 7,
-        "anchor": "task_ref"
+        "start": 27,
+        "end": 38,
+        "anchor": "SyntheticNativeBrief"
       },
       "decision": "Native scanner mode uses task_ref. linear_issue is null and Linear is not required.",
       "testOwner": "M10-A",
@@ -1539,9 +1539,9 @@
       "fieldPath": "art.perItem",
       "baseline": {
         "file": "deploy/native-scan/mount.go",
-        "start": 12,
-        "end": 13,
-        "anchor": "perItemMount"
+        "start": 86,
+        "end": 109,
+        "anchor": "sharedArtRoot"
       },
       "decision": "Each item gets its own workspace mount and there is no shared writable ART root.",
       "testOwner": "M10-A",
@@ -1575,8 +1575,8 @@
       "fieldPath": "owners,sendAuthorized",
       "baseline": {
         "file": "internal/outbound/bridge.go",
-        "start": 5,
-        "end": 6,
+        "start": 12,
+        "end": 13,
         "anchor": "factory-outbound-bridge"
       },
       "decision": "One outbound owner, factory-outbound-bridge, stays disabled unless a send is authorized. Outage queues reporting and does not block execution.",

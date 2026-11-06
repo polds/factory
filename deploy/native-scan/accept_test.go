@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/polds/factory/internal/outbound"
 	"github.com/polds/factory/internal/result"
@@ -118,31 +119,97 @@ func TestM10PublicationFailures(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "note.txt"), link); err != nil {
 		t.Fatal(err)
 	}
-	if err := PublishCandidate(root, true, []byte("ok"), []string{"linked.txt"}); err == nil || !codeIs(err, result.CodeSymlinkRejected) {
+	const failID = "fail-item"
+	failPath, err := RetainedReportPath(root, failID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	if err := PublishCandidate(root, failID, true, []byte("ok"), []string{"linked.txt"}, now); err == nil || !codeIs(err, result.CodeSymlinkRejected) {
 		t.Fatalf("symlink %v", err)
 	}
-	if err := PublishCandidate(root, true, []byte("ok"), []string{"../outside"}); err == nil || !codeIs(err, result.CodePathRejected) {
+	if err := PublishCandidate(root, failID, true, []byte("ok"), []string{"../outside"}, now); err == nil || !codeIs(err, result.CodePathRejected) {
 		t.Fatalf("traversal %v", err)
 	}
 	big := filepath.Join(root, "big.bin")
 	if err := os.WriteFile(big, make([]byte, (1<<20)*16+1), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := PublishCandidate(root, true, []byte("ok"), []string{"big.bin"}); err == nil || !codeIs(err, result.CodeOversize) {
+	if err := PublishCandidate(root, failID, true, []byte("ok"), []string{"big.bin"}, now); err == nil || !codeIs(err, result.CodeOversize) {
 		t.Fatalf("size %v", err)
 	}
-	if err := PublishCandidate(root, true, []byte("CANARY-SYNTHETIC"), nil); err == nil || !codeIs(err, result.CodeSecretRejected) {
+	if err := PublishCandidate(root, failID, true, []byte("CANARY-SYNTHETIC"), nil, now); err == nil || !codeIs(err, result.CodeSecretRejected) {
 		t.Fatalf("leak %v", err)
 	}
-	if err := PublishCandidate(root, false, []byte("ok"), nil); err == nil || !codeIs(err, result.CodeUnauthorized) {
+	if err := PublishCandidate(root, failID, false, []byte("ok"), nil, now); err == nil || !codeIs(err, result.CodeUnauthorized) {
 		t.Fatalf("auth %v", err)
 	}
-	matches, err := filepath.Glob(filepath.Join(root, "retention", "*", "report.json"))
+	matches, err := filepath.Glob(filepath.Join(root, "retention", "*", retainedReportFile))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(matches) != 0 {
-		t.Fatalf("published after failure: %v", matches)
+		t.Fatalf("writer created %s after failure: %v", failPath, matches)
+	}
+	if _, err := os.Stat(failPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failure path %s: %v", failPath, err)
+	}
+	if err := PublishCandidate(root, "ok-item", true, []byte("clean"), nil, now); err != nil {
+		t.Fatal(err)
+	}
+	okPath, err := RetainedReportPath(root, "ok-item")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(okPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(failPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failure path appeared: %v", err)
+	}
+}
+
+func TestM10RetentionExpiresOnClock(t *testing.T) {
+	root := t.TempDir()
+	engine, err := NewEngine(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	engine.clock = func() time.Time { return start }
+	if err := engine.commit("old-item", ReportView{
+		ID: "old-item", Kind: "schedule", Findings: 0, Coverage: "recorded", Body: "findings=0", Link: linkFor("old-item"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	engine.clock = func() time.Time { return start.Add(time.Hour) }
+	if err := engine.commit("new-item", ReportView{
+		ID: "new-item", Kind: "schedule", Findings: 0, Coverage: "recorded", Body: "findings=0", Link: linkFor("new-item"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldPath, err := RetainedReportPath(root, "old-item")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPath, err := RetainedReportPath(root, "new-item")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ExpireRetention(root, start.Add(retentionWindow-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExpireRetention(root, start.Add(retentionWindow)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old report remains: %v", err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -15,6 +15,11 @@ if [[ -n "${LINEAR_API_KEY:-}" || -n "${LINEAR_API_TOKEN:-}" || -n "${LINEAR_WEB
   exit 1
 fi
 
+if [[ -z "${FACTORY_TEST_DATABASE_URL:-}" ]]; then
+  echo "m10 database unavailable" >&2
+  exit 1
+fi
+
 echo "m10 offline acceptance"
 python3 "${ROOT}/docs/contracts/defined-factory/validate.py" | tee /tmp/m10-validate.out | grep -q 'CONTRACT FIXTURES PASS'
 
@@ -29,11 +34,11 @@ run_pkg() {
   local out
   local code
   set +e
-  out="$(go test -count=1 "${pkg}" -run "${run}")"
+  out="$(go test -count=1 "${pkg}" -run "${run}" 2>&1)"
   code=$?
   set -e
   printf '%s\n' "${out}"
-  if [[ "${code}" -ne 0 || "${out}" == *"no tests to run"* ]]; then
+  if [[ "${code}" -ne 0 || "${out}" == *"no tests to run"* || "${out}" == *"--- SKIP:"* ]]; then
     echo "m10: ${pkg} ${run} failed" >&2
     exit 1
   fi
@@ -42,7 +47,7 @@ run_pkg() {
 run_pkg ./deploy/native-scan 'TestM10'
 run_pkg ./internal/outbound 'TestBridge'
 run_pkg ./internal/normalize/linear 'TestSyntheticNativeBrief'
-run_pkg ./internal/server 'TestRouteBridgeEcho|TestReportThroughBridge'
+run_pkg ./internal/server 'TestM10OfflineAcceptance|TestBridgeRestart|TestRouteBridgeEcho|TestReportThroughBridge'
 
 bin="$(mktemp)"
 trap 'rm -f "${bin}"' EXIT

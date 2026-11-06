@@ -454,7 +454,7 @@ MODE=offline ./spike/m10/run.sh
 
 The driver prints `m10 offline PASS`. The same definition covers two schedule slots and one pinned pull-request input. Zero findings are valid. Linear configuration is refused. The optional bridge `factory-outbound-bridge` stays disabled and `sendCount` stays 0. Details and the blocked live rows are in `docs/15-native-scanner-acceptance.md`.
 
-`.github/workflows/m10-live.yml` is manual and fail-closed. It has not been dispatched. There is no live run id. It does not deploy a schedule against a live host.
+`.github/workflows/m10-live.yml` is manual and fail-closed. Job `gate` waits on environment `m10-live` and a `confirm` input of `m10-live`. It has not been dispatched. There is no live run id. It does not deploy a schedule against a live host.
 
 | Row | State | Run ID |
 | --- | --- | --- |

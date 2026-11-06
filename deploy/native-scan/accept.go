@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/polds/factory/internal/outbound"
 	"github.com/polds/factory/internal/result"
@@ -54,17 +55,18 @@ type Definition struct {
 
 // ReportView is a published report. It has no pull-request URL.
 type ReportView struct {
-	ID               string `json:"id"`
-	Kind             string `json:"kind"`
-	DefinitionDigest string `json:"definitionDigest"`
-	DefaultSHA       string `json:"defaultSha,omitempty"`
-	BaseSHA          string `json:"baseSha,omitempty"`
-	HeadSHA          string `json:"headSha,omitempty"`
-	Slot             string `json:"slot,omitempty"`
-	Findings         int    `json:"findings"`
-	Coverage         string `json:"coverage"`
-	Body             string `json:"body"`
-	Link             string `json:"link"`
+	ID               string    `json:"id"`
+	Kind             string    `json:"kind"`
+	DefinitionDigest string    `json:"definitionDigest"`
+	DefaultSHA       string    `json:"defaultSha,omitempty"`
+	BaseSHA          string    `json:"baseSha,omitempty"`
+	HeadSHA          string    `json:"headSha,omitempty"`
+	Slot             string    `json:"slot,omitempty"`
+	Findings         int       `json:"findings"`
+	Coverage         string    `json:"coverage"`
+	Body             string    `json:"body"`
+	Link             string    `json:"link"`
+	PublishedAt      time.Time `json:"publishedAt"`
 }
 
 // Summary is the offline acceptance result.
@@ -93,6 +95,7 @@ type Engine struct {
 	linearCalls int
 	running     bool
 	commits     map[string]int
+	clock       func() time.Time
 }
 
 // LoadDefinition reads the embedded synthetic definition.
@@ -194,7 +197,10 @@ func RunAcceptance(root string, bridge *outbound.Bridge) (*Engine, Summary, erro
 		IdempotencyKey: "report:" + slotAID,
 		TaskRef:        "ntask_01ARZ3NDEKTSV4RRFFQ69G5FAA",
 	})
-	if queued.BlocksExecution || echo.Suppressed != "echo" || replay.Suppressed != "replay" {
+	if queued.BlocksExecution || echo.BlocksExecution || replay.BlocksExecution || engine.bridge.SendCount() != 0 {
+		return nil, Summary{}, errors.New("nativescan: bridge")
+	}
+	if queued.Queued && (echo.Suppressed != "echo" || replay.Suppressed != "replay") {
 		return nil, Summary{}, errors.New("nativescan: bridge")
 	}
 	if _, err := engine.Get(slotAID); err != nil {
@@ -341,14 +347,16 @@ func (e *Engine) commit(id string, view ReportView) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
+	view.PublishedAt = e.now()
 	raw, err := json.Marshal(view)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "report.json"), raw, 0o644); err != nil {
+	path, err := RetainedReportPath(e.root, id)
+	if err != nil {
+		return err
+	}
+	if err := writeRetainedReport(path, raw); err != nil {
 		return err
 	}
 	coverage, err := json.Marshal(map[string]string{"status": view.Coverage})
@@ -370,6 +378,13 @@ func (e *Engine) commit(id string, view ReportView) error {
 	}
 	e.commits[id]++
 	return nil
+}
+
+func (e *Engine) now() time.Time {
+	if e != nil && e.clock != nil {
+		return e.clock().UTC()
+	}
+	return time.Now().UTC()
 }
 
 // Get loads a retained report. It does not read the item workspace.

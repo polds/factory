@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/polds/factory/internal/outbound"
 	"github.com/polds/factory/internal/result"
 	"github.com/polds/factory/internal/store"
 )
@@ -47,7 +48,7 @@ func (s *Server) publishFinishReport(ctx context.Context, tx pgx.Tx, runID, stat
 	if err := result.Publish(true, "", pub); err != nil {
 		s.log.Error("publish report", "run_id", runID, "err", err)
 	} else if result.ValidateTerminal(true, true, rep.FindingsCount, rep.CoverageStatus) == nil {
-		return store.PutResultTx(ctx, tx, store.ResultRow{
+		if err := store.PutResultTx(ctx, tx, store.ResultRow{
 			InvocationID:   invocationID,
 			FactoryID:      factoryID,
 			Summary:        rep.Summary,
@@ -56,7 +57,17 @@ func (s *Server) publishFinishReport(ctx context.Context, tx pgx.Tx, runID, stat
 			ReportBody:     []byte(rep.Body),
 			ArtifactPaths:  rep.ArtifactPaths,
 			PublishedAt:    time.Now().UTC(),
-		})
+		}); err != nil {
+			return err
+		}
+		if s.bridge != nil {
+			if _, err := s.bridge.CommitTx(ctx, tx, outbound.BridgeNotice{
+				IdempotencyKey: "report:" + invocationID,
+				Summary:        rep.Summary,
+			}); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
