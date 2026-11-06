@@ -3,15 +3,15 @@
 
 CREATE TABLE IF NOT EXISTS bridge_outbox (
     idempotency_key text PRIMARY KEY,
-    origin text NOT NULL DEFAULT '',
-    binding text NOT NULL DEFAULT '',
+    notice_origin text NOT NULL DEFAULT '',
+    notice_binding text NOT NULL DEFAULT '',
     task_ref text NOT NULL DEFAULT '',
-    summary text NOT NULL DEFAULT '',
+    notice_summary text NOT NULL DEFAULT '',
     sent boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS bridge_bindings (
-    binding text PRIMARY KEY,
+    binding_key text PRIMARY KEY,
     created_at timestamptz NOT NULL DEFAULT now()
 );

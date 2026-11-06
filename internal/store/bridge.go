@@ -90,7 +90,7 @@ func commitBridge(ctx context.Context, db bridgeDB, n BridgeNotice, pol BridgePo
 	sent := pol.Enabled && pol.Authorized && !pol.Outage
 	tag, err := db.Exec(ctx, `
 		INSERT INTO bridge_outbox (
-		    idempotency_key, origin, binding, task_ref, summary, sent)
+		    idempotency_key, notice_origin, notice_binding, task_ref, notice_summary, sent)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (idempotency_key) DO NOTHING`,
 		n.IdempotencyKey, n.Origin, n.Binding, n.TaskRef, n.Summary, sent,
@@ -102,8 +102,8 @@ func commitBridge(ctx context.Context, db bridgeDB, n BridgeNotice, pol BridgePo
 		return BridgeOutcome{Suppressed: "replay", SendCount: count}, nil
 	}
 	if _, err := db.Exec(ctx, `
-		INSERT INTO bridge_bindings (binding) VALUES ($1)
-		ON CONFLICT (binding) DO NOTHING`, n.IdempotencyKey); err != nil {
+		INSERT INTO bridge_bindings (binding_key) VALUES ($1)
+		ON CONFLICT (binding_key) DO NOTHING`, n.IdempotencyKey); err != nil {
 		return BridgeOutcome{}, fmt.Errorf("store: bridge binding: %w", err)
 	}
 	if sent {
@@ -125,7 +125,7 @@ func bridgeEcho(ctx context.Context, db bridgeDB, n BridgeNotice, owner string) 
 		return false, nil
 	}
 	var found bool
-	if err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM bridge_bindings WHERE binding = $1)`, n.Binding).Scan(&found); err != nil {
+	if err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM bridge_bindings WHERE binding_key = $1)`, n.Binding).Scan(&found); err != nil {
 		return false, fmt.Errorf("store: bridge binding: %w", err)
 	}
 	return found, nil
