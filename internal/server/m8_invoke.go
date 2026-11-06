@@ -35,13 +35,12 @@ func (s *Server) AdmitInvocation(ctx context.Context, factoryUID string, princip
 	}
 	digest := invocation.Digest(req)
 	profileName := req.Profile.Name
-	if req.OverlapPolicy == "forbid" && req.ScheduleID != "" {
-		if busy, err := s.scheduleOverlapBusy(ctx, fac.ID, req.ScheduleID); err != nil {
-			return invocation.Receipt{}, err
-		} else if busy {
-			return s.recordSkippedOverlap(ctx, fac, principal, req, digest)
-		}
-	}
+	// Overlap forbid is decided inside InsertInvocation. That transaction
+	// locks the schedule row and a factory+schedule advisory lock, then
+	// inserts either this scan or a skipped_overlap receipt. Two first
+	// slots cannot both observe an idle schedule. The same occurrence key
+	// still replays the stored receipt. A skipped receipt does not start
+	// a run and does not count as a completed scan.
 	tree := s.snapshot().tree
 	if tree == nil {
 		return invocation.Receipt{}, fmt.Errorf("server: definition not loaded")
@@ -86,12 +85,17 @@ func (s *Server) AdmitInvocation(ctx context.Context, factoryUID string, princip
 		PinnedHeadSHA:       headSHA,
 		PinnedBaseSHA:       baseSHA,
 		NeutralStage:        true,
+		OverlapForbid:       req.OverlapPolicy == "forbid" && req.ScheduleID != "",
+		ScheduleID:          req.ScheduleID,
 	})
 	if err != nil {
 		return invocation.Receipt{}, err
 	}
 	if ins.Conflict {
 		return invocation.Receipt{}, invocation.ErrConflict
+	}
+	if rec, ok := s.recordSkippedOverlap(fac, ins.Row, !ins.Created); ok {
+		return rec, nil
 	}
 	if !ins.Created && (ins.Row.WorkItemID != "" || ins.Row.State != invocation.StateAccepted) {
 		return s.receiptFromRow(fac.Name, ins.Row, true), nil
@@ -141,7 +145,7 @@ func (s *Server) scheduleOverlapBusy(ctx context.Context, factoryID, scheduleID 
 		return false, err
 	}
 	if row.WorkItemID == "" {
-		return false, nil
+		return true, nil
 	}
 	item, err := s.store.GetWorkItem(ctx, row.WorkItemID)
 	if err != nil {
@@ -150,29 +154,22 @@ func (s *Server) scheduleOverlapBusy(ctx context.Context, factoryID, scheduleID 
 	return item.Status == store.WorkItemOpen, nil
 }
 
-func (s *Server) recordSkippedOverlap(ctx context.Context, fac store.Factory, principal invocation.Principal, req invocation.Request, digest string) (invocation.Receipt, error) {
-	principalJSON, _ := json.Marshal(principal)
-	ins, err := s.store.InsertInvocation(ctx, store.InsertInvocationParams{
-		FactoryID:           fac.ID,
-		ProfileName:         req.Profile.Name,
-		SourceOccurrenceKey: req.SourceOccurrenceKey,
-		CanonicalDigest:     digest,
-		DefinitionRevision:  req.DefinitionRevision,
-		DefinitionDigest:    s.snapshot().tree.Digest,
-		PrincipalJSON:       principalJSON,
-		State:               invocation.StateSkippedOverlap,
-		Outcome:             invocation.OutcomeSkippedOverlap,
-		CountsAsCompleted:   false,
-		Intent:              req.Intent,
-		Priority:            req.Priority,
-	})
-	if err != nil {
-		return invocation.Receipt{}, err
+func (s *Server) recordSkippedOverlap(fac store.Factory, row store.InvocationRow, replay bool) (invocation.Receipt, bool) {
+	// InsertInvocation locks the schedule, then inserts this row when another
+	// invocation for that schedule is still non-terminal. The skipped receipt
+	// keeps countsAsCompletedScan false and does not start a work item.
+	//
+	// A row is non-terminal when it was accepted and its work item is still
+	// open, or the work item has not been linked yet. A completed work item
+	// leaves the next fresh slot free. The same occurrence key still replays.
+	if row.State != invocation.StateSkippedOverlap {
+		return invocation.Receipt{}, false
 	}
-	if ins.Conflict {
-		return invocation.Receipt{}, invocation.ErrConflict
-	}
-	return s.receiptFromRow(fac.Name, ins.Row, !ins.Created), nil
+	// The lock is the schedule row plus a transaction advisory lock on the
+	// factory and schedule, so two first slots cannot both pass the check.
+	// Two concurrent fresh keys yield one accepted scan and one skipped
+	// receipt. A later slot after the work item is complete is accepted.
+	return s.receiptFromRow(fac.Name, row, replay), true
 }
 
 func (s *Server) receiptFromRow(factoryUID string, row store.InvocationRow, replay bool) invocation.Receipt {
@@ -203,6 +200,9 @@ func (s *Server) receiptFromRow(factoryUID string, row store.InvocationRow, repl
 	}
 }
 
+// repositoryAllowed reports whether the tree permits the repository.
+// An empty repository list allows every repository. A tree that names
+// repositories allows only those owner/name pairs.
 func repositoryAllowed(tree *definition.Tree, repo string) bool {
 	if tree == nil || len(tree.Factory.Repositories) == 0 {
 		return true

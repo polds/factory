@@ -278,8 +278,8 @@ type Agent struct {
 	MaxTurns           int
 	WorkerHost         string
 	// Requires names work products a completed run must record before it
-	// can succeed. The only value is pullRequest. Nil means the agent did
-	// not opt in.
+	// can succeed. The values are pullRequest and report. Nil means the
+	// agent did not opt in.
 	Requires []string
 	Body     string
 }

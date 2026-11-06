@@ -41,28 +41,29 @@ type InvocationRow struct {
 
 // InsertInvocationParams is the first-write payload for a new receipt.
 type InsertInvocationParams struct {
-	FactoryID           string
-	ProfileName         string
-	SourceOccurrenceKey string
-	CanonicalDigest     string
-	DefinitionRevision  string
-	DefinitionDigest    string
-	PolicyDigest        string
-	ProfileDigest       string
-	PrincipalJSON       json.RawMessage
-	State               string
-	Outcome             string
-	CountsAsCompleted   bool
-	Intent              string
-	Priority            string
-	CorrelationJSON     json.RawMessage
-	TargetRepository    string
-	TargetRef           string
-	TargetPullRequest   *int
-	PinnedHeadSHA       string
-	PinnedBaseSHA       string
-	WorkItemID          string
-	NeutralStage        bool
+	FactoryID                   string
+	ProfileName                 string
+	SourceOccurrenceKey         string
+	CanonicalDigest             string
+	DefinitionRevision          string
+	DefinitionDigest            string
+	PolicyDigest                string
+	ProfileDigest               string
+	PrincipalJSON               json.RawMessage
+	State                       string
+	Outcome                     string
+	CountsAsCompleted           bool
+	Intent                      string
+	Priority                    string
+	CorrelationJSON             json.RawMessage
+	TargetRepository            string
+	TargetRef                   string
+	TargetPullRequest           *int
+	PinnedHeadSHA               string
+	PinnedBaseSHA               string
+	WorkItemID                  string
+	NeutralStage, OverlapForbid bool
+	ScheduleID                  string
 }
 
 // InsertInvocationResult is either a fresh row or a replay/conflict outcome.
@@ -113,7 +114,9 @@ func (s *Store) InsertInvocation(ctx context.Context, p InsertInvocationParams) 
 		return InsertInvocationResult{}, fmt.Errorf("store: insert invocation: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
+	if err := prepareOverlap(ctx, tx, &p); err != nil {
+		return InsertInvocationResult{}, err
+	}
 	existing, err := scanInvocation(tx.QueryRow(ctx, `
 		SELECT `+invocationColumns+`
 		FROM invocations
@@ -125,7 +128,6 @@ func (s *Store) InsertInvocation(ctx context.Context, p InsertInvocationParams) 
 	if !errors.Is(err, ErrNotFound) {
 		return InsertInvocationResult{}, fmt.Errorf("store: insert invocation: %w", err)
 	}
-
 	id, err := NewID(PrefixInvocation)
 	if err != nil {
 		return InsertInvocationResult{}, err
@@ -240,4 +242,58 @@ func (s *Store) ActiveInvocationForSchedule(ctx context.Context, factoryID, sche
 		return InvocationRow{}, err
 	}
 	return row, nil
+}
+
+// prepareOverlap locks the schedule and marks the insert skipped when another
+// invocation for that schedule is non-terminal. The strings match
+// invocation.StateSkippedOverlap and invocation.OutcomeSkippedOverlap.
+// Same-key replay still wins: the caller looks up the occurrence row after this.
+func prepareOverlap(ctx context.Context, tx pgx.Tx, p *InsertInvocationParams) error {
+	if p == nil || !p.OverlapForbid || p.ScheduleID == "" {
+		return nil
+	}
+	lockKey := "overlap:" + p.FactoryID + ":" + p.ScheduleID
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
+		return fmt.Errorf("store: lock schedule overlap: %w", err)
+	}
+	var id string
+	err := tx.QueryRow(ctx, `
+		SELECT id FROM schedules WHERE id = $1 AND factory_id = $2 FOR UPDATE`,
+		p.ScheduleID, p.FactoryID).Scan(&id)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("store: lock schedule: %w", err)
+	}
+	busy, err := scheduleSlotBusy(ctx, tx, p.FactoryID, p.ScheduleID, p.SourceOccurrenceKey)
+	if err != nil {
+		return err
+	}
+	if !busy {
+		return nil
+	}
+	p.State = "skipped_overlap"
+	p.Outcome = "skipped_overlap"
+	p.CountsAsCompleted = false
+	p.WorkItemID = ""
+	return nil
+}
+
+func scheduleSlotBusy(ctx context.Context, tx pgx.Tx, factoryID, scheduleID, occurrenceKey string) (bool, error) {
+	prefix := "schedule:" + scheduleID + ":slot:"
+	var busy bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM invocations i
+			LEFT JOIN work_items w ON w.id = i.work_item_id
+			WHERE i.factory_id = $1
+			  AND i.source_occurrence_key LIKE $2 || '%'
+			  AND i.source_occurrence_key <> $3
+			  AND i.state = 'accepted'
+			  AND i.outcome = ''
+			  AND (i.work_item_id IS NULL OR w.status = $4)
+		)`, factoryID, prefix, occurrenceKey, WorkItemOpen).Scan(&busy)
+	if err != nil {
+		return false, fmt.Errorf("store: schedule overlap: %w", err)
+	}
+	return busy, nil
 }
