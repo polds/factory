@@ -243,6 +243,19 @@ func (s *Server) DecideApproval(ctx context.Context, id, decision, decidedBy, no
 	return toAPIApproval(approval), nil
 }
 
+// neutralStageComplete is true when this work item was admitted as a
+// single-stage invocation. Success finishes the item in place.
+func (s *Server) neutralStageComplete(ctx context.Context, item store.WorkItem) bool {
+	if s.store == nil || item.InvocationID == "" {
+		return false
+	}
+	row, err := s.store.GetInvocation(ctx, item.FactoryID, item.InvocationID)
+	if err != nil {
+		return false
+	}
+	return row.NeutralStage
+}
+
 // advanceAfterTerminal steps the work item that owns a run which just
 // reached a terminal status. Infra requeue does not call this.
 func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
@@ -274,6 +287,15 @@ func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
 		return
 	}
 	if item.Status != store.WorkItemOpen || item.Stage != run.Stage {
+		s.orchMu.Unlock()
+		return
+	}
+	if run.Status == store.StatusSucceeded && s.neutralStageComplete(ctx, item) {
+		if _, err := s.store.UpdateWorkItemStage(ctx, item.ID, item.Stage, store.WorkItemComplete); err != nil {
+			s.orchMu.Unlock()
+			s.log.Error("neutral stage", "work_item_id", item.ID, "err", err)
+			return
+		}
 		s.orchMu.Unlock()
 		return
 	}
@@ -2051,6 +2073,7 @@ func toAPITask(item store.WorkItem, gate string) api.Task {
 		CreatedBy:      item.CreatedBy,
 		ConversationID: item.ConversationID,
 		RevisionCount:  item.RevisionCount,
+		InvocationID:   item.InvocationID,
 		PendingGate:    gate,
 		CreatedAt:      item.CreatedAt,
 	}

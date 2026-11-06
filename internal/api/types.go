@@ -130,6 +130,7 @@ type Task struct {
 	CreatedBy      string `json:"created_by,omitempty"`
 	ConversationID string `json:"conversation_id,omitempty"`
 	RevisionCount  int    `json:"revision_count"`
+	InvocationID   string `json:"invocation_id,omitempty"`
 	// PendingGate is the gate blocking this work item. factoryctl task watch
 	// prints it. Empty when no gate is pending.
 	PendingGate string    `json:"pending_gate,omitempty"`

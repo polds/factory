@@ -500,4 +500,29 @@ describe("work items", () => {
     expect(screen.queryByText("Should the budget be global?")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Send answer" })).not.toBeInTheDocument();
   });
+
+  it("opens invoke form and admits an occurrence", async () => {
+    setAPIKey(demoAPIKey);
+    installBoard();
+    const user = userEvent.setup();
+    let posted = false;
+    server.use(
+      http.post(`/api/v1/factory/${factoryId}/invocations`, async ({ request }) => {
+        posted = true;
+        const body = (await request.json()) as { sourceOccurrenceKey: string };
+        expect(body.sourceOccurrenceKey).toBe("human:console:1");
+        return HttpResponse.json({
+          invocationId: "inv_console_1",
+          workItemId: "task_new",
+          links: { self: `/api/v1/factory/${factoryId}/invocations/inv_console_1` },
+        });
+      }),
+    );
+    await renderApp(`/f/${factoryId}/work-items`);
+    await user.click(await screen.findByRole("button", { name: "Invoke" }));
+    expect(await screen.findByLabelText("Occurrence key")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Occurrence key"), "human:console:1");
+    await user.click(screen.getByRole("button", { name: "Admit" }));
+    await waitFor(() => expect(posted).toBe(true));
+  });
 });

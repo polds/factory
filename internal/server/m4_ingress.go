@@ -131,7 +131,7 @@ func (s *Server) handleDelivery(ctx context.Context, d ingress.Delivery) (bool, 
 			return false, errors.New("server: automation engine is not configured")
 		}
 		s.integ.mu.Lock()
-		res, handleErr := s.integ.engine.Handle(ctx, ev)
+		res, handleErr := s.dispatchAutomationEvent(ctx, ev)
 		s.integ.mu.Unlock()
 		if handleErr != nil {
 			return false, handleErr

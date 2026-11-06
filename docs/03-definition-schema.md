@@ -254,6 +254,8 @@ triggers:
     schedule:
       name: weekday-mornings
       cron: "0 9 * * 1-5"           # 5-field, or @daily / @every 1h
+      occurrenceMode: legacy_continue # or fresh (per-slot invocation receipts)
+      overlapPolicy: forbid           # fresh schedules only; skipped_overlap when busy
 # execution overrides (same keys as an agent)
 model: auto
 runner: linux-standard

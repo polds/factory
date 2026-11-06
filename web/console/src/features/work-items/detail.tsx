@@ -139,6 +139,9 @@ export function WorkItemDetail({ factoryId, id }: { factoryId: string; id: strin
           })}
         </ol>
       </Panel>
+      {task.data.invocation_id ? (
+        <InvocationResultPanel factoryId={factoryId} invocationId={task.data.invocation_id} />
+      ) : null}
       {waiting === "awaiting_approval" && approval ? (
         <section
           className="callout"
@@ -281,6 +284,35 @@ function stepText(state: "done" | "current" | "pending"): string {
     default:
       return unexpected(state);
   }
+}
+
+function InvocationResultPanel({
+  factoryId,
+  invocationId,
+}: {
+  factoryId: string;
+  invocationId: string;
+}) {
+  const result = useQuery({
+    queryKey: ["invocation-result", factoryId, invocationId],
+    queryFn: () => client.getInvocationResult(factoryId, invocationId),
+    retry: false,
+  });
+  const selfLink = `/api/v1/factory/${factoryId}/invocations/${invocationId}`;
+  const resultLink = `${selfLink}/result`;
+  return (
+    <Panel title="Invocation result">
+      <p className="muted">
+        Receipt <span className="mono">{invocationId}</span>
+      </p>
+      <p>
+        <a href={selfLink}>Receipt API</a> · <a href={resultLink}>Result API</a>
+      </p>
+      {result.isPending ? <p>Loading result…</p> : null}
+      {result.isError ? <p role="alert">No published result yet.</p> : null}
+      {result.data ? <pre className="mono">{JSON.stringify(result.data, null, 2)}</pre> : null}
+    </Panel>
+  );
 }
 
 function StreamWatch({ factoryId }: { factoryId: string }) {

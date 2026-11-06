@@ -93,7 +93,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "GAP: the durable result row outlives workspace cleanup. archive stores events.ndjson and is not that row.",
+      "title": "The durable result row outlives workspace cleanup.",
       "document": {
         "reportSurvivesWorkspaceCleanup": true,
         "retention": "durable_result_row"
@@ -106,7 +106,7 @@
       "rejectBy": "formula",
       "code": "INV-RETENTION",
       "schema": "scenario",
-      "title": "GAP: the durable result row outlives workspace cleanup. archive stores events.ndjson and is not that row.",
+      "title": "The durable result row outlives workspace cleanup.",
       "document": {
         "reportSurvivesWorkspaceCleanup": false,
         "retention": "durable_result_row"

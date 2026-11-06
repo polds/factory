@@ -11,9 +11,9 @@
       "fieldPath": "POST /api/v1/factory/{uid}/invocations",
       "baseline": {
         "file": "internal/api/handler.go",
-        "start": 75,
-        "end": 86,
-        "anchor": "handleStartRun"
+        "start": 87,
+        "end": 89,
+        "anchor": "handleCreateInvocation"
       },
       "decision": "Add Invoke beside POST /tasks and POST /agent/run. The body has no principal and the profile is a name only.",
       "testOwner": "M8-I",
@@ -28,10 +28,10 @@
       "method": "store.InsertInvocation",
       "fieldPath": "factoryUid,profile,sourceOccurrenceKey,canonicalDigest",
       "baseline": {
-        "file": "internal/store/automation.go",
-        "start": 177,
-        "end": 181,
-        "anchor": "Continuation"
+        "file": "internal/store/invocations.go",
+        "start": 110,
+        "end": 145,
+        "anchor": "InsertInvocation"
       },
       "decision": "Same key and same canonical digest returns the original definition digest and target SHA. A reload or a moved ref does not rewrite the receipt.",
       "testOwner": "M8-I",
@@ -46,10 +46,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "canonicalDigest",
       "baseline": {
-        "file": "internal/store/automation.go",
-        "start": 177,
-        "end": 181,
-        "anchor": "Continuation"
+        "file": "internal/store/invocations.go",
+        "start": 174,
+        "end": 177,
+        "anchor": "CanonicalDigest"
       },
       "decision": "Same key and a different canonical digest returns 409 invocation_conflict and writes nothing.",
       "testOwner": "M8-I",
@@ -64,10 +64,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "intent",
       "baseline": {
-        "file": "internal/store/automation.go",
-        "start": 177,
-        "end": 181,
-        "anchor": "Continuation"
+        "file": "internal/store/invocations.go",
+        "start": 174,
+        "end": 177,
+        "anchor": "CanonicalDigest"
       },
       "decision": "Intent is part of the canonical body. new and wake on one occurrence key conflict.",
       "testOwner": "M8-I",
@@ -82,10 +82,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "priority",
       "baseline": {
-        "file": "internal/server/m4_cron.go",
-        "start": 61,
-        "end": 83,
-        "anchor": "EventCronFired"
+        "file": "internal/server/m8_admit.go",
+        "start": 185,
+        "end": 195,
+        "anchor": "batch"
       },
       "decision": "Human invoke is interactive. A schedule occurrence is batch.",
       "testOwner": "M8-I",
@@ -100,10 +100,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "correlation.threadRef",
       "baseline": {
-        "file": "internal/automation/engine.go",
-        "start": 170,
-        "end": 174,
-        "anchor": "ExternalRef"
+        "file": "internal/server/m8_admit.go",
+        "start": 77,
+        "end": 79,
+        "anchor": "ThreadRef"
       },
       "decision": "A thread ref correlates replies. It is not the occurrence identity.",
       "testOwner": "M8-I",
@@ -118,10 +118,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "target.pullRequest,sourceOccurrenceKey",
       "baseline": {
-        "file": "internal/server/m4_ingress.go",
-        "start": 295,
-        "end": 310,
-        "anchor": "pull_request_opened"
+        "file": "internal/server/m8_admit.go",
+        "start": 84,
+        "end": 86,
+        "anchor": "ingressOccurrenceKey"
       },
       "decision": "Two deliberate reviews of one pull request are two invocations.",
       "testOwner": "M8-I",
@@ -136,10 +136,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "targetPin.headSha,targetPin.baseSha,targetPin.refSha",
       "baseline": {
-        "file": "internal/server/m4_ingress.go",
-        "start": 295,
-        "end": 310,
-        "anchor": "pullHeadSHA"
+        "file": "internal/server/assign.go",
+        "start": 208,
+        "end": 212,
+        "anchor": "invocationCheckoutOverrides"
       },
       "decision": "Resolve the pull request head and base, or the ref, once. Checkout uses the pinned SHA, not the SHA written in the prompt.",
       "testOwner": "M8-I",
@@ -154,10 +154,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "target",
       "baseline": {
-        "file": "internal/server/backend.go",
-        "start": 104,
-        "end": 112,
-        "anchor": "req.Repo"
+        "file": "internal/server/m8_invoke.go",
+        "start": 300,
+        "end": 303,
+        "anchor": "target.Repository"
       },
       "decision": "A definition that does not require a repository mints no forge token.",
       "testOwner": "M8-I",
@@ -184,16 +184,18 @@
     },
     {
       "invariant": "INV-PROFILE",
-      "title": "GAP: a profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected and write nothing. WeakensApprovals compares approval gates and does not see a profile.",
+      "title": "A profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected and write nothing.",
       "consumer": "M8-I",
       "producer": "M8-I",
       "method": "invocation.Service.Invoke",
       "fieldPath": "profile.name",
       "baseline": {
-        "status": "gap",
-        "gap": "No profile admission check exists. WeakensApprovals compares approval gates."
+        "file": "internal/invocation/validate.go",
+        "start": 58,
+        "end": 64,
+        "anchor": "CodeProfileRejected"
       },
-      "decision": "GAP: a profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected and write nothing. WeakensApprovals compares approval gates and does not see a profile.",
+      "decision": "A profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected and write nothing.",
       "testOwner": "M8-I",
       "positive": "INV-PROFILE",
       "negative": "INV-PROFILE-BAD"
@@ -206,10 +208,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "target.repository",
       "baseline": {
-        "file": "internal/forge/github/token.go",
-        "start": 64,
-        "end": 70,
-        "anchor": "InstallationByRepo"
+        "file": "internal/server/m8_invoke.go",
+        "start": 206,
+        "end": 212,
+        "anchor": "repositoryAllowed"
       },
       "decision": "A repository outside the allowlist is repository_rejected and writes nothing.",
       "testOwner": "M8-I",
@@ -218,16 +220,18 @@
     },
     {
       "invariant": "INV-GRANT",
-      "title": "GAP: execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing. WeakensApprovals compares approval gates and is not that check.",
+      "title": "execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing.",
       "consumer": "M9-N,M10-A",
       "producer": "M8-I",
       "method": "invocation.Service.Invoke",
       "fieldPath": "grants.executeTarget",
       "baseline": {
-        "status": "gap",
-        "gap": "No execute_target grant check exists. WeakensApprovals compares approval gates."
+        "file": "internal/server/m8_invoke.go",
+        "start": 24,
+        "end": 26,
+        "anchor": "CodeGrantRejected"
       },
-      "decision": "GAP: execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing. WeakensApprovals compares approval gates and is not that check.",
+      "decision": "execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing.",
       "testOwner": "M8-I",
       "positive": "INV-GRANT",
       "negative": "INV-GRANT-BAD"
@@ -240,10 +244,10 @@
       "method": "scheduler.EmitOccurrence",
       "fieldPath": "scheduleId,dueSlot",
       "baseline": {
-        "file": "internal/server/m4_cron.go",
-        "start": 76,
-        "end": 82,
-        "anchor": "ev.DueAt"
+        "file": "internal/server/m8_admit.go",
+        "start": 184,
+        "end": 186,
+        "anchor": "ScheduleOccurrenceKey"
       },
       "decision": "The occurrence key is schedule id plus the due slot. Delivery time is not part of the key.",
       "testOwner": "M8-I",
@@ -258,10 +262,10 @@
       "method": "store.InsertInvocation",
       "fieldPath": "sourceOccurrenceKey",
       "baseline": {
-        "file": "internal/server/m4_cron.go",
-        "start": 76,
-        "end": 82,
-        "anchor": "DeliveryID"
+        "file": "internal/store/invocations.go",
+        "start": 109,
+        "end": 125,
+        "anchor": "InsertInvocation"
       },
       "decision": "Redelivery of the same due slot returns the original receipt and does not start another run.",
       "testOwner": "M8-I",
@@ -276,10 +280,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "overlapPolicy,outcome",
       "baseline": {
-        "file": "internal/store/automation.go",
-        "start": 177,
-        "end": 181,
-        "anchor": "Continuation"
+        "file": "internal/server/m8_invoke.go",
+        "start": 155,
+        "end": 168,
+        "anchor": "StateSkippedOverlap"
       },
       "decision": "Forbid overlap records skipped_overlap. It does not continue the busy item and it is not a completed scan.",
       "testOwner": "M8-I",
@@ -294,10 +298,10 @@
       "method": "scheduler.EmitOccurrence",
       "fieldPath": "dueSlot,workItemId",
       "baseline": {
-        "file": "internal/server/m4_cron.go",
-        "start": 76,
-        "end": 82,
-        "anchor": "ev.DueAt"
+        "file": "internal/server/m8_admit.go",
+        "start": 184,
+        "end": 186,
+        "anchor": "ScheduleOccurrenceKey"
       },
       "decision": "Two nonoverlapping due slots create two work items.",
       "testOwner": "M8-I",
@@ -313,8 +317,8 @@
       "fieldPath": "occurrenceMode",
       "baseline": {
         "file": "internal/automation/engine.go",
-        "start": 170,
-        "end": 180,
+        "start": 210,
+        "end": 214,
         "anchor": "OpenWorkItem"
       },
       "decision": "Legacy schedule and coding-thread continuation stays the default until occurrenceMode is fresh.",
@@ -330,10 +334,10 @@
       "method": "store.InsertInvocation",
       "fieldPath": "invocation_ledgers",
       "baseline": {
-        "file": "internal/server/m4_cron.go",
-        "start": 31,
-        "end": 40,
-        "anchor": "DueSchedules"
+        "file": "internal/store/migrations/0013_m8_invocations.sql",
+        "start": 30,
+        "end": 31,
+        "anchor": "invocations_factory_profile_occurrence_key"
       },
       "decision": "The due slot and receipt live in Postgres. Leader change and late delivery do not create a second receipt. A crash before commit inserts at most once.",
       "testOwner": "M8-I",
@@ -342,18 +346,18 @@
     },
     {
       "invariant": "INV-REPORT-ZERO",
-      "title": "checkRequires accepts only the pullRequest token and rejects every other token. A report product does not exist at this baseline. findingsCount 0 with coverage present is success once that product exists.",
+      "title": "checkRequires accepts pullRequest and report. findingsCount 0 with coverage present is success.",
       "consumer": "M10-A",
       "producer": "M8-I",
       "method": "result.PutReport",
       "fieldPath": "products.report.findingsCount",
       "baseline": {
-        "file": "internal/definition/validate.go",
-        "start": 96,
-        "end": 113,
-        "anchor": "checkRequires"
+        "file": "internal/result/publish.go",
+        "start": 144,
+        "end": 152,
+        "anchor": "ValidateTerminal"
       },
-      "decision": "checkRequires accepts only the pullRequest token and rejects every other token. A report product does not exist at this baseline. findingsCount 0 with coverage present is success once that product exists.",
+      "decision": "checkRequires accepts pullRequest and report. findingsCount 0 with coverage present is success.",
       "testOwner": "M8-I",
       "positive": "INV-REPORT-ZERO",
       "negative": "INV-REPORT-ZERO-BAD"
@@ -367,8 +371,8 @@
       "fieldPath": "target.pullRequest,products.outputPullRequest",
       "baseline": {
         "file": "internal/server/terminal.go",
-        "start": 601,
-        "end": 607,
+        "start": 686,
+        "end": 691,
         "anchor": "open_pr_url"
       },
       "decision": "The input pull request never satisfies requires pullRequest.",
@@ -385,8 +389,8 @@
       "fieldPath": "requires",
       "baseline": {
         "file": "internal/server/terminal.go",
-        "start": 499,
-        "end": 516,
+        "start": 520,
+        "end": 527,
         "anchor": "pullRequestMissing"
       },
       "decision": "Opt-in requires pullRequest still fails closed with no_work_product when no output pull request was recorded.",
@@ -457,9 +461,9 @@
       "fieldPath": "products.report",
       "baseline": {
         "file": "internal/server/terminal.go",
-        "start": 21,
-        "end": 22,
-        "anchor": "no_work_product"
+        "start": 610,
+        "end": 620,
+        "anchor": "reportMissing"
       },
       "decision": "Missing report when report is required fails with report_missing. It does not reuse no_work_product.",
       "testOwner": "M8-I",
@@ -474,10 +478,10 @@
       "method": "GET /invocations/{id}/result",
       "fieldPath": "links.result",
       "baseline": {
-        "file": "internal/api/handler.go",
-        "start": 138,
-        "end": 145,
-        "anchor": "withAPIKey"
+        "file": "internal/api/invocation.go",
+        "start": 56,
+        "end": 60,
+        "anchor": "StatusForbidden"
       },
       "decision": "An unauthorized result read is 403 with an empty body.",
       "testOwner": "M8-I",
@@ -486,48 +490,54 @@
     },
     {
       "invariant": "INV-PATH",
-      "title": "GAP: publication rejects absolute paths, backslashes, and .. segments. No result publisher exists. archive writes runs/{run}/{exec}/events.ndjson and does not check paths.",
+      "title": "Publication rejects absolute paths, backslashes, and .. segments.",
       "consumer": "M8-I",
       "producer": "M8-I",
       "method": "result.Publish",
       "fieldPath": "storageRef",
       "baseline": {
-        "status": "gap",
-        "gap": "No result-path publisher exists. terminal.go archive stores events.ndjson."
+        "file": "internal/result/publish.go",
+        "start": 38,
+        "end": 48,
+        "anchor": "ValidatePath"
       },
-      "decision": "GAP: publication rejects absolute paths, backslashes, and .. segments. No result publisher exists. archive writes runs/{run}/{exec}/events.ndjson and does not check paths.",
+      "decision": "Publication rejects absolute paths, backslashes, and .. segments.",
       "testOwner": "M8-I",
       "positive": "INV-PATH",
       "negative": "INV-PATH-BAD"
     },
     {
       "invariant": "INV-SYMLINK",
-      "title": "GAP: a lexically safe path that is a symlink is result_symlink_rejected. defsync.rejectSymlinks rejects symlinks in a definition tree, not a result path.",
+      "title": "A lexically safe path that is a symlink is result_symlink_rejected.",
       "consumer": "M8-I",
       "producer": "M8-I",
       "method": "result.Publish",
       "fieldPath": "storageRef",
       "baseline": {
-        "status": "gap",
-        "gap": "No result symlink check exists. defsync.rejectSymlinks covers definition trees."
+        "file": "internal/result/publish.go",
+        "start": 51,
+        "end": 66,
+        "anchor": "ValidateSymlink"
       },
-      "decision": "GAP: a lexically safe path that is a symlink is result_symlink_rejected. defsync.rejectSymlinks rejects symlinks in a definition tree, not a result path.",
+      "decision": "A lexically safe path that is a symlink is result_symlink_rejected.",
       "testOwner": "M8-I",
       "positive": "INV-SYMLINK",
       "negative": "INV-SYMLINK-BAD"
     },
     {
       "invariant": "INV-SIZE",
-      "title": "GAP: report bodies are at most 1 MiB and artifact files at most 16 MiB. archive stores the events transcript with no result size cap.",
+      "title": "Report bodies are at most 1 MiB and artifact files at most 16 MiB.",
       "consumer": "M8-I",
       "producer": "M8-I",
       "method": "result.Publish",
       "fieldPath": "reportMaxBytes,artifactMaxBytes",
       "baseline": {
-        "status": "gap",
-        "gap": "No 1 MiB report cap or 16 MiB artifact cap exists on a result publisher."
+        "file": "internal/result/publish.go",
+        "start": 68,
+        "end": 76,
+        "anchor": "maxReportBytes"
       },
-      "decision": "GAP: report bodies are at most 1 MiB and artifact files at most 16 MiB. archive stores the events transcript with no result size cap.",
+      "decision": "Report bodies are at most 1 MiB and artifact files at most 16 MiB.",
       "testOwner": "M8-I",
       "positive": "INV-SIZE",
       "negative": "INV-SIZE-BAD"
@@ -540,10 +550,10 @@
       "method": "result.Publish",
       "fieldPath": "secretScan",
       "baseline": {
-        "file": "internal/server/assign.go",
-        "start": 91,
-        "end": 94,
-        "anchor": "OPENAI_API_KEY"
+        "file": "internal/result/publish.go",
+        "start": 96,
+        "end": 104,
+        "anchor": "ScanSecrets"
       },
       "decision": "A secret scan hit is not published. Fixtures use the synthetic canary label only.",
       "testOwner": "M8-I",
@@ -559,8 +569,8 @@
       "fieldPath": "personas.reportsTo,policySnapshot",
       "baseline": {
         "file": "internal/definition/inherit.go",
-        "start": 66,
-        "end": 73,
+        "start": 76,
+        "end": 80,
         "anchor": "foreman"
       },
       "decision": "Native mode freezes one synthetic root, an acyclic connected depth-2 tree, direct-manager delegation, and no ancestor shortcut. It is not an Atum roster.",
@@ -577,8 +587,8 @@
       "fieldPath": "nativeHierarchy",
       "baseline": {
         "file": "internal/definition/types.go",
-        "start": 267,
-        "end": 270,
+        "start": 271,
+        "end": 274,
         "anchor": "SpawnableBy"
       },
       "decision": "Legacy factories may omit reportsTo. The field is not enforced unless native hierarchy is on.",
@@ -595,8 +605,8 @@
       "fieldPath": "maxDepth,absoluteMaxDepth",
       "baseline": {
         "file": "internal/definition/inherit.go",
-        "start": 66,
-        "end": 73,
+        "start": 76,
+        "end": 80,
         "anchor": "spawnableBy"
       },
       "decision": "The proof profile max depth is 2. The absolute max depth is 8. A deeper spawn is depth_exceeded.",
@@ -613,8 +623,8 @@
       "fieldPath": "spawnableBy,reportsTo",
       "baseline": {
         "file": "internal/definition/inherit.go",
-        "start": 66,
-        "end": 73,
+        "start": 76,
+        "end": 80,
         "anchor": "foreman"
       },
       "decision": "Direct-manager delegation requires the delegator to be reportsTo and listed in spawnableBy. spawnableBy stays parsed until M9-N enforces it.",
@@ -631,8 +641,8 @@
       "fieldPath": "delegationEdgeId,parentRunId",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 660,
-        "end": 682,
+        "start": 698,
+        "end": 702,
         "anchor": "ParentRunID"
       },
       "decision": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
@@ -685,8 +695,8 @@
       "fieldPath": "stageOwner",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 246,
-        "end": 255,
+        "start": 257,
+        "end": 261,
         "anchor": "advanceAfterTerminal"
       },
       "decision": "Only the stage owner advances the pipeline. A child with the same stage string does not.",
@@ -756,9 +766,9 @@
       "method": "store.ReadInbox",
       "fieldPath": "cursor",
       "baseline": {
-        "file": "internal/client/run_events.go",
-        "start": 50,
-        "end": 56,
+        "file": "internal/client/run_events_stream.go",
+        "start": 84,
+        "end": 86,
         "anchor": "Last-Event-ID"
       },
       "decision": "Read and long-poll do not acknowledge.",
@@ -828,9 +838,9 @@
       "method": "client.StreamRunEvents",
       "fieldPath": "Last-Event-ID",
       "baseline": {
-        "file": "internal/client/run_events.go",
-        "start": 50,
-        "end": 56,
+        "file": "internal/client/run_events_stream.go",
+        "start": 84,
+        "end": 86,
         "anchor": "Last-Event-ID"
       },
       "decision": "Per-run SSE cursors stay on run_events.seq.",
@@ -901,8 +911,8 @@
       "fieldPath": "workerCapacity",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 341,
-        "end": 346,
+        "start": 361,
+        "end": 365,
         "anchor": "onQuestion"
       },
       "decision": "Capacity 1 still finishes the tree because a manager parks and releases its slot before the child runs.",
@@ -919,8 +929,8 @@
       "fieldPath": "state,blockers",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 341,
-        "end": 346,
+        "start": 361,
+        "end": 365,
         "anchor": "onQuestion"
       },
       "decision": "Park is per task, records blockers, and releases worker capacity. Today's suspension is one per work item.",
@@ -991,8 +1001,8 @@
       "fieldPath": "executionId",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 341,
-        "end": 346,
+        "start": 361,
+        "end": 365,
         "anchor": "releases the worker"
       },
       "decision": "Park continuation creates a new execution of the same run.",
@@ -1009,8 +1019,8 @@
       "fieldPath": "status",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 246,
-        "end": 255,
+        "start": 257,
+        "end": 261,
         "anchor": "advanceAfterTerminal"
       },
       "decision": "A cancelled task does not auto-resurrect.",
@@ -1027,8 +1037,8 @@
       "fieldPath": "descendants",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 330,
-        "end": 338,
+        "start": 357,
+        "end": 361,
         "anchor": "cancelWorkItemRuns"
       },
       "decision": "Cancel and pause cascade over the chosen subtree and later spawn is spawn_denied.",
@@ -1063,8 +1073,8 @@
       "fieldPath": "failedChildPolicy",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 276,
-        "end": 279,
+        "start": 287,
+        "end": 291,
         "anchor": "item.Stage"
       },
       "decision": "fail_parent does not synthesize and does not spawn a replacement.",
@@ -1081,8 +1091,8 @@
       "fieldPath": "blockers",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 276,
-        "end": 279,
+        "start": 287,
+        "end": 291,
         "anchor": "item.Stage"
       },
       "decision": "Join does not synthesize while a required child is live or unresolved.",
@@ -1319,8 +1329,8 @@
       "fieldPath": "roster.dispatch",
       "baseline": {
         "file": "internal/definition/inherit.go",
-        "start": 66,
-        "end": 73,
+        "start": 76,
+        "end": 80,
         "anchor": "foreman"
       },
       "decision": "Specialists do not dispatch roster agents. Leads may, under policy.",
@@ -1524,16 +1534,18 @@
     },
     {
       "invariant": "INV-RETENTION",
-      "title": "GAP: the durable result row outlives workspace cleanup. archive stores events.ndjson and is not that row.",
+      "title": "The durable result row outlives workspace cleanup.",
       "consumer": "M10-A",
       "producer": "M8-I",
       "method": "result.PutReport",
       "fieldPath": "retention",
       "baseline": {
-        "status": "gap",
-        "gap": "No durable result row exists. archive stores the events transcript."
+        "file": "internal/store/results.go",
+        "start": 24,
+        "end": 35,
+        "anchor": "invocation_results"
       },
-      "decision": "GAP: the durable result row outlives workspace cleanup. archive stores events.ndjson and is not that row.",
+      "decision": "The durable result row outlives workspace cleanup.",
       "testOwner": "M8-I",
       "positive": "INV-RETENTION",
       "negative": "INV-RETENTION-BAD"

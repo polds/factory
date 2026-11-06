@@ -22,6 +22,7 @@ import (
 	"github.com/polds/factory/internal/events"
 	"github.com/polds/factory/internal/gateway"
 	"github.com/polds/factory/internal/inference"
+	"github.com/polds/factory/internal/invocation"
 	"github.com/polds/factory/internal/scheduler"
 	"github.com/polds/factory/internal/store"
 )
@@ -109,6 +110,9 @@ type Config struct {
 	ReviewerLogins      map[string]string
 	SamplerInterval     time.Duration
 	ImprovementInterval time.Duration
+
+	// ExecuteTargetGrant allows inputs.executeTarget on Invoke when true.
+	ExecuteTargetGrant bool
 }
 
 // Server is one factoryd process: REST, SSE, the worker gateway, and the
@@ -172,6 +176,9 @@ type Server struct {
 	// before claim leases it. Nil in production. A test commits a new prompt
 	// in that gap. The hook runs without leaseMu and must not call assignOne.
 	beforeClaim func(runID string)
+
+	// PinTarget resolves invocation target SHAs. Tests and offline drivers set it.
+	PinTarget func(context.Context, *invocation.Target) (headSHA, baseSHA string, err error)
 
 	// afterWorkerConnect runs at the end of WorkerConnected, after the
 	// gateway has registered the socket. Nil in production. A test waits
@@ -304,6 +311,7 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		schemas:      schemaHandler(cfg.SchemasPath),
 		scheduleGate: cfg.ScheduleGate,
 	}
+	s.PinTarget = s.pinTargetProduction
 	s.gw = gateway.New(s.authenticate, s, s.log)
 	if err := s.wire(); err != nil {
 		_ = s.Close()

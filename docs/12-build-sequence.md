@@ -394,6 +394,11 @@ step ran and left 0 refs, 0 branches and 0 PRs.
 
 ## M8 — Hardening (ongoing)
 
+Defined-factory invocation (`POST /factory/{uid}/invocations`) admits occurrences from
+the console, API, allowlisted ingress with `occurrenceMode: fresh`, and schedule slots
+keyed `schedule:{id}:slot:{due}`. Legacy `legacy_continue` schedules and coding-thread
+intake still use the automation engine path.
+
 Secret providers beyond the default; egress policy templates; per-run-VM backend via
 one-shot Direct; gVisor/Kata RuntimeClass support; audit export; computer use with Xvfb and
 screenshot artifacts; MCP endpoint; macOS Direct pool; multi-tenancy.

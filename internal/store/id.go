@@ -25,6 +25,7 @@ const (
 	PrefixImproveBatch   = "ibt_"
 	PrefixBenchmarkRun   = "bmr_"
 	PrefixBenchmarkTrial = "bmt_"
+	PrefixInvocation     = "inv_"
 )
 
 // NewID returns prefix plus 26 Crockford base32 characters encoding a 48-bit
@@ -58,7 +59,7 @@ func knownPrefix(prefix string) bool {
 		PrefixWorkItem, PrefixApproval, PrefixConversation,
 		PrefixDelivery, PrefixSchedule, PrefixInputRequest, PrefixWebhook,
 		PrefixSteer, PrefixAutomation, PrefixScorerResult, PrefixImproveBatch,
-		PrefixBenchmarkRun, PrefixBenchmarkTrial:
+		PrefixBenchmarkRun, PrefixBenchmarkTrial, PrefixInvocation:
 		return true
 	default:
 		return false

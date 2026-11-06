@@ -10,7 +10,6 @@ import (
 	"github.com/polds/factory/internal/automation"
 	"github.com/polds/factory/internal/cron"
 	"github.com/polds/factory/internal/definition"
-	"github.com/polds/factory/internal/event"
 	"github.com/polds/factory/internal/store"
 )
 
@@ -59,40 +58,7 @@ func (c cronDB) MarkFired(ctx context.Context, sch cron.Schedule) error {
 }
 
 func (c cronDB) Emit(ctx context.Context, ev cron.Event) error {
-	if ev.Event != cron.EventCronFired {
-		c.s.log.Info("schedule missed",
-			"factory", ev.FactoryID,
-			"automation", ev.Automation,
-			"name", ev.Name,
-			"due", ev.DueAt.UTC().Format(time.RFC3339Nano),
-		)
-		return nil
-	}
-	occurred := ev.OccurredAt
-	if occurred.IsZero() {
-		occurred = c.s.now()
-	}
-	canonical := event.Event{
-		Provider:   event.ProviderSchedule,
-		Event:      cron.EventCronFired,
-		DeliveryID: ev.ExternalRef + ":" + ev.DueAt.UTC().Format(time.RFC3339Nano),
-		OccurredAt: occurred.UTC(),
-		Actor:      event.Actor{ProviderID: "schedule", Handle: "schedule"},
-		Subject:    event.Subject{Kind: "schedule", Title: ev.Automation},
-		Thread:     event.Thread{Kind: event.ThreadSchedule, ExternalRef: ev.ExternalRef},
-	}
-	if c.s.integ.engine == nil {
-		return nil
-	}
-	c.s.integ.mu.Lock()
-	res, err := c.s.integ.engine.Handle(ctx, canonical)
-	c.s.integ.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	c.s.recordOutcomes(ctx, res)
-	c.s.notePaused(ctx, res)
-	return nil
+	return c.emitSchedule(ctx, ev)
 }
 
 func (c cronDB) ListSchedules(ctx context.Context) ([]cron.Schedule, error) {

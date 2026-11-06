@@ -159,6 +159,7 @@ triggers:
     schedule:
       name: weekly-dep-audit      # at most one schedule per automation may omit a name
       cron: "0 6 * * 1"           # 5-field UTC, or @daily / @hourly / @every 1h
+      occurrenceMode: legacy_continue
 ```
 
 Changing `cron` updates the schedule in place; changing `name` replaces it. Schedules are
