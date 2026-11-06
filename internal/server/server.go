@@ -311,6 +311,7 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		schemas:      schemaHandler(cfg.SchemasPath),
 		scheduleGate: cfg.ScheduleGate,
 	}
+	s.PinTarget = s.pinTargetProduction
 	s.gw = gateway.New(s.authenticate, s, s.log)
 	if err := s.wire(); err != nil {
 		_ = s.Close()

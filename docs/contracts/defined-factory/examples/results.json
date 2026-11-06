@@ -9,7 +9,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "checkRequires accepts only the pullRequest token and rejects every other token. A report product does not exist at this baseline. findingsCount 0 with coverage present is success once that product exists.",
+      "title": "checkRequires accepts pullRequest and report. findingsCount 0 with coverage present is success.",
       "document": {
         "countsAsSuccess": true,
         "coverageStatus": "present",
@@ -25,7 +25,7 @@
       "rejectBy": "formula",
       "code": "INV-REPORT-ZERO",
       "schema": "scenario",
-      "title": "checkRequires accepts only the pullRequest token and rejects every other token. A report product does not exist at this baseline. findingsCount 0 with coverage present is success once that product exists.",
+      "title": "checkRequires accepts pullRequest and report. findingsCount 0 with coverage present is success.",
       "document": {
         "countsAsSuccess": false,
         "coverageStatus": "present",

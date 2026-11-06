@@ -11,9 +11,9 @@
       "fieldPath": "POST /api/v1/factory/{uid}/invocations",
       "baseline": {
         "file": "internal/api/handler.go",
-        "start": 75,
-        "end": 86,
-        "anchor": "handleStartRun"
+        "start": 87,
+        "end": 89,
+        "anchor": "handleCreateInvocation"
       },
       "decision": "Add Invoke beside POST /tasks and POST /agent/run. The body has no principal and the profile is a name only.",
       "testOwner": "M8-I",
@@ -28,10 +28,10 @@
       "method": "store.InsertInvocation",
       "fieldPath": "factoryUid,profile,sourceOccurrenceKey,canonicalDigest",
       "baseline": {
-        "file": "internal/store/automation.go",
-        "start": 177,
-        "end": 181,
-        "anchor": "Continuation"
+        "file": "internal/store/invocations.go",
+        "start": 110,
+        "end": 145,
+        "anchor": "InsertInvocation"
       },
       "decision": "Same key and same canonical digest returns the original definition digest and target SHA. A reload or a moved ref does not rewrite the receipt.",
       "testOwner": "M8-I",
@@ -46,10 +46,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "canonicalDigest",
       "baseline": {
-        "file": "internal/store/automation.go",
-        "start": 177,
-        "end": 181,
-        "anchor": "Continuation"
+        "file": "internal/store/invocations.go",
+        "start": 174,
+        "end": 177,
+        "anchor": "CanonicalDigest"
       },
       "decision": "Same key and a different canonical digest returns 409 invocation_conflict and writes nothing.",
       "testOwner": "M8-I",
@@ -64,10 +64,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "intent",
       "baseline": {
-        "file": "internal/store/automation.go",
-        "start": 177,
-        "end": 181,
-        "anchor": "Continuation"
+        "file": "internal/store/invocations.go",
+        "start": 174,
+        "end": 177,
+        "anchor": "CanonicalDigest"
       },
       "decision": "Intent is part of the canonical body. new and wake on one occurrence key conflict.",
       "testOwner": "M8-I",
@@ -101,8 +101,8 @@
       "fieldPath": "correlation.threadRef",
       "baseline": {
         "file": "internal/server/m8_admit.go",
-        "start": 76,
-        "end": 80,
+        "start": 77,
+        "end": 79,
         "anchor": "ThreadRef"
       },
       "decision": "A thread ref correlates replies. It is not the occurrence identity.",
@@ -118,10 +118,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "target.pullRequest,sourceOccurrenceKey",
       "baseline": {
-        "file": "internal/server/m4_ingress.go",
-        "start": 295,
-        "end": 310,
-        "anchor": "pull_request_opened"
+        "file": "internal/server/m8_admit.go",
+        "start": 84,
+        "end": 86,
+        "anchor": "ingressOccurrenceKey"
       },
       "decision": "Two deliberate reviews of one pull request are two invocations.",
       "testOwner": "M8-I",
@@ -136,10 +136,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "targetPin.headSha,targetPin.baseSha,targetPin.refSha",
       "baseline": {
-        "file": "internal/server/m4_ingress.go",
-        "start": 295,
-        "end": 310,
-        "anchor": "pullHeadSHA"
+        "file": "internal/server/assign.go",
+        "start": 208,
+        "end": 212,
+        "anchor": "invocationCheckoutOverrides"
       },
       "decision": "Resolve the pull request head and base, or the ref, once. Checkout uses the pinned SHA, not the SHA written in the prompt.",
       "testOwner": "M8-I",
@@ -154,10 +154,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "target",
       "baseline": {
-        "file": "internal/server/backend.go",
-        "start": 104,
-        "end": 112,
-        "anchor": "req.Repo"
+        "file": "internal/server/m8_invoke.go",
+        "start": 300,
+        "end": 303,
+        "anchor": "target.Repository"
       },
       "decision": "A definition that does not require a repository mints no forge token.",
       "testOwner": "M8-I",
@@ -208,10 +208,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "target.repository",
       "baseline": {
-        "file": "internal/forge/github/token.go",
-        "start": 64,
-        "end": 70,
-        "anchor": "InstallationByRepo"
+        "file": "internal/server/m8_invoke.go",
+        "start": 206,
+        "end": 212,
+        "anchor": "repositoryAllowed"
       },
       "decision": "A repository outside the allowlist is repository_rejected and writes nothing.",
       "testOwner": "M8-I",
@@ -245,8 +245,8 @@
       "fieldPath": "scheduleId,dueSlot",
       "baseline": {
         "file": "internal/server/m8_admit.go",
-        "start": 185,
-        "end": 187,
+        "start": 184,
+        "end": 186,
         "anchor": "ScheduleOccurrenceKey"
       },
       "decision": "The occurrence key is schedule id plus the due slot. Delivery time is not part of the key.",
@@ -280,10 +280,10 @@
       "method": "invocation.Service.Invoke",
       "fieldPath": "overlapPolicy,outcome",
       "baseline": {
-        "file": "internal/store/automation.go",
-        "start": 177,
-        "end": 181,
-        "anchor": "Continuation"
+        "file": "internal/server/m8_invoke.go",
+        "start": 155,
+        "end": 168,
+        "anchor": "StateSkippedOverlap"
       },
       "decision": "Forbid overlap records skipped_overlap. It does not continue the busy item and it is not a completed scan.",
       "testOwner": "M8-I",
@@ -299,8 +299,8 @@
       "fieldPath": "dueSlot,workItemId",
       "baseline": {
         "file": "internal/server/m8_admit.go",
-        "start": 185,
-        "end": 187,
+        "start": 184,
+        "end": 186,
         "anchor": "ScheduleOccurrenceKey"
       },
       "decision": "Two nonoverlapping due slots create two work items.",
@@ -317,8 +317,8 @@
       "fieldPath": "occurrenceMode",
       "baseline": {
         "file": "internal/automation/engine.go",
-        "start": 198,
-        "end": 210,
+        "start": 210,
+        "end": 214,
         "anchor": "OpenWorkItem"
       },
       "decision": "Legacy schedule and coding-thread continuation stays the default until occurrenceMode is fresh.",
@@ -334,10 +334,10 @@
       "method": "store.InsertInvocation",
       "fieldPath": "invocation_ledgers",
       "baseline": {
-        "file": "internal/server/m4_cron.go",
-        "start": 31,
-        "end": 40,
-        "anchor": "DueSchedules"
+        "file": "internal/store/migrations/0013_m8_invocations.sql",
+        "start": 30,
+        "end": 31,
+        "anchor": "invocations_factory_profile_occurrence_key"
       },
       "decision": "The due slot and receipt live in Postgres. Leader change and late delivery do not create a second receipt. A crash before commit inserts at most once.",
       "testOwner": "M8-I",
@@ -346,18 +346,18 @@
     },
     {
       "invariant": "INV-REPORT-ZERO",
-      "title": "checkRequires accepts only the pullRequest token and rejects every other token. A report product does not exist at this baseline. findingsCount 0 with coverage present is success once that product exists.",
+      "title": "checkRequires accepts pullRequest and report. findingsCount 0 with coverage present is success.",
       "consumer": "M10-A",
       "producer": "M8-I",
       "method": "result.PutReport",
       "fieldPath": "products.report.findingsCount",
       "baseline": {
-        "file": "internal/definition/validate.go",
-        "start": 96,
-        "end": 113,
-        "anchor": "checkRequires"
+        "file": "internal/result/publish.go",
+        "start": 144,
+        "end": 152,
+        "anchor": "ValidateTerminal"
       },
-      "decision": "checkRequires accepts only the pullRequest token and rejects every other token. A report product does not exist at this baseline. findingsCount 0 with coverage present is success once that product exists.",
+      "decision": "checkRequires accepts pullRequest and report. findingsCount 0 with coverage present is success.",
       "testOwner": "M8-I",
       "positive": "INV-REPORT-ZERO",
       "negative": "INV-REPORT-ZERO-BAD"
@@ -461,9 +461,9 @@
       "fieldPath": "products.report",
       "baseline": {
         "file": "internal/server/terminal.go",
-        "start": 21,
-        "end": 22,
-        "anchor": "no_work_product"
+        "start": 610,
+        "end": 620,
+        "anchor": "reportMissing"
       },
       "decision": "Missing report when report is required fails with report_missing. It does not reuse no_work_product.",
       "testOwner": "M8-I",
@@ -478,10 +478,10 @@
       "method": "GET /invocations/{id}/result",
       "fieldPath": "links.result",
       "baseline": {
-        "file": "internal/api/handler.go",
-        "start": 138,
-        "end": 145,
-        "anchor": "withAPIKey"
+        "file": "internal/api/invocation.go",
+        "start": 56,
+        "end": 60,
+        "anchor": "StatusForbidden"
       },
       "decision": "An unauthorized result read is 403 with an empty body.",
       "testOwner": "M8-I",
@@ -550,10 +550,10 @@
       "method": "result.Publish",
       "fieldPath": "secretScan",
       "baseline": {
-        "file": "internal/server/assign.go",
-        "start": 91,
-        "end": 94,
-        "anchor": "OPENAI_API_KEY"
+        "file": "internal/result/publish.go",
+        "start": 96,
+        "end": 104,
+        "anchor": "ScanSecrets"
       },
       "decision": "A secret scan hit is not published. Fixtures use the synthetic canary label only.",
       "testOwner": "M8-I",
@@ -641,8 +641,8 @@
       "fieldPath": "delegationEdgeId,parentRunId",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 660,
-        "end": 682,
+        "start": 698,
+        "end": 702,
         "anchor": "ParentRunID"
       },
       "decision": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
@@ -695,8 +695,8 @@
       "fieldPath": "stageOwner",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 246,
-        "end": 255,
+        "start": 257,
+        "end": 261,
         "anchor": "advanceAfterTerminal"
       },
       "decision": "Only the stage owner advances the pipeline. A child with the same stage string does not.",
@@ -911,8 +911,8 @@
       "fieldPath": "workerCapacity",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 341,
-        "end": 346,
+        "start": 361,
+        "end": 365,
         "anchor": "onQuestion"
       },
       "decision": "Capacity 1 still finishes the tree because a manager parks and releases its slot before the child runs.",
@@ -929,8 +929,8 @@
       "fieldPath": "state,blockers",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 341,
-        "end": 346,
+        "start": 361,
+        "end": 365,
         "anchor": "onQuestion"
       },
       "decision": "Park is per task, records blockers, and releases worker capacity. Today's suspension is one per work item.",
@@ -1001,8 +1001,8 @@
       "fieldPath": "executionId",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 341,
-        "end": 346,
+        "start": 361,
+        "end": 365,
         "anchor": "releases the worker"
       },
       "decision": "Park continuation creates a new execution of the same run.",
@@ -1019,8 +1019,8 @@
       "fieldPath": "status",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 246,
-        "end": 255,
+        "start": 257,
+        "end": 261,
         "anchor": "advanceAfterTerminal"
       },
       "decision": "A cancelled task does not auto-resurrect.",
@@ -1037,8 +1037,8 @@
       "fieldPath": "descendants",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 330,
-        "end": 338,
+        "start": 357,
+        "end": 361,
         "anchor": "cancelWorkItemRuns"
       },
       "decision": "Cancel and pause cascade over the chosen subtree and later spawn is spawn_denied.",
@@ -1073,8 +1073,8 @@
       "fieldPath": "failedChildPolicy",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 276,
-        "end": 279,
+        "start": 287,
+        "end": 291,
         "anchor": "item.Stage"
       },
       "decision": "fail_parent does not synthesize and does not spawn a replacement.",
@@ -1091,8 +1091,8 @@
       "fieldPath": "blockers",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 276,
-        "end": 279,
+        "start": 287,
+        "end": 291,
         "anchor": "item.Stage"
       },
       "decision": "Join does not synthesize while a required child is live or unresolved.",

@@ -3,7 +3,7 @@ package definition
 import "strings"
 
 // RequiresPullRequest reports whether the agent opted into a recorded
-// pull request. Other work products are rejected at load.
+// pull request. requires: [report] is a separate opt-in.
 func RequiresPullRequest(agent Agent) bool {
 	for _, item := range agent.Requires {
 		if item == RequirePullRequest {

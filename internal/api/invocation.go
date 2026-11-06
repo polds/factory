@@ -53,6 +53,14 @@ func (h *handler) handleGetInvocation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, receipt)
 }
 
+func (h *handler) handleGetInvocationResultAuth(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	h.handleGetInvocationResult(w, r)
+}
+
 func (h *handler) handleGetInvocationResult(w http.ResponseWriter, r *http.Request) {
 	ib, ok := h.requireInvocation(w)
 	if !ok {

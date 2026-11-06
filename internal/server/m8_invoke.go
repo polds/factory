@@ -93,8 +93,11 @@ func (s *Server) AdmitInvocation(ctx context.Context, factoryUID string, princip
 	if ins.Conflict {
 		return invocation.Receipt{}, invocation.ErrConflict
 	}
-	if !ins.Created {
+	if !ins.Created && (ins.Row.WorkItemID != "" || ins.Row.State != invocation.StateAccepted) {
 		return s.receiptFromRow(fac.Name, ins.Row, true), nil
+	}
+	if ins.Row.WorkItemID != "" {
+		return s.receiptFromRow(fac.Name, ins.Row, !ins.Created), nil
 	}
 	item, err := s.store.CreateWorkItem(ctx, store.NewWorkItem{
 		FactoryID: fac.ID,
@@ -116,11 +119,16 @@ func (s *Server) AdmitInvocation(ctx context.Context, factoryUID string, princip
 	if _, err := s.startStageRun(ctx, item, stage, agentName, ""); err != nil {
 		return invocation.Receipt{}, err
 	}
-	return s.receiptFromRow(fac.Name, ins.Row, false), nil
+	return s.receiptFromRow(fac.Name, ins.Row, !ins.Created), nil
 }
 
 func (s *Server) rejectProfileInjection(req invocation.Request) error {
-	// Budget/code/credentials/grants belong in profile_rejected, not input_invalid.
+	for k := range req.Inputs {
+		switch k {
+		case "budgetCeilingCents", "credentials", "grants", "code":
+			return invocation.Reject{Code: invocation.CodeProfileRejected, Status: 403}
+		}
+	}
 	return nil
 }
 
@@ -257,9 +265,6 @@ func invocationSource(principal invocation.Principal) string {
 }
 
 func invocationTitle(req invocation.Request) string {
-	if req.Target != nil && req.Target.Repository != "" {
-		return "Invocation " + req.SourceOccurrenceKey
-	}
 	return "Invocation " + req.SourceOccurrenceKey
 }
 
@@ -299,13 +304,25 @@ func (s *Server) resolveTargetSHAs(ctx context.Context, target *invocation.Targe
 	if s.PinTarget != nil {
 		return s.PinTarget(ctx, target)
 	}
-	if target.Ref != "" {
+	return s.pinTargetProduction(ctx, target)
+}
+
+// pinTargetProduction resolves a pull request or ref to commit SHAs once.
+// It does not mint a forge token when the request has no repository.
+func (s *Server) pinTargetProduction(ctx context.Context, target *invocation.Target) (head, base string, err error) {
+	if target == nil || target.Repository == "" {
+		return "", "", nil
+	}
+	if isCommitSHA(target.Ref) {
 		return target.Ref, "", nil
 	}
 	if target.PullRequest > 0 {
-		return fmt.Sprintf("pr%d-head", target.PullRequest), fmt.Sprintf("pr%d-base", target.PullRequest), nil
+		return s.pinGitHubPull(ctx, target.Repository, target.PullRequest)
 	}
-	return "", "", nil
+	if target.Ref != "" {
+		return s.pinGitHubRef(ctx, target.Repository, target.Ref)
+	}
+	return "", "", fmt.Errorf("server: target %s has no ref or pull request to pin", target.Repository)
 }
 
 // PinTarget overrides target resolution in tests and offline drivers.

@@ -9,7 +9,7 @@ import (
 	"github.com/polds/factory/internal/result"
 )
 
-func TestINXPathRejectsAbsolute(t *testing.T) {
+func TestINVPathRejectsAbsolute(t *testing.T) {
 	if err := result.ValidatePath("/etc/passwd"); err == nil {
 		t.Fatal("expected reject")
 	}
@@ -49,6 +49,14 @@ func TestINVSecretPubRejectsCanary(t *testing.T) {
 	err := result.ScanSecrets([]byte("hello CANARY-SYNTHETIC"))
 	var pub result.PublishError
 	if !errorsAs(err, &pub) || pub.Code != result.CodeSecretRejected {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestPublishRejectsEmptyRootWithArtifacts(t *testing.T) {
+	err := result.Publish(true, "", result.Report{ArtifactPaths: []string{"report.md"}})
+	var pub result.PublishError
+	if !errorsAs(err, &pub) || pub.Code != result.CodePathRejected {
 		t.Fatalf("err %v", err)
 	}
 }

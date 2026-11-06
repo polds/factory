@@ -86,7 +86,7 @@ func (h *handler) route() {
 	m.HandleFunc("POST /api/v1/factory/{uid}/tasks", h.withAPIKey(h.handleCreateTask))
 	m.HandleFunc("POST /api/v1/factory/{uid}/invocations", h.withAPIKey(h.handleCreateInvocation))
 	m.HandleFunc("GET /api/v1/factory/{uid}/invocations/{invocationID}", h.withAPIKey(h.handleGetInvocation))
-	m.HandleFunc("GET /api/v1/factory/{uid}/invocations/{invocationID}/result", h.withAPIKey(h.handleGetInvocationResult))
+	m.HandleFunc("GET /api/v1/factory/{uid}/invocations/{invocationID}/result", h.handleGetInvocationResultAuth)
 	m.HandleFunc("GET /api/v1/factory/{uid}/tasks/{taskID}", h.withAPIKey(h.handleGetTask))
 	m.HandleFunc("POST /api/v1/factory/{uid}/tasks/{taskID}/cancel", h.withAPIKey(h.handleCancelTask))
 	m.HandleFunc("GET /api/v1/factory/{uid}/approvals", h.withAPIKey(h.handleListApprovals))

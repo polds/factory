@@ -120,13 +120,7 @@ func (s *Store) InsertInvocation(ctx context.Context, p InsertInvocationParams) 
 		WHERE factory_id = $1 AND profile_name = $2 AND source_occurrence_key = $3
 		FOR UPDATE`, p.FactoryID, p.ProfileName, p.SourceOccurrenceKey))
 	if err == nil {
-		if existing.CanonicalDigest != p.CanonicalDigest {
-			return InsertInvocationResult{Conflict: true}, nil
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return InsertInvocationResult{}, err
-		}
-		return InsertInvocationResult{Row: existing, Created: false}, nil
+		return finishInvocationInsert(ctx, tx, existing, p)
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return InsertInvocationResult{}, fmt.Errorf("store: insert invocation: %w", err)
@@ -144,6 +138,7 @@ func (s *Store) InsertInvocation(ctx context.Context, p InsertInvocationParams) 
 		    intent, priority, correlation, target_repository, target_ref,
 		    target_pull_request, pinned_head_sha, pinned_base_sha, neutral_stage)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+		ON CONFLICT ON CONSTRAINT invocations_factory_profile_occurrence_key DO NOTHING
 		RETURNING `+invocationColumns,
 		id, p.FactoryID, nullableText(p.WorkItemID), p.ProfileName, p.SourceOccurrenceKey,
 		p.CanonicalDigest, p.DefinitionRevision, p.DefinitionDigest, p.PolicyDigest,
@@ -151,6 +146,17 @@ func (s *Store) InsertInvocation(ctx context.Context, p InsertInvocationParams) 
 		p.Intent, p.Priority, nullJSON(p.CorrelationJSON), p.TargetRepository, p.TargetRef,
 		p.TargetPullRequest, p.PinnedHeadSHA, p.PinnedBaseSHA, p.NeutralStage,
 	))
+	if errors.Is(err, ErrNotFound) {
+		existing, err = scanInvocation(tx.QueryRow(ctx, `
+			SELECT `+invocationColumns+`
+			FROM invocations
+			WHERE factory_id = $1 AND profile_name = $2 AND source_occurrence_key = $3
+			FOR UPDATE`, p.FactoryID, p.ProfileName, p.SourceOccurrenceKey))
+		if err != nil {
+			return InsertInvocationResult{}, fmt.Errorf("store: insert invocation: %w", err)
+		}
+		return finishInvocationInsert(ctx, tx, existing, p)
+	}
 	if err != nil {
 		return InsertInvocationResult{}, fmt.Errorf("store: insert invocation: %w", err)
 	}
@@ -163,6 +169,16 @@ func (s *Store) InsertInvocation(ctx context.Context, p InsertInvocationParams) 
 		return InsertInvocationResult{}, err
 	}
 	return InsertInvocationResult{Row: row, Created: true}, nil
+}
+
+func finishInvocationInsert(ctx context.Context, tx pgx.Tx, existing InvocationRow, p InsertInvocationParams) (InsertInvocationResult, error) {
+	if existing.CanonicalDigest != p.CanonicalDigest {
+		return InsertInvocationResult{Conflict: true}, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return InsertInvocationResult{}, err
+	}
+	return InsertInvocationResult{Row: existing, Created: false}, nil
 }
 
 func nullJSON(raw json.RawMessage) any {

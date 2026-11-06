@@ -37,29 +37,28 @@ func (s *Server) dispatchAutomationEvent(ctx context.Context, ev event.Event) (a
 	if err != nil {
 		return automation.Result{}, err
 	}
-	if preview.Continuation {
-		return eng.Handle(ctx, ev)
+	if auto, ok := freshFromList(preview.Automations()); ok {
+		if err := s.admitIngressInvocation(ctx, ev, auto); err != nil {
+			return automation.Result{}, err
+		}
+		return automation.Result{
+			Matched: true,
+			Outcomes: []automation.Outcome{{
+				Kind:       "invocation",
+				Automation: auto.Name,
+			}},
+		}, nil
 	}
-	if len(preview.Matches) == 0 {
-		return eng.Handle(ctx, ev)
+	return eng.Handle(ctx, ev)
+}
+
+func freshFromList(autos []definition.Automation) (definition.Automation, bool) {
+	for _, auto := range autos {
+		if normalizeOccurrenceMode(auto.OccurrenceMode) == occurrenceFresh {
+			return auto, true
+		}
 	}
-	auto := preview.FirstAutomation()
-	if auto.Name == "" {
-		return eng.Handle(ctx, ev)
-	}
-	if normalizeOccurrenceMode(auto.OccurrenceMode) != occurrenceFresh {
-		return eng.Handle(ctx, ev)
-	}
-	if err := s.admitIngressInvocation(ctx, ev, auto); err != nil {
-		return automation.Result{}, err
-	}
-	return automation.Result{
-		Matched: true,
-		Outcomes: []automation.Outcome{{
-			Kind:       "invocation",
-			Automation: auto.Name,
-		}},
-	}, nil
+	return definition.Automation{}, false
 }
 
 func (s *Server) admitIngressInvocation(ctx context.Context, ev event.Event, auto definition.Automation) error {

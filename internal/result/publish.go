@@ -104,9 +104,13 @@ func ScanSecrets(body []byte) error {
 }
 
 // Publish validates authorization, path, symlink, size, and secret scan.
+// Artifact paths require a workspace root; an empty root fails closed.
 func Publish(authorized bool, root string, rep Report) error {
 	if !authorized {
 		return PublishError{Code: CodeUnauthorized}
+	}
+	if len(rep.ArtifactPaths) > 0 && strings.TrimSpace(root) == "" {
+		return PublishError{Code: CodePathRejected}
 	}
 	for _, rel := range rep.ArtifactPaths {
 		if err := ValidatePath(rel); err != nil {
@@ -115,8 +119,19 @@ func Publish(authorized bool, root string, rep Report) error {
 		if err := ValidateSymlink(root, rel); err != nil {
 			return err
 		}
+		full := filepath.Join(root, rel)
+		body, err := os.ReadFile(full)
+		if err != nil {
+			return PublishError{Code: CodePathRejected}
+		}
+		if len(body) > maxArtifactBytes {
+			return PublishError{Code: CodeOversize}
+		}
+		if err := ScanSecrets(body); err != nil {
+			return err
+		}
 	}
-	if err := ValidateSize(rep.Body, rep.ArtifactPaths, root); err != nil {
+	if err := ValidateSize(rep.Body, nil, root); err != nil {
 		return err
 	}
 	if err := ScanSecrets(rep.Body); err != nil {

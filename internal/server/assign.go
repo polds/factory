@@ -205,6 +205,10 @@ func (s *Server) assignment(ctx context.Context, run store.Run, exec store.Execu
 	if prepErr == nil && len(prepared.overrides) > 0 {
 		asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides = prepared.overrides
 	}
+	if pinned, pinErr := s.invocationCheckoutOverrides(ctx, run.WorkItemID); pinErr == nil && len(pinned) > 0 {
+		asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides = append(
+			asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides, pinned...)
+	}
 	return asg
 }
 

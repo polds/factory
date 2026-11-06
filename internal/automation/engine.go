@@ -108,15 +108,14 @@ func (e *Engine) Preview(ctx context.Context, ev event.Event) (Preview, error) {
 		return out, errors.New("automation: engine is not configured")
 	}
 	tree := e.Tree()
+	out.Matches = e.matching(tree, ev)
 	if shape := replyShape(tree, ev); shape != replyNone {
 		if _, err := e.Store.GetExternalRef(ctx, ev.Provider, ev.Thread.ExternalRef); err == nil {
 			out.Continuation = true
-			return out, nil
 		} else if !errors.Is(err, ErrNotFound) {
 			return out, fmt.Errorf("automation: external ref: %w", err)
 		}
 	}
-	out.Matches = e.matching(tree, ev)
 	return out, nil
 }
 
@@ -132,6 +131,15 @@ func (p Preview) FirstAutomation() definition.Automation {
 		return definition.Automation{}
 	}
 	return p.Matches[0].auto
+}
+
+// Automations returns the matched automation specs.
+func (p Preview) Automations() []definition.Automation {
+	out := make([]definition.Automation, 0, len(p.Matches))
+	for _, match := range p.Matches {
+		out = append(out, match.auto)
+	}
+	return out
 }
 
 func (e *Engine) matching(tree definition.Tree, ev event.Event) []compiled {

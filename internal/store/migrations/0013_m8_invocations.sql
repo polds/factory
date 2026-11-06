@@ -15,9 +15,12 @@ CREATE TABLE IF NOT EXISTS invocations (
     state text NOT NULL,
     outcome text NOT NULL DEFAULT '',
     counts_as_completed_scan boolean NOT NULL DEFAULT true,
+    -- noqa: disable=RF04
     intent text NOT NULL,
     priority text NOT NULL,
+    -- noqa: disable=RF04
     correlation jsonb,
+    -- noqa: enable=RF04
     target_repository text NOT NULL DEFAULT '',
     target_ref text NOT NULL DEFAULT '',
     target_pull_request integer,
@@ -26,15 +29,19 @@ CREATE TABLE IF NOT EXISTS invocations (
     neutral_stage boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT invocations_factory_profile_occurrence_key
-        UNIQUE (factory_id, profile_name, source_occurrence_key)
+    UNIQUE (factory_id, profile_name, source_occurrence_key)
 );
 
-CREATE INDEX IF NOT EXISTS invocations_work_item_idx ON invocations (work_item_id);
+CREATE INDEX IF NOT EXISTS invocations_work_item_idx
+ON invocations (work_item_id);
 
 CREATE TABLE IF NOT EXISTS invocation_results (
-    invocation_id text PRIMARY KEY REFERENCES invocations (id) ON DELETE CASCADE,
+    invocation_id text PRIMARY KEY
+    REFERENCES invocations (id) ON DELETE CASCADE,
     factory_id text NOT NULL REFERENCES factories (id) ON DELETE CASCADE,
+    -- noqa: disable=RF04
     summary text NOT NULL DEFAULT '',
+    -- noqa: enable=RF04
     coverage_status text NOT NULL DEFAULT '',
     findings_count integer NOT NULL DEFAULT 0,
     report_body bytea,
@@ -42,4 +49,6 @@ CREATE TABLE IF NOT EXISTS invocation_results (
     published_at timestamptz NOT NULL DEFAULT now()
 );
 
-ALTER TABLE work_items ADD COLUMN IF NOT EXISTS invocation_id text REFERENCES invocations (id) ON DELETE SET NULL;
+ALTER TABLE work_items
+ADD COLUMN IF NOT EXISTS invocation_id text
+REFERENCES invocations (id) ON DELETE SET NULL;

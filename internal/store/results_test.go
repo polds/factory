@@ -43,6 +43,26 @@ func TestINVRetentionResultSurvivesWithoutWorkItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	item, err := h.st.CreateWorkItem(ctx, store.NewWorkItem{
+		FactoryID: factoryID,
+		Source:    store.SourceAPI,
+		Title:     "retention",
+		Stage:     store.StageTriage,
+		Status:    store.WorkItemOpen,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.LinkInvocationWorkItem(ctx, ins.Row.ID, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.raw.Exec(ctx, `DELETE FROM work_items WHERE id = $1`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	row, err = h.st.GetResult(ctx, factoryID, ins.Row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if row.FindingsCount != 0 || row.Summary != "ok" {
 		t.Fatalf("row %+v", row)
 	}
