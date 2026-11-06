@@ -250,30 +250,47 @@ func (s *Store) AckDelivery(ctx context.Context, deliveryID, principal, taskID s
 
 // Redeliver inserts a new delivery id for the same message. A dropped read
 // leaves the previous delivery unacked. This does not apply or acknowledge.
-func (s *Store) Redeliver(ctx context.Context, messageID string) (InboxDelivery, error) {
-	if messageID == "" {
-		return InboxDelivery{}, fmt.Errorf("%w: message id", ErrInputInvalid)
-	}
-	id, err := NewID(PrefixNativeDelivery)
-	if err != nil {
-		return InboxDelivery{}, err
+// The message task is checked before the insert, in this transaction. A
+// different task, including one in another factory, inserts nothing.
+func (s *Store) Redeliver(ctx context.Context, messageID, taskID string) (InboxDelivery, error) {
+	if messageID == "" || taskID == "" {
+		return InboxDelivery{}, fmt.Errorf("%w: message and task are required", ErrInputInvalid)
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return InboxDelivery{}, fmt.Errorf("store: redeliver: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var eventTask string
+	err = tx.QueryRow(ctx, `
+		SELECT COALESCE(task_id, '')
+		FROM invocation_events
+		WHERE message_id = $1
+		FOR UPDATE`, messageID).Scan(&eventTask)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return InboxDelivery{}, ErrNotFound
+		}
+		return InboxDelivery{}, fmt.Errorf("store: redeliver: %w", err)
+	}
+	if eventTask != taskID {
+		return InboxDelivery{}, ErrNotFound
+	}
+	id, err := NewID(PrefixNativeDelivery)
+	if err != nil {
+		return InboxDelivery{}, err
+	}
 	var row InboxDelivery
 	err = tx.QueryRow(ctx, `
 		INSERT INTO native_deliveries (
 		    id, message_id, invocation_id, ledger_seq, task_id, assignee)
 		SELECT $1, message_id, invocation_id, ledger_seq, task_id, assignee
 		FROM native_deliveries
-		WHERE message_id = $2
+		WHERE message_id = $2 AND task_id = $3
 		ORDER BY created_at DESC, id DESC
 		LIMIT 1
 		RETURNING id, message_id, invocation_id, task_id, assignee`,
-		id, messageID).Scan(&row.DeliveryID, &row.MessageID, &row.InvocationID, &row.TaskID, &row.Assignee)
+		id, messageID, taskID).Scan(&row.DeliveryID, &row.MessageID, &row.InvocationID, &row.TaskID, &row.Assignee)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return InboxDelivery{}, ErrNotFound

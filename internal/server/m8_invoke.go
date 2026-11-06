@@ -115,15 +115,17 @@ func (s *Server) AdmitInvocation(ctx context.Context, factoryUID string, princip
 			Status:    store.WorkItemOpen,
 			CreatedBy: principal.Actor,
 		},
+		StartStage: func(item store.WorkItem, openPR string) (store.NewRun, error) {
+			return s.prepareFirstStageRun(item, stage, agentName, "", openPR)
+		},
 	})
 	if err != nil {
 		return invocation.Receipt{}, err
 	}
 	ins.Row.WorkItemID = repaired.Item.ID
-	if !repaired.RunExists {
-		if _, err := s.startStageRun(ctx, repaired.Item, stage, agentName, ""); err != nil {
-			return invocation.Receipt{}, err
-		}
+	if repaired.RunStarted {
+		s.log.Info("stage run", "work_item_id", repaired.Item.ID, "stage", stage, "run_id", repaired.RunID, "agent", agentName)
+		s.nudge()
 	}
 	return s.receiptFromRow(fac.Name, ins.Row, !ins.Created), nil
 }

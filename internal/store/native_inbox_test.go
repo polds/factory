@@ -278,7 +278,7 @@ func TestRedeliverUnackedAppliesOnce(t *testing.T) {
 	if err != nil || acks != 0 {
 		t.Fatalf("dropped read acks %d %v", acks, err)
 	}
-	again, err := h.st.Redeliver(ctx, rec.MessageID)
+	again, err := h.st.Redeliver(ctx, rec.MessageID, rec.TaskID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,6 +305,44 @@ func TestRedeliverUnackedAppliesOnce(t *testing.T) {
 	}
 	if len(page.Deliveries) != 2 {
 		t.Fatalf("deliveries %+v", page.Deliveries)
+	}
+}
+
+func TestRedeliverOtherTaskLeavesDeliveries(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	rec := commentForAck(t, h, "cross-task")
+	var invocationID string
+	if err := h.raw.QueryRow(ctx, `SELECT invocation_id FROM native_tasks WHERE id = $1`, rec.TaskID).Scan(&invocationID); err != nil {
+		t.Fatal(err)
+	}
+	other := insertNative(t, h, rec.FactoryID, invocationID, "other")
+	var before int
+	if err := h.raw.QueryRow(ctx, `SELECT count(*) FROM native_deliveries`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.st.Redeliver(ctx, rec.MessageID, other.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("other task %v", err)
+	}
+	if _, err := h.raw.Exec(ctx, `
+		INSERT INTO factories (id, name, schema_version, definition_source)
+		VALUES ('fac_redeliver', 'redeliver-other', 'v1alpha1', 'test')`); err != nil {
+		t.Fatal(err)
+	}
+	foreignInv := insertNativeInvocation(t, h, "fac_redeliver", "cross-factory")
+	foreign := insertNative(t, h, "fac_redeliver", foreignInv, "lead")
+	if _, err := h.st.Redeliver(ctx, rec.MessageID, foreign.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("other factory task %v", err)
+	}
+	if _, err := h.st.Redeliver(ctx, "nmsg_missing", rec.TaskID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing message %v", err)
+	}
+	var after int
+	if err := h.raw.QueryRow(ctx, `SELECT count(*) FROM native_deliveries`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("native_deliveries %d -> %d", before, after)
 	}
 }
 

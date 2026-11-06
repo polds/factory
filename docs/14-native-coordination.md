@@ -30,7 +30,7 @@ A comment or assign body longer than 8192 bytes is `input_invalid`. The check is
 
 Read and long-poll do not ack. Ack is `POST` after a durable apply, unique on `(delivery_id, principal, task_id)`. The principal is the API key (`api-key`), never a JSON field. Ack before apply is `not_applied`. A different principal is `principal_rejected`. A different task is not found. A second ack returns `duplicate: true` and does not increment `native_applies.apply_count`.
 
-A dropped read leaves the delivery unacked. Redeliver inserts a new `ndlv_` for the same `nmsg_` and does not apply or ack. Apply of that message stays once.
+A dropped read leaves the delivery unacked. Redeliver reads the message task and compares it to the path task before inserting a new `ndlv_` for the same `nmsg_`. A different task inserts nothing. Redeliver does not apply or ack. Apply of that message stays once.
 
 The first claim inserts fence 1. A later claim, including one from the holder, returns HTTP 409 `claim_fenced`. The holder and fence stay unchanged.
 
@@ -72,7 +72,7 @@ inbox.Read(ctx, st, store.InboxQuery) (store.InboxPage, error)
 inbox.Apply(ctx, st, messageID, taskID, principal string) (bool, error)
 inbox.Ack(ctx, st, deliveryID, principal, taskID string) (store.AckResult, error)
 inbox.Claim(ctx, st, taskID, holder string) (store.InboxClaim, error)
-inbox.Redeliver(ctx, st, messageID string) (store.InboxDelivery, error)
+inbox.Redeliver(ctx, st, messageID, taskID string) (store.InboxDelivery, error)
 
 store.InsertNativeTask(ctx, NativeTaskInput) (NativeTask, error)
 store.GetNativeTask(ctx, factoryID, taskID string) (NativeTask, error)
@@ -81,7 +81,7 @@ store.ReadOutbox(ctx, invocationID string, afterSeq int64, limit int) ([]OutboxR
 store.ReadInbox(ctx, InboxQuery) (InboxPage, error)
 store.ApplyMessage(ctx, messageID, taskID, principal string) (bool, error)
 store.AckDelivery(ctx, deliveryID, principal, taskID string) (AckResult, error)
-store.Redeliver(ctx, messageID string) (InboxDelivery, error)
+store.Redeliver(ctx, messageID, taskID string) (InboxDelivery, error)
 store.ClaimInbox(ctx, taskID, holder string) (InboxClaim, error)
 store.GetInboxClaim(ctx, taskID string) (InboxClaim, error)
 store.CoalesceWake(ctx, WakeIntent) (WakeIntent, error)
@@ -103,6 +103,6 @@ client.GetNativeWake(ctx, factoryUID, taskID) (NativeWake, error)
 
 ## Optional items
 
-Orphan repair is in. An accepted invocation with a null `work_item_id` is linked to the existing work item for that source ref, or one new item is created. A stage run starts only when that item has none. Replay does not insert a second item or a second run.
+Orphan repair is in. An accepted invocation with a null `work_item_id` is linked to the existing work item for that source ref, or one new item is created. The check that the item has no stage run and the insert of that run commit in the same transaction, for triage and for building. Replay does not insert a second item or a second run.
 
 Workspace root is not plumbed. `result.Publish` is called from `internal/server/m8_api.go` with an empty root. That file is outside this change, and no stored workspace root is available to pass. An empty root still fails artifact paths closed. Body-only reports are unchanged.

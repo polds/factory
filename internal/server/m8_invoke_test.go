@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -296,6 +298,121 @@ func TestOrphanInvocationRepairStartsOnce(t *testing.T) {
 	if runs != 1 {
 		t.Fatalf("stage runs after replay %d", runs)
 	}
+}
+
+func TestConcurrentAdmitStartsOneTriageRun(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 1)
+	}})
+	admitConcurrent(t, env, "verifier:concurrent-admit", store.StageTriage)
+}
+
+func TestConcurrentAdmitStartsOneBuildingRun(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writeBuildingOnlyPipeline(t)
+	}})
+	admitConcurrent(t, env, "verifier:concurrent-admit-building", store.StageBuilding)
+}
+
+func admitConcurrent(t *testing.T, env *env, key, stage string) {
+	t.Helper()
+	const n = 8
+	body := map[string]any{
+		"sourceOccurrenceKey": key,
+		"intent":              "new",
+		"priority":            "interactive",
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	statuses := make([]int, n)
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			req, err := http.NewRequest(http.MethodPost, env.base+"/api/v1/factory/pipe/invocations", bytes.NewReader(raw))
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+env.apiKey)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			statuses[i] = resp.StatusCode
+		}()
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	created := 0
+	for _, status := range statuses {
+		switch status {
+		case http.StatusCreated:
+			created++
+		case http.StatusOK:
+		default:
+			t.Fatalf("statuses %v", statuses)
+		}
+	}
+	if created != 1 {
+		t.Fatalf("created %d statuses %v", created, statuses)
+	}
+	ctx := context.Background()
+	var items, runs int
+	var gotStage string
+	if err := env.raw.QueryRow(ctx, `SELECT count(*) FROM work_items WHERE source_ref = $1`, key).Scan(&items); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.raw.QueryRow(ctx, `
+		SELECT count(*), COALESCE(min(r.stage), '')
+		FROM runs r
+		JOIN work_items w ON w.id = r.work_item_id
+		WHERE w.source_ref = $1`, key).Scan(&runs, &gotStage); err != nil {
+		t.Fatal(err)
+	}
+	if items != 1 || runs != 1 || gotStage != stage {
+		t.Fatalf("items %d runs %d stage %s", items, runs, gotStage)
+	}
+}
+
+func writeBuildingOnlyPipeline(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "factory.yaml"), `
+schemaVersion: v1alpha1
+name: pipe
+agentDefaults:
+  model: auto
+  runner: local
+  pool: standard
+pipeline:
+  stages: [building]
+  agents:
+    building: implementer
+`)
+	writeAgent(t, root, "implementer", "IMPLEMENT", "model: building-model")
+	return root
 }
 
 func TestEmitFreshScheduleIsCronCaller(t *testing.T) {

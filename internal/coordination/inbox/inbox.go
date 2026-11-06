@@ -28,6 +28,7 @@ func Claim(ctx context.Context, st *store.Store, taskID, holder string) (store.I
 }
 
 // Redeliver creates a new delivery id for the same message and does not ack.
-func Redeliver(ctx context.Context, st *store.Store, messageID string) (store.InboxDelivery, error) {
-	return st.Redeliver(ctx, messageID)
+// taskID is the path task. A different message task inserts nothing.
+func Redeliver(ctx context.Context, st *store.Store, messageID, taskID string) (store.InboxDelivery, error) {
+	return st.Redeliver(ctx, messageID, taskID)
 }

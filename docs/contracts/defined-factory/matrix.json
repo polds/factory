@@ -155,8 +155,8 @@
       "fieldPath": "target",
       "baseline": {
         "file": "internal/server/m8_invoke.go",
-        "start": 300,
-        "end": 303,
+        "start": 305,
+        "end": 308,
         "anchor": "target.Repository"
       },
       "decision": "A definition that does not require a repository mints no forge token.",
@@ -281,8 +281,8 @@
       "fieldPath": "overlapPolicy,outcome",
       "baseline": {
         "file": "internal/server/m8_invoke.go",
-        "start": 155,
-        "end": 168,
+        "start": 169,
+        "end": 172,
         "anchor": "StateSkippedOverlap"
       },
       "decision": "Forbid overlap records skipped_overlap. It does not continue the busy item and it is not a completed scan.",
@@ -641,8 +641,8 @@
       "fieldPath": "delegationEdgeId,parentRunId",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 698,
-        "end": 702,
+        "start": 725,
+        "end": 729,
         "anchor": "ParentRunID"
       },
       "decision": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
@@ -857,8 +857,8 @@
       "fieldPath": "fence",
       "baseline": {
         "file": "internal/store/native_inbox.go",
-        "start": 295,
-        "end": 297,
+        "start": 312,
+        "end": 314,
         "anchor": "claim_fenced"
       },
       "decision": "A second claim loses the fence. The holder and fence stay unchanged.",

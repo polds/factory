@@ -210,3 +210,55 @@ func TestNativeCoordinationHTTP(t *testing.T) {
 		t.Fatalf("native routes started runs %d -> %d", runsBefore, runsAfter)
 	}
 }
+
+func TestRedeliverCrossTaskLeavesDeliveries(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 1)
+	}})
+	inv := env.postJSON(t, "/api/v1/factory/pipe/invocations", map[string]any{
+		"sourceOccurrenceKey": "native:redeliver:cross",
+		"intent":              "new",
+		"priority":            "interactive",
+	}, http.StatusCreated)
+	invocationID, _ := inv["invocationId"].(string)
+	c := &client.Client{BaseURL: env.base, APIKey: env.apiKey}
+	ctx := context.Background()
+	taskA, err := c.CreateNativeTask(ctx, "pipe", client.NativeTaskRequest{InvocationID: invocationID, Assignee: "spec"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskB, err := c.CreateNativeTask(ctx, "pipe", client.NativeTaskRequest{InvocationID: invocationID, Assignee: "lead"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	comment, err := c.CommentNativeTask(ctx, "pipe", taskA.ID, client.NativeCommentRequest{Body: "for spec"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before int
+	if err := env.raw.QueryRow(ctx, `SELECT count(*) FROM native_deliveries`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RedeliverNativeMessage(ctx, "pipe", taskB.ID, comment.MessageID); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Fatalf("cross task %v", err)
+	}
+	var after int
+	if err := env.raw.QueryRow(ctx, `SELECT count(*) FROM native_deliveries`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("native_deliveries %d -> %d", before, after)
+	}
+	if _, err := c.RedeliverNativeMessage(ctx, "pipe", taskA.ID, comment.MessageID); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.raw.QueryRow(ctx, `SELECT count(*) FROM native_deliveries`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before+1 {
+		t.Fatalf("matching redeliver count %d", after)
+	}
+}

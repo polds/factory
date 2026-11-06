@@ -210,12 +210,9 @@ func (s *Server) RedeliverNativeMessage(ctx context.Context, factoryUID, taskID,
 	if _, err := s.nativeTask(ctx, factoryUID, taskID); err != nil {
 		return api.NativeRedelivery{}, err
 	}
-	row, err := inbox.Redeliver(ctx, s.store, messageID)
+	row, err := inbox.Redeliver(ctx, s.store, messageID, taskID)
 	if err != nil {
 		return api.NativeRedelivery{}, nativeStoreErr(err)
-	}
-	if row.TaskID != taskID {
-		return api.NativeRedelivery{}, api.ErrNotFound
 	}
 	return api.NativeRedelivery{DeliveryID: row.DeliveryID, MessageID: row.MessageID, TaskID: row.TaskID}, nil
 }
@@ -367,3 +364,5 @@ func nativeStoreErr(err error) error {
 		return err
 	}
 }
+
+var _ api.NativeBackend = apiFacade{}
