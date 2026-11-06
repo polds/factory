@@ -200,6 +200,9 @@ func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason,
 		}
 	}
 	if !missing {
+		if err := s.publishFinishReport(ctx, tx, runID, status, summary); err != nil {
+			return false, err
+		}
 		reportMissing, repErr := s.reportMissing(ctx, tx, runID, status)
 		if repErr != nil {
 			return false, repErr

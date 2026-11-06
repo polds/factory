@@ -22,13 +22,22 @@ type ResultRow struct {
 	PublishedAt    time.Time
 }
 
-// PutResultParams stores a validated report. The caller must run result.Publish first.
+// PutResult stores a validated report in invocation_results. Run result.Publish first.
 func (s *Store) PutResult(ctx context.Context, p ResultRow) error {
+	return putResult(ctx, s.pool, p)
+}
+
+// PutResultTx stores a validated report on an open transaction.
+func PutResultTx(ctx context.Context, tx pgx.Tx, p ResultRow) error {
+	return putResult(ctx, tx, p)
+}
+
+func putResult(ctx context.Context, db deliveryDB, p ResultRow) error {
 	paths, err := json.Marshal(p.ArtifactPaths)
 	if err != nil {
 		return err
 	}
-	tag, err := s.pool.Exec(ctx, `
+	tag, err := db.Exec(ctx, `
 		INSERT INTO invocation_results (
 		    invocation_id, factory_id, summary, coverage_status, findings_count,
 		    report_body, artifact_paths, published_at)
