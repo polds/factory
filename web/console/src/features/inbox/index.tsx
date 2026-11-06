@@ -24,6 +24,7 @@ import {
   unexpected,
   type RunRow,
 } from "../dashboard/model";
+import { NativeConsole } from "../work-items/native-panel";
 import { AnswerForm, ApprovalActions, submitAnswer } from "./actions";
 
 type InboxFilter = "all" | InboxKind;
@@ -105,6 +106,7 @@ export default function InboxPage() {
           </>
         }
       />
+      <NativeConsole factoryId={factoryId} customStages={[]} />
       {notice ? <p role="alert">{notice}</p> : null}
       <div className="chips" role="group" aria-label="Filter by kind">
         {filters.map((kind) => (

@@ -271,7 +271,10 @@ type Agent struct {
 	// SpawnableBy is who may spawn this agent. After load, an omitted key is
 	// [foreman] and an explicit empty list is empty. Nil is only the
 	// pre-inherit signal that the key was omitted.
-	SpawnableBy        []string
+	SpawnableBy []string
+	// ReportsTo is the direct manager. Empty means omitted. Native mode
+	// enforces it; legacy factories stay valid without it.
+	ReportsTo          string
 	CredentialStrategy string
 	IdleTimeoutMinutes int
 	RequiredRepos      []Repository

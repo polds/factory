@@ -166,6 +166,21 @@ func (h *handler) registerNative(m *http.ServeMux) {
 	m.HandleFunc("GET /api/v1/factory/{uid}/native-tasks/{taskID}/claim", h.withAPIKey(h.handleGetNativeClaim))
 	m.HandleFunc("GET /api/v1/factory/{uid}/native-tasks/{taskID}/wake", h.withAPIKey(h.handleGetNativeWake))
 	m.HandleFunc("GET /api/v1/factory/{uid}/invocations/{invocationID}/outbox", h.withAPIKey(h.handleReadNativeOutbox))
+	m.HandleFunc("POST /api/v1/factory/{uid}/invocations/{invocationID}/native-tree", h.withAPIKey(h.handleOpenNativeTree))
+	m.HandleFunc("POST /api/v1/factory/{uid}/native-tasks/{taskID}/delegate", h.withAPIKey(h.handleDelegateNative))
+	m.HandleFunc("POST /api/v1/factory/{uid}/native-tasks/{taskID}/activate", h.withAPIKey(h.handleActivateNative))
+	m.HandleFunc("POST /api/v1/factory/{uid}/native-tasks/{taskID}/park", h.withAPIKey(h.handleParkNative))
+	m.HandleFunc("POST /api/v1/factory/{uid}/native-tasks/{taskID}/wake-run", h.withAPIKey(h.handleWakeNativeRun))
+	m.HandleFunc("POST /api/v1/factory/{uid}/native-tasks/{taskID}/join", h.withAPIKey(h.handleJoinNative))
+	m.HandleFunc("POST /api/v1/factory/{uid}/native-tasks/{taskID}/cancel-subtree", h.withAPIKey(h.handleCancelNativeSubtree))
+	m.HandleFunc("POST /api/v1/factory/{uid}/native-tasks/{taskID}/pause-subtree", h.withAPIKey(h.handlePauseNativeSubtree))
+	m.HandleFunc("POST /api/v1/factory/{uid}/native-tasks/{taskID}/board-resume", h.withAPIKey(h.handleBoardResumeNative))
+	m.HandleFunc("POST /api/v1/factory/{uid}/native-tasks/{taskID}/complete", h.withAPIKey(h.handleCompleteNative))
+	m.HandleFunc("POST /api/v1/factory/{uid}/invocations/{invocationID}/budget/reserve", h.withAPIKey(h.handleReserveNative))
+	m.HandleFunc("POST /api/v1/factory/{uid}/invocations/{invocationID}/budget/settle", h.withAPIKey(h.handleSettleNative))
+	m.HandleFunc("POST /api/v1/factory/{uid}/invocations/{invocationID}/budget/admit", h.withAPIKey(h.handleAdmitNative))
+	m.HandleFunc("POST /api/v1/factory/{uid}/budget/ceiling", h.withAPIKey(h.handleAuthorizeNativeCeiling))
+	m.HandleFunc("GET /api/v1/factory/{uid}/native-trees", h.withAPIKey(h.handleListNativeTrees))
 }
 
 func (h *handler) nativeBackend(w http.ResponseWriter) (NativeBackend, bool) {
@@ -466,6 +481,16 @@ func (h *handler) writeNativeErr(w http.ResponseWriter, err error) {
 		writeProblemReason(w, http.StatusForbidden, "principal_rejected")
 	case errors.Is(err, ErrNativeNotApplied):
 		writeProblemReason(w, http.StatusConflict, "not_applied")
+	case errors.Is(err, ErrNativeDelegation):
+		writeProblemReason(w, http.StatusForbidden, "delegation_denied")
+	case errors.Is(err, ErrNativeDepth):
+		writeProblemReason(w, http.StatusConflict, "depth_exceeded")
+	case errors.Is(err, ErrNativeSpawn):
+		writeProblemReason(w, http.StatusConflict, "spawn_denied")
+	case errors.Is(err, ErrNativeBudget):
+		writeProblemReason(w, http.StatusConflict, "budget_exceeded")
+	case errors.Is(err, ErrNativeNoResurrect):
+		writeProblemReason(w, http.StatusConflict, "cancelled_no_resurrect")
 	default:
 		h.writeBackendErr(w, err)
 	}

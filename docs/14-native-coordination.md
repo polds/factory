@@ -1,6 +1,6 @@
 # 14 — Native coordination spine
 
-This is the M9-T surface. It records native tasks, a per-invocation ledger, an assignee inbox, and one coalesced wake intent. It does not start an execution, claim an activation, enforce `reportsTo`, or reserve a budget. M9-N consumes the wake later. M9-H calls the HTTP routes and the client below. There is no native dispatch route.
+M9-T records native tasks, a per-invocation ledger, an assignee inbox, and one coalesced wake intent. M9-N activates that wake: it freezes `reportsTo`, delegates, parks, joins, and reserves ancestor budgets. Creating a task still does not start a run. Activation does. There is no native dispatch route.
 
 The contract remains `defined-factory/1`. `docs/13-defined-factory-contracts.md` states the rules. This page names the methods that implement the producer `M9-T` rows.
 
@@ -11,7 +11,7 @@ The contract remains `defined-factory/1`. `docs/13-defined-factory-contracts.md`
 | Task | `ntask_` | The native task. `task_ref` equals this id. |
 | Message | `nmsg_` | One canonical ledger event. |
 | Delivery | `ndlv_` | One assignee projection of a message. |
-| Activation | `nact_` | Stored only. Insert and assign do not start it. |
+| Activation | `nact_` | One fenced execution. Insert and assign do not start it. `POST .../activate` does. |
 | Execution | `exec_` | Stored only. Insert and assign do not start it. |
 
 Task, assignee, parent task, blockers, activation id, and execution id are different fields. `parent_task_id` is not `runs.parent_run_id`. `linear_issue` is not a column. The HTTP task body returns `linearIssue: null`.
@@ -38,7 +38,7 @@ Cursor is opaque (`n1.<ledger_seq>.<delivery_id>`). Limit is 1 through 100 and d
 
 ## Wake
 
-One `native_wake_intents` row per task. Comment and assign set it pending and route `assignee` to the task's current assignee. Reassign updates that same row and increments `coalesce_count`. Mention, result, and completion do not wake. The row survives a new store connection. Nothing here starts a run.
+One `native_wake_intents` row per task. Comment and assign set it pending and route `assignee` to the task's current assignee. Reassign updates that same row and increments `coalesce_count`. Mention does not wake. The row survives a new store connection. `GetWake` returns `InvocationID`. The HTTP wake body does not. Reading the wake does not start a run. `ClaimActivation` does, using that stored invocation id.
 
 ## HTTP
 
@@ -58,6 +58,21 @@ All routes use the factory API key. An unknown factory or a task in another fact
 | GET | `/api/v1/factory/{uid}/native-tasks/{taskID}/claim` |
 | GET | `/api/v1/factory/{uid}/native-tasks/{taskID}/wake` |
 | GET | `/api/v1/factory/{uid}/invocations/{invocationID}/outbox?after&limit` |
+| POST | `/api/v1/factory/{uid}/invocations/{invocationID}/native-tree` |
+| GET | `/api/v1/factory/{uid}/native-trees` |
+| POST | `/api/v1/factory/{uid}/native-tasks/{taskID}/delegate` |
+| POST | `/api/v1/factory/{uid}/native-tasks/{taskID}/activate` |
+| POST | `/api/v1/factory/{uid}/native-tasks/{taskID}/park` |
+| POST | `/api/v1/factory/{uid}/native-tasks/{taskID}/wake-run` |
+| POST | `/api/v1/factory/{uid}/native-tasks/{taskID}/join` |
+| POST | `/api/v1/factory/{uid}/native-tasks/{taskID}/cancel-subtree` |
+| POST | `/api/v1/factory/{uid}/native-tasks/{taskID}/pause-subtree` |
+| POST | `/api/v1/factory/{uid}/native-tasks/{taskID}/board-resume` |
+| POST | `/api/v1/factory/{uid}/native-tasks/{taskID}/complete` |
+| POST | `/api/v1/factory/{uid}/invocations/{invocationID}/budget/reserve` |
+| POST | `/api/v1/factory/{uid}/invocations/{invocationID}/budget/settle` |
+| POST | `/api/v1/factory/{uid}/invocations/{invocationID}/budget/admit` |
+| POST | `/api/v1/factory/{uid}/budget/ceiling` |
 
 Apply, ack, and redeliver bodies are empty or `{}`. A `principal` field is `input_invalid`.
 
@@ -87,6 +102,22 @@ store.GetInboxClaim(ctx, taskID string) (InboxClaim, error)
 store.CoalesceWake(ctx, WakeIntent) (WakeIntent, error)
 store.GetWake(ctx, taskID string) (WakeIntent, error)
 
+coordination.OpenTree(ctx, st, store.OpenTreeInput) (store.NativePolicy, store.NativeTask, error)
+coordination.Delegate(ctx, st, store.DelegateInput) (store.DelegateResult, error)
+coordination.ClaimActivation(ctx, st, taskID, store.ClaimInput) (store.Activation, error)
+coordination.Park(ctx, st, store.ParkInput) (store.Activation, error)
+coordination.Wake(ctx, st, store.WakeInput) (store.WakeResult, error)
+coordination.WakeCompleted(ctx, st, taskID, store.WakeInput) (store.WakeResult, error)
+coordination.RetryExecution(ctx, st, taskID) (store.Activation, error)
+coordination.ResumePark(ctx, st, store.ClaimInput) (store.Activation, error)
+coordination.Join(ctx, st, store.JoinInput) (store.JoinResult, error)
+coordination.CancelSubtree(ctx, st, taskID) (store.SubtreeResult, error)
+coordination.BoardResume(ctx, st, store.BoardResumeInput) (store.BoardResumeResult, error)
+coordination.Admit(ctx, st, store.AdmitInput) (store.AdmitResult, error)
+coordination.ReserveAncestors(ctx, st, store.ReserveInput) (store.Reservation, error)
+coordination.SettleUsage(ctx, st, store.SettleInput) (store.Settlement, error)
+coordination.AuthorizeCeiling(ctx, st, store.CeilingInput) (store.CeilingAudit, error)
+
 client.CreateNativeTask(ctx, factoryUID, NativeTaskRequest) (NativeTask, error)
 client.GetNativeTask(ctx, factoryUID, taskID) (NativeTask, error)
 client.CommentNativeTask(ctx, factoryUID, taskID, NativeCommentRequest) (NativeEventResult, error)
@@ -97,9 +128,16 @@ client.AckNativeDelivery(ctx, factoryUID, taskID, deliveryID) (NativeAckResult, 
 client.RedeliverNativeMessage(ctx, factoryUID, taskID, messageID) (NativeRedelivery, error)
 client.ClaimNativeInbox(ctx, factoryUID, taskID, holder) (NativeClaim, error)
 client.GetNativeWake(ctx, factoryUID, taskID) (NativeWake, error)
+client.GetNativeClaim(ctx, factoryUID, taskID) (NativeClaim, error)
+client.ReadNativeOutbox(ctx, factoryUID, invocationID, after, limit) (NativeOutboxPage, error)
+client.OpenNativeTree(ctx, factoryUID, invocationID, NativeTreeRequest) (NativeTreeOpened, error)
+client.DelegateNative(ctx, factoryUID, taskID, NativeDelegateRequest) (NativeDelegateResult, error)
+client.ActivateNative(ctx, factoryUID, taskID, NativeActivateRequest) (NativeActivation, error)
 ```
 
-`GetNativeClaim` and `ReadNativeOutbox` are on `api.NativeBackend` and the server. The Go client does not wrap them yet.
+`ClaimActivation` calls `store.GetWake`. That row includes `InvocationID`. The HTTP wake DTO does not. `client.NativeOutboxRecord.Payload` matches `api.NativeOutboxRecord` and `store.OutboxRow`.
+
+A runtime refusal uses the same transaction as the refused spawn. `delegation_denied` is 403. `depth_exceeded`, `spawn_denied`, `budget_exceeded`, `claim_fenced`, and `cancelled_no_resurrect` are 409. `input_invalid` is 400. Ceiling and board-resume bodies have no principal field. The audited principal is `api_key:ops`.
 
 ## Optional items
 

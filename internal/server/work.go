@@ -259,6 +259,9 @@ func (s *Server) neutralStageComplete(ctx context.Context, item store.WorkItem) 
 // advanceAfterTerminal steps the work item that owns a run which just
 // reached a terminal status. Infra requeue does not call this.
 func (s *Server) advanceAfterTerminal(ctx context.Context, runID string) {
+	if s.refuseChildAdvance(ctx, runID) {
+		return
+	}
 	run, err := s.store.GetRun(ctx, runID)
 	if err != nil || run.WorkItemID == "" || run.Stage == "" {
 		return

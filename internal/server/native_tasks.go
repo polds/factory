@@ -9,6 +9,7 @@ import (
 	"github.com/polds/factory/internal/coordination/inbox"
 	"github.com/polds/factory/internal/coordination/ledger"
 	"github.com/polds/factory/internal/coordination/tasks"
+	"github.com/polds/factory/internal/definition"
 	"github.com/polds/factory/internal/store"
 )
 
@@ -360,6 +361,18 @@ func nativeStoreErr(err error) error {
 		return api.ErrNativePrincipal
 	case errors.Is(err, store.ErrNotApplied):
 		return api.ErrNativeNotApplied
+	case errors.Is(err, definition.ErrDelegationDenied):
+		return api.ErrNativeDelegation
+	case errors.Is(err, definition.ErrDepthExceeded):
+		return api.ErrNativeDepth
+	case errors.Is(err, definition.ErrNativeTree), errors.Is(err, definition.ErrLegacyHierarchy):
+		return api.ErrNativeInput
+	case errors.Is(err, store.ErrSpawnDenied):
+		return api.ErrNativeSpawn
+	case errors.Is(err, store.ErrBudgetExceeded):
+		return api.ErrNativeBudget
+	case errors.Is(err, store.ErrNoResurrect):
+		return api.ErrNativeNoResurrect
 	default:
 		return err
 	}

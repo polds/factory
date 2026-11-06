@@ -202,6 +202,23 @@ func TestNativeCoordinationHTTP(t *testing.T) {
 	if rawResp.StatusCode != http.StatusBadRequest || !strings.Contains(string(rawBody), "input_invalid") {
 		t.Fatalf("principal body %d %s", rawResp.StatusCode, rawBody)
 	}
+	gotClaim, err := c.GetNativeClaim(ctx, "pipe", task.ID)
+	if err != nil || gotClaim.Holder != "lead" || gotClaim.Fence != 1 {
+		t.Fatalf("get claim %+v %v", gotClaim, err)
+	}
+	outbox, err := c.ReadNativeOutbox(ctx, "pipe", invocationID, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawAssignee bool
+	for _, rec := range outbox.Records {
+		if strings.Contains(string(rec.Payload), `"assignee"`) && strings.Contains(string(rec.Payload), "specialist") {
+			sawAssignee = true
+		}
+	}
+	if !sawAssignee {
+		t.Fatalf("outbox payload %+v", outbox.Records)
+	}
 	var runsAfter int
 	if err := env.raw.QueryRow(context.Background(), `SELECT count(*) FROM runs`).Scan(&runsAfter); err != nil {
 		t.Fatal(err)

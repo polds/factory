@@ -184,6 +184,7 @@ type agentDoc struct {
 	Model              string               `json:"model,omitempty"`
 	Harness            *Harness             `json:"harness,omitempty"`
 	SpawnableBy        []string             `json:"spawnableBy,omitempty"`
+	ReportsTo          string               `json:"reportsTo,omitempty"`
 	CredentialStrategy string               `json:"credentialStrategy,omitempty"`
 	IdleTimeoutMinutes int                  `json:"idleTimeoutMinutes,omitempty"`
 	RequiredRepos      []Repository         `json:"required_repos,omitempty"`
@@ -321,6 +322,7 @@ func (p parsedAgent) agent(factory Factory) Agent {
 		Description:        p.doc.Description,
 		AgentType:          p.doc.AgentType,
 		SpawnableBy:        spawnableBy(p.raw, p.doc.SpawnableBy),
+		ReportsTo:          strings.TrimSpace(p.doc.ReportsTo),
 		CredentialStrategy: p.doc.CredentialStrategy,
 		IdleTimeoutMinutes: p.doc.IdleTimeoutMinutes,
 		RequiredRepos:      cloneRepos(p.doc.RequiredRepos),

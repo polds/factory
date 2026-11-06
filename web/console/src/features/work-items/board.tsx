@@ -20,6 +20,7 @@ import {
   type RunRow,
 } from "../dashboard/model";
 import { GateBadge, PageHeader } from "../dashboard/ui";
+import { NativeConsole } from "./native-panel";
 
 const filterSources = [
   "cli",
@@ -150,6 +151,12 @@ export function WorkItemBoard({ factoryId }: { factoryId: string }) {
         <EmptyState title="No work items match" message="Clear the search or source filter." />
       ) : null}
       <OtherStages tasks={open} factoryId={factoryId} latest={latest} />
+      <NativeConsole
+        factoryId={factoryId}
+        customStages={[
+          ...new Set(open.filter((task) => !isPipelineStage(task.stage)).map((task) => task.stage)),
+        ]}
+      />
     </div>
   );
 }

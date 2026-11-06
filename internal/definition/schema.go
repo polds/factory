@@ -126,6 +126,7 @@ var (
 		"model":              leaf(),
 		"harness":            harnessSpec,
 		"spawnableBy":        leaf(),
+		"reportsTo":          leaf(),
 		"credentialStrategy": leaf(),
 		"idleTimeoutMinutes": leaf(),
 		"required_repos":     {elem: repoSpec},

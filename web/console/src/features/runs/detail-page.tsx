@@ -25,6 +25,7 @@ import { TreeTab } from "./tree-tab";
 import type { LocalSteer, RunDetailWire, RunRow } from "./types";
 import { ScoresPanel } from "./scores-panel";
 import { UsageTab } from "./usage-tab";
+import { NativeConsole } from "../work-items/native-panel";
 import { useRunEvents } from "./use-run-events";
 
 function RunFactoryStream({ factoryId }: { factoryId: string }) {
@@ -299,6 +300,7 @@ export function RunDetailPage({ runId }: { runId: string }) {
       </header>
       <FailurePanel run={run} />
       {run.factory_id ? <RunFactoryStream factoryId={run.factory_id} /> : null}
+      {run.factory_id ? <NativeConsole factoryId={run.factory_id} customStages={[]} /> : null}
       <ScoresPanel runId={run.id} factoryId={run.factory_id ?? ""} />
       <CapturePanel runId={run.id} />
       <div className="detail-layout">

@@ -213,6 +213,21 @@ POST   /factory/{uid}/tasks                 create a work item (intake)
 POST   /factory/{uid}/invocations           admit a defined-factory occurrence (Invoke)
 GET    /factory/{uid}/invocations/{id}
 GET    /factory/{uid}/invocations/{id}/result
+POST   /factory/{uid}/invocations/{id}/native-tree
+GET    /factory/{uid}/native-trees
+POST   /factory/{uid}/native-tasks/{taskID}/delegate
+POST   /factory/{uid}/native-tasks/{taskID}/activate
+POST   /factory/{uid}/native-tasks/{taskID}/park
+POST   /factory/{uid}/native-tasks/{taskID}/wake-run
+POST   /factory/{uid}/native-tasks/{taskID}/join
+POST   /factory/{uid}/native-tasks/{taskID}/cancel-subtree
+POST   /factory/{uid}/native-tasks/{taskID}/pause-subtree
+POST   /factory/{uid}/native-tasks/{taskID}/board-resume
+POST   /factory/{uid}/native-tasks/{taskID}/complete
+POST   /factory/{uid}/invocations/{id}/budget/reserve
+POST   /factory/{uid}/invocations/{id}/budget/settle
+POST   /factory/{uid}/invocations/{id}/budget/admit
+POST   /factory/{uid}/budget/ceiling
 GET    /factory/{uid}/tasks/{task_uid}
 POST   /factory/{uid}/tasks/{task_uid}/cancel
 GET    /factory/{uid}/task-by-conversation  resolve by conversation id
