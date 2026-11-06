@@ -525,14 +525,21 @@ func (s *Store) JoinNative(ctx context.Context, in JoinInput) (JoinResult, error
 		}
 		return result, nil
 	}
-	result.Policy = children[0].policy
 	var unresolved []string
-	failed := false
+	failEdge := false
+	blockEdge := false
 	for _, c := range children {
 		switch c.status {
 		case NativeCompleted:
 		case NativeFailed, NativeCancelled:
-			failed = true
+			switch c.policy {
+			case JoinFailParent:
+				failEdge = true
+			case JoinBlockParent:
+				blockEdge = true
+			default:
+				return JoinResult{}, fmt.Errorf("%w: join policy", ErrInputInvalid)
+			}
 		default:
 			unresolved = append(unresolved, c.id)
 		}
@@ -545,10 +552,12 @@ func (s *Store) JoinNative(ctx context.Context, in JoinInput) (JoinResult, error
 		}
 		return result, nil
 	}
-	if failed {
-		next := NativeFailed
-		if result.Policy == JoinBlockParent {
-			next = NativeBlocked
+	if failEdge || blockEdge {
+		next := NativeBlocked
+		result.Policy = JoinBlockParent
+		if failEdge {
+			next = NativeFailed
+			result.Policy = JoinFailParent
 		}
 		if act, actErr := latestActivationTx(ctx, tx, head.ID); actErr == nil {
 			result.RunID = act.RunID
@@ -594,6 +603,19 @@ func (s *Store) CancelNativeSubtree(ctx context.Context, in SubtreeInput) (Subtr
 		return SubtreeResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var invocationID string
+	err = tx.QueryRow(ctx, `SELECT invocation_id FROM native_tasks WHERE id = $1`, in.TaskID).Scan(&invocationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SubtreeResult{}, ErrNotFound
+	}
+	if err != nil {
+		return SubtreeResult{}, err
+	}
+	// Same row DelegateNative locks before insert. The snapshot below runs
+	// only after that lock, so a delegate cannot commit a child this scan misses.
+	if err := lockPolicyTx(ctx, tx, invocationID); err != nil {
+		return SubtreeResult{}, err
+	}
 	if _, err := lockTask(ctx, tx, in.TaskID); err != nil {
 		return SubtreeResult{}, err
 	}

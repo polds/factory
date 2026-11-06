@@ -641,8 +641,8 @@
       "fieldPath": "delegationEdgeId,parentRunId",
       "baseline": {
         "file": "internal/store/native_runtime.go",
-        "start": 470,
-        "end": 470,
+        "start": 483,
+        "end": 483,
         "anchor": "parent_run_id is the stage predecessor"
       },
       "decision": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
@@ -1037,8 +1037,8 @@
       "fieldPath": "descendants",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 590,
-        "end": 590,
+        "start": 599,
+        "end": 599,
         "anchor": "spawn_denied"
       },
       "decision": "Cancel and pause cascade over the chosen subtree and later spawn is spawn_denied.",
@@ -1055,8 +1055,8 @@
       "fieldPath": "audit.board.resume",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 698,
-        "end": 698,
+        "start": 722,
+        "end": 722,
         "anchor": "BoardResume"
       },
       "decision": "Board resume is an authorized audited transition. It does not mutate the cancelled run's terminal evidence.",
@@ -1091,8 +1091,8 @@
       "fieldPath": "blockers",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 542,
-        "end": 542,
+        "start": 549,
+        "end": 549,
         "anchor": "unresolved children"
       },
       "decision": "Join does not synthesize while a required child is live or unresolved.",
@@ -1156,7 +1156,7 @@
     },
     {
       "invariant": "INV-RESERVE",
-      "title": "GAP: ancestor reservation is one transaction with scope rows locked in scope id order. RunUsage adds CostCents and does not lock scopes.",
+      "title": "Ancestor reservation is one transaction with scope rows locked in scope id order.",
       "consumer": "M9-H",
       "producer": "M9-N",
       "method": "coordination.ReserveAncestors",
@@ -1167,32 +1167,32 @@
         "end": 46,
         "anchor": "partialOnFailure"
       },
-      "decision": "GAP: ancestor reservation is one transaction with scope rows locked in scope id order. RunUsage adds CostCents and does not lock scopes.",
+      "decision": "Ancestor reservation is one transaction with scope rows locked in scope id order.",
       "testOwner": "M9-N",
       "positive": "INV-RESERVE",
       "negative": "INV-RESERVE-BAD"
     },
     {
       "invariant": "INV-CONCURRENT",
-      "title": "GAP: two concurrent reservations that would pass a 2500 cent ceiling cannot both commit. RunUsage adds CostCents and is not that transaction.",
+      "title": "Two concurrent reservations that would pass a 2500 cent ceiling cannot both commit.",
       "consumer": "M9-N",
       "producer": "M9-N",
       "method": "coordination.ReserveAncestors",
       "fieldPath": "ceilingCents",
       "baseline": {
         "file": "internal/store/native_budget.go",
-        "start": 165,
-        "end": 165,
-        "anchor": "FOR UPDATE"
+        "start": 526,
+        "end": 526,
+        "anchor": "lockScopesTx"
       },
-      "decision": "GAP: two concurrent reservations that would pass a 2500 cent ceiling cannot both commit. RunUsage adds CostCents and is not that transaction.",
+      "decision": "Two concurrent reservations that would pass a 2500 cent ceiling cannot both commit.",
       "testOwner": "M9-N",
       "positive": "INV-CONCURRENT",
       "negative": "INV-CONCURRENT-BAD"
     },
     {
       "invariant": "INV-ALERT80",
-      "title": "GAP: an 80 percent crossing emits one alert per episode. A refund below the line starts a new episode. RunUsage adds CostCents and emits no alert.",
+      "title": "An 80 percent crossing emits one alert per episode. A refund below the line starts a new episode.",
       "consumer": "M9-N",
       "producer": "M9-N",
       "method": "coordination.NoteThreshold",
@@ -1203,7 +1203,7 @@
         "end": 16,
         "anchor": "thresholdPercent"
       },
-      "decision": "GAP: an 80 percent crossing emits one alert per episode. A refund below the line starts a new episode. RunUsage adds CostCents and emits no alert.",
+      "decision": "An 80 percent crossing emits one alert per episode. A refund below the line starts a new episode.",
       "testOwner": "M9-N",
       "positive": "INV-ALERT80",
       "negative": "INV-ALERT80-BAD"
@@ -1217,8 +1217,8 @@
       "fieldPath": "usageDeadline",
       "baseline": {
         "file": "internal/store/native_budget.go",
-        "start": 344,
-        "end": 344,
+        "start": 359,
+        "end": 359,
         "anchor": "usage deadline"
       },
       "decision": "Missing usage after the deadline admits no new spend. The overshoot bound is the outstanding reservation.",
@@ -1228,7 +1228,7 @@
     },
     {
       "invariant": "INV-OVERSHOOT",
-      "title": "GAP: spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. RunUsage adds reported CostCents and does not keep that account.",
+      "title": "Spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0.",
       "consumer": "M10-G",
       "producer": "M9-N",
       "method": "coordination.Admit",
@@ -1239,14 +1239,14 @@
         "end": 53,
         "anchor": "overshootBeyondCeilingCents"
       },
-      "decision": "GAP: spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. RunUsage adds reported CostCents and does not keep that account.",
+      "decision": "Spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0.",
       "testOwner": "M9-N",
       "positive": "INV-OVERSHOOT",
       "negative": "INV-OVERSHOOT-BAD"
     },
     {
       "invariant": "INV-LATE-CHARGE",
-      "title": "GAP: a late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation. RunUsage adds the reported CostCents.",
+      "title": "A late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation.",
       "consumer": "M10-G",
       "producer": "M9-N",
       "method": "coordination.SettleUsage",
@@ -1257,7 +1257,7 @@
         "end": 120,
         "anchor": "quarantine"
       },
-      "decision": "GAP: a late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation. RunUsage adds the reported CostCents.",
+      "decision": "A late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation.",
       "testOwner": "M9-N",
       "positive": "INV-LATE-CHARGE",
       "negative": "INV-LATE-CHARGE-BAD"
@@ -1298,18 +1298,18 @@
     },
     {
       "invariant": "INV-BUDGET-OVERRIDE",
-      "title": "GAP: an authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing. RunUsage sums usage and does not raise a ceiling.",
+      "title": "An authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing.",
       "consumer": "M9-N",
       "producer": "M9-N",
       "method": "coordination.AuthorizeCeiling",
       "fieldPath": "ceilingCents,audit",
       "baseline": {
         "file": "internal/store/native_budget.go",
-        "start": 398,
-        "end": 398,
+        "start": 413,
+        "end": 413,
         "anchor": "AuthorizeCeiling"
       },
-      "decision": "GAP: an authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing. RunUsage sums usage and does not raise a ceiling.",
+      "decision": "An authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing.",
       "testOwner": "M9-N",
       "positive": "INV-BUDGET-OVERRIDE",
       "negative": "INV-BUDGET-OVERRIDE-BAD"

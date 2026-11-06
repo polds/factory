@@ -407,7 +407,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "GAP: two concurrent reservations that would pass a 2500 cent ceiling cannot both commit. RunUsage adds CostCents and is not that transaction.",
+      "title": "Two concurrent reservations that would pass a 2500 cent ceiling cannot both commit.",
       "document": {
         "attempts": [
           {
@@ -435,7 +435,7 @@
       "rejectBy": "formula",
       "code": "INV-CONCURRENT",
       "schema": "scenario",
-      "title": "GAP: two concurrent reservations that would pass a 2500 cent ceiling cannot both commit. RunUsage adds CostCents and is not that transaction.",
+      "title": "Two concurrent reservations that would pass a 2500 cent ceiling cannot both commit.",
       "document": {
         "attempts": [
           {

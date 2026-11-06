@@ -469,7 +469,7 @@ func TestNativeAlertEpisode(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scopeID := "factory:" + factoryID
+	scopeID := "factory:" + factoryID + ":" + invocationID
 	charges := []int64{900, -200, 200}
 	for i, delta := range charges {
 		if _, err := h.st.ApplyBudgetDelta(ctx, scopeID, "call", string(rune('a'+i)), delta); err != nil {
@@ -630,6 +630,15 @@ func TestNativeMissingUsage(t *testing.T) {
 		ReservationID: reservation.ID, CallID: "ok", AttemptID: "1", Cents: 300,
 	}); err != nil {
 		t.Fatal(err)
+	}
+	admitted, err := coordination.Admit(ctx, h.st, store.AdmitInput{InvocationID: invocationID, ScopeIDs: scopes, Now: time.Now()})
+	if err != nil || !admitted.Admitted {
+		t.Fatalf("admit after settlement %+v %v", admitted, err)
+	}
+	if _, err := coordination.ReserveAncestors(ctx, h.st, store.ReserveInput{
+		InvocationID: invocationID, IdempotencyKey: "after", Cents: 1, ScopeIDs: scopes, CeilingCents: 2500,
+	}); err != nil {
+		t.Fatalf("reserve after settlement %v", err)
 	}
 }
 

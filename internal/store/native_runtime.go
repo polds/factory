@@ -178,8 +178,7 @@ func (s *Store) DelegateNative(ctx context.Context, in DelegateInput) (DelegateR
 	if err != nil {
 		return DelegateResult{}, err
 	}
-	var locked string
-	if err := tx.QueryRow(ctx, `SELECT invocation_id FROM native_policies WHERE invocation_id = $1 FOR UPDATE`, in.InvocationID).Scan(&locked); err != nil {
+	if err := lockPolicyTx(ctx, tx, in.InvocationID); err != nil {
 		return DelegateResult{}, err
 	}
 	parent, err := lockTask(ctx, tx, in.ParentTaskID)
@@ -309,17 +308,31 @@ func personaMap(personas []definition.NativePersona) map[string]definition.Nativ
 	return out
 }
 
-// AncestorScopes are the factory, invocation, lead, and agent accounts.
+// AncestorScopes are one factory line for this invocation, plus the invocation, lead, and agent accounts.
+// The factory line includes the invocation id, so spend does not mix across invocations.
 // Callers lock them in scope_id order.
 func AncestorScopes(factoryID, invocationID, lead, agent string) []string {
 	ids := []string{
-		"factory:" + factoryID,
+		"factory:" + factoryID + ":" + invocationID,
 		"invocation:" + invocationID,
 		"lead:" + invocationID + ":" + lead,
 		"agent:" + invocationID + ":" + agent,
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func lockPolicyTx(ctx context.Context, tx pgx.Tx, invocationID string) error {
+	var locked string
+	err := tx.QueryRow(ctx, `
+		SELECT invocation_id FROM native_policies WHERE invocation_id = $1 FOR UPDATE`, invocationID).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("store: lock policy: %w", err)
+	}
+	return nil
 }
 
 func lockInvocation(ctx context.Context, tx pgx.Tx, factoryID, invocationID string) error {

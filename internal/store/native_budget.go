@@ -160,13 +160,10 @@ func settleTx(ctx context.Context, tx pgx.Tx, in SettleInput) (Settlement, error
 		return Settlement{CallID: in.CallID, AttemptID: in.AttemptID, CountedCents: in.Cents}, nil
 	}
 	var reserved int64
-	var state string
+	var state, invocationID string
 	if err := tx.QueryRow(ctx, `
-		SELECT cents, state FROM budget_reservations WHERE id = $1 FOR UPDATE`, in.ReservationID).Scan(&reserved, &state); err != nil {
+		SELECT cents, state, invocation_id FROM budget_reservations WHERE id = $1 FOR UPDATE`, in.ReservationID).Scan(&reserved, &state, &invocationID); err != nil {
 		return Settlement{}, err
-	}
-	if state != "reserved" {
-		return Settlement{CallID: in.CallID, AttemptID: in.AttemptID, CountedCents: in.Cents, Duplicate: true}, nil
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT scope_id, cents FROM budget_reservation_lines
@@ -199,6 +196,17 @@ func settleTx(ctx context.Context, tx pgx.Tx, in SettleInput) (Settlement, error
 	}
 	if _, err := lockScopesTx(ctx, tx, ids); err != nil {
 		return Settlement{}, err
+	}
+	// A new attempt_id is a new charge. Same-pair dedupe already returned.
+	// The reservation hold was released by the first settlement, so this
+	// attempt spends against the ceiling and does not release reserved again.
+	if state != "reserved" {
+		for _, ln := range lines {
+			if _, err := creditScopeTx(ctx, tx, ln.id, in.Cents); err != nil {
+				return Settlement{}, err
+			}
+		}
+		return Settlement{CallID: in.CallID, AttemptID: in.AttemptID, CountedCents: in.Cents}, nil
 	}
 	counted := in.Cents
 	quarantined := int64(0)
@@ -249,6 +257,11 @@ func settleTx(ctx context.Context, tx pgx.Tx, in SettleInput) (Settlement, error
 	if _, err := tx.Exec(ctx, `
 		UPDATE budget_reservations SET state = $2 WHERE id = $1`, in.ReservationID, nextState); err != nil {
 		return Settlement{}, err
+	}
+	if quarantined == 0 {
+		if err := clearMissingIfCurrentTx(ctx, tx, invocationID, ids); err != nil {
+			return Settlement{}, err
+		}
 	}
 	out := Settlement{
 		CallID: in.CallID, AttemptID: in.AttemptID, CountedCents: counted,
@@ -510,6 +523,7 @@ func ensureScopesTx(ctx context.Context, tx pgx.Tx, in ReserveInput) error {
 	return nil
 }
 
+// lockScopesTx locks scope rows in scope_id order so two reservations cannot both pass one ceiling.
 func lockScopesTx(ctx context.Context, tx pgx.Tx, ids []string) ([]scopeAccount, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("%w: scopes", ErrInputInvalid)
@@ -584,6 +598,20 @@ func overdueReservedTx(ctx context.Context, tx pgx.Tx, invocationID string, now 
 		  AND usage_deadline IS NOT NULL
 		  AND usage_deadline < $2`, invocationID, now).Scan(&bound)
 	return bound, err
+}
+
+func clearMissingIfCurrentTx(ctx context.Context, tx pgx.Tx, invocationID string, ids []string) error {
+	bound, err := overdueReservedTx(ctx, tx, invocationID, time.Now())
+	if err != nil || bound > 0 {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := tx.Exec(ctx, `
+			UPDATE budget_scopes SET missing_usage = false WHERE scope_id = $1`, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func markMissingTx(ctx context.Context, tx pgx.Tx, ids []string) error {
