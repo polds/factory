@@ -438,6 +438,10 @@ failure mode in this architecture that actually loses work — lease expiry, rej
 worker disconnects mid-run, duplicate terminal messages — is a concurrency bug that will
 not reproduce under manual testing.
 
+## M9-N — Native activation and budgets
+
+Native mode freezes `reportsTo` and `spawnableBy` on the invocation. Delegate, park, wake, join, and cancel run in one transaction with the refusal. Only the stage owner reaches `advanceAfterTerminal`. Ancestor budgets reserve, settle, and alert in integer cents. `spike/m9/run.sh` is offline only.
+
 ## Open questions to resolve with measurement
 
 - Scheduler policy (U3) is inferred. Instrument time-to-assignment and reject

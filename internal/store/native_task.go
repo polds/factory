@@ -41,6 +41,22 @@ func scanNativeTask(row pgx.Row) (NativeTask, error) {
 // InsertNativeTask inserts one native task. It does not start an activation
 // or an execution, and it does not write parent_run_id.
 func (s *Store) InsertNativeTask(ctx context.Context, in NativeTaskInput) (NativeTask, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return NativeTask{}, fmt.Errorf("store: insert native task: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	task, err := insertNativeTaskTx(ctx, tx, in)
+	if err != nil {
+		return NativeTask{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return NativeTask{}, err
+	}
+	return task, nil
+}
+
+func insertNativeTaskTx(ctx context.Context, tx pgx.Tx, in NativeTaskInput) (NativeTask, error) {
 	id, err := NewID(PrefixNativeTask)
 	if err != nil {
 		return NativeTask{}, err
@@ -51,12 +67,6 @@ func (s *Store) InsertNativeTask(ctx context.Context, in NativeTaskInput) (Nativ
 	if in.BlockerIDs == nil {
 		in.BlockerIDs = []string{}
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return NativeTask{}, fmt.Errorf("store: insert native task: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	var invocationFactory string
 	err = tx.QueryRow(ctx, `SELECT factory_id FROM invocations WHERE id = $1`, in.InvocationID).Scan(&invocationFactory)
 	if err != nil {
@@ -83,9 +93,6 @@ func (s *Store) InsertNativeTask(ctx context.Context, in NativeTaskInput) (Nativ
 	))
 	if err != nil {
 		return NativeTask{}, fmt.Errorf("store: insert native task: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return NativeTask{}, err
 	}
 	return task, nil
 }

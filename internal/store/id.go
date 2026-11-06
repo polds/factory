@@ -7,29 +7,31 @@ import (
 )
 
 const (
-	PrefixRun              = "run_"
-	PrefixExec             = "exec_"
-	PrefixFactory          = "fac_"
-	PrefixAgent            = "agt_"
-	PrefixDefinition       = "def_"
-	PrefixWorkItem         = "task_"
-	PrefixApproval         = "apr_"
-	PrefixConversation     = "conv_"
-	PrefixDelivery         = "dlv_"
-	PrefixSchedule         = "sch_"
-	PrefixInputRequest     = "inr_"
-	PrefixWebhook          = "whk_"
-	PrefixSteer            = "str_"
-	PrefixAutomation       = "aut_"
-	PrefixScorerResult     = "scr_"
-	PrefixImproveBatch     = "ibt_"
-	PrefixBenchmarkRun     = "bmr_"
-	PrefixBenchmarkTrial   = "bmt_"
-	PrefixInvocation       = "inv_"
-	PrefixNativeTask       = "ntask_"
-	PrefixNativeMessage    = "nmsg_"
-	PrefixNativeDelivery   = "ndlv_"
-	PrefixNativeActivation = "nact_"
+	PrefixRun               = "run_"
+	PrefixExec              = "exec_"
+	PrefixFactory           = "fac_"
+	PrefixAgent             = "agt_"
+	PrefixDefinition        = "def_"
+	PrefixWorkItem          = "task_"
+	PrefixApproval          = "apr_"
+	PrefixConversation      = "conv_"
+	PrefixDelivery          = "dlv_"
+	PrefixSchedule          = "sch_"
+	PrefixInputRequest      = "inr_"
+	PrefixWebhook           = "whk_"
+	PrefixSteer             = "str_"
+	PrefixAutomation        = "aut_"
+	PrefixScorerResult      = "scr_"
+	PrefixImproveBatch      = "ibt_"
+	PrefixBenchmarkRun      = "bmr_"
+	PrefixBenchmarkTrial    = "bmt_"
+	PrefixInvocation        = "inv_"
+	PrefixNativeTask        = "ntask_"
+	PrefixNativeMessage     = "nmsg_"
+	PrefixNativeDelivery    = "ndlv_"
+	PrefixNativeActivation  = "nact_"
+	PrefixNativeReservation = "nres_"
+	PrefixNativeResume      = "nbra_"
 )
 
 // NewID returns prefix plus 26 Crockford base32 characters encoding a 48-bit
@@ -65,7 +67,7 @@ func knownPrefix(prefix string) bool {
 		PrefixSteer, PrefixAutomation, PrefixScorerResult, PrefixImproveBatch,
 		PrefixBenchmarkRun, PrefixBenchmarkTrial, PrefixInvocation,
 		PrefixNativeTask, PrefixNativeMessage, PrefixNativeDelivery,
-		PrefixNativeActivation:
+		PrefixNativeActivation, PrefixNativeReservation, PrefixNativeResume:
 		return true
 	default:
 		return false

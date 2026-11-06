@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -116,10 +117,11 @@ type NativeOutboxPage struct {
 	Records []NativeOutboxRecord `json:"records"`
 }
 
-// NativeOutboxRecord is one outbox row.
+// NativeOutboxRecord is one outbox row. Payload matches the API record.
 type NativeOutboxRecord struct {
-	LedgerSeq int64  `json:"ledgerSeq"`
-	Kind      string `json:"kind"`
+	LedgerSeq int64           `json:"ledgerSeq"`
+	Kind      string          `json:"kind"`
+	Payload   json.RawMessage `json:"payload"`
 }
 
 // CreateNativeTask posts a native task.
@@ -200,6 +202,29 @@ func (c *Client) ClaimNativeInbox(ctx context.Context, factoryUID, taskID, holde
 	var out NativeClaim
 	path := nativeTaskPath(factoryUID, taskID) + "/claim"
 	err := c.doJSON(ctx, http.MethodPost, path, map[string]string{"holder": holder}, &out, http.StatusOK)
+	return out, err
+}
+
+// GetNativeClaim reads the current inbox fence.
+func (c *Client) GetNativeClaim(ctx context.Context, factoryUID, taskID string) (NativeClaim, error) {
+	var out NativeClaim
+	path := nativeTaskPath(factoryUID, taskID) + "/claim"
+	err := c.doJSON(ctx, http.MethodGet, path, nil, &out, http.StatusOK)
+	return out, err
+}
+
+// ReadNativeOutbox replays committed outbox rows, including payload.
+func (c *Client) ReadNativeOutbox(ctx context.Context, factoryUID, invocationID string, after int64, limit int) (NativeOutboxPage, error) {
+	q := url.Values{}
+	if after > 0 {
+		q.Set("after", strconv.FormatInt(after, 10))
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	var out NativeOutboxPage
+	path := "/api/v1/factory/" + url.PathEscape(factoryUID) + "/invocations/" + url.PathEscape(invocationID) + "/outbox"
+	err := c.doJSONQuery(ctx, http.MethodGet, path, q, nil, &out, http.StatusOK)
 	return out, err
 }
 

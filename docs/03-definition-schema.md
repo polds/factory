@@ -199,6 +199,7 @@ description: Adversarial code review. Advisory verdict; humans merge.
 agentType: REVIEW          # CUSTOM | FOREMAN | TRIAGE | SPEC | IMPLEMENT | REVIEW | VERIFY
 model: auto-genius
 spawnableBy: [foreman]     # omit → foreman only; [] → none
+reportsTo: foreman        # omit is valid while native hierarchy is off
 credentialStrategy: EXECUTOR
 idleTimeoutMinutes: 15     # 1–60; keeps session available for follow-ups
 required_repos:
@@ -226,7 +227,9 @@ each as unambiguous or a judgment call.
 ```
 
 Exactly one agent per factory has `agentType: FOREMAN`; it is the entry point and the
-default automation target.
+default automation target. `reportsTo` names that agent's manager. Native mode freezes
+the effective tree on the invocation. Omitting `reportsTo` stays valid while native
+hierarchy is off.
 
 The five default roles, with the division of labor worth preserving: **Foreman**
 coordinates and talks to the requester; **Triage** establishes scope and evidence;

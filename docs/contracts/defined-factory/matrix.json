@@ -568,10 +568,10 @@
       "method": "definition.ValidateNativeTree",
       "fieldPath": "personas.reportsTo,policySnapshot",
       "baseline": {
-        "file": "internal/definition/inherit.go",
-        "start": 76,
-        "end": 80,
-        "anchor": "foreman"
+        "file": "internal/definition/native_tree.go",
+        "start": 59,
+        "end": 59,
+        "anchor": "ValidateNativeTree"
       },
       "decision": "Native mode freezes one synthetic root, an acyclic connected depth-2 tree, direct-manager delegation, and no ancestor shortcut. It is not an Atum roster.",
       "testOwner": "M9-N",
@@ -586,10 +586,10 @@
       "method": "definition.ValidateNativeTree",
       "fieldPath": "nativeHierarchy",
       "baseline": {
-        "file": "internal/definition/types.go",
-        "start": 271,
-        "end": 274,
-        "anchor": "SpawnableBy"
+        "file": "internal/definition/native_tree.go",
+        "start": 60,
+        "end": 60,
+        "anchor": "reportsTo omitted"
       },
       "decision": "Legacy factories may omit reportsTo. The field is not enforced unless native hierarchy is on.",
       "testOwner": "M9-N",
@@ -604,10 +604,10 @@
       "method": "coordination.Delegate",
       "fieldPath": "maxDepth,absoluteMaxDepth",
       "baseline": {
-        "file": "internal/definition/inherit.go",
-        "start": 76,
-        "end": 80,
-        "anchor": "spawnableBy"
+        "file": "internal/definition/native_tree.go",
+        "start": 25,
+        "end": 25,
+        "anchor": "depth_exceeded"
       },
       "decision": "The proof profile max depth is 2. The absolute max depth is 8. A deeper spawn is depth_exceeded.",
       "testOwner": "M9-N",
@@ -622,10 +622,10 @@
       "method": "coordination.Delegate",
       "fieldPath": "spawnableBy,reportsTo",
       "baseline": {
-        "file": "internal/definition/inherit.go",
-        "start": 76,
-        "end": 80,
-        "anchor": "foreman"
+        "file": "internal/definition/native_tree.go",
+        "start": 27,
+        "end": 27,
+        "anchor": "delegation_denied"
       },
       "decision": "Direct-manager delegation requires the delegator to be reportsTo and listed in spawnableBy. spawnableBy stays parsed until M9-N enforces it.",
       "testOwner": "M9-N",
@@ -640,10 +640,10 @@
       "method": "coordination.Delegate",
       "fieldPath": "delegationEdgeId,parentRunId",
       "baseline": {
-        "file": "internal/server/work.go",
-        "start": 725,
-        "end": 729,
-        "anchor": "ParentRunID"
+        "file": "internal/store/native_runtime.go",
+        "start": 470,
+        "end": 470,
+        "anchor": "parent_run_id is the stage predecessor"
       },
       "decision": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
       "testOwner": "M9-N",
@@ -658,10 +658,10 @@
       "method": "coordination.Delegate",
       "fieldPath": "reportsTo",
       "baseline": {
-        "file": "internal/server/assign.go",
-        "start": 47,
-        "end": 53,
-        "anchor": "secretNames"
+        "file": "internal/definition/native_tree.go",
+        "start": 131,
+        "end": 131,
+        "anchor": "reportsTo does not grant"
       },
       "decision": "Reporting line does not grant secret or repository access.",
       "testOwner": "M9-N",
@@ -694,10 +694,10 @@
       "method": "server.advanceAfterTerminal",
       "fieldPath": "stageOwner",
       "baseline": {
-        "file": "internal/server/work.go",
-        "start": 257,
-        "end": 261,
-        "anchor": "advanceAfterTerminal"
+        "file": "internal/server/native_stage.go",
+        "start": 6,
+        "end": 6,
+        "anchor": "stage owner"
       },
       "decision": "Only the stage owner advances the pipeline. A child with the same stage string does not.",
       "testOwner": "M9-N",
@@ -910,10 +910,10 @@
       "method": "coordination.ClaimActivation",
       "fieldPath": "workerCapacity",
       "baseline": {
-        "file": "internal/server/work.go",
-        "start": 361,
-        "end": 365,
-        "anchor": "onQuestion"
+        "file": "internal/store/native_activate.go",
+        "start": 182,
+        "end": 182,
+        "anchor": "capacityReleased"
       },
       "decision": "Capacity 1 still finishes the tree because a manager parks and releases its slot before the child runs.",
       "testOwner": "M9-N",
@@ -928,10 +928,10 @@
       "method": "coordination.Park",
       "fieldPath": "state,blockers",
       "baseline": {
-        "file": "internal/server/work.go",
-        "start": 361,
-        "end": 365,
-        "anchor": "onQuestion"
+        "file": "internal/store/native_activate.go",
+        "start": 181,
+        "end": 181,
+        "anchor": "records blockers"
       },
       "decision": "Park is per task, records blockers, and releases worker capacity. Today's suspension is one per work item.",
       "testOwner": "M9-N",
@@ -946,10 +946,10 @@
       "method": "coordination.DeliverInput",
       "fieldPath": "capabilities.steer",
       "baseline": {
-        "file": "internal/server/m5_steer.go",
-        "start": 23,
-        "end": 29,
-        "anchor": "Interrupt"
+        "file": "internal/store/native_activate.go",
+        "start": 233,
+        "end": 233,
+        "anchor": "negotiatedSteer"
       },
       "decision": "A running recipient is steered only when steer was negotiated. Otherwise the input stays pending.",
       "testOwner": "M9-N",
@@ -964,10 +964,10 @@
       "method": "coordination.WakeCompleted",
       "fieldPath": "linkedFromRunId",
       "baseline": {
-        "file": "internal/server/m5_steer.go",
-        "start": 39,
-        "end": 41,
-        "anchor": "steerUnavailable"
+        "file": "internal/store/native_activate.go",
+        "start": 312,
+        "end": 312,
+        "anchor": "WakeCompleted"
       },
       "decision": "Waking a completed task creates a new linked run. The prior terminal row stays immutable.",
       "testOwner": "M9-N",
@@ -982,10 +982,10 @@
       "method": "coordination.RetryExecution",
       "fieldPath": "runId,executionId",
       "baseline": {
-        "file": "internal/store/types.go",
-        "start": 118,
-        "end": 120,
-        "anchor": "logical task"
+        "file": "internal/store/native_activate.go",
+        "start": 375,
+        "end": 375,
+        "anchor": "RetryExecution"
       },
       "decision": "Infrastructure retry creates a new execution of the same run.",
       "testOwner": "M9-N",
@@ -1000,10 +1000,10 @@
       "method": "coordination.ResumePark",
       "fieldPath": "executionId",
       "baseline": {
-        "file": "internal/server/work.go",
-        "start": 361,
-        "end": 365,
-        "anchor": "releases the worker"
+        "file": "internal/store/native_activate.go",
+        "start": 66,
+        "end": 66,
+        "anchor": "ResumePark"
       },
       "decision": "Park continuation creates a new execution of the same run.",
       "testOwner": "M9-N",
@@ -1018,10 +1018,10 @@
       "method": "coordination.Wake",
       "fieldPath": "status",
       "baseline": {
-        "file": "internal/server/work.go",
-        "start": 257,
-        "end": 261,
-        "anchor": "advanceAfterTerminal"
+        "file": "internal/store/native_runtime_types.go",
+        "start": 34,
+        "end": 34,
+        "anchor": "cancelled_no_resurrect"
       },
       "decision": "A cancelled task does not auto-resurrect.",
       "testOwner": "M9-N",
@@ -1036,10 +1036,10 @@
       "method": "coordination.CancelSubtree",
       "fieldPath": "descendants",
       "baseline": {
-        "file": "internal/server/work.go",
-        "start": 357,
-        "end": 361,
-        "anchor": "cancelWorkItemRuns"
+        "file": "internal/store/native_activate.go",
+        "start": 590,
+        "end": 590,
+        "anchor": "spawn_denied"
       },
       "decision": "Cancel and pause cascade over the chosen subtree and later spawn is spawn_denied.",
       "testOwner": "M9-N",
@@ -1054,10 +1054,10 @@
       "method": "coordination.BoardResume",
       "fieldPath": "audit.board.resume",
       "baseline": {
-        "file": "internal/store/types.go",
-        "start": 108,
-        "end": 110,
-        "anchor": "InboxActionApprove"
+        "file": "internal/store/native_activate.go",
+        "start": 698,
+        "end": 698,
+        "anchor": "BoardResume"
       },
       "decision": "Board resume is an authorized audited transition. It does not mutate the cancelled run's terminal evidence.",
       "testOwner": "M9-N",
@@ -1072,10 +1072,10 @@
       "method": "coordination.Join",
       "fieldPath": "failedChildPolicy",
       "baseline": {
-        "file": "internal/server/work.go",
-        "start": 287,
-        "end": 291,
-        "anchor": "item.Stage"
+        "file": "internal/store/native_activate.go",
+        "start": 482,
+        "end": 482,
+        "anchor": "fail_parent"
       },
       "decision": "fail_parent does not synthesize and does not spawn a replacement.",
       "testOwner": "M9-N",
@@ -1090,10 +1090,10 @@
       "method": "coordination.Join",
       "fieldPath": "blockers",
       "baseline": {
-        "file": "internal/server/work.go",
-        "start": 287,
-        "end": 291,
-        "anchor": "item.Stage"
+        "file": "internal/store/native_activate.go",
+        "start": 542,
+        "end": 542,
+        "anchor": "unresolved children"
       },
       "decision": "Join does not synthesize while a required child is live or unresolved.",
       "testOwner": "M9-N",
@@ -1108,10 +1108,10 @@
       "method": "coordination.Delegate",
       "fieldPath": "idempotencyKey",
       "baseline": {
-        "file": "internal/store/automation.go",
-        "start": 177,
-        "end": 181,
-        "anchor": "Continuation"
+        "file": "internal/store/native_runtime.go",
+        "start": 149,
+        "end": 149,
+        "anchor": "idempotency key"
       },
       "decision": "Duplicate delegate delivery does not create a second child or a second reservation.",
       "testOwner": "M9-N",
@@ -1126,10 +1126,10 @@
       "method": "coordination.SettleUsage",
       "fieldPath": "callId,attemptId",
       "baseline": {
-        "file": "internal/store/m5_read.go",
-        "start": 137,
-        "end": 139,
-        "anchor": "CostCents"
+        "file": "internal/store/native_budget.go",
+        "start": 119,
+        "end": 119,
+        "anchor": "call_id, attempt_id"
       },
       "decision": "RunUsage adds CostCents for every usage event and does not dedup by call and attempt. The contract counts integer cents once per call and attempt, including a failed attempt.",
       "testOwner": "M9-N",
@@ -1144,10 +1144,10 @@
       "method": "coordination.Rollup",
       "fieldPath": "scopes",
       "baseline": {
-        "file": "internal/store/m5_read.go",
-        "start": 109,
-        "end": 116,
-        "anchor": "RunUsage"
+        "file": "internal/coordination/budget/budget.go",
+        "start": 74,
+        "end": 74,
+        "anchor": "inclusive rollup"
       },
       "decision": "RunUsage sums one run. The contract rolls each leaf charge once to invocation, lead, agent, and factory. Summing inclusive totals is not the rollup.",
       "testOwner": "M9-N",
@@ -1162,8 +1162,10 @@
       "method": "coordination.ReserveAncestors",
       "fieldPath": "reservation",
       "baseline": {
-        "status": "gap",
-        "gap": "No ancestor reservation exists. RunUsage adds CostCents per usage event."
+        "file": "internal/store/native_budget.go",
+        "start": 46,
+        "end": 46,
+        "anchor": "partialOnFailure"
       },
       "decision": "GAP: ancestor reservation is one transaction with scope rows locked in scope id order. RunUsage adds CostCents and does not lock scopes.",
       "testOwner": "M9-N",
@@ -1178,8 +1180,10 @@
       "method": "coordination.ReserveAncestors",
       "fieldPath": "ceilingCents",
       "baseline": {
-        "status": "gap",
-        "gap": "No concurrent reservation transaction exists. RunUsage adds CostCents."
+        "file": "internal/store/native_budget.go",
+        "start": 165,
+        "end": 165,
+        "anchor": "FOR UPDATE"
       },
       "decision": "GAP: two concurrent reservations that would pass a 2500 cent ceiling cannot both commit. RunUsage adds CostCents and is not that transaction.",
       "testOwner": "M9-N",
@@ -1194,8 +1198,10 @@
       "method": "coordination.NoteThreshold",
       "fieldPath": "thresholdPercent",
       "baseline": {
-        "status": "gap",
-        "gap": "No 80 percent budget alert exists. RunUsage adds CostCents."
+        "file": "internal/coordination/budget/budget.go",
+        "start": 16,
+        "end": 16,
+        "anchor": "thresholdPercent"
       },
       "decision": "GAP: an 80 percent crossing emits one alert per episode. A refund below the line starts a new episode. RunUsage adds CostCents and emits no alert.",
       "testOwner": "M9-N",
@@ -1210,10 +1216,10 @@
       "method": "coordination.Admit",
       "fieldPath": "usageDeadline",
       "baseline": {
-        "file": "internal/store/m5_read.go",
-        "start": 109,
-        "end": 116,
-        "anchor": "RunUsage"
+        "file": "internal/store/native_budget.go",
+        "start": 344,
+        "end": 344,
+        "anchor": "usage deadline"
       },
       "decision": "Missing usage after the deadline admits no new spend. The overshoot bound is the outstanding reservation.",
       "testOwner": "M9-N",
@@ -1228,8 +1234,10 @@
       "method": "coordination.Admit",
       "fieldPath": "overshootBeyondCeilingCents",
       "baseline": {
-        "status": "gap",
-        "gap": "No ceiling-overshoot account exists. RunUsage adds reported CostCents."
+        "file": "internal/coordination/budget/budget.go",
+        "start": 53,
+        "end": 53,
+        "anchor": "overshootBeyondCeilingCents"
       },
       "decision": "GAP: spent plus reserved stays at or under the ceiling, so attributed overshoot beyond the ceiling is 0. RunUsage adds reported CostCents and does not keep that account.",
       "testOwner": "M9-N",
@@ -1244,8 +1252,10 @@
       "method": "coordination.SettleUsage",
       "fieldPath": "quarantinedCents",
       "baseline": {
-        "status": "gap",
-        "gap": "No late-charge quarantine exists. RunUsage adds every usage event."
+        "file": "internal/store/native_budget.go",
+        "start": 120,
+        "end": 120,
+        "anchor": "quarantine"
       },
       "decision": "GAP: a late charge above its reservation is quarantined, the scope pauses, and spent stays at the reservation. RunUsage adds the reported CostCents.",
       "testOwner": "M9-N",
@@ -1276,10 +1286,10 @@
       "method": "coordination.Admit",
       "fieldPath": "sharedKey",
       "baseline": {
-        "file": "internal/server/assign.go",
-        "start": 91,
-        "end": 94,
-        "anchor": "OPENAI_API_KEY"
+        "file": "internal/coordination/budget/budget.go",
+        "start": 64,
+        "end": 64,
+        "anchor": "guaranteesCeiling"
       },
       "decision": "Refusing a spawn on a shared key does not guarantee the ceiling. In-flight calls on that key stay uncapped.",
       "testOwner": "M10-G",
@@ -1294,8 +1304,10 @@
       "method": "coordination.AuthorizeCeiling",
       "fieldPath": "ceilingCents,audit",
       "baseline": {
-        "status": "gap",
-        "gap": "No audited ceiling override exists. RunUsage sums usage events."
+        "file": "internal/store/native_budget.go",
+        "start": 398,
+        "end": 398,
+        "anchor": "AuthorizeCeiling"
       },
       "decision": "GAP: an authorized ceiling override commits an audit row and changes the ceiling only. It spends nothing. RunUsage sums usage and does not raise a ceiling.",
       "testOwner": "M9-N",
