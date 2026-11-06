@@ -73,7 +73,10 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Pages can sit in updating_pages for a long time when GitHub's Pages
+    # backend is degraded. A job timeout cancels the pending deployment, so
+    # give it room; deploy-pages below polls for up to 25 minutes.
+    timeout-minutes: 30
     permissions:
       pages: write
       id-token: write
@@ -86,3 +89,5 @@ jobs:
           enablement: true
       - id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+        with:
+          timeout: 1500000
