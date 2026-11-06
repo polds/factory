@@ -139,6 +139,12 @@ spec:
             {{- with .Values.controlPlane.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- if .Values.controlPlane.secretProjection.enabled }}
+            - name: FACTORY_SECRET_MOUNT_DIR
+              value: {{ .Values.controlPlane.secretProjection.mountPath | quote }}
+            - name: FACTORY_SECRET_ALLOWLIST
+              value: {{ include "factory.secretProjectionAllowlist" . | quote }}
+            {{- end }}
           {{- with .Values.controlPlane.extraEnvFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}
@@ -181,6 +187,11 @@ spec:
             {{- with .Values.controlPlane.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- if .Values.controlPlane.secretProjection.enabled }}
+            - name: projected-secrets
+              mountPath: {{ .Values.controlPlane.secretProjection.mountPath | quote }}
+              readOnly: true
+            {{- end }}
       volumes:
         {{- if .Values.operator.enabled }}
         - name: definition
@@ -192,6 +203,21 @@ spec:
         {{- end }}
         {{- with .Values.controlPlane.extraVolumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.controlPlane.secretProjection.enabled }}
+        - name: projected-secrets
+          projected:
+            defaultMode: 384
+            sources:
+            {{- range .Values.controlPlane.secretProjection.sources }}
+              - secret:
+                  name: {{ required "secretProjection.sources[].secretName" .secretName | quote }}
+                  items:
+                  {{- range .items }}
+                    - key: {{ required "key" .key | quote }}
+                      path: {{ required "path" .path | quote }}
+                  {{- end }}
+            {{- end }}
         {{- end }}
 {{- if .Values.controlPlane.ingress.enabled }}
 ---

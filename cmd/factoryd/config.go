@@ -12,14 +12,17 @@ import (
 	"github.com/polds/factory/internal/artifacts"
 	"github.com/polds/factory/internal/forge/github"
 	"github.com/polds/factory/internal/inference"
+	"github.com/polds/factory/internal/secrets"
 	"github.com/polds/factory/internal/server"
 )
 
 type processConfig struct {
-	server  server.Config
-	addr    string
-	level   slog.Level
-	secrets []string
+	server         server.Config
+	addr           string
+	level          slog.Level
+	secrets        []string
+	secretMount    server.SecretMountSettings
+	secretResolver secrets.Resolver
 }
 
 func configFromEnv(getenv func(string) string, environ []string) (processConfig, error) {
@@ -95,6 +98,11 @@ func configFromEnv(getenv func(string) string, environ []string) (processConfig,
 	if err != nil {
 		return processConfig{}, err
 	}
+	secretMount := server.ParseSecretMountSettings(getenv)
+	resolver, err := secretMount.BuildResolver(secrets)
+	if err != nil {
+		return processConfig{}, err
+	}
 	return processConfig{
 		server: server.Config{
 			DatabaseURL:           strings.TrimSpace(getenv("FACTORY_DATABASE_URL")),
@@ -147,9 +155,11 @@ func configFromEnv(getenv func(string) string, environ []string) (processConfig,
 			SamplerInterval:            samplerEvery,
 			ImprovementInterval:        improveEvery,
 		},
-		addr:    httpAddr(getenv),
-		level:   logLevel(getenv("FACTORY_LOG_LEVEL")),
-		secrets: hidden,
+		addr:           httpAddr(getenv),
+		level:          logLevel(getenv("FACTORY_LOG_LEVEL")),
+		secrets:        hidden,
+		secretMount:    secretMount,
+		secretResolver: resolver,
 	}, nil
 }
 
@@ -210,6 +220,13 @@ func secretsFrom(environ []string) map[string]string {
 		}
 		name := strings.TrimPrefix(key, prefix)
 		if name == "" {
+			continue
+		}
+		// Mount path and allowlist are configuration, not secret material.
+		// They share the FACTORY_SECRET_ prefix with real values and must
+		// not land in Config.Secrets (task env and redaction needles).
+		switch name {
+		case "MOUNT_DIR", "ALLOWLIST":
 			continue
 		}
 		out[name] = val

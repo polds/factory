@@ -62,7 +62,11 @@ func TestTaskServerURLDefault(t *testing.T) {
 		default:
 			return ""
 		}
-	}, []string{"FACTORY_SECRET_GH_TOKEN=planted-secret-value"})
+	}, []string{
+		"FACTORY_SECRET_GH_TOKEN=planted-secret-value",
+		"FACTORY_SECRET_MOUNT_DIR=/var/run/factory/secrets",
+		"FACTORY_SECRET_ALLOWLIST=SCAN_GITHUB_TOKEN",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +75,12 @@ func TestTaskServerURLDefault(t *testing.T) {
 	}
 	if cfg.server.Secrets["GH_TOKEN"] != "planted-secret-value" {
 		t.Fatal("secret name was not taken from FACTORY_SECRET_")
+	}
+	if _, ok := cfg.server.Secrets["MOUNT_DIR"]; ok {
+		t.Fatal("MOUNT_DIR must not enter Secrets")
+	}
+	if _, ok := cfg.server.Secrets["ALLOWLIST"]; ok {
+		t.Fatal("ALLOWLIST must not enter Secrets")
 	}
 	if !cfg.server.S3.PathStyle || cfg.server.S3.Region != "us-east-1" || cfg.addr != ":8080" {
 		t.Fatalf("s3 path %v region %s addr %s", cfg.server.S3.PathStyle, cfg.server.S3.Region, cfg.addr)

@@ -397,6 +397,18 @@ Shipped behavior where it differs from the sketch above:
   `terminationGracePeriodSeconds: 600` is the pod grace described above, not a
   600s process drain.
 
+## Scan security (M10-S, opt-in)
+
+G14/G18 **foundations** add optional Helm values only; defaults are unchanged:
+
+| Value | Purpose |
+| --- | --- |
+| `controlPlane.secretProjection.enabled` | Projected Kubernetes secret files at `FACTORY_SECRET_MOUNT_DIR` for resolver mounts |
+| `scanSecurity.enabled` | Emit synthetic enforcement helpers (NetworkPolicy template when egress is enabled) |
+| `scanSecurity.egress.networkPolicy` | Baseline deny-metadata egress policy in task namespaces |
+
+See [11-security-deployment.md](11-security-deployment.md). Helm template and kind smoke **do not** attest the live Docker acceptance host; M10-G owns that gate.
+
 ## GitOps
 
 Both modes work under ArgoCD/Flux, with one caveat each:

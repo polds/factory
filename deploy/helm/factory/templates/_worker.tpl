@@ -149,11 +149,15 @@ backend:
     teardown_command: |-
       {{- $kb.teardownCommand | nindent 6 }}
     {{- end }}
-    {{- if $kb.extraLabels }}
-    {{- if gt (len $kb.extraLabels) 0 }}
+    {{- $scanTask := and $root.Values.scanSecurity.enabled $root.Values.scanSecurity.egress.networkPolicy }}
+    {{- if or $scanTask (and $kb.extraLabels (gt (len $kb.extraLabels) 0)) }}
     extra_labels:
+      {{- if $scanTask }}
+      factory.dev/scan-task: "true"
+      {{- end }}
+      {{- if and $kb.extraLabels (gt (len $kb.extraLabels) 0) }}
       {{- toYaml $kb.extraLabels | nindent 6 }}
-    {{- end }}
+      {{- end }}
     {{- end }}
     {{- if $kb.extraAnnotations }}
     {{- if gt (len $kb.extraAnnotations) 0 }}
