@@ -444,6 +444,24 @@ not reproduce under manual testing.
 
 Native mode freezes `reportsTo` and `spawnableBy` on the invocation. Delegate, park, wake, join, and cancel run in one transaction with the refusal. Only the stage owner reaches `advanceAfterTerminal`. Ancestor budgets reserve, settle, and alert in integer cents. The Claude Code tools `native_delegate` and `native_wait` call those production routes. `spike/m9/run.sh` is offline only and drives the adapter through the real server with Linear absent.
 
+## M10-A — Offline scanner acceptance
+
+Synthetic native acceptance only. A green offline run is not scanner acceptance, and the actual backend is not determinable. `paidProbeAllowed` stays false. INV-GATEWAY, INV-SECURITY-GATE, and INV-ATTESTATION stay GAP until M10-G.
+
+```bash
+MODE=offline ./spike/m10/run.sh
+```
+
+The driver prints `m10 offline PASS`. The same definition covers two schedule slots and one pinned pull-request input. Zero findings are valid. Linear configuration is refused. The optional bridge `factory-outbound-bridge` stays disabled and `sendCount` stays 0. Details and the blocked live rows are in `docs/15-native-scanner-acceptance.md`.
+
+`.github/workflows/m10-live.yml` is manual and fail-closed. Job `gate` waits on environment `m10-live` and a `confirm` input of `m10-live`. It has not been dispatched. There is no live run id. It does not deploy a schedule against a live host.
+
+| Row | State | Run ID |
+| --- | --- | --- |
+| Backend attestation | absent | none |
+| `paidProbeAllowed` | false | none |
+| `m10-live` dispatch | not dispatched | none |
+
 ## Open questions to resolve with measurement
 
 - Scheduler policy (U3) is inferred. Instrument time-to-assignment and reject

@@ -1502,10 +1502,10 @@
       "method": "scanner.NativeBrief",
       "fieldPath": "taskRef",
       "baseline": {
-        "file": "internal/normalize/linear/doc.go",
-        "start": 18,
-        "end": 18,
-        "anchor": "linear_issue"
+        "file": "internal/normalize/linear/native_brief.go",
+        "start": 27,
+        "end": 38,
+        "anchor": "SyntheticNativeBrief"
       },
       "decision": "Native scanner mode uses task_ref. linear_issue is null and Linear is not required.",
       "testOwner": "M10-A",
@@ -1514,32 +1514,36 @@
     },
     {
       "invariant": "INV-LOCAL-CLI",
-      "title": "GAP: local CLI mode stays available and does not require Linear or a Factory task ref. harness/run.go rejects an unknown harness adapter and does not implement that mode.",
+      "title": "Local CLI mode stays available and does not require Linear or a Factory task ref.",
       "consumer": "M10-A",
       "producer": "M10-A",
       "method": "scanner.LocalCLI",
       "fieldPath": "mode",
       "baseline": {
-        "status": "gap",
-        "gap": "No scanner local-CLI mode exists in this repository."
+        "file": "deploy/native-scan/localcli.go",
+        "start": 5,
+        "end": 6,
+        "anchor": "local_cli"
       },
-      "decision": "GAP: local CLI mode stays available and does not require Linear or a Factory task ref. harness/run.go rejects an unknown harness adapter and does not implement that mode.",
+      "decision": "Local CLI mode stays available and does not require Linear or a Factory task ref.",
       "testOwner": "M10-A",
       "positive": "INV-LOCAL-CLI",
       "negative": "INV-LOCAL-CLI-BAD"
     },
     {
       "invariant": "INV-ART",
-      "title": "GAP: each item gets its own workspace mount and there is no shared writable ART root. This tree has no ART mounter.",
+      "title": "Each item gets its own workspace mount and there is no shared writable ART root.",
       "consumer": "M10-A",
       "producer": "M10-A",
       "method": "scanner.MountWorkspace",
       "fieldPath": "art.perItem",
       "baseline": {
-        "status": "gap",
-        "gap": "No per-item ART mount exists in this repository."
+        "file": "deploy/native-scan/mount.go",
+        "start": 86,
+        "end": 109,
+        "anchor": "sharedArtRoot"
       },
-      "decision": "GAP: each item gets its own workspace mount and there is no shared writable ART root. This tree has no ART mounter.",
+      "decision": "Each item gets its own workspace mount and there is no shared writable ART root.",
       "testOwner": "M10-A",
       "positive": "INV-ART",
       "negative": "INV-ART-BAD"
@@ -1564,16 +1568,18 @@
     },
     {
       "invariant": "INV-BRIDGE",
-      "title": "GAP: one outbound owner, disabled unless a send is authorized. Outage queues reporting and does not block execution. followUp sets StageBuilding. internal/outbound posts work-item status cards. Neither is factory-outbound-bridge.",
+      "title": "One outbound owner, factory-outbound-bridge, stays disabled unless a send is authorized. Outage queues reporting and does not block execution.",
       "consumer": "M10-A",
       "producer": "M10-A",
       "method": "outbound.Enqueue",
       "fieldPath": "owners,sendAuthorized",
       "baseline": {
-        "status": "gap",
-        "gap": "No scanner outbound bridge exists. followUp sets StageBuilding."
+        "file": "internal/outbound/bridge.go",
+        "start": 12,
+        "end": 13,
+        "anchor": "factory-outbound-bridge"
       },
-      "decision": "GAP: one outbound owner, disabled unless a send is authorized. Outage queues reporting and does not block execution. followUp sets StageBuilding. internal/outbound posts work-item status cards. Neither is factory-outbound-bridge.",
+      "decision": "One outbound owner, factory-outbound-bridge, stays disabled unless a send is authorized. Outage queues reporting and does not block execution.",
       "testOwner": "M10-A",
       "positive": "INV-BRIDGE",
       "negative": "INV-BRIDGE-BAD"

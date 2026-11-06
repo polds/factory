@@ -29,6 +29,9 @@
 #   m5 offline e2e         MODE=offline ./spike/m5/run.sh
 #   m6 offline e2e         MODE=offline ./spike/m6/run.sh
 #   m7 offline e2e         MODE=offline ./spike/m7/run.sh
+#   m8 offline e2e         MODE=offline ./spike/m8/run.sh
+#   m9 offline e2e         MODE=offline ./spike/m9/run.sh
+#   m10 offline e2e        MODE=offline ./spike/m10/run.sh
 #   helm                   chart goldens, operator render, kubeconform
 #   task image platform    task and harness images built for linux/arm64
 #   upcoming languages     TypeScript, Python, SQL, Helm, JSON Schema
@@ -52,6 +55,7 @@
 #   m5 live                .github/workflows/m5-live.yml (workflow_dispatch)
 #   m6 live                .github/workflows/m6-live.yml (workflow_dispatch)
 #   m7 live                .github/workflows/m7-live.yml (workflow_dispatch)
+#   m10 live               .github/workflows/m10-live.yml (workflow_dispatch, fail closed)
 name: ci
 
 on:
@@ -642,6 +646,101 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
 
+  m8-offline:
+    name: m8 offline e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FACTORY_TEST_DATABASE_URL: postgres://postgres:t@127.0.0.1:5432/factory?sslmode=disable
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: t
+          POSTGRES_DB: factory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d factory"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run the offline M8 driver
+        run: MODE=offline ./spike/m8/run.sh
+
+  m9-offline:
+    name: m9 offline e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FACTORY_TEST_DATABASE_URL: postgres://postgres:t@127.0.0.1:5432/factory?sslmode=disable
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: t
+          POSTGRES_DB: factory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d factory"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run the offline M9 driver
+        run: MODE=offline ./spike/m9/run.sh
+
+  m10-offline:
+    name: m10 offline e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FACTORY_TEST_DATABASE_URL: postgres://postgres:t@127.0.0.1:5432/factory?sslmode=disable
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: t
+          POSTGRES_DB: factory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d factory"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run m10 mode and preflight tests
+        run: bash spike/m10/run_test.sh
+      - name: Run the offline M10 driver
+        run: MODE=offline ./spike/m10/run.sh
+
   helm:
     name: helm
     runs-on: ubuntu-latest
@@ -868,6 +967,9 @@ jobs:
       - m5-offline
       - m6-offline
       - m7-offline
+      - m8-offline
+      - m9-offline
+      - m10-offline
       - helm
       - task-image-arch
       - upcoming-languages
@@ -898,6 +1000,9 @@ jobs:
           M5_OFFLINE: ${{ needs.m5-offline.result }}
           M6_OFFLINE: ${{ needs.m6-offline.result }}
           M7_OFFLINE: ${{ needs.m7-offline.result }}
+          M8_OFFLINE: ${{ needs.m8-offline.result }}
+          M9_OFFLINE: ${{ needs.m9-offline.result }}
+          M10_OFFLINE: ${{ needs.m10-offline.result }}
           HELM: ${{ needs.helm.result }}
           TASK_IMAGE_ARCH: ${{ needs.task-image-arch.result }}
           UPCOMING: ${{ needs.upcoming-languages.result }}
@@ -938,6 +1043,9 @@ jobs:
           report "m5 offline e2e" "${M5_OFFLINE}"
           report "m6 offline e2e" "${M6_OFFLINE}"
           report "m7 offline e2e" "${M7_OFFLINE}"
+          report "m8 offline e2e" "${M8_OFFLINE}"
+          report "m9 offline e2e" "${M9_OFFLINE}"
+          report "m10 offline e2e" "${M10_OFFLINE}"
           report "helm" "${HELM}"
           report "task image platform" "${TASK_IMAGE_ARCH}"
           report "upcoming languages" "${UPCOMING}"

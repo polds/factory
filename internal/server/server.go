@@ -23,6 +23,7 @@ import (
 	"github.com/polds/factory/internal/gateway"
 	"github.com/polds/factory/internal/inference"
 	"github.com/polds/factory/internal/invocation"
+	"github.com/polds/factory/internal/outbound"
 	"github.com/polds/factory/internal/scheduler"
 	"github.com/polds/factory/internal/store"
 )
@@ -180,6 +181,11 @@ type Server struct {
 	// PinTarget resolves invocation target SHAs. Tests and offline drivers set it.
 	PinTarget func(context.Context, *invocation.Target) (headSHA, baseSHA string, err error)
 
+	// bridge is the optional native publication owner. It stays disabled
+	// unless enabled and a send policy are both on. Queue, binding, and
+	// replay state are in Postgres.
+	bridge *outbound.Bridge
+
 	// afterWorkerConnect runs at the end of WorkerConnected, after the
 	// gateway has registered the socket. Nil in production. A test waits
 	// on it so a reconnect is visible before the sweep.
@@ -287,10 +293,13 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
+	bridge := outbound.NewBridge()
+	bridge.BindStore(st)
 	s := &Server{
 		cfg:          cfg,
 		log:          cfg.Log,
 		store:        st,
+		bridge:       bridge,
 		db:           pool,
 		leader:       leader,
 		session:      session,

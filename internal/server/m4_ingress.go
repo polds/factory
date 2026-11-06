@@ -108,6 +108,9 @@ var (
 )
 
 func (s *Server) handleDelivery(ctx context.Context, d ingress.Delivery) (bool, error) {
+	if RouteBridgeEcho(d) {
+		return false, ingress.ErrIgnored
+	}
 	evs, err := normalizeDelivery(d)
 	if err != nil {
 		return false, err

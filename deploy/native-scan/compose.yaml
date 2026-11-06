@@ -1,0 +1,37 @@
+# Hardened dedicated Docker sample for the synthetic scanner definition.
+# The offline driver does not apply this file. m10-live does not apply it.
+# Retention: published reports live under the host retention directory for
+# 168h and survive deletion of the item workspace. Each item has its own
+# workspace volume and its own art volume. There is no shared writable
+# checkout. network_mode none keeps this sample from being scheduled onto
+# a live host as written. Actual host firewall proof is M10-G.
+services:
+  item-a:
+    image: factory-scanner-stub:local
+    read_only: true
+    network_mode: none
+    volumes:
+      - type: volume
+        source: item-a-workspace
+        target: /workspace
+        read_only: true
+      - type: volume
+        source: item-a-art
+        target: /items/item-a/art
+  item-b:
+    image: factory-scanner-stub:local
+    read_only: true
+    network_mode: none
+    volumes:
+      - type: volume
+        source: item-b-workspace
+        target: /workspace
+        read_only: true
+      - type: volume
+        source: item-b-art
+        target: /items/item-b/art
+volumes:
+  item-a-workspace:
+  item-a-art:
+  item-b-workspace:
+  item-b-art:

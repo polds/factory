@@ -47,3 +47,15 @@ paidProbeAllowed = false   # until M10-G on the actual backend
 ```
 
 Helm render, kind smoke, and synthetic PASS lines in CI are development signals only—not approval to run paid scanner probes.
+
+## Native scan backend (M10-A)
+
+`deploy/native-scan/` is the offline dedicated-backend sample: per-item workspace and art mounts, no shared writable checkout, no shared `/art` root, and no host socket or broad secret in the committed sample. Reports are retained for 168h and survive item-workspace removal. `deploy/native-scan/compose.yaml` uses `network_mode: none` and is not applied by the offline driver or by `.github/workflows/m10-live.yml`.
+
+The no-network preflight names every check and refuses an absent or stale attestation, a wrong SHA, image, or adapter, a missing capability, credential name, or grant, `execute_target`, insecure mounts, and a private image fetch before any model probe:
+
+```bash
+bash spike/m10/preflight.sh live
+```
+
+That command prints `model_probe count=0` and `m10 preflight live blocked`, then exits 1. `paidProbeAllowed` remains false. Synthetic security checks stay in `scripts/ci/scan-security-check.sh`, separate from scanner or model startup. See `docs/15-native-scanner-acceptance.md`.
