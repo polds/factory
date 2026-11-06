@@ -48,12 +48,12 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 	env := make(map[string]string, len(allow)+12)
 	var values []string
 	for _, name := range allow {
-		value, ok := s.cfg.Secrets[name]
-		if !ok || value == "" {
-			return nil, fmt.Errorf("server: secret %s is not configured", name)
+		value, err := s.resolveInjectedSecret(ctx, name)
+		if err != nil || value == "" {
+			return nil, fmt.Errorf("server: secret %s is not configured: %w", name, err)
 		}
 		if name == "GH_TOKEN" && s.cfg.GitHubTokenMode == tokenModeApp {
-			minted, err := s.mintRunToken(ctx, run)
+			minted, err := s.mintRunToken(ctx, run, bound)
 			if err != nil {
 				return nil, err
 			}
@@ -87,20 +87,20 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 	env["FACTORY_EVENTS_URL"] = base + "/api/v1/agent/runs/" + run.ID + "/events:ingest"
 	env["FACTORY_RUN_TOKEN"] = token
 	values = append(values, token)
-	if s.cfg.InferenceBaseURL != "" {
+	if s.cfg.InferenceBaseURL != "" && !s.omitAmbientInference(run, bound) {
 		env["OPENAI_BASE_URL"] = s.cfg.InferenceBaseURL
 	}
-	if s.cfg.InferenceAPIKey != "" {
+	if s.cfg.InferenceAPIKey != "" && !s.omitAmbientInference(run, bound) {
 		env["OPENAI_API_KEY"] = s.cfg.InferenceAPIKey
 		values = append(values, s.cfg.InferenceAPIKey)
 	}
 	// The upstream worker copies EnvVars into the task container. The
 	// harness reads this variable on every model call, including review.
-	if formatted := inference.Format(s.cfg.InferenceExtraHeaders); formatted != "" {
+	if formatted := inference.Format(s.cfg.InferenceExtraHeaders); formatted != "" && !s.omitAmbientInference(run, bound) {
 		env[inference.ExtraHeadersEnv] = formatted
 		values = append(values, inference.Values(s.cfg.InferenceExtraHeaders)...)
 	}
-	env["FACTORY_SECRET_VALUES"] = strings.Join(harness.RedactionNeedles(values), "\n")
+	env["FACTORY_SECRET_VALUES"] = strings.Join(harness.RedactionNeedles(s.redactionValues(values)), "\n")
 	// The task image has no git user (arbitrary uid, empty global config).
 	// Git reads these instead of user.name, so the first commit can succeed.
 	// An allowlisted secret of the same name is already in env and wins.
@@ -208,6 +208,9 @@ func (s *Server) assignment(ctx context.Context, run store.Run, exec store.Execu
 	if pinned, pinErr := s.invocationCheckoutOverrides(ctx, run.WorkItemID); pinErr == nil && len(pinned) > 0 {
 		asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides = append(
 			asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides, pinned...)
+	}
+	if s.readOnlyForgeTarget(run) || readOnlyHarness(bound.agent.Harness) {
+		asg = applyUntrustedConstraints(asg)
 	}
 	return asg
 }

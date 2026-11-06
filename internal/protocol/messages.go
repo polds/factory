@@ -197,6 +197,17 @@ type AgentConfigSnapshot struct {
 	SnapshotUploadTimeoutSecs *int                       `json:"snapshot_upload_timeout_secs,omitempty"`
 	SnapshotScriptTimeoutSecs *int                       `json:"snapshot_script_timeout_secs,omitempty"`
 	RepositoryHeadOverrides   []RepositoryHeadOverride   `json:"repository_head_overrides,omitempty"`
+	// NativeConstraints is set for scanner and native assignments.
+	NativeConstraints *NativeRunConstraints `json:"native_constraints,omitempty"`
+}
+
+// NativeRunConstraints is the untrusted scanner posture. Coding assignments leave it nil.
+type NativeRunConstraints struct {
+	DockerSocket         bool `json:"docker_socket"`
+	ForeignCheckoutWrite bool `json:"foreign_checkout_write"`
+	BroadSecretMount     bool `json:"broad_secret_mount"`
+	NegotiatedSteer      bool `json:"negotiated_steer"`
+	ReadOnlyForge        bool `json:"read_only_forge"`
 }
 
 // Harness selects a third-party harness. Nil, empty, or "oz" means the built-in harness.

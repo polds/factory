@@ -118,8 +118,8 @@ func Run(ctx context.Context, opt Options) int {
 	if name == "" {
 		name = adapterName
 	}
-	if name != adapterName {
-		return finish(ExitConfigInvalid, "config_invalid", fmt.Sprintf("harness adapter %q is not in this build", name))
+	if code, ok := routeAdapter(ctx, name, opt, inv, task, log, finish); ok {
+		return code
 	}
 
 	model := inv.Model()

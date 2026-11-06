@@ -89,6 +89,7 @@ func (s *Server) redact(text string) string {
 	for _, value := range s.cfg.Secrets {
 		secretVals = append(secretVals, value)
 	}
+	secretVals = append(secretVals, s.secretRedactor().Needles()...)
 	secretVals = append(secretVals, inference.Values(s.cfg.InferenceExtraHeaders)...)
 	needles := harness.RedactionNeedles(secretVals)
 	sort.Slice(needles, func(i, j int) bool { return len(needles[i]) > len(needles[j]) })

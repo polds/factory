@@ -340,7 +340,7 @@ func (s *Server) githubCollaborator(ctx context.Context, owner, name, handle str
 	}
 }
 
-func (s *Server) mintGitHubToken(ctx context.Context, run store.Run) (string, error) {
+func (s *Server) mintGitHubToken(ctx context.Context, run store.Run, bound boundAgent) (string, error) {
 	if s.integ.githubApp == nil {
 		return "", errors.New("server: github token: app is not configured")
 	}
@@ -352,7 +352,7 @@ func (s *Server) mintGitHubToken(ctx context.Context, run store.Run) (string, er
 	if err != nil {
 		return "", fmt.Errorf("server: github token: %w", err)
 	}
-	tok, err := s.integ.githubApp.InstallationToken(ctx, id, repos, ghclient.DefaultPermissions())
+	tok, err := s.installToken(ctx, id, repos, run, bound, ghclient.DefaultPermissions)
 	if err != nil {
 		return "", fmt.Errorf("server: github token: %w", err)
 	}
@@ -430,10 +430,6 @@ func githubSlug(s string) bool {
 // credential and never includes its value.
 type secretSource struct{ s *Server }
 
-func (a secretSource) Secret(_ context.Context, name string) (string, error) {
-	value, ok := a.s.cfg.Secrets[name]
-	if !ok || value == "" {
-		return "", fmt.Errorf("server: secret %s is not configured", name)
-	}
-	return value, nil
+func (a secretSource) Secret(ctx context.Context, name string) (string, error) {
+	return a.s.resolveInjectedSecret(ctx, name)
 }

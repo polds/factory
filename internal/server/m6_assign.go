@@ -191,6 +191,7 @@ func (s *Server) secretMaterial() []string {
 	if s.cfg.InferenceAPIKey != "" {
 		out = append(out, s.cfg.InferenceAPIKey)
 	}
+	out = append(out, s.secretRedactor().Needles()...)
 	return out
 }
 
