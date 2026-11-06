@@ -366,6 +366,7 @@ var (
 	_ api.InputBackend           = apiFacade{}
 	_ api.IngressMounts          = apiFacade{}
 	_ api.ConsoleBackend         = apiFacade{}
+	_ api.InvocationBackend      = apiFacade{}
 	_ api.DefinitionTreeApplier  = apiFacade{}
 	_ api.SteerHistory           = apiFacade{}
 	_ api.WebhookDeliveryBackend = apiFacade{}

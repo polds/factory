@@ -14,12 +14,15 @@ import (
 	"github.com/polds/factory/internal/definition"
 	"github.com/polds/factory/internal/events"
 	"github.com/polds/factory/internal/protocol"
+	"github.com/polds/factory/internal/result"
 	"github.com/polds/factory/internal/store"
 )
 
 const (
 	reasonNoWorkProduct  = "no_work_product"
 	summaryNoWorkProduct = "agent finished without opening a pull request"
+	reasonReportMissing  = "report_missing"
+	summaryReportMissing = "required report was not published"
 )
 
 // settleCancel makes a cancel-requested run terminal and records one
@@ -194,6 +197,24 @@ func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason,
 			SET state = $2, failure_reason = $3
 			WHERE id = $1`, execID, state, reason); err != nil {
 			return false, err
+		}
+	}
+	if !missing {
+		reportMissing, repErr := s.reportMissing(ctx, tx, runID, status)
+		if repErr != nil {
+			return false, repErr
+		}
+		if reportMissing {
+			status = store.StatusFailed
+			state = store.ExecFailed
+			reason = reasonReportMissing
+			summary = summaryReportMissing
+			if _, err := tx.Exec(ctx, `
+				UPDATE executions
+				SET state = $2, failure_reason = $3
+				WHERE id = $1`, execID, state, reason); err != nil {
+				return false, err
+			}
 		}
 	}
 	harness, err := harnessStatusTx(ctx, tx, runID)
@@ -584,6 +605,69 @@ func pullRequestMissingDecision(agentID string, known, opted bool, n int, readEr
 		return agentID != "", nil
 	}
 	return opted, nil
+}
+
+func (s *Server) reportMissing(ctx context.Context, tx pgx.Tx, runID, status string) (bool, error) {
+	if status != store.StatusSucceeded {
+		return false, nil
+	}
+	var agentID, workItemID string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(agent_id, ''), COALESCE(work_item_id, '') FROM runs WHERE id = $1`, runID).Scan(&agentID, &workItemID); err != nil {
+		return false, err
+	}
+	opted, known, err := s.agentRequiresReport(ctx, tx, agentID)
+	if err != nil || !opted {
+		return false, err
+	}
+	if !known {
+		return true, nil
+	}
+	var invocationID string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(invocation_id, '') FROM work_items WHERE id = $1`, workItemID).Scan(&invocationID); err != nil {
+		return false, err
+	}
+	if invocationID == "" {
+		return true, nil
+	}
+	var count int
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM invocation_results WHERE invocation_id = $1`, invocationID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	if count == 0 {
+		return true, nil
+	}
+	var coverage string
+	var findings int
+	err = tx.QueryRow(ctx, `
+		SELECT coverage_status, findings_count FROM invocation_results WHERE invocation_id = $1`, invocationID).Scan(&coverage, &findings)
+	if err != nil {
+		return false, err
+	}
+	return result.ValidateTerminal(true, true, findings, coverage) != nil, nil
+}
+
+func (s *Server) agentRequiresReport(ctx context.Context, tx pgx.Tx, agentID string) (opted, known bool, err error) {
+	if agentID == "" {
+		return false, true, nil
+	}
+	snap := s.snapshot()
+	if bound, ok := snap.byID[agentID]; ok {
+		return definition.RequiresReport(bound.agent), true, nil
+	}
+	var name string
+	err = tx.QueryRow(ctx, `SELECT name FROM agents WHERE id = $1`, agentID).Scan(&name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	id, ok := snap.byName[name]
+	if !ok {
+		return false, false, nil
+	}
+	return definition.RequiresReport(snap.byID[id].agent), true, nil
 }
 
 // dbQuerier is the subset of pgx.Tx and *pgxpool.Pool that can read pull URLs.

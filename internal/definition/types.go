@@ -285,6 +285,10 @@ type Agent struct {
 // pull request URL was recorded.
 const RequirePullRequest = "pullRequest"
 
+// RequireReport is the durable report product an agent opts into with
+// requires: [report]. It ships only together with storage and validation.
+const RequireReport = "report"
+
 // Harness is an explicit harness block. It is mutually exclusive with Model.
 type Harness struct {
 	Type  string       `json:"type,omitempty"`

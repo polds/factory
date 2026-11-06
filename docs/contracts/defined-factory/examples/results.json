@@ -262,7 +262,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "GAP: publication rejects absolute paths, backslashes, and .. segments. No result publisher exists. archive writes runs/{run}/{exec}/events.ndjson and does not check paths.",
+      "title": "Publication rejects absolute paths, backslashes, and .. segments.",
       "document": {
         "code": null,
         "path": "reports/scan.json",
@@ -276,7 +276,7 @@
       "rejectBy": "formula",
       "code": "INV-PATH",
       "schema": "scenario",
-      "title": "GAP: publication rejects absolute paths, backslashes, and .. segments. No result publisher exists. archive writes runs/{run}/{exec}/events.ndjson and does not check paths.",
+      "title": "Publication rejects absolute paths, backslashes, and .. segments.",
       "document": {
         "code": null,
         "path": "../secret",
@@ -290,7 +290,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "GAP: a lexically safe path that is a symlink is result_symlink_rejected. defsync.rejectSymlinks rejects symlinks in a definition tree, not a result path.",
+      "title": "A lexically safe path that is a symlink is result_symlink_rejected.",
       "document": {
         "code": "result_symlink_rejected",
         "path": "reports/scan.json",
@@ -305,7 +305,7 @@
       "rejectBy": "formula",
       "code": "INV-SYMLINK",
       "schema": "scenario",
-      "title": "GAP: a lexically safe path that is a symlink is result_symlink_rejected. defsync.rejectSymlinks rejects symlinks in a definition tree, not a result path.",
+      "title": "A lexically safe path that is a symlink is result_symlink_rejected.",
       "document": {
         "code": "result_symlink_rejected",
         "path": "reports/scan.json",
@@ -320,7 +320,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "GAP: report bodies are at most 1 MiB and artifact files at most 16 MiB. archive stores the events transcript with no result size cap.",
+      "title": "Report bodies are at most 1 MiB and artifact files at most 16 MiB.",
       "document": {
         "artifactMaxBytes": 16777216,
         "code": null,
@@ -336,7 +336,7 @@
       "rejectBy": "formula",
       "code": "INV-SIZE",
       "schema": "scenario",
-      "title": "GAP: report bodies are at most 1 MiB and artifact files at most 16 MiB. archive stores the events transcript with no result size cap.",
+      "title": "Report bodies are at most 1 MiB and artifact files at most 16 MiB.",
       "document": {
         "artifactMaxBytes": 16777216,
         "code": null,

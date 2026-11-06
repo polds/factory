@@ -22,6 +22,8 @@ import type {
   ImprovementRunNow,
   InboxItem,
   InputAnswer,
+  InvocationCreate,
+  InvocationReceipt,
   Problem,
   Run,
   RunDetail,
@@ -360,6 +362,13 @@ export class ConsoleClient {
 
   createTask(factoryId: string, body: TaskCreate): Promise<Task> {
     return this.request(`/api/v1/factory/${segment(factoryId)}/tasks`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  createInvocation(factoryId: string, body: InvocationCreate): Promise<InvocationReceipt> {
+    return this.request(`/api/v1/factory/${segment(factoryId)}/invocations`, {
       method: "POST",
       body: JSON.stringify(body),
     });

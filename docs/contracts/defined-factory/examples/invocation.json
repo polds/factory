@@ -430,7 +430,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "GAP: a profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected and write nothing. WeakensApprovals compares approval gates and does not see a profile.",
+      "title": "A profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected and write nothing.",
       "document": {
         "injectionRejected": {
           "accepted": false,
@@ -455,7 +455,7 @@
       "rejectBy": "formula",
       "code": "INV-PROFILE",
       "schema": "scenario",
-      "title": "GAP: a profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected and write nothing. WeakensApprovals compares approval gates and does not see a profile.",
+      "title": "A profile selects reviewed defaults. Injected budget, code, credentials, or grants are profile_rejected and write nothing.",
       "document": {
         "injectionRejected": {
           "accepted": true,
@@ -510,7 +510,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "GAP: execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing. WeakensApprovals compares approval gates and is not that check.",
+      "title": "execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing.",
       "document": {
         "code": "grant_rejected",
         "executeTargetRequested": true,
@@ -526,7 +526,7 @@
       "rejectBy": "formula",
       "code": "INV-GRANT",
       "schema": "scenario",
-      "title": "GAP: execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing. WeakensApprovals compares approval gates and is not that check.",
+      "title": "execute_target is a grant. Requesting it without the grant is grant_rejected and writes nothing.",
       "document": {
         "code": "grant_rejected",
         "executeTargetRequested": true,

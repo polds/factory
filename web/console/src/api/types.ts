@@ -281,6 +281,20 @@ export type TaskCreate = {
   source_ref?: string;
 };
 
+export type InvocationCreate = {
+  sourceOccurrenceKey: string;
+  intent: "new" | "continue" | "wake";
+  priority: "interactive" | "batch";
+  profile?: { name: string };
+  inputs?: Record<string, unknown>;
+};
+
+export type InvocationReceipt = {
+  invocationId: string;
+  workItemId?: string;
+  links: { self: string; result?: string };
+};
+
 export type Approval = {
   id: string;
   work_item_id: string;

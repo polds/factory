@@ -36,6 +36,8 @@ func execute(args []string, stdout, stderr io.Writer, getenv func(string) string
 		return cmdCRDs(args[1:], stdout, stderr)
 	case "task":
 		return cmdTask(args[1:], stdout, stderr, getenv)
+	case "invoke":
+		return cmdInvoke(args[1:], stdout, stderr, getenv)
 	case "approvals":
 		return cmdApprovals(args[1:], stdout, stderr, getenv)
 	case "deliveries":
@@ -87,6 +89,7 @@ Commands:
   crds print
   crds apply [--dry-run]
   task create --factory NAME --title TEXT [--body TEXT] [--source issue|manual|api] [--ref REF]
+  invoke create --factory NAME --key KEY [--intent new|continue|wake] [--priority interactive|batch] [--profile NAME]
   task list --factory NAME [--stage STAGE] [--status STATUS]
   task get --factory NAME TASK_ID
   task cancel --factory NAME TASK_ID
