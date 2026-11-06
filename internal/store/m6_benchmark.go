@@ -175,13 +175,8 @@ func (s *Store) TrialCells(ctx context.Context, benchmarkRunID string) ([]TrialC
 	if benchmarkRunID == "" {
 		return nil, fmt.Errorf("store: benchmark run is required")
 	}
-	var one int
-	err := s.pool.QueryRow(ctx, `SELECT 1 FROM benchmark_runs WHERE id = $1`, benchmarkRunID).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("store: trial cells: %w", err)
+	if err := requireRow(ctx, s.pool, "store: trial cells", `SELECT 1 FROM benchmark_runs WHERE id = $1`, benchmarkRunID); err != nil {
+		return nil, err
 	}
 	trialRows, qerr := s.pool.Query(ctx, `
 		SELECT `+benchmarkTrialColumns+`
@@ -287,13 +282,8 @@ func (s *Store) ListBenchmarkTrials(ctx context.Context, benchmarkRunID string) 
 	if benchmarkRunID == "" {
 		return nil, fmt.Errorf("store: benchmark run is required")
 	}
-	var one int
-	err := s.pool.QueryRow(ctx, `SELECT 1 FROM benchmark_runs WHERE id = $1`, benchmarkRunID).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("store: list trials: %w", err)
+	if err := requireRow(ctx, s.pool, "store: list trials", `SELECT 1 FROM benchmark_runs WHERE id = $1`, benchmarkRunID); err != nil {
+		return nil, err
 	}
 	rows, qerr := s.pool.Query(ctx, `
 		SELECT `+benchmarkTrialColumns+`

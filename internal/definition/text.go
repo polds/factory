@@ -1,7 +1,9 @@
 package definition
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -12,8 +14,100 @@ var (
 	secretRefAny   = regexp.MustCompile(`\{\{[A-Z][A-Z0-9_]*\}\}`)
 	bearerValue    = regexp.MustCompile(`(?i)\bbearer\s+(\S+)`)
 	basicValue     = regexp.MustCompile(`(?i)\bbasic\s+(\S+)`)
-	tokenPrefix    = regexp.MustCompile(`(?:^|[^A-Za-z0-9])(?:sk-[A-Za-z0-9]|ghp_|github_pat_|gho_|glpat-|xox[baprs]-|AKIA[0-9A-Z]{16})`)
+	// tokenPattern is the union of the old boundary check and the inline
+	// redactor: no word boundary, and the class keeps '/' and short AKIA
+	// keys. ghs_ is not in either source pattern.
+	tokenPattern = regexp.MustCompile(`(?:sk-|ghp_|github_pat_|gho_|glpat-|xox[baprs]-|AKIA)[A-Za-z0-9_/+.=-]*`)
 )
+
+// CredentialKind is the pattern that produced a CredentialValue.
+type CredentialKind int
+
+const (
+	CredentialBearer CredentialKind = iota
+	CredentialBasic
+	CredentialToken
+)
+
+// CredentialValue is one matched credential. Formatting, JSON, and slog
+// omit the matched text.
+type CredentialValue struct {
+	Kind  CredentialKind
+	Value string
+}
+
+func (CredentialValue) String() string { return "[REDACTED]" }
+
+func (CredentialValue) GoString() string { return "[REDACTED]" }
+
+func (CredentialValue) Format(f fmt.State, _ rune) {
+	_, _ = f.Write([]byte("[REDACTED]"))
+}
+
+func (c CredentialValue) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Kind string `json:"kind"`
+	}{Kind: c.kindName()})
+}
+
+func (c CredentialValue) LogValue() slog.Value {
+	return slog.StringValue(c.kindName())
+}
+
+func (c CredentialValue) kindName() string {
+	switch c.Kind {
+	case CredentialBearer:
+		return "bearer"
+	case CredentialBasic:
+		return "basic"
+	case CredentialToken:
+		return "token"
+	default:
+		panic(fmt.Sprintf("definition: unhandled credential kind %d", int(neverCredential(c.Kind))))
+	}
+}
+
+func neverCredential(kind CredentialKind) CredentialKind { return kind }
+
+// ExactSecretRef reports whether s is a whole {{SECRET_NAME}} reference.
+func ExactSecretRef(s string) bool { return secretRefExact.MatchString(s) }
+
+// CredentialValues lists bearer, basic, and token matches in s.
+// A bearer or basic value that is exactly {{SECRET_NAME}} is omitted.
+// A token that overlaps a {{SECRET_NAME}} span is omitted.
+func CredentialValues(s string) []CredentialValue {
+	var out []CredentialValue
+	out = append(out, authValues(s, bearerValue, CredentialBearer)...)
+	out = append(out, authValues(s, basicValue, CredentialBasic)...)
+	refs := secretRefAny.FindAllStringIndex(s, -1)
+	for _, span := range tokenPattern.FindAllStringIndex(s, -1) {
+		if overlaps(span, refs) {
+			continue
+		}
+		out = append(out, CredentialValue{Kind: CredentialToken, Value: s[span[0]:span[1]]})
+	}
+	return out
+}
+
+func authValues(s string, re *regexp.Regexp, kind CredentialKind) []CredentialValue {
+	var out []CredentialValue
+	for _, m := range re.FindAllStringSubmatch(s, -1) {
+		if len(m) != 2 || secretRefExact.MatchString(m[1]) {
+			continue
+		}
+		out = append(out, CredentialValue{Kind: kind, Value: m[1]})
+	}
+	return out
+}
+
+func overlaps(span []int, spans [][]int) bool {
+	for _, other := range spans {
+		if span[0] < other[1] && other[0] < span[1] {
+			return true
+		}
+	}
+	return false
+}
 
 // splitFrontmatter splits a Markdown document. opened is true when the file
 // starts with a --- fence, even if the closing fence is missing.
@@ -269,36 +363,46 @@ func InlineCredential(v string) bool {
 }
 
 func inlineCredential(v string) bool {
-	if m := bearerValue.FindStringSubmatch(v); m != nil && !secretRefExact.MatchString(m[1]) {
-		return true
-	}
-	if m := basicValue.FindStringSubmatch(v); m != nil && !secretRefExact.MatchString(m[1]) {
-		return true
-	}
-	stripped := secretRefAny.ReplaceAllString(v, "")
-	return tokenPrefix.MatchString(stripped)
+	return len(CredentialValues(v)) > 0
 }
 
-var inlineToken = regexp.MustCompile(`(?:sk-[A-Za-z0-9][A-Za-z0-9_/+.=-]*|ghp_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|gho_[A-Za-z0-9_]+|glpat-[A-Za-z0-9_\-]+|xox[baprs]-[A-Za-z0-9\-]+|AKIA[0-9A-Z]{16})`)
-
 // RedactInline replaces bearer, basic, and token-prefix credentials.
-// {{SECRET_NAME}} references are left in place.
+// {{SECRET_NAME}} references are left in place. Markers stay
+// "Bearer [REDACTED]", "Basic [REDACTED]", and "[REDACTED]".
 func RedactInline(s string) string {
-	s = bearerValue.ReplaceAllStringFunc(s, func(match string) string {
-		parts := bearerValue.FindStringSubmatch(match)
+	s = replaceAuth(s, bearerValue, "Bearer [REDACTED]")
+	s = replaceAuth(s, basicValue, "Basic [REDACTED]")
+	return replaceTokens(s)
+}
+
+func replaceAuth(s string, re *regexp.Regexp, repl string) string {
+	return re.ReplaceAllStringFunc(s, func(match string) string {
+		parts := re.FindStringSubmatch(match)
 		if len(parts) == 2 && secretRefExact.MatchString(parts[1]) {
 			return match
 		}
-		return "Bearer [REDACTED]"
+		return repl
 	})
-	s = basicValue.ReplaceAllStringFunc(s, func(match string) string {
-		parts := basicValue.FindStringSubmatch(match)
-		if len(parts) == 2 && secretRefExact.MatchString(parts[1]) {
-			return match
+}
+
+func replaceTokens(s string) string {
+	refs := secretRefAny.FindAllStringIndex(s, -1)
+	matches := tokenPattern.FindAllStringIndex(s, -1)
+	if len(matches) == 0 {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, span := range matches {
+		if overlaps(span, refs) {
+			continue
 		}
-		return "Basic [REDACTED]"
-	})
-	return inlineToken.ReplaceAllString(s, "[REDACTED]")
+		b.WriteString(s[last:span[0]])
+		b.WriteString("[REDACTED]")
+		last = span[1]
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }
 
 func scanMCPCredentials(file, prefix string, raw map[string]any, lines map[string]int, diags *[]Diagnostic) {

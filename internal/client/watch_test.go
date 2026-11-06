@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -48,7 +49,7 @@ func TestWatchReconnectsWithLastEventID(t *testing.T) {
 			return
 		}
 		writeSSE(t, w, "3", "message.delta", `{"role":"assistant","text":"three"}`)
-		writeSSE(t, w, "4", "terminal", `{"status":"succeeded","summary":"done"}`)
+		writeSSE(t, w, "4", "run.terminal", `{"status":"succeeded","summary":"done"}`)
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -101,7 +102,7 @@ func TestWatchExitCodes(t *testing.T) {
 		t.Run(tc.status, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
-				writeSSE(t, w, "1", "terminal", fmt.Sprintf(`{"status":%q,"summary":%q}`, tc.status, tc.summary))
+				writeSSE(t, w, "1", "run.terminal", fmt.Sprintf(`{"status":%q,"summary":%q}`, tc.status, tc.summary))
 			}))
 			t.Cleanup(srv.Close)
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -154,6 +155,38 @@ func TestWatchFromSeq(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "terminal status=succeeded") {
 		t.Fatalf("output %q", out.String())
+	}
+}
+
+func TestWatchWaitsForRunTerminal(t *testing.T) {
+	var conns atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conns.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, w, "1", "terminal", `{"status":"succeeded","summary":"agent done"}`)
+		writeSSE(t, w, "2", "run.terminal", `{"status":"failed","summary":"no pull request"}`)
+	}))
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var out strings.Builder
+	c := &Client{BaseURL: srv.URL, APIKey: "test-key", Backoff: func(int) time.Duration { return 0 }}
+	code, err := c.Watch(ctx, "run_x", nil, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	text := out.String()
+	if !strings.Contains(text, "terminal status=succeeded summary=agent done") {
+		t.Fatalf("harness terminal not rendered in %q", text)
+	}
+	if !strings.Contains(text, "terminal status=failed summary=no pull request") {
+		t.Fatalf("run terminal not rendered in %q", text)
+	}
+	if conns.Load() != 1 {
+		t.Fatalf("connections %d", conns.Load())
 	}
 }
 

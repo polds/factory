@@ -55,9 +55,11 @@ type AgentRunReconciler struct {
 	// Base is the parent context for event watches. It outlives a single reconcile.
 	Base context.Context
 
-	mu      sync.Mutex
-	watches map[string]context.CancelFunc
-	started map[string]string
+	mu       sync.Mutex
+	watches  map[string]context.CancelFunc
+	started  map[string]string
+	idle     map[string]types.NamespacedName
+	idleOnce sync.Once
 }
 
 // SetupWithManager registers the AgentRun reconciler.
@@ -178,6 +180,12 @@ func (r *AgentRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	var fresh factoryv1.AgentRun
 	if err := r.Get(ctx, req.NamespacedName, &fresh); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	// A settled terminal phase has no event stream left to mirror. An
+	// in-flight watch is left alone: run.status can mark the phase before
+	// run.terminal and the execution rows arrive.
+	if terminalPhase(fresh.Status.Phase) && !r.watching(req.NamespacedName) {
+		return ctrl.Result{}, nil
 	}
 	r.ensureWatch(req.NamespacedName, fresh.Status.RunID)
 	return ctrl.Result{}, nil
@@ -313,13 +321,37 @@ func (r *AgentRunReconciler) ensureWatch(key types.NamespacedName, runID string)
 	if _, ok := r.watches[id]; ok {
 		return
 	}
+	if r.idle == nil {
+		r.idle = map[string]types.NamespacedName{}
+	}
+	r.idle[runID] = key
 	parent := r.Base
 	if parent == nil {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
 	r.watches[id] = cancel
+	r.armIdleHook()
 	go r.watch(ctx, key, runID)
+}
+
+func (r *AgentRunReconciler) watching(key types.NamespacedName) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.watches[key.String()]
+	return ok
+}
+
+// armIdleHook installs the idle resync once. The client field is written
+// before any watch reads it, so later watches do not race that assignment.
+func (r *AgentRunReconciler) armIdleHook() {
+	r.idleOnce.Do(func() {
+		api, ok := r.API.(*fclient.Client)
+		if !ok || api == nil {
+			return
+		}
+		api.OnIdleReconnect = r.onIdle
+	})
 }
 
 func (r *AgentRunReconciler) stopWatch(key types.NamespacedName) {
@@ -333,6 +365,7 @@ func (r *AgentRunReconciler) stopWatch(key types.NamespacedName) {
 }
 
 func (r *AgentRunReconciler) watch(ctx context.Context, key types.NamespacedName, runID string) {
+	defer r.clearIdle(runID)
 	defer r.dropWatch(key)
 	err := r.API.StreamRunEvents(ctx, runID, func(ev fclient.Event) error {
 		return r.applyEvent(ctx, key, ev)
@@ -340,6 +373,73 @@ func (r *AgentRunReconciler) watch(ctx context.Context, key types.NamespacedName
 	if err != nil && ctx.Err() == nil {
 		r.log().Info("run event stream ended", "agentrun", key.String())
 	}
+}
+
+// onIdle runs only after a silent event stream. It GETs the run once. A
+// terminal status with no run.terminal settles the phase and ends the watch.
+// A live run, or a GET error, leaves the stream to reconnect from its cursor.
+func (r *AgentRunReconciler) onIdle(ctx context.Context, runID string) error {
+	key, ok := r.idleTarget(runID)
+	if !ok {
+		return nil
+	}
+	api, ok := r.API.(*fclient.Client)
+	if !ok || api == nil {
+		return nil
+	}
+	detail, err := api.RunDetail(ctx, runID)
+	if err != nil {
+		r.log().Info("run resync failed", "agentrun", key.String(), "message", clip(err.Error(), maxMessage))
+		return nil
+	}
+	if !terminalPhase(detail.Status) {
+		return nil
+	}
+	if err := r.settleTerminal(ctx, key, detail); err != nil {
+		return err
+	}
+	return fclient.ErrStreamSettled
+}
+
+func (r *AgentRunReconciler) idleTarget(runID string) (types.NamespacedName, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key, ok := r.idle[runID]
+	return key, ok
+}
+
+func (r *AgentRunReconciler) clearIdle(runID string) {
+	r.mu.Lock()
+	delete(r.idle, runID)
+	r.mu.Unlock()
+}
+
+func (r *AgentRunReconciler) settleTerminal(ctx context.Context, key types.NamespacedName, detail fclient.RunDetail) error {
+	phase := redact(detail.Status)
+	reason := strings.TrimSpace(detail.FailureReason)
+	summary := strings.TrimSpace(detail.Failure.Summary)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var run factoryv1.AgentRun
+		if err := r.Get(ctx, key, &run); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		changed := false
+		if phase != "" && run.Status.Phase != phase {
+			run.Status.Phase = phase
+			changed = true
+		}
+		if strings.EqualFold(phase, "failed") && reason != "" && !conditionTrue(run.Status.Conditions, condFailed) {
+			setCondition(&run.Status.Conditions, failedCondition(&run, reason, summary, r.now()))
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		return r.Status().Update(ctx, &run)
+	})
 }
 
 func (r *AgentRunReconciler) dropWatch(key types.NamespacedName) {

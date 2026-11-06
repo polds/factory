@@ -39,6 +39,7 @@ const (
 	ReasonContainerOOM           = "container_oom"
 	ReasonEvicted                = "evicted"
 	ReasonConfigInvalid          = "config_invalid"
+	ReasonRequestRejected        = "request_rejected"
 	ReasonModelUnavailable       = "model_unavailable"
 	ReasonEnvironmentSetupFailed = "environment_setup_failed"
 	ReasonFailedByAgent          = "failed_by_agent"
@@ -91,7 +92,9 @@ func Classify(in Input) Result {
 	switch {
 	case harness == ReasonFailedByAgent || exitIs(exit, 10):
 		return done(ClassAgent, CodeAgentReported, withExit("Agent reported this run as failed", exit), false, facts(exit, reason, harness, snap))
-	case exitIs(exit, 20) || reason == ReasonConfigInvalid || harness == ReasonConfigInvalid:
+	case exitIs(exit, 20) ||
+		reason == ReasonConfigInvalid || harness == ReasonConfigInvalid ||
+		reason == ReasonRequestRejected || harness == ReasonRequestRejected:
 		return done(ClassConfiguration, CodeConfigInvalid, withExit("Configuration is invalid", exit), false, facts(exit, reason, harness, snap))
 	case exitIs(exit, 21) || reason == ReasonModelUnavailable || harness == ReasonModelUnavailable:
 		return done(ClassInfrastructure, CodeModelUnavailable, withExit("Model provider is unavailable", exit), true, facts(exit, reason, harness, snap))
@@ -194,6 +197,7 @@ var echoedReasons = map[string]bool{
 	ReasonContainerOOM:           true,
 	ReasonEvicted:                true,
 	ReasonConfigInvalid:          true,
+	ReasonRequestRejected:        true,
 	ReasonModelUnavailable:       true,
 	ReasonEnvironmentSetupFailed: true,
 	ReasonFailedByAgent:          true,
@@ -234,6 +238,7 @@ var echoedReasons = map[string]bool{
 var echoedHarness = map[string]bool{
 	ReasonFailedByAgent:          true,
 	ReasonConfigInvalid:          true,
+	ReasonRequestRejected:        true,
 	ReasonModelUnavailable:       true,
 	ReasonEnvironmentSetupFailed: true,
 }

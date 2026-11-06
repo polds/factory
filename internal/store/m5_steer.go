@@ -147,15 +147,7 @@ func (s *Store) MarkSteerDelivered(ctx context.Context, id string) error {
 	if tag.RowsAffected() == 1 {
 		return nil
 	}
-	var one int
-	err = s.pool.QueryRow(ctx, `SELECT 1 FROM steer_requests WHERE id = $1`, id).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("store: mark steer: %w", err)
-	}
-	return nil
+	return requireRow(ctx, s.pool, "store: mark steer", `SELECT 1 FROM steer_requests WHERE id = $1`, id)
 }
 
 // ListSteers returns every steer for runID, oldest first.

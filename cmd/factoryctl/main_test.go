@@ -26,7 +26,7 @@ func TestRunWatchPrintsIDThenTranscript(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agent/runs/run_cli/events":
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = fmt.Fprintf(w, "id: 1\nevent: message.delta\ndata: {\"role\":\"assistant\",\"text\":\"hello\"}\n\n")
-			_, _ = fmt.Fprintf(w, "id: 2\nevent: terminal\ndata: {\"status\":\"succeeded\",\"summary\":\"done\"}\n\n")
+			_, _ = fmt.Fprintf(w, "id: 2\nevent: run.terminal\ndata: {\"status\":\"succeeded\",\"summary\":\"done\"}\n\n")
 		default:
 			http.NotFound(w, r)
 		}
@@ -70,7 +70,7 @@ func TestWatchHarnessStatusExitsFailed(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprintf(w, "id: 1\nevent: terminal\ndata: {\"status\":\"model_unavailable\",\"summary\":\"Post \\\"http://127.0.0.1:8317/chat/completions\\\": connection refused\"}\n\n")
+		_, _ = fmt.Fprintf(w, "id: 1\nevent: run.terminal\ndata: {\"status\":\"model_unavailable\",\"summary\":\"Post \\\"http://127.0.0.1:8317/chat/completions\\\": connection refused\"}\n\n")
 	}))
 	t.Cleanup(srv.Close)
 
@@ -142,7 +142,7 @@ func TestWatchFromSeqArg(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.URL.Query().Get("from_seq")
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprintf(w, "id: 9\nevent: terminal\ndata: {\"status\":\"cancelled\"}\n\n")
+		_, _ = fmt.Fprintf(w, "id: 9\nevent: run.terminal\ndata: {\"status\":\"cancelled\"}\n\n")
 	}))
 	t.Cleanup(srv.Close)
 	getenv := func(k string) string {

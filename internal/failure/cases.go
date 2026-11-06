@@ -159,6 +159,87 @@ func Cases() []Rule {
 			},
 		},
 		{
+			Name: "harness_request_rejected_no_exit",
+			Input: Input{
+				RunStatus:     StatusFailed,
+				HarnessStatus: ReasonRequestRejected,
+			},
+			Result: Result{
+				Class:    ClassConfiguration,
+				Code:     CodeConfigInvalid,
+				Summary:  "Configuration is invalid",
+				Evidence: []string{"harness status request_rejected"},
+			},
+		},
+		{
+			Name: "reason_request_rejected_no_exit",
+			Input: Input{
+				RunStatus:     StatusFailed,
+				FailureReason: ReasonRequestRejected,
+			},
+			Result: Result{
+				Class:    ClassConfiguration,
+				Code:     CodeConfigInvalid,
+				Summary:  "Configuration is invalid",
+				Evidence: []string{"failure reason request_rejected"},
+			},
+		},
+		{
+			Name: "harness_request_rejected_exit_20",
+			Input: Input{
+				RunStatus:     StatusFailed,
+				HarnessStatus: ReasonRequestRejected,
+				ExitCode:      codePtr(20),
+			},
+			Result: Result{
+				Class:   ClassConfiguration,
+				Code:    CodeConfigInvalid,
+				Summary: "Configuration is invalid (exit 20)",
+				Evidence: []string{
+					"exit code 20",
+					"harness status request_rejected",
+				},
+			},
+		},
+		{
+			Name: "container_exit_20_harness_request_rejected",
+			Input: Input{
+				RunStatus:     StatusFailed,
+				FailureReason: ReasonContainerExit,
+				ExitCode:      codePtr(20),
+				HarnessStatus: ReasonRequestRejected,
+			},
+			Result: Result{
+				Class:   ClassConfiguration,
+				Code:    CodeConfigInvalid,
+				Summary: "Configuration is invalid (exit 20)",
+				Evidence: []string{
+					"exit code 20",
+					"harness status request_rejected",
+					"failure reason container_exit",
+				},
+			},
+		},
+		{
+			Name: "exit_10_beats_request_rejected",
+			Input: Input{
+				RunStatus:     StatusFailed,
+				FailureReason: ReasonContainerExit,
+				ExitCode:      codePtr(10),
+				HarnessStatus: ReasonRequestRejected,
+			},
+			Result: Result{
+				Class:   ClassAgent,
+				Code:    CodeAgentReported,
+				Summary: "Agent reported this run as failed (exit 10)",
+				Evidence: []string{
+					"exit code 10",
+					"harness status request_rejected",
+					"failure reason container_exit",
+				},
+			},
+		},
+		{
 			Name: "exit_21",
 			Input: Input{
 				RunStatus: StatusFailed,

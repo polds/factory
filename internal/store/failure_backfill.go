@@ -17,6 +17,7 @@ package store
 // effective exit is exit_code, else the snapshot normalized exit, else
 // 128+signal; OOM and Evicted tokens are checked before a signal exit;
 // worker_lost is only orphaned, lease_expired, and worker_gone.
+// request_rejected, with or without an exit code, is configuration/config_invalid.
 //
 // harness_status is the payload status of the newest run_events row
 // whose type is terminal or run.terminal.
@@ -29,6 +30,8 @@ const FailureBackfillCASE = `        CASE
                 failure_effective_exit(exit_code, details) = 20
                 OR failure_reason = 'config_invalid'
                 OR harness_status = 'config_invalid'
+                OR failure_reason = 'request_rejected'
+                OR harness_status = 'request_rejected'
                 THEN 'configuration/config_invalid'
             WHEN
                 failure_effective_exit(exit_code, details) = 21

@@ -4,6 +4,8 @@ import "testing"
 
 func FuzzClassify(f *testing.F) {
 	f.Add("failed", "container_exit", 10, true, "failed_by_agent", []byte(nil))
+	f.Add("failed", "request_rejected", 0, false, "request_rejected", []byte(nil))
+	f.Add("failed", "container_exit", 20, true, "request_rejected", []byte(nil))
 	f.Add("failed", "container_oom", 137, true, "", []byte(mustFixture("testdata/oom.json")))
 	f.Add("failed", "evicted", 143, true, "", []byte(mustFixture("testdata/evicted.json")))
 	f.Add("failed", "unschedulable", 0, false, "", []byte(mustFixture("testdata/unschedulable.json")))

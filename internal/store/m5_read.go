@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -584,13 +583,5 @@ func (s *Store) requireFactory(ctx context.Context, q rowQuery, id string) error
 	if id == "" {
 		return fmt.Errorf("store: factory is required")
 	}
-	var one int
-	err := q.QueryRow(ctx, `SELECT 1 FROM factories WHERE id = $1`, id).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("store: factory: %w", err)
-	}
-	return nil
+	return requireRow(ctx, q, "store: factory", `SELECT 1 FROM factories WHERE id = $1`, id)
 }

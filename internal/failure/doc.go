@@ -42,7 +42,7 @@
 // The first matching row wins:
 //
 //  1. Harness status failed_by_agent, or exit 10.
-//  2. Exit 20, or reason or harness status config_invalid.
+//  2. Exit 20, or reason or harness status config_invalid or request_rejected.
 //  3. Exit 21, or reason or harness status model_unavailable (retryable).
 //  4. Exit 30, or reason or harness status environment_setup_failed.
 //  5. OOMKilled or OOMKilling in the kubernetes snapshot, or reason container_oom.
@@ -90,7 +90,8 @@
 // Evicted keep their own rows. Any other non-zero container exit keeps
 // container_exit, unless the exit is 20, 21, 30, or 128+signal. Every
 // remaining Kubernetes reason is infrastructure with code unknown, and the
-// summary is that reason. Configuration stays exit 20 or config_invalid.
+// summary is that reason. Configuration stays exit 20, config_invalid, or
+// harness status request_rejected (including when the exit code is absent).
 // infrastructure and configuration are the classes eligibility already
 // excludes.
 //

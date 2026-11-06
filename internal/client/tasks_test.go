@@ -250,7 +250,7 @@ func TestWatchTaskStagesAndChildTranscript(t *testing.T) {
 			events.Add(1)
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = io.WriteString(w, "id: 1\nevent: message.delta\ndata: {\"role\":\"assistant\",\"text\":\"hello\"}\n\n")
-			_, _ = io.WriteString(w, "id: 2\nevent: terminal\ndata: {\"status\":\"succeeded\",\"summary\":\"done\"}\n\n")
+			_, _ = io.WriteString(w, "id: 2\nevent: run.terminal\ndata: {\"status\":\"succeeded\",\"summary\":\"done\"}\n\n")
 		default:
 			http.NotFound(w, r)
 		}
@@ -335,7 +335,7 @@ func TestWatchTaskListsRunsWhenTaskOmitsRuns(t *testing.T) {
 			events.Add(1)
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = io.WriteString(w, "id: 1\nevent: message.delta\ndata: {\"role\":\"assistant\",\"text\":\"from-list\"}\n\n")
-			_, _ = io.WriteString(w, "id: 2\nevent: terminal\ndata: {\"status\":\"succeeded\",\"summary\":\"done\"}\n\n")
+			_, _ = io.WriteString(w, "id: 2\nevent: run.terminal\ndata: {\"status\":\"succeeded\",\"summary\":\"done\"}\n\n")
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/agent/runs/run_other/events":
 			t.Errorf("streamed a run for a different work item")
 			http.NotFound(w, r)

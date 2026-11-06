@@ -206,13 +206,8 @@ func (s *Store) RunScores(ctx context.Context, runID string) ([]ScorerResult, er
 	if runID == "" {
 		return nil, fmt.Errorf("store: run is required")
 	}
-	var one int
-	err := s.pool.QueryRow(ctx, `SELECT 1 FROM runs WHERE id = $1`, runID).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("store: run scores: %w", err)
+	if err := requireRow(ctx, s.pool, "store: run scores", `SELECT 1 FROM runs WHERE id = $1`, runID); err != nil {
+		return nil, err
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+scorerColumns+`

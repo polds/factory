@@ -26,6 +26,16 @@ type Client struct {
 	// PollInterval is the delay between work-item polls in WatchTask.
 	// Zero uses a short default. Run watch reconnects keep using Backoff.
 	PollInterval time.Duration
+	// StreamIdle is how long Watch and StreamRunEvents wait with no bytes,
+	// including SSE comments, before closing and reconnecting from the cursor.
+	// Zero uses 60s. FACTORY_OPERATOR_WATCH_IDLE sets it for the operator.
+	// A positive value is the test injection. It is not a poll interval:
+	// bytes reset one deadline.
+	StreamIdle time.Duration
+	// OnIdleReconnect runs after an idle close and before the next events
+	// request. Other reconnects do not call it. Nil continues the reconnect.
+	// ErrStreamSettled ends the stream successfully.
+	OnIdleReconnect func(ctx context.Context, runID string) error
 }
 
 // RunRequest is the POST /agent/run body.

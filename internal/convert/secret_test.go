@@ -84,3 +84,20 @@ secretName: CI_WEBHOOK_SECRET
 		t.Fatalf("redact kept a value: %s", leaked)
 	}
 }
+
+func TestRedactEmbeddedToken(t *testing.T) {
+	const planted = "xxsk-embeddedplanted9f3a"
+	got := redactText("see " + planted + " and https://github.com/polds/factory and Bearer {{SENTRY_MCP_TOKEN}}")
+	if strings.Contains(got, planted) {
+		t.Fatal("embedded token kept")
+	}
+	if !strings.Contains(got, "https://github.com/polds/factory") {
+		t.Fatal("repository url removed")
+	}
+	if !strings.Contains(got, "Bearer {{SENTRY_MCP_TOKEN}}") {
+		t.Fatal("secret ref removed")
+	}
+	if !strings.Contains(got, "REDACTED") {
+		t.Fatal("replacement marker missing")
+	}
+}

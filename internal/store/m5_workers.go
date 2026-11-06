@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -148,10 +147,10 @@ func (s *Store) RecordRejection(ctx context.Context, workerID, runID string) err
 		return fmt.Errorf("store: record rejection: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := requireRow(ctx, tx, `SELECT 1 FROM workers WHERE id = $1`, workerID); err != nil {
+	if err := requireRow(ctx, tx, "store: record rejection", `SELECT 1 FROM workers WHERE id = $1`, workerID); err != nil {
 		return err
 	}
-	if err := requireRow(ctx, tx, `SELECT 1 FROM runs WHERE id = $1`, runID); err != nil {
+	if err := requireRow(ctx, tx, "store: record rejection", `SELECT 1 FROM runs WHERE id = $1`, runID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
@@ -165,18 +164,6 @@ func (s *Store) RecordRejection(ctx context.Context, workerID, runID string) err
 		return fmt.Errorf("store: record rejection: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("store: record rejection: %w", err)
-	}
-	return nil
-}
-
-func requireRow(ctx context.Context, q rowQuery, query, id string) error {
-	var one int
-	err := q.QueryRow(ctx, query, id).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
 		return fmt.Errorf("store: record rejection: %w", err)
 	}
 	return nil
