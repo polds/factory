@@ -1,0 +1,16 @@
+# Sample untrusted scanner task (synthetic). No docker socket or broad secret mounts.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: scanner-sample
+spec:
+  containers:
+    - name: scanner
+      image: example/scanner:stub
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+          readOnly: true
+  volumes:
+    - name: workspace
+      emptyDir: {}

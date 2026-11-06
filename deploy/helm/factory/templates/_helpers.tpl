@@ -205,3 +205,13 @@ url
 {{- define "factory.minioHost" -}}
 {{- printf "%s-minio" (include "factory.fullname" .) -}}
 {{- end -}}
+
+{{- define "factory.secretProjectionAllowlist" -}}
+{{- $names := list -}}
+{{- range .Values.controlPlane.secretProjection.sources -}}
+  {{- range .items -}}
+    {{- $names = append $names .path -}}
+  {{- end -}}
+{{- end -}}
+{{- join "," $names -}}
+{{- end -}}

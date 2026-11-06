@@ -86,6 +86,27 @@ controlPlane:
   extraEnvFrom: []
   extraVolumes: []
   extraVolumeMounts: []
+  # Opt-in projected Kubernetes secret files for G18 resolver mounts (M10-S).
+  # Disabled by default; does not change chart-only installs.
+  secretProjection:
+    enabled: false
+    mountPath: /var/run/factory/secrets
+    sources: []
+    # - secretName: factory-task-secrets
+    #   defaultMode: 384
+    #   items:
+    #     - key: SCAN_GITHUB_TOKEN
+    #       path: SCAN_GITHUB_TOKEN
+
+# Opt-in G14/G18 synthetic enforcement templates (NetworkPolicy, docs hooks).
+# Helm render success is not Docker-host or live-cluster attestation.
+scanSecurity:
+  enabled: false
+  egress:
+    networkPolicy: false
+    requireCNI: false
+    # When requireCNI is true, chart adds pod annotation factory.dev/require-cni.
+    cniProvider: ""
 
 # In-chart Postgres is dev/eval only. Off by default.
 postgresql:
