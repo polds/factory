@@ -17,14 +17,17 @@ import (
 	"github.com/polds/factory/internal/store"
 )
 
-func TestFailureClassBackfillCASEMatchesMigration(t *testing.T) {
+func TestHistoricalBackfillOmitsRequestRejected(t *testing.T) {
 	t.Parallel()
 	body, err := os.ReadFile("migrations/0006_m5.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), store.FailureBackfillCASE) {
-		t.Fatal("0006_m5.sql does not contain store.FailureBackfillCASE verbatim")
+	if strings.Contains(string(body), "request_rejected") {
+		t.Fatal("0006_m5.sql is historical and must not grow the request_rejected arms")
+	}
+	if !strings.Contains(store.FailureBackfillCASE, "failure_reason = 'request_rejected'") {
+		t.Fatal("live CASE dropped request_rejected")
 	}
 }
 

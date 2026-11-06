@@ -260,8 +260,6 @@ FROM (
                 failure_effective_exit(exit_code, details) = 20
                 OR failure_reason = 'config_invalid'
                 OR harness_status = 'config_invalid'
-                OR failure_reason = 'request_rejected'
-                OR harness_status = 'request_rejected'
                 THEN 'configuration/config_invalid'
             WHEN
                 failure_effective_exit(exit_code, details) = 21

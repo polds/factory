@@ -14,10 +14,20 @@ var (
 	secretRefAny   = regexp.MustCompile(`\{\{[A-Z][A-Z0-9_]*\}\}`)
 	bearerValue    = regexp.MustCompile(`(?i)\bbearer\s+(\S+)`)
 	basicValue     = regexp.MustCompile(`(?i)\bbasic\s+(\S+)`)
-	// tokenPattern is the union of the old boundary check and the inline
-	// redactor: no word boundary, and the class keeps '/' and short AKIA
-	// keys. ghs_ is not in either source pattern.
-	tokenPattern = regexp.MustCompile(`(?:sk-|ghp_|github_pat_|gho_|glpat-|xox[baprs]-|AKIA)[A-Za-z0-9_/+.=-]*`)
+	// tokenPattern is the credential union.
+	// A short sk- match needs a boundary, so ask-pass, task-runner,
+	// task-id, and disk-usage stay words. A long sk- body still matches
+	// when it is glued to letters. A slash continues a token only when
+	// the next segment has an uppercase letter or a digit, so a URL path
+	// stays put. ghs_ is a GitHub App installation token.
+	tokenPattern = regexp.MustCompile(
+		`\bsk-[A-Za-z0-9][A-Za-z0-9_+=.-]*|` +
+			`sk-[A-Za-z0-9][A-Za-z0-9_+=.-]{15,}|` +
+			`\b(?:ghp_|github_pat_|gho_|glpat-|xox[baprs]-)[A-Za-z0-9_+=.-]+` +
+			`(?:/[A-Za-z0-9_+=.-]*[A-Z0-9][A-Za-z0-9_+=.-]*)?|` +
+			`\bghs_[A-Za-z0-9._-]{36,}|` +
+			`\bAKIA[0-9A-Z]{4,}`,
+	)
 )
 
 // CredentialKind is the pattern that produced a CredentialValue.

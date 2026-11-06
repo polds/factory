@@ -1,7 +1,10 @@
 package store
 
-// FailureBackfillCASE is the classification CASE in
-// migrations/0006_m5.sql. That file contains this constant verbatim.
+// FailureBackfillCASE is the live classification CASE.
+// TestFailureClassBackfillMatchesClassify executes it.
+// migrations/0006_m5.sql is the historical snapshot and does not carry
+// the request_rejected arms. migrations/0012_request_rejected_class.sql
+// rewrites rows that snapshot stored under another class.
 //
 // Evaluate it against one FROM item with these columns:
 //

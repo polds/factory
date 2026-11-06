@@ -101,3 +101,52 @@ func TestRedactEmbeddedToken(t *testing.T) {
 		t.Fatal("replacement marker missing")
 	}
 }
+
+func TestRedactShapeTable(t *testing.T) {
+	const (
+		embedded = "xxsk-embeddedplanted9f3a"
+		slash    = "ghp_Planted/SecretValue99"
+		ghs      = "ghs_12345_eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig"
+		userTok  = "ghp_PlantedTokenValue99"
+	)
+	rows := []struct {
+		name   string
+		in     string
+		want   string
+		secret string
+	}{
+		{name: "ask-pass", in: "https://github.com/org/ask-pass", want: "https://github.com/org/ask-pass"},
+		{name: "task-runner", in: "https://github.com/org/task-runner", want: "https://github.com/org/task-runner"},
+		{name: "task-id", in: "task-id", want: "task-id"},
+		{name: "disk-usage", in: "disk-usage", want: "disk-usage"},
+		{name: "embedded sk", in: embedded, want: "xxREDACTED", secret: embedded},
+		{name: "ghp slash", in: slash, want: "REDACTED", secret: slash},
+		{name: "ghs", in: ghs, want: "REDACTED", secret: ghs},
+		{
+			name:   "url path",
+			in:     "https://github.com/polds/ghp_notatoken/factory",
+			want:   "https://github.com/polds/REDACTED/factory",
+			secret: "ghp_notatoken",
+		},
+		{
+			name:   "userinfo",
+			in:     "https://x-access-token:" + userTok + "@github.com/polds/factory.git",
+			want:   "https://x-access-token:REDACTED@github.com/polds/factory.git",
+			secret: userTok,
+		},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			got := redactText(row.in)
+			if row.secret != "" && strings.Contains(got, row.secret) {
+				t.Fatal("redaction kept a planted value")
+			}
+			if got != row.want {
+				if row.secret != "" {
+					t.Fatal("redacted shape mismatch")
+				}
+				t.Fatalf("got %q", got)
+			}
+		})
+	}
+}
