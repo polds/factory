@@ -149,6 +149,8 @@ func redactCredentialPatterns(s string) string {
 }
 
 func peelTrailer(token string) (string, string) {
+	// Copied from internal/convert/redact.go. convert is outside M10-S paths,
+	// so this stays a local copy until a later consolidation pass.
 	i := len(token)
 	for i > 0 {
 		switch token[i-1] {

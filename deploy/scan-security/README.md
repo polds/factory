@@ -13,7 +13,7 @@ Forbidden in sample scanner tasks: host Docker socket, writable foreign checkout
 
 ## Kubernetes
 
-Use `scripts/ci/egress-kind-smoke.sh` with `scanSecurity.enabled=true` to render NetworkPolicy and verify a probe pod cannot reach `169.254.169.254`.
+`scripts/ci/egress-kind-smoke.sh` renders the opt-in NetworkPolicy and the named route ConfigMap. It does **not** start a probe pod and does **not** prove that a pod cannot reach `169.254.169.254`. A live denial is M10-G. Without `FACTORY_EGRESS_KIND_SKIP=1`, a missing `kubectl` or the unimplemented cluster probe exits non-zero.
 
 Helm render and kind success **do not** replace Docker-host firewall attestation (M10-G).
 

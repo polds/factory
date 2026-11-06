@@ -4,8 +4,8 @@ set -euo pipefail
 
 matrix="${1:-}"
 if [[ -z "${matrix}" || ! -f "${matrix}" ]]; then
-  echo "usage: $0 <matrix.env>" >&2
-  exit 2
+  echo "g14-matrix: FAIL missing matrix" >&2
+  exit 1
 fi
 
 expect() {
@@ -20,8 +20,10 @@ expect() {
 }
 
 expect deny_by_default true
+expect gateway_routes forge,control-plane
 expect direct_ip deny
 expect dns_connect_tricks deny
 expect metadata deny
 expect cross_engagement deny
+expect attribution task_identity
 echo "g14-matrix: PASS"

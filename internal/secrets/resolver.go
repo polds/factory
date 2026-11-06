@@ -36,6 +36,9 @@ func (r *MountResolver) Resolve(ctx context.Context, name, injectionID string) (
 		return Handle{}, fmt.Errorf("%w: %s not allowlisted", ErrRefRejected, name)
 	}
 	if r.mountRoot != "" {
+		if err := rejectWritableDir(r.mountRoot); err != nil {
+			return Handle{}, err
+		}
 		h, err := r.readMount(name)
 		if err == nil {
 			return h, nil
@@ -92,8 +95,23 @@ func isMissingMount(err error) bool {
 	if !IsRefRejected(err) {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "missing") || strings.Contains(msg, "empty file")
+	return strings.Contains(err.Error(), "missing file")
+}
+
+func rejectWritableDir(dir string) error {
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("%w: mount dir stat: %w", ErrRefRejected, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%w: mount dir is not a directory", ErrRefRejected)
+	}
+	// Group or world write lets another user replace the file between injections.
+	// Do not use 0o077: a normal 0755 mount must still resolve.
+	if fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%w: mount dir group/world writable", ErrRefRejected)
+	}
+	return nil
 }
 
 func validateSecretName(name string) error {

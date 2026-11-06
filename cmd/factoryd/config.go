@@ -222,6 +222,13 @@ func secretsFrom(environ []string) map[string]string {
 		if name == "" {
 			continue
 		}
+		// Mount path and allowlist are configuration, not secret material.
+		// They share the FACTORY_SECRET_ prefix with real values and must
+		// not land in Config.Secrets (task env and redaction needles).
+		switch name {
+		case "MOUNT_DIR", "ALLOWLIST":
+			continue
+		}
 		out[name] = val
 	}
 	return out

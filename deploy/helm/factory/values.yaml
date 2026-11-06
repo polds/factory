@@ -107,6 +107,16 @@ scanSecurity:
     requireCNI: false
     # When requireCNI is true, chart adds pod annotation factory.dev/require-cni.
     cniProvider: ""
+    # Named routes the egress proxy may open. The NetworkPolicy does not
+    # allow 0.0.0.0/0; tasks may egress only to kube-dns and this proxy.
+    proxyPort: 8443
+    routes:
+      - name: forge-api
+        host: api.github.com
+        port: 443
+      - name: control-plane
+        host: factory.example.internal
+        port: 443
 
 # In-chart Postgres is dev/eval only. Off by default.
 postgresql:

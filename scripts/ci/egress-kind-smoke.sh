@@ -29,8 +29,20 @@ if ! grep -q 'kind: NetworkPolicy' "${work}/render.yaml"; then
   echo "egress-kind-smoke: FAIL missing NetworkPolicy" >&2
   exit 1
 fi
+if grep -q '0.0.0.0/0' "${work}/render.yaml"; then
+  echo "egress-kind-smoke: FAIL broad 0.0.0.0/0 egress" >&2
+  exit 1
+fi
+if ! grep -q 'factory.dev/scan-task' "${work}/render.yaml"; then
+  echo "egress-kind-smoke: FAIL policy does not select scan-task pods" >&2
+  exit 1
+fi
+if ! grep -q 'api.github.com' "${work}/render.yaml"; then
+  echo "egress-kind-smoke: FAIL missing named forge route" >&2
+  exit 1
+fi
 if ! grep -q '169.254.169.254/32' "${work}/render.yaml"; then
-  echo "egress-kind-smoke: FAIL metadata CIDR not excluded" >&2
+  echo "egress-kind-smoke: FAIL metadata deny not recorded" >&2
   exit 1
 fi
 if ! grep -q 'factory.dev/require-cni' "${work}/render.yaml"; then
@@ -39,13 +51,14 @@ if ! grep -q 'factory.dev/require-cni' "${work}/render.yaml"; then
 fi
 
 if [[ "${FACTORY_EGRESS_KIND_SKIP:-}" == "1" ]]; then
-  echo "egress-kind-smoke: PASS (template-only)"
+  echo "egress-kind-smoke: PASS (template-only; no probe pod)"
   exit 0
 fi
 
 if ! command -v kubectl >/dev/null 2>&1; then
-  echo "egress-kind-smoke: SKIP no kubectl" >&2
-  exit 0
+  echo "egress-kind-smoke: FAIL kubectl is required for a cluster probe" >&2
+  exit 1
 fi
 
-echo "egress-kind-smoke: PASS (render ok; cluster probe optional)"
+echo "egress-kind-smoke: FAIL cluster probe is not implemented; set FACTORY_EGRESS_KIND_SKIP=1 for the template check. A live pod denial is M10-G." >&2
+exit 1

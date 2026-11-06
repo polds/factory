@@ -96,13 +96,80 @@ func TestResolveEnvFallback(t *testing.T) {
 func TestResolveWorldWritableRejected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "SCAN_GITHUB_TOKEN")
-	if err := os.WriteFile(path, []byte("CANARY-SYNTHETIC"), 0o666); err != nil {
+	if err := os.WriteFile(path, []byte("CANARY-SYNTHETIC"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
 		t.Fatal(err)
 	}
 	r := resolver(t, dir, []string{"SCAN_GITHUB_TOKEN"}, nil)
 	_, err := r.Resolve(context.Background(), "SCAN_GITHUB_TOKEN", "inj")
 	if !secrets.IsRefRejected(err) || !strings.Contains(err.Error(), "writable") {
 		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(err.Error(), "CANARY") {
+		t.Fatalf("error leaked material: %v", err)
+	}
+}
+
+func TestResolveWorldWritableDirRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SCAN_GITHUB_TOKEN")
+	if err := os.WriteFile(path, []byte("CANARY-SYNTHETIC"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	_, err := secrets.ResolverFromConfig(secrets.MountConfig{
+		MountDir:  dir,
+		Allowlist: []string{"SCAN_GITHUB_TOKEN"},
+	})
+	if !secrets.IsRefRejected(err) || !strings.Contains(err.Error(), "mount dir") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestResolveDir0755StillResolves(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SCAN_GITHUB_TOKEN"), []byte("CANARY-SYNTHETIC"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := resolver(t, dir, []string{"SCAN_GITHUB_TOKEN"}, nil)
+	h, err := r.Resolve(context.Background(), "SCAN_GITHUB_TOKEN", "inj")
+	if err != nil || h.Value() != "CANARY-SYNTHETIC" {
+		t.Fatalf("got %v %q", err, h.Value())
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Resolve(context.Background(), "SCAN_GITHUB_TOKEN", "inj-2")
+	if !secrets.IsRefRejected(err) || !strings.Contains(err.Error(), "mount dir") {
+		t.Fatalf("after chmod: %v", err)
+	}
+}
+
+func TestResolveEmptyFileNoEnvFallback(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "SCAN_GITHUB_TOKEN"), []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := resolver(t, dir, []string{"SCAN_GITHUB_TOKEN"}, map[string]string{"SCAN_GITHUB_TOKEN": "CANARY-OLD"})
+	_, err := r.Resolve(context.Background(), "SCAN_GITHUB_TOKEN", "inj")
+	if !secrets.IsRefRejected(err) || !strings.Contains(err.Error(), "empty file") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestResolveMissingFileUsesEnv(t *testing.T) {
+	dir := t.TempDir()
+	r := resolver(t, dir, []string{"SCAN_GITHUB_TOKEN"}, map[string]string{"SCAN_GITHUB_TOKEN": "CANARY-OLD"})
+	h, err := r.Resolve(context.Background(), "SCAN_GITHUB_TOKEN", "inj")
+	if err != nil || h.Value() != "CANARY-OLD" {
+		t.Fatalf("got %v %q", err, h.Value())
 	}
 }
 

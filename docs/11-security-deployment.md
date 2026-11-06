@@ -30,7 +30,7 @@ FACTORY_EGRESS_KIND_SKIP=1 ./scripts/ci/egress-kind-smoke.sh
 
 Default posture in `deploy/scan-security/matrices/g14-default.env`: deny by default; narrow gateway/forge/control-plane routes; deny direct-IP bypass, DNS/CONNECT tricks, metadata (`169.254.169.254`), and cross-engagement traffic. Denials attribute to trusted task identity in probe logs (never secret values).
 
-Helm opt-in: `scanSecurity.enabled`, `scanSecurity.egress.networkPolicy`, and `scanSecurity.egress.requireCNI` (adds `factory.dev/require-cni` and a CNI requirement ConfigMap). These renders are **not** host-firewall or live-cluster CNI attestation.
+Helm opt-in: `scanSecurity.enabled`, `scanSecurity.egress.networkPolicy`, and `scanSecurity.egress.requireCNI`. The policy lives in the task namespace and selects `factory.dev/scan-task` (stamped by the worker `extra_labels`). Egress is kube-dns plus the egress-proxy pods in the release namespace on the configured proxy port. Named forge and control-plane hosts are listed on the route ConfigMap (`api.github.com`, control plane). There is no `0.0.0.0/0` rule. These renders are **not** host-firewall or live-cluster CNI attestation, and the smoke script does not run a probe pod.
 
 ## Residual allowlist exfiltration risk
 

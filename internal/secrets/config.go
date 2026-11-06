@@ -33,6 +33,9 @@ func (c MountConfig) Validate() error {
 		if !st.IsDir() {
 			return fmt.Errorf("secrets: mount dir is not a directory")
 		}
+		if err := rejectWritableDir(dir); err != nil {
+			return err
+		}
 		abs, err := filepath.Abs(dir)
 		if err != nil {
 			return fmt.Errorf("secrets: mount dir: %w", err)
