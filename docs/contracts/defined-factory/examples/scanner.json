@@ -39,7 +39,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "GAP: local CLI mode stays available and does not require Linear or a Factory task ref. harness/run.go rejects an unknown harness adapter and does not implement that mode.",
+      "title": "Local CLI mode stays available and does not require Linear or a Factory task ref.",
       "document": {
         "mode": "local_cli",
         "requiresLinear": false,
@@ -53,7 +53,7 @@
       "rejectBy": "formula",
       "code": "INV-LOCAL-CLI",
       "schema": "scenario",
-      "title": "GAP: local CLI mode stays available and does not require Linear or a Factory task ref. harness/run.go rejects an unknown harness adapter and does not implement that mode.",
+      "title": "Local CLI mode stays available and does not require Linear or a Factory task ref.",
       "document": {
         "mode": "local_cli",
         "requiresLinear": true,
@@ -67,7 +67,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "GAP: each item gets its own workspace mount and there is no shared writable ART root. This tree has no ART mounter.",
+      "title": "Each item gets its own workspace mount and there is no shared writable ART root.",
       "document": {
         "perItemMount": true,
         "sharedWritableRoot": false
@@ -80,7 +80,7 @@
       "rejectBy": "formula",
       "code": "INV-ART",
       "schema": "scenario",
-      "title": "GAP: each item gets its own workspace mount and there is no shared writable ART root. This tree has no ART mounter.",
+      "title": "Each item gets its own workspace mount and there is no shared writable ART root.",
       "document": {
         "perItemMount": true,
         "sharedWritableRoot": true
@@ -119,7 +119,7 @@
       "rejectBy": "formula",
       "code": null,
       "schema": "scenario",
-      "title": "GAP: one outbound owner, disabled unless a send is authorized. Outage queues reporting and does not block execution. followUp sets StageBuilding. internal/outbound posts work-item status cards. Neither is factory-outbound-bridge.",
+      "title": "One outbound owner, factory-outbound-bridge, stays disabled unless a send is authorized. Outage queues reporting and does not block execution.",
       "document": {
         "blocksExecution": false,
         "echoSuppressed": true,
@@ -140,7 +140,7 @@
       "rejectBy": "formula",
       "code": "INV-BRIDGE",
       "schema": "scenario",
-      "title": "GAP: one outbound owner, disabled unless a send is authorized. Outage queues reporting and does not block execution. followUp sets StageBuilding. internal/outbound posts work-item status cards. Neither is factory-outbound-bridge.",
+      "title": "One outbound owner, factory-outbound-bridge, stays disabled unless a send is authorized. Outage queues reporting and does not block execution.",
       "document": {
         "blocksExecution": false,
         "echoSuppressed": true,

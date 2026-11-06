@@ -1,0 +1,11 @@
+{
+  "name": "native-scan",
+  "profile": "scanner",
+  "requires": ["report"],
+  "executeTarget": false,
+  "linear": null,
+  "defaultSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "codeSha": "1111111111111111111111111111111111111111",
+  "imageDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "adapterDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}

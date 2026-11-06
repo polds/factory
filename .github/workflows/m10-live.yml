@@ -1,0 +1,40 @@
+# Manual M10 live gate.
+#
+# workflow_dispatch only. This workflow is not part of the required CI
+# check. It does not deploy a schedule and it does not start a scanner
+# or a model. The only step runs the live preflight, which exits 1
+# while backend attestation is absent. Do not dispatch it from an agent.
+#
+# permissions is contents:read. There is no job-level permissions block
+# and no repository secret is read.
+name: m10-live
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m10-live
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gate:
+    name: m10 live gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Fail closed before any model probe
+        run: bash spike/m10/preflight.sh live

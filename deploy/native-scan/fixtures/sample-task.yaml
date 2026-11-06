@@ -1,0 +1,25 @@
+# Synthetic dedicated-backend sample. One definition, two item mounts.
+# The offline driver does not apply this file to a host.
+dockerSocket: false
+sharedWritableCheckout: false
+sharedArtRoot: false
+broadSecrets: []
+items:
+  - id: item-a
+    workspace:
+      source: item-a-workspace
+      target: /workspace
+      readOnly: true
+    art:
+      source: item-a-art
+      target: /items/item-a/art
+      readOnly: false
+  - id: item-b
+    workspace:
+      source: item-b-workspace
+      target: /workspace
+      readOnly: true
+    art:
+      source: item-b-art
+      target: /items/item-b/art
+      readOnly: false
