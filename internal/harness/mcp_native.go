@@ -10,8 +10,8 @@ import (
 	"github.com/polds/factory/internal/client"
 )
 
-// nativeClient is the ten production methods M9-H may call.
-// Delegate and wait are not on this interface.
+// nativeClient is the production surface NativeTools calls.
+// Delegate, activate, complete, park, join, and wake-run are included.
 type nativeClient interface {
 	CreateNativeTask(ctx context.Context, factoryUID string, req client.NativeTaskRequest) (client.NativeTask, error)
 	GetNativeTask(ctx context.Context, factoryUID, taskID string) (client.NativeTask, error)
@@ -23,6 +23,12 @@ type nativeClient interface {
 	RedeliverNativeMessage(ctx context.Context, factoryUID, taskID, messageID string) (client.NativeRedelivery, error)
 	ClaimNativeInbox(ctx context.Context, factoryUID, taskID, holder string) (client.NativeClaim, error)
 	GetNativeWake(ctx context.Context, factoryUID, taskID string) (client.NativeWake, error)
+	DelegateNative(ctx context.Context, factoryUID, taskID string, req client.NativeDelegateRequest) (client.NativeDelegateResult, error)
+	ActivateNative(ctx context.Context, factoryUID, taskID string, req client.NativeActivateRequest) (client.NativeActivation, error)
+	CompleteNative(ctx context.Context, factoryUID, taskID string, req client.NativeCompleteRequest) (client.NativeActivation, error)
+	ParkNative(ctx context.Context, factoryUID, taskID string, req client.NativeParkRequest) (client.NativeActivation, error)
+	JoinNative(ctx context.Context, factoryUID, taskID string) (client.NativeJoinResult, error)
+	WakeNativeRun(ctx context.Context, factoryUID, taskID string, req client.NativeWakeRunRequest) (client.NativeWakeRunResult, error)
 }
 
 // Compile-time check that the real client is the production implementation.
@@ -31,7 +37,8 @@ var _ nativeClient = (*client.Client)(nil)
 const (
 	// EvidenceProduction is a call that hit client.Client.
 	EvidenceProduction = "production"
-	// EvidenceContract is the delegate/wait fake. M9-N does not ship those routes yet.
+	// EvidenceContract is the delegate/wait conformance fake.
+	// Production dispatch leaves NativeTools.Contract false.
 	EvidenceContract = "contract"
 )
 
@@ -41,23 +48,36 @@ type ToolResult struct {
 	Payload  string `json:"payload"`
 }
 
-// NativeTools dispatches MCP tools. API may be nil when the tool is delegate or wait.
+// NativeTools dispatches MCP tools.
+// Contract keeps delegate and wait on the conformance fake. Tests set it.
+// Production dispatch leaves it false and calls the client.
 type NativeTools struct {
-	API     nativeClient
-	Needles []string
+	API      nativeClient
+	Needles  []string
+	Contract bool
 }
 
-// Dispatch runs one native tool. task, inbox, ack, and the other eight production
-// tools call API. delegate and wait stay on the conformance fake.
+// Dispatch runs one native tool. Delegate calls DelegateNative.
+// Wait parks a running task, joins a parked task, and wakes a completed task.
 func (t NativeTools) Dispatch(ctx context.Context, tok RunToken, name string, args map[string]string) (ToolResult, error) {
 	switch name {
 	case "native_delegate":
-		return t.contract(tok, GrantRosterDispatch, args)
-	case "native_wait":
-		if err := Authorize(tok, GrantInboxRead, args["taskId"], args["invocationId"]); err != nil {
-			return ToolResult{}, err
+		if t.Contract {
+			return t.contract(tok, GrantRosterDispatch, args)
 		}
-		return t.redacted(EvidenceContract, "wait contract")
+		return t.delegate(ctx, tok, args)
+	case "native_wait":
+		if t.Contract {
+			if err := Authorize(tok, GrantInboxRead, args["taskId"], args["invocationId"]); err != nil {
+				return ToolResult{}, err
+			}
+			return t.redacted(EvidenceContract, "wait contract")
+		}
+		return t.wait(ctx, tok, args)
+	case "native_activate":
+		return t.activate(ctx, tok, args)
+	case "native_complete":
+		return t.complete(ctx, tok, args)
 	case "native_task_create":
 		if err := t.need(tok, GrantTaskWrite, "", args["invocationId"]); err != nil {
 			return ToolResult{}, err
@@ -168,7 +188,7 @@ func (t NativeTools) Dispatch(ctx context.Context, tok RunToken, name string, ar
 }
 
 func (t NativeTools) need(tok RunToken, grant, taskID, invocationID string) error {
-	if t.API == nil && grant != GrantRosterDispatch {
+	if t.API == nil {
 		return errors.New("harness: native client is not configured")
 	}
 	return Authorize(tok, grant, taskID, invocationID)

@@ -177,13 +177,13 @@ The contract body cap is 8192 bytes. `DeliveryBodyCap` (`internal/store/types.go
 
 `ClaimActivation` updates one task row from pending or parked to running and increments the fence. Park clears the active execution and releases capacity in the same transaction as the blocker insert. The capacity witness has one worker slot: the coordinator and the lead park before their children run, and only the coordinator's completion advances the pipeline.
 
-`RunUsage` (`internal/store/m5_read.go`) adds `CostCents` for every `usage` event on one run. It does not dedup by call and attempt, reserve ancestor scopes, emit an 80 percent alert, or allocate a gateway cap. Ancestor reservation, the 80 percent alert, and per-engagement gateway allocation are GAP. The contract still requires `ReserveAncestors` to lock factory, invocation, lead, and agent scope rows in scope-id order, and `SettleUsage` to be unique on `(call_id, attempt_id)`.
+`coordination.ReserveAncestors` locks factory, invocation, lead, and agent scope rows in scope-id order and holds the cents in that transaction. `coordination.SettleUsage` is unique on `(call_id, attempt_id)`, including a failed attempt. `ApplyBudgetDelta` emits one 80 percent alert per scope episode. `RunUsage` (`internal/store/m5_read.go`) still adds `CostCents` for every `usage` event on one run. It is not the admission gate.
 
 The 2500 cent figures in the budget witnesses are the configured policy cap used as an example. They are not a measured cost and not a spend authorization.
 
-A shared gateway key plus a spawn refusal does not cap calls that are already in flight. Paid work needs a per-engagement gateway allocation at most the ceiling. Until that allocation is proved, `guaranteesCeiling` is false.
+A shared gateway key plus a spawn refusal does not cap calls that are already in flight. Paid work needs a per-engagement gateway allocation at most the ceiling. That allocation is GAP until M10-G (INV-GATEWAY). `secrets.FailClosedAllocator` fails closed and does not set `guaranteesCeiling`. A shared key does not guarantee the ceiling.
 
-`AuthorizeCeiling` is GAP. The contract raises one scope ceiling only in the same transaction as an audit row for `api_key:ops`, spends 0 cents, and rejects an unaudited raise. Cancel and pause (`CancelSubtree`, late-charge pause) leave in-flight reservations on the ceiling until the releasing transaction commits. Late-charge quarantine and ceiling overshoot are also GAP: `RunUsage` adds the reported cents and does not quarantine the excess.
+`coordination.AuthorizeCeiling` raises one scope ceiling in the same transaction as an audit row for `api_key:ops`, spends 0 cents, and rejects an unaudited raise. Cancel and pause (`CancelSubtree`, late-charge pause) leave in-flight reservations on the ceiling until the releasing transaction commits. A late charge above the reservation is quarantined and the scope pauses. Attributed spend beyond the ceiling stays 0 while `spent + reserved` is within the ceiling.
 
 ## Legacy defaults
 

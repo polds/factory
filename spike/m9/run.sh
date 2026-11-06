@@ -15,4 +15,5 @@ go test -count=1 "$ROOT/internal/definition" -run 'TestNative|TestReportsTo'
 go test -count=1 "$ROOT/internal/coordination/..."
 go test -count=1 "$ROOT/internal/store" -run 'TestNative'
 go test -count=1 "$ROOT/internal/server" -run 'TestNative'
+go test -race -count=10 -timeout 30m "$ROOT/internal/server" -run 'TestM9NativeToolsE2E'
 echo "m9 offline PASS"
