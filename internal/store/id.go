@@ -7,25 +7,29 @@ import (
 )
 
 const (
-	PrefixRun            = "run_"
-	PrefixExec           = "exec_"
-	PrefixFactory        = "fac_"
-	PrefixAgent          = "agt_"
-	PrefixDefinition     = "def_"
-	PrefixWorkItem       = "task_"
-	PrefixApproval       = "apr_"
-	PrefixConversation   = "conv_"
-	PrefixDelivery       = "dlv_"
-	PrefixSchedule       = "sch_"
-	PrefixInputRequest   = "inr_"
-	PrefixWebhook        = "whk_"
-	PrefixSteer          = "str_"
-	PrefixAutomation     = "aut_"
-	PrefixScorerResult   = "scr_"
-	PrefixImproveBatch   = "ibt_"
-	PrefixBenchmarkRun   = "bmr_"
-	PrefixBenchmarkTrial = "bmt_"
-	PrefixInvocation     = "inv_"
+	PrefixRun              = "run_"
+	PrefixExec             = "exec_"
+	PrefixFactory          = "fac_"
+	PrefixAgent            = "agt_"
+	PrefixDefinition       = "def_"
+	PrefixWorkItem         = "task_"
+	PrefixApproval         = "apr_"
+	PrefixConversation     = "conv_"
+	PrefixDelivery         = "dlv_"
+	PrefixSchedule         = "sch_"
+	PrefixInputRequest     = "inr_"
+	PrefixWebhook          = "whk_"
+	PrefixSteer            = "str_"
+	PrefixAutomation       = "aut_"
+	PrefixScorerResult     = "scr_"
+	PrefixImproveBatch     = "ibt_"
+	PrefixBenchmarkRun     = "bmr_"
+	PrefixBenchmarkTrial   = "bmt_"
+	PrefixInvocation       = "inv_"
+	PrefixNativeTask       = "ntask_"
+	PrefixNativeMessage    = "nmsg_"
+	PrefixNativeDelivery   = "ndlv_"
+	PrefixNativeActivation = "nact_"
 )
 
 // NewID returns prefix plus 26 Crockford base32 characters encoding a 48-bit
@@ -59,7 +63,9 @@ func knownPrefix(prefix string) bool {
 		PrefixWorkItem, PrefixApproval, PrefixConversation,
 		PrefixDelivery, PrefixSchedule, PrefixInputRequest, PrefixWebhook,
 		PrefixSteer, PrefixAutomation, PrefixScorerResult, PrefixImproveBatch,
-		PrefixBenchmarkRun, PrefixBenchmarkTrial, PrefixInvocation:
+		PrefixBenchmarkRun, PrefixBenchmarkTrial, PrefixInvocation,
+		PrefixNativeTask, PrefixNativeMessage, PrefixNativeDelivery,
+		PrefixNativeActivation:
 		return true
 	default:
 		return false

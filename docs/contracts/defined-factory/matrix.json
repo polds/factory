@@ -155,8 +155,8 @@
       "fieldPath": "target",
       "baseline": {
         "file": "internal/server/m8_invoke.go",
-        "start": 300,
-        "end": 303,
+        "start": 305,
+        "end": 308,
         "anchor": "target.Repository"
       },
       "decision": "A definition that does not require a repository mints no forge token.",
@@ -281,8 +281,8 @@
       "fieldPath": "overlapPolicy,outcome",
       "baseline": {
         "file": "internal/server/m8_invoke.go",
-        "start": 155,
-        "end": 168,
+        "start": 169,
+        "end": 172,
         "anchor": "StateSkippedOverlap"
       },
       "decision": "Forbid overlap records skipped_overlap. It does not continue the busy item and it is not a completed scan.",
@@ -641,8 +641,8 @@
       "fieldPath": "delegationEdgeId,parentRunId",
       "baseline": {
         "file": "internal/server/work.go",
-        "start": 698,
-        "end": 702,
+        "start": 725,
+        "end": 729,
         "anchor": "ParentRunID"
       },
       "decision": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
@@ -677,9 +677,9 @@
       "fieldPath": "taskId,assignee,blockerIds,activationId,executionId",
       "baseline": {
         "file": "internal/store/types.go",
-        "start": 110,
-        "end": 131,
-        "anchor": "ParentRunID"
+        "start": 715,
+        "end": 728,
+        "anchor": "ActivationID"
       },
       "decision": "Task, assignee, blockers, activation, and execution are distinct identities.",
       "testOwner": "M9-T",
@@ -712,10 +712,10 @@
       "method": "store.AppendLedger",
       "fieldPath": "invocation_events",
       "baseline": {
-        "file": "internal/store/events.go",
-        "start": 107,
-        "end": 115,
-        "anchor": "MAX(seq)"
+        "file": "internal/store/migrations/0014_native_coordination.sql",
+        "start": 34,
+        "end": 47,
+        "anchor": "invocation_events"
       },
       "decision": "One canonical event record per invocation. The inbox is a per-assignee projection, not a second store.",
       "testOwner": "M9-T",
@@ -731,9 +731,9 @@
       "fieldPath": "body",
       "baseline": {
         "file": "internal/store/types.go",
-        "start": 90,
-        "end": 91,
-        "anchor": "DeliveryBodyCap"
+        "start": 697,
+        "end": 700,
+        "anchor": "NativeBodyCap"
       },
       "decision": "Inbox and comment bodies are at most 8192 bytes. DeliveryBodyCap is 256 KiB (256 << 10). maxBodyBytes is 1 MiB. Neither constant is 8192.",
       "testOwner": "M9-T",
@@ -748,10 +748,10 @@
       "method": "store.AckDelivery",
       "fieldPath": "deliveryId,principal,taskId",
       "baseline": {
-        "file": "internal/store/events.go",
-        "start": 97,
-        "end": 105,
-        "anchor": "insertEvent"
+        "file": "internal/store/native_inbox.go",
+        "start": 191,
+        "end": 193,
+        "anchor": "AckDelivery"
       },
       "decision": "Ack is explicit, idempotent, and scoped to task and principal. It runs only after durable apply.",
       "testOwner": "M9-T",
@@ -766,10 +766,10 @@
       "method": "store.ReadInbox",
       "fieldPath": "cursor",
       "baseline": {
-        "file": "internal/client/run_events_stream.go",
-        "start": 84,
-        "end": 86,
-        "anchor": "Last-Event-ID"
+        "file": "internal/store/native_inbox.go",
+        "start": 56,
+        "end": 58,
+        "anchor": "ReadInbox"
       },
       "decision": "Read and long-poll do not acknowledge.",
       "testOwner": "M9-T",
@@ -784,10 +784,10 @@
       "method": "store.AckDelivery",
       "fieldPath": "messageId,deliveryId",
       "baseline": {
-        "file": "internal/store/events.go",
-        "start": 97,
-        "end": 105,
-        "anchor": "execution_id"
+        "file": "internal/store/native_inbox.go",
+        "start": 251,
+        "end": 253,
+        "anchor": "Redeliver"
       },
       "decision": "A dropped response leaves the delivery unacked. Redelivery applies the message once.",
       "testOwner": "M9-T",
@@ -802,10 +802,10 @@
       "method": "store.AckDelivery",
       "fieldPath": "deliveryId",
       "baseline": {
-        "file": "internal/store/events.go",
-        "start": 97,
-        "end": 105,
-        "anchor": "idx"
+        "file": "internal/store/native_inbox.go",
+        "start": 231,
+        "end": 248,
+        "anchor": "Duplicate"
       },
       "decision": "A duplicate ack does not apply the message twice.",
       "testOwner": "M9-T",
@@ -820,10 +820,10 @@
       "method": "store.AppendLedger",
       "fieldPath": "invocation_ledgers.ledger_seq",
       "baseline": {
-        "file": "internal/store/migrations/0009_run_lifecycle_events.sql",
-        "start": 94,
-        "end": 96,
-        "anchor": "nextval"
+        "file": "internal/store/native_event.go",
+        "start": 26,
+        "end": 30,
+        "anchor": "FOR UPDATE"
       },
       "decision": "Lock the invocation ledger row and commit the event, state, and outbox together. factory_seq and run_events.seq are not invocation order.",
       "testOwner": "M9-T",
@@ -856,10 +856,10 @@
       "method": "store.ClaimInbox",
       "fieldPath": "fence",
       "baseline": {
-        "file": "internal/store/events.go",
-        "start": 107,
-        "end": 115,
-        "anchor": "MAX(seq)"
+        "file": "internal/store/native_inbox.go",
+        "start": 312,
+        "end": 314,
+        "anchor": "claim_fenced"
       },
       "decision": "A second claim loses the fence. The holder and fence stay unchanged.",
       "testOwner": "M9-T",
@@ -874,10 +874,10 @@
       "method": "store.ReadInbox",
       "fieldPath": "cursor,limit",
       "baseline": {
-        "file": "internal/store/events.go",
-        "start": 122,
-        "end": 127,
-        "anchor": "EventsFrom"
+        "file": "internal/store/native_inbox.go",
+        "start": 15,
+        "end": 29,
+        "anchor": "EncodeInboxCursor"
       },
       "decision": "Inbox pages use an opaque cursor. Limit is 1 through 100 and defaults to 50.",
       "testOwner": "M9-T",
@@ -892,10 +892,10 @@
       "method": "store.CoalesceWake",
       "fieldPath": "wakeIntent",
       "baseline": {
-        "file": "internal/server/m5_steer.go",
-        "start": 31,
-        "end": 42,
-        "anchor": "enqueueSteer"
+        "file": "internal/store/native_wake.go",
+        "start": 47,
+        "end": 56,
+        "anchor": "coalesce_count"
       },
       "decision": "Repeated wake intents for one task collapse to one durable wake record.",
       "testOwner": "M9-T",
@@ -983,8 +983,8 @@
       "fieldPath": "runId,executionId",
       "baseline": {
         "file": "internal/store/types.go",
-        "start": 110,
-        "end": 112,
+        "start": 118,
+        "end": 120,
         "anchor": "logical task"
       },
       "decision": "Infrastructure retry creates a new execution of the same run.",
@@ -1055,8 +1055,8 @@
       "fieldPath": "audit.board.resume",
       "baseline": {
         "file": "internal/store/types.go",
-        "start": 100,
-        "end": 102,
+        "start": 108,
+        "end": 110,
         "anchor": "InboxActionApprove"
       },
       "decision": "Board resume is an authorized audited transition. It does not mutate the cancelled run's terminal evidence.",

@@ -103,25 +103,29 @@ func (s *Server) AdmitInvocation(ctx context.Context, factoryUID string, princip
 	if ins.Row.WorkItemID != "" {
 		return s.receiptFromRow(fac.Name, ins.Row, !ins.Created), nil
 	}
-	item, err := s.store.CreateWorkItem(ctx, store.NewWorkItem{
-		FactoryID: fac.ID,
-		Source:    invocationSource(principal),
-		SourceRef: req.SourceOccurrenceKey,
-		Title:     invocationTitle(req),
-		Body:      invocationBody(req),
-		Stage:     stage,
-		Status:    store.WorkItemOpen,
-		CreatedBy: principal.Actor,
+	repaired, err := s.store.RepairAcceptedInvocation(ctx, store.RepairInvocationParams{
+		InvocationID: ins.Row.ID,
+		Work: store.NewWorkItem{
+			FactoryID: fac.ID,
+			Source:    invocationSource(principal),
+			SourceRef: req.SourceOccurrenceKey,
+			Title:     invocationTitle(req),
+			Body:      invocationBody(req),
+			Stage:     stage,
+			Status:    store.WorkItemOpen,
+			CreatedBy: principal.Actor,
+		},
+		StartStage: func(item store.WorkItem, openPR string) (store.NewRun, error) {
+			return s.prepareFirstStageRun(item, stage, agentName, "", openPR)
+		},
 	})
 	if err != nil {
 		return invocation.Receipt{}, err
 	}
-	if err := s.store.LinkInvocationWorkItem(ctx, ins.Row.ID, item.ID); err != nil {
-		return invocation.Receipt{}, err
-	}
-	ins.Row.WorkItemID = item.ID
-	if _, err := s.startStageRun(ctx, item, stage, agentName, ""); err != nil {
-		return invocation.Receipt{}, err
+	ins.Row.WorkItemID = repaired.Item.ID
+	if repaired.RunStarted {
+		s.log.Info("stage run", "work_item_id", repaired.Item.ID, "stage", stage, "run_id", repaired.RunID, "agent", agentName)
+		s.nudge()
 	}
 	return s.receiptFromRow(fac.Name, ins.Row, !ins.Created), nil
 }

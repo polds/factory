@@ -208,6 +208,167 @@ func nullableText(s string) any {
 	return s
 }
 
+// RepairInvocationParams closes the crash window between an accepted
+// invocation insert and its work-item link. Work is used only when no item
+// with this occurrence key exists.
+type RepairInvocationParams struct {
+	InvocationID string
+	Work         NewWorkItem
+	StartStage   StageRunStarter
+}
+
+// RepairInvocationResult is the work item that now belongs to the invocation.
+// Created is true only when this call inserted the item. RunExists is true
+// when a stage run is attached, including one this call just inserted.
+// RunStarted is true only when this call inserted that run in the same commit.
+type RepairInvocationResult struct {
+	Item       WorkItem
+	Created    bool
+	RunExists  bool
+	RunStarted bool
+	RunID      string
+}
+
+// StageRunStarter builds the run to insert when the work item has none.
+// It runs while the invocation row is locked. openPR is the work item's
+// stored pull request, read on this transaction. The starter must not use
+// the store pool. The returned run is inserted before the lock is released.
+type StageRunStarter func(item WorkItem, openPR string) (NewRun, error)
+
+// RepairAcceptedInvocation links an accepted invocation to one work item.
+// A replay finds the item already created for the same source ref and does
+// not insert a second one. The invocation row stays locked until commit.
+func (s *Store) RepairAcceptedInvocation(ctx context.Context, p RepairInvocationParams) (RepairInvocationResult, error) {
+	if p.InvocationID == "" {
+		return RepairInvocationResult{}, ErrInputInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return RepairInvocationResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	row, err := scanInvocation(tx.QueryRow(ctx, `
+		SELECT `+invocationColumns+`
+		FROM invocations
+		WHERE id = $1
+		FOR UPDATE`, p.InvocationID))
+	if err != nil {
+		return RepairInvocationResult{}, err
+	}
+	var out RepairInvocationResult
+	switch {
+	case row.WorkItemID != "":
+		out.Item, err = scanWorkItem(tx.QueryRow(ctx, `
+			SELECT `+workItemColumns+`
+			FROM work_items
+			WHERE id = $1
+			FOR UPDATE`, row.WorkItemID))
+		if err != nil {
+			return RepairInvocationResult{}, err
+		}
+	default:
+		out.Item, err = scanWorkItem(tx.QueryRow(ctx, `
+			SELECT `+workItemColumns+`
+			FROM work_items
+			WHERE factory_id = $1
+			  AND source_ref = $2
+			  AND (invocation_id IS NULL OR invocation_id = $3)
+			ORDER BY created_at
+			LIMIT 1
+			FOR UPDATE`, p.Work.FactoryID, p.Work.SourceRef, p.InvocationID))
+		if errors.Is(err, ErrNotFound) {
+			prepared, prepErr := prepareWorkItem(p.Work)
+			if prepErr != nil {
+				return RepairInvocationResult{}, prepErr
+			}
+			out.Item, err = insertPreparedWorkItem(ctx, tx, prepared)
+			if err != nil {
+				return RepairInvocationResult{}, err
+			}
+			out.Created = true
+		} else if err != nil {
+			return RepairInvocationResult{}, err
+		}
+		if err = linkInvocationWorkItemTx(ctx, tx, p.InvocationID, out.Item.ID); err != nil {
+			return RepairInvocationResult{}, err
+		}
+		out.Item.InvocationID = p.InvocationID
+	}
+	locked, err := lockWorkItem(ctx, tx, out.Item.ID)
+	if err != nil {
+		return RepairInvocationResult{}, err
+	}
+	out.Item = locked
+	if err = startStageRunTx(ctx, tx, &out, p.StartStage); err != nil {
+		return RepairInvocationResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return RepairInvocationResult{}, err
+	}
+	return out, nil
+}
+
+// startStageRunTx counts runs for the locked work item and, when there are
+// none, inserts the run before the caller commits. The count and the insert
+// stay in one transaction for every stage, including triage.
+func startStageRunTx(ctx context.Context, tx pgx.Tx, out *RepairInvocationResult, start StageRunStarter) error {
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM runs WHERE work_item_id = $1`, out.Item.ID).Scan(&n); err != nil {
+		return fmt.Errorf("store: count stage runs: %w", err)
+	}
+	out.RunExists = n > 0
+	if n > 0 || start == nil {
+		return nil
+	}
+	var openPR string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(open_pr_url, '') FROM work_items WHERE id = $1`, out.Item.ID).Scan(&openPR); err != nil {
+		return fmt.Errorf("store: stage run pull request: %w", err)
+	}
+	newRun, err := start(out.Item, openPR)
+	if err != nil {
+		return err
+	}
+	newRun.WorkItemID = out.Item.ID
+	if newRun.ConversationID == "" {
+		newRun.ConversationID = out.Item.ConversationID
+	}
+	if err = validateNewRun(newRun); err != nil {
+		return err
+	}
+	runID, err := NewID(PrefixRun)
+	if err != nil {
+		return err
+	}
+	if err = insertRunTx(ctx, tx, runID, newRun); err != nil {
+		return err
+	}
+	if err = notifyRun(ctx, tx, runID); err != nil {
+		return err
+	}
+	out.RunStarted = true
+	out.RunID = runID
+	out.RunExists = true
+	return nil
+}
+
+func linkInvocationWorkItemTx(ctx context.Context, tx pgx.Tx, invocationID, workItemID string) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE invocations SET work_item_id = $2 WHERE id = $1 AND work_item_id IS NULL`,
+		invocationID, workItemID)
+	if err != nil {
+		return fmt.Errorf("store: link invocation: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	_, err = tx.Exec(ctx, `UPDATE work_items SET invocation_id = $2 WHERE id = $1`, workItemID, invocationID)
+	if err != nil {
+		return fmt.Errorf("store: link invocation work item: %w", err)
+	}
+	return nil
+}
+
 // LinkInvocationWorkItem attaches a work item after the receipt row exists.
 func (s *Store) LinkInvocationWorkItem(ctx context.Context, invocationID, workItemID string) error {
 	tag, err := s.pool.Exec(ctx, `

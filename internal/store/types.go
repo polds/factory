@@ -43,6 +43,14 @@ var (
 	// ErrImmutable is returned when a webhook registration would change
 	// auth_mode or signature_scheme. Delete the registration and create it again.
 	ErrImmutable = errors.New("store: immutable")
+	// ErrClaimFenced means a second inbox claim lost. The holder and fence stay as they were.
+	ErrClaimFenced = errors.New("claim_fenced")
+	// ErrInputInvalid means a native body, cursor, limit, or identity is outside the contract.
+	ErrInputInvalid = errors.New("input_invalid")
+	// ErrPrincipalRejected means the ack principal does not match the durable apply.
+	ErrPrincipalRejected = errors.New("principal_rejected")
+	// ErrNotApplied means AckDelivery ran before a durable apply of that message.
+	ErrNotApplied = errors.New("store: ack before durable apply")
 )
 
 const (
@@ -684,4 +692,157 @@ type PRFact struct {
 	HumanPushSeen *bool
 	IsImprovement *bool
 	ChangedLines  *int
+}
+
+const (
+	// NativeBodyCap is the inbox and comment body limit in bytes.
+	// DeliveryBodyCap is 256 KiB and the API max body is 1 MiB. Neither is 8192.
+	NativeBodyCap = 8192
+	// InboxDefaultLimit is the inbox page size when the caller omits limit.
+	InboxDefaultLimit = 50
+	// InboxMaxLimit is the largest inbox page. Limits outside 1..100 are rejected.
+	InboxMaxLimit = 100
+
+	NativeTaskPending = "pending"
+
+	LedgerKindComment    = "comment"
+	LedgerKindMention    = "mention"
+	LedgerKindAssign     = "assign"
+	LedgerKindResult     = "result"
+	LedgerKindCompletion = "completion"
+)
+
+// NativeTask is one factory-owned task. Task, assignee, blockers, activation,
+// and execution are different fields. ParentTaskID is not a stage predecessor;
+// runs keep parent_run_id for that. TaskRef is the Factory-side id a scanner
+// cites. linear_issue is not a column.
+type NativeTask struct {
+	ID           string
+	TaskRef      string
+	FactoryID    string
+	InvocationID string
+	ParentTaskID string
+	Assignee     string
+	BlockerIDs   []string
+	ActivationID string
+	ExecutionID  string
+	Status       string
+	BudgetScope  string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// NativeTaskInput is the insert payload for InsertNativeTask.
+// ActivationID and ExecutionID are recorded only. Insert does not start an execution.
+type NativeTaskInput struct {
+	FactoryID    string
+	InvocationID string
+	ParentTaskID string
+	Assignee     string
+	BlockerIDs   []string
+	ActivationID string
+	ExecutionID  string
+	BudgetScope  string
+}
+
+// LedgerEntry is one canonical invocation event. AppendLedger commits the
+// event, the state row, and the outbox row together.
+type LedgerEntry struct {
+	Kind       string
+	TaskID     string
+	Body       string
+	Payload    json.RawMessage
+	Assignee   string
+	Wake       bool
+	WakeReason string
+	TaskUpdate *NativeTaskUpdate
+}
+
+// NativeTaskUpdate is the task mutation committed with a ledger event.
+type NativeTaskUpdate struct {
+	Assignee string
+	Status   string
+}
+
+// LedgerRecord is the committed sequence position.
+type LedgerRecord struct {
+	InvocationID string
+	LedgerSeq    int64
+	MessageID    string
+	DeliveryID   string
+}
+
+// InboxQuery selects one assignee projection. Wait greater than zero long-polls.
+// ReadInbox does not acknowledge.
+type InboxQuery struct {
+	FactoryID string
+	Assignee  string
+	Cursor    string
+	Limit     int
+	Wait      time.Duration
+}
+
+// InboxDelivery is one projected delivery. Body is the canonical event body.
+type InboxDelivery struct {
+	DeliveryID   string
+	MessageID    string
+	InvocationID string
+	TaskID       string
+	Assignee     string
+	Body         string
+	Kind         string
+	LedgerSeq    int64
+}
+
+// InboxPage is one cursor page.
+type InboxPage struct {
+	Deliveries []InboxDelivery
+	NextCursor string
+}
+
+// AckResult is one explicit ack. Duplicate is true when the same
+// delivery, principal, and task were already acked.
+type AckResult struct {
+	DeliveryID string
+	MessageID  string
+	TaskID     string
+	Principal  string
+	Duplicate  bool
+}
+
+// InboxClaim is the fence held for one task inbox.
+type InboxClaim struct {
+	TaskID   string
+	Holder   string
+	Fence    int64
+	Accepted bool
+}
+
+// ClaimLost is a lost inbox claim. Holder and Fence are the unchanged winner.
+type ClaimLost struct {
+	InboxClaim
+}
+
+func (e *ClaimLost) Error() string { return ErrClaimFenced.Error() }
+
+func (e *ClaimLost) Unwrap() error { return ErrClaimFenced }
+
+// WakeIntent is the single coalesced wake row for a task. Pending means
+// no activation consumer has taken it.
+type WakeIntent struct {
+	TaskID        string
+	InvocationID  string
+	Assignee      string
+	Reason        string
+	Pending       bool
+	CoalesceCount int64
+	UpdatedAt     time.Time
+}
+
+// OutboxRow is one committed outbox record in ledger order.
+type OutboxRow struct {
+	InvocationID string
+	LedgerSeq    int64
+	Kind         string
+	Payload      json.RawMessage
 }

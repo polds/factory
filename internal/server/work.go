@@ -679,6 +679,35 @@ func (s *Server) applyEffects(ctx context.Context, item store.WorkItem, effects 
 	return cancel, nil
 }
 
+// prepareFirstStageRun builds the first run for a work item that has no
+// runs yet. prior stages are empty. openPR was read on the repair transaction.
+// It does not use the store pool, so it can run while that transaction holds
+// the only connection the pool has left.
+func (s *Server) prepareFirstStageRun(item store.WorkItem, stage, agentName, parentRunID, openPR string) (store.NewRun, error) {
+	snap := s.snapshot()
+	agentID, bound, err := s.resolveAgent(agentName, item.FactoryID, snap)
+	if err != nil {
+		return store.NewRun{}, err
+	}
+	pool := bound.agent.Pool
+	if pool == "" {
+		pool = s.cfg.WorkerPool
+	}
+	return store.NewRun{
+		FactoryID:      item.FactoryID,
+		AgentID:        agentID,
+		Pool:           pool,
+		Priority:       store.PriorityPipeline,
+		Prompt:         renderStagePrompt(bound.agent, item, stage, nil, openPR, s.redactEnv()),
+		Title:          item.Title,
+		WorkItemID:     item.ID,
+		ParentRunID:    parentRunID,
+		ConversationID: item.ConversationID,
+		Stage:          stage,
+		ModelID:        resolveModelID(snap.tree, bound.agent),
+	}, nil
+}
+
 func (s *Server) prepareStageRun(ctx context.Context, item store.WorkItem, stage, agentName, parentRunID string) (store.NewRun, error) {
 	snap := s.snapshot()
 	agentID, bound, err := s.resolveAgent(agentName, item.FactoryID, snap)
@@ -746,7 +775,25 @@ func withNoPullRequest(body string) string {
 }
 
 func (s *Server) stagePrompt(ctx context.Context, item store.WorkItem, stage string, bound boundAgent) string {
-	agent := bound.agent
+	return renderStagePrompt(bound.agent, item, stage, s.priorStages(ctx, item.ID), s.openPullRequest(ctx, item.ID, stage), s.redactEnv())
+}
+
+func (s *Server) openPullRequest(ctx context.Context, workItemID, stage string) string {
+	if stage != store.StageBuilding || s.store == nil || workItemID == "" {
+		return ""
+	}
+	url, ok, err := (&store.Automation{Store: s.store}).OpenPullRequest(ctx, workItemID)
+	if err != nil {
+		s.log.Error("pull request", "work_item_id", workItemID, "err", err)
+		return ""
+	}
+	if !ok {
+		return ""
+	}
+	return url
+}
+
+func renderStagePrompt(agent definition.Agent, item store.WorkItem, stage string, prior []handoff.StageOutput, openPR string, env map[string]string) string {
 	if stage != store.StageBuilding {
 		agent.Body = withNoPullRequest(agent.Body)
 	}
@@ -757,24 +804,13 @@ func (s *Server) stagePrompt(ctx context.Context, item store.WorkItem, stage str
 		SourceRef:      item.SourceRef,
 		Title:          item.Title,
 		Body:           item.Body,
-		PriorStages:    s.priorStages(ctx, item.ID),
-		Env:            s.redactEnv(),
+		PriorStages:    prior,
+		Env:            env,
 	})
-	if stage != store.StageBuilding {
+	if openPR == "" {
 		return prompt
 	}
-	if s.store == nil || item.ID == "" {
-		return prompt
-	}
-	url, ok, err := (&store.Automation{Store: s.store}).OpenPullRequest(ctx, item.ID)
-	if err != nil {
-		s.log.Error("pull request", "work_item_id", item.ID, "err", err)
-		return prompt
-	}
-	if !ok || url == "" {
-		return prompt
-	}
-	return "Pull request: " + url + "\nPush to this pull request. Do not open another pull request.\n\n" + prompt
+	return "Pull request: " + openPR + "\nPush to this pull request. Do not open another pull request.\n\n" + prompt
 }
 
 func (s *Server) redactEnv() map[string]string {
