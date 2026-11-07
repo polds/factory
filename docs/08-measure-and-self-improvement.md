@@ -140,8 +140,9 @@ Three properties this buys:
   should be one click in the console.
 
 **M6 applied.** factoryd fills `repository_head_overrides` on the assignment.
-The worker forwards each one as `--repository-head-override-json`. An empty
-document still checks nothing out. An explicit `COMMIT_SHA` is checked out
+The worker forwards each one as `--repository-head-override-json` and omits
+the flag when the list is empty. A supplied empty document fails before the
+harness setup command and before a model call. An explicit `COMMIT_SHA` is checked out
 only when that commit is already in the workspace and the workspace `origin`
 is that GitHub repository; otherwise the harness stops before setup and before
 a model call. It does not fetch or clone. The flag and the skill path are in

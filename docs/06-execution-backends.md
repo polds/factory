@@ -224,9 +224,10 @@ The dispatch command's job is to hand the payload to a runtime and return quickl
 - **Head overrides.** A benchmark trial or an invocation pin puts frozen SHAs
   on the assignment (`repository_head_overrides`). The worker forwards that JSON
   as `--repository-head-override-json`. The in-repo harness checks out one
-  supported local `COMMIT_SHA` before setup or a model call, and only when the
-  workspace `origin` is that GitHub repository and the commit object is already
-  local. Empty override JSON checks nothing out. A branch head, `clone_from`,
+  supported local `COMMIT_SHA` before the harness setup command or a model call,
+  and only when the workspace `origin` is that GitHub repository and the commit
+  object is already local. The flag is omitted when there is no override. A
+  supplied empty document fails before those steps. A branch head, `clone_from`,
   `preserve_origin`, a second override, a missing object, a dirty tree, or a
   path that is not the workspace repository fails before setup. The gate does
   not fetch, force, reset, or clean (`internal/harness/checkout.go`). The

@@ -81,7 +81,7 @@ upstream worker can drive it:
 | `--computer-use`, `--computer-use-model`, `--no-computer-use` | Computer-use toggles |
 | `--idle-on-complete <dur>` | Stay alive for follow-ups after the conversation ends |
 | `--skip-initial-turn` | Attach without prompting (handoff/continuation) |
-| `--repository-head-override-json` | Accepted. Empty `{}`, `[]`, `null`, or an empty string checks nothing out. One supported local `COMMIT_SHA` override is checked out before setup or a model call. Any other document fails before those steps. |
+| `--repository-head-override-json` | Omitted, the workspace is unchanged. Present with `{}`, `[]`, `null`, an empty string, or any other document that is not one local `COMMIT_SHA` fails before setup or a model call. |
 | `--remove-repository-origins` | Strip remotes after clone |
 | `--no-snapshot`, `--snapshot-upload-timeout`, `--snapshot-script-timeout` | Snapshot control |
 | `--bedrock-inference-role`, `--bedrock-role-region` | AWS STS AssumeRoleWithWebIdentity |
@@ -95,9 +95,11 @@ and the worker forwards them as `--repository-head-override-json`. The in-repo
 `generic-openai` harness reads that flag after `task.json` is loaded and before
 `setup_command`, tools, or the model call.
 
-An empty override (`{}`, `[]`, `null`, or an empty string) is the conformance
-token and checks nothing out. The worker passes one JSON object per repository.
-One object, or a one-element array, is applied only when `code_forge` is
+The flag is omitted when the assignment has no overrides. The pinned worker
+does not send `{}` in that case; it emits one JSON object per repository only
+when an override is present. A supplied `{}`, `[]`, `null`, or empty string
+fails before setup and before a model call. One object, or a one-element array,
+is applied only when `code_forge` is
 `GITHUB`, `head.type` is `COMMIT_SHA`, the value is 40 hex characters, and
 `clone_from` and `preserve_origin` are unset. The workspace must already be a
 real directory whose `origin` remote is that GitHub repository, whose `HEAD`
@@ -116,9 +118,10 @@ optional when the workspace is missing or unrecognized. The gate does not
 fetch, force, reset, or clean, and it does not create a repository. A dirty
 tree is left untouched. Each git command sets `core.hooksPath` to an empty
 directory and points global and system gitconfig at an empty file, so a hook
-in the repository does not run and user gitconfig is not read. Only an absent
-override (`{}`, `[]`, `null`, or an empty string) keeps the previous behavior
-and runs setup and the model in the workspace as it already is.
+in the repository does not run and user gitconfig is not read. Only omitting
+the flag keeps the previous behavior and runs setup and the model in the
+workspace as it already is. The harness gate runs after the worker's own setup
+command. It does not run before that command.
 
 The checkout SHA is the invocation `pinned_head_sha` carried on the assignment.
 It is not proof that role blobs exist in that commit. `SourceCommit` on a role

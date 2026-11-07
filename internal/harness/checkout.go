@@ -25,20 +25,13 @@ var (
 // hooks are pointed at an empty directory, and the user and system gitconfig
 // are not read.
 func enforceLocalCheckout(ctx context.Context, workspace string, raws []string) error {
-	var present []string
-	for _, raw := range raws {
-		if checkoutAbsent(raw) {
-			continue
-		}
-		present = append(present, raw)
-	}
-	if len(present) == 0 {
+	if len(raws) == 0 {
 		return nil
 	}
-	if len(present) != 1 {
-		return fmt.Errorf("%w: override count", errCheckoutOverride)
+	if len(raws) != 1 || explicitEmptyOverride(raws[0]) {
+		return fmt.Errorf("%w: empty or repeated override", errCheckoutOverride)
 	}
-	ov, err := oneCheckoutOverride(present[0])
+	ov, err := oneCheckoutOverride(raws[0])
 	if err != nil {
 		return err
 	}
@@ -169,7 +162,7 @@ func decodeCheckout(raw string, dest any) error {
 	return nil
 }
 
-func checkoutAbsent(raw string) bool {
+func explicitEmptyOverride(raw string) bool {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return true

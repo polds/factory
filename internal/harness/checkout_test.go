@@ -30,9 +30,22 @@ func TestCheckoutGateMaterializesRequestedCommit(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "a")); err != nil {
 		t.Fatal("earlier file removed")
 	}
-	emptyCode, emptyCalls, _ := runWithOverride(t, dir, "{}", "")
-	if emptyCode != ExitOK || emptyCalls != 1 || head(t, dir) != second {
-		t.Fatalf("empty override code %d calls %d head %s", emptyCode, emptyCalls, head(t, dir))
+	bareCode, bareCalls, bareSetup := runWithoutOverride(t, dir, second)
+	if bareCode != ExitOK || bareCalls != 1 || strings.TrimSpace(bareSetup) != second || head(t, dir) != second {
+		t.Fatalf("absent flag code %d calls %d setup %q head %s", bareCode, bareCalls, bareSetup, head(t, dir))
+	}
+}
+
+func TestCheckoutGateRefusesExplicitEmptyOverride(t *testing.T) {
+	for _, raw := range []string{"{}", "[]", "null", "", "   "} {
+		t.Run(raw, func(t *testing.T) {
+			dir, first, _ := twoCommitRepo(t, "https://github.com/example/fixture.git")
+			before := dirEntries(t, dir)
+			code, calls, setup := runWithOverride(t, dir, raw, "")
+			if code != ExitConfigInvalid || calls != 0 || setup != "" || head(t, dir) != first || dirEntries(t, dir) != before {
+				t.Fatalf("code %d calls %d setup %q head %s", code, calls, setup, head(t, dir))
+			}
+		})
 	}
 }
 
@@ -202,6 +215,16 @@ func TestCheckoutGateRefusesBeforeWork(t *testing.T) {
 
 func runWithOverride(t *testing.T, workspace, raw, wantHead string) (int, int, string) {
 	t.Helper()
+	return runCheckout(t, workspace, []string{"--repository-head-override-json", raw}, wantHead)
+}
+
+func runWithoutOverride(t *testing.T, workspace, wantHead string) (int, int, string) {
+	t.Helper()
+	return runCheckout(t, workspace, nil, wantHead)
+}
+
+func runCheckout(t *testing.T, workspace string, extra []string, wantHead string) (int, int, string) {
+	t.Helper()
 	rt := t.TempDir()
 	setupLog := filepath.Join(t.TempDir(), "setup-head")
 	var calls atomic.Int32
@@ -228,8 +251,10 @@ func runWithOverride(t *testing.T, workspace, raw, wantHead string) (int, int, s
 	if err := os.WriteFile(filepath.Join(rt, "task.json"), task, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	args := []string{"agent", "run", "--task-id", "checkout", "--model", "fake-model", "--idle-on-complete", "0s"}
+	args = append(args, extra...)
 	code := Run(context.Background(), Options{
-		Args:       []string{"agent", "run", "--task-id", "checkout", "--model", "fake-model", "--idle-on-complete", "0s", "--repository-head-override-json", raw},
+		Args:       args,
 		Env:        []string{"PATH=" + os.Getenv("PATH"), "OPENAI_BASE_URL=" + srv.URL, "OPENAI_API_KEY=test"},
 		Workspace:  workspace,
 		RuntimeDir: rt,
