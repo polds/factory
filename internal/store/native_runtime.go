@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -60,7 +61,7 @@ func (s *Store) OpenNativeTree(ctx context.Context, in OpenTreeInput) (NativePol
 	if err != nil {
 		return NativePolicy{}, NativeTask{}, err
 	}
-	body, err := json.Marshal(in.Tree.Personas)
+	body, err := marshalNativePersonas(in.Tree.Personas, in.Tree.SourceCommit, in.Tree.RosterSHA256, in.Tree.RosterGitBlob)
 	if err != nil {
 		return NativePolicy{}, NativeTask{}, err
 	}
@@ -75,6 +76,9 @@ func (s *Store) OpenNativeTree(ctx context.Context, in OpenTreeInput) (NativePol
 		Delegation:            in.Tree.Delegation,
 		StageOwner:            checked.Root,
 		Personas:              in.Tree.Personas,
+		SourceCommit:          in.Tree.SourceCommit,
+		RosterSHA256:          in.Tree.RosterSHA256,
+		RosterGitBlob:         in.Tree.RosterGitBlob,
 		CeilingCents:          in.CeilingCents,
 		CapacitySlots:         in.Slots,
 		MaxLive:               in.MaxLive,
@@ -276,6 +280,9 @@ func (s *Store) DelegateNative(ctx context.Context, in DelegateInput) (DelegateR
 }
 
 func (p NativePolicy) tree() definition.NativeTree {
+	// Synthetic is reapplied because the column is not stored. ValidateNativeTree
+	// only accepts a synthetic roster, so a reloaded policy stays on that gate.
+	// Source commit and roster hashes come from the personas JSON envelope.
 	return definition.NativeTree{
 		NativeHierarchy:       p.NativeHierarchy,
 		Personas:              p.Personas,
@@ -284,6 +291,9 @@ func (p NativePolicy) tree() definition.NativeTree {
 		AllowAncestorShortcut: p.AllowAncestorShortcut,
 		Delegation:            p.Delegation,
 		Synthetic:             true,
+		SourceCommit:          p.SourceCommit,
+		RosterSHA256:          p.RosterSHA256,
+		RosterGitBlob:         p.RosterGitBlob,
 	}
 }
 
@@ -432,10 +442,62 @@ func loadPolicyTx(ctx context.Context, q interface {
 	if err != nil {
 		return NativePolicy{}, fmt.Errorf("store: native policy: %w", err)
 	}
-	if err := json.Unmarshal(personas, &policy.Personas); err != nil {
+	loaded, commit, rosterSHA, rosterBlob, err := unmarshalNativePersonas(personas)
+	if err != nil {
 		return NativePolicy{}, err
 	}
+	policy.Personas = loaded
+	policy.SourceCommit = commit
+	policy.RosterSHA256 = rosterSHA
+	policy.RosterGitBlob = rosterBlob
 	return policy, nil
+}
+
+// marshalNativePersonas stores persona JSON. A legacy tree with no source pin
+// stays a JSON array. A pinned snapshot stores the source commit and roster
+// content hashes in the same jsonb value so reload does not keep only the digest.
+func marshalNativePersonas(personas []definition.NativePersona, commit, rosterSHA, rosterBlob string) ([]byte, error) {
+	if commit == "" && rosterSHA == "" && rosterBlob == "" {
+		return json.Marshal(personas)
+	}
+	return json.Marshal(struct {
+		Personas      []definition.NativePersona `json:"personas"`
+		SourceCommit  string                     `json:"sourceCommit,omitempty"`
+		RosterSHA256  string                     `json:"rosterSha256,omitempty"`
+		RosterGitBlob string                     `json:"rosterGitBlob,omitempty"`
+	}{
+		Personas:      personas,
+		SourceCommit:  commit,
+		RosterSHA256:  rosterSHA,
+		RosterGitBlob: rosterBlob,
+	})
+}
+
+func unmarshalNativePersonas(raw []byte) ([]definition.NativePersona, string, string, string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, "", "", "", fmt.Errorf("%w: personas", ErrInputInvalid)
+	}
+	if trimmed[0] == '[' {
+		var personas []definition.NativePersona
+		if err := json.Unmarshal(trimmed, &personas); err != nil {
+			return nil, "", "", "", err
+		}
+		return personas, "", "", "", nil
+	}
+	var doc struct {
+		Personas      []definition.NativePersona `json:"personas"`
+		SourceCommit  string                     `json:"sourceCommit"`
+		RosterSHA256  string                     `json:"rosterSha256"`
+		RosterGitBlob string                     `json:"rosterGitBlob"`
+	}
+	if err := json.Unmarshal(trimmed, &doc); err != nil {
+		return nil, "", "", "", err
+	}
+	if doc.Personas == nil {
+		return nil, "", "", "", fmt.Errorf("%w: personas", ErrInputInvalid)
+	}
+	return doc.Personas, doc.SourceCommit, doc.RosterSHA256, doc.RosterGitBlob, nil
 }
 
 func rootTaskTx(ctx context.Context, tx pgx.Tx, invocationID string) (NativeTask, error) {
@@ -804,7 +866,7 @@ func insertActivationTx(ctx context.Context, tx pgx.Tx, act Activation) error {
 	return nil
 }
 
-func nativeRunInput(policy NativePolicy, fallback ClaimInput, repo string) NewRun {
+func nativeRunInput(policy NativePolicy, fallback ClaimInput, repo, assignee string) (NewRun, error) {
 	agent := fallback.AgentID
 	if agent == "" {
 		agent = policy.AgentID
@@ -817,17 +879,21 @@ func nativeRunInput(policy NativePolicy, fallback ClaimInput, repo string) NewRu
 	if stage == "" {
 		stage = policy.Stage
 	}
+	prompt, err := definition.NativeSeatPrompt(policy.Personas, assignee)
+	if err != nil {
+		return NewRun{}, err
+	}
 	return NewRun{
 		FactoryID:  policy.FactoryID,
 		AgentID:    agent,
 		Pool:       "default",
 		Priority:   PriorityInteractive,
-		Prompt:     "native activation",
+		Prompt:     prompt,
 		Title:      "native activation",
 		Repo:       repo,
 		WorkItemID: work,
 		Stage:      stage,
-	}
+	}, nil
 }
 
 func invocationRepoTx(ctx context.Context, tx pgx.Tx, invocationID string) (string, error) {

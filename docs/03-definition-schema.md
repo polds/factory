@@ -231,6 +231,10 @@ default automation target. `reportsTo` names that agent's manager. Native mode f
 the effective tree on the invocation. Omitting `reportsTo` stays valid while native
 hierarchy is off.
 
+Pinned role files (`org/roster.yaml` and `org/agents/<slug>/*.md`) are not
+`agents/<slug>/agent.md`. `LoadDir` does not read them, and they are not a
+`factory.yaml` key. A caller passes an explicit slug list into `LoadPinnedRoles`.
+
 The five default roles, with the division of labor worth preserving: **Foreman**
 coordinates and talks to the requester; **Triage** establishes scope and evidence;
 **Spec** turns requirements into a plan; **Implement** makes and validates the change;

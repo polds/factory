@@ -11,6 +11,12 @@ func TestNativeTreeProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Legacy witness digest of proofTree() at the D1 merge. New persona and
+	// snapshot fields are omitempty and stay empty here, so this hex must not move.
+	const witnessDigest = "14faa7694f746a143133d339b3243aafef69e9bda270000fee48b737324a1c82"
+	if checked.Digest != witnessDigest {
+		t.Fatalf("witness digest %s", checked.Digest)
+	}
 	if checked.Root != "coordinator" || checked.Depth["specialist-a"] != 2 || checked.Digest == "" {
 		t.Fatalf("tree %+v", checked)
 	}
