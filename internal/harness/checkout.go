@@ -24,11 +24,21 @@ var (
 // fails before git mutates the tree. Git runs with per-command config only:
 // hooks are pointed at an empty directory, and the user and system gitconfig
 // are not read.
-func enforceLocalCheckout(ctx context.Context, workspace, raw string) error {
-	if checkoutAbsent(raw) {
+func enforceLocalCheckout(ctx context.Context, workspace string, raws []string) error {
+	var present []string
+	for _, raw := range raws {
+		if checkoutAbsent(raw) {
+			continue
+		}
+		present = append(present, raw)
+	}
+	if len(present) == 0 {
 		return nil
 	}
-	ov, err := oneCheckoutOverride(raw)
+	if len(present) != 1 {
+		return fmt.Errorf("%w: override count", errCheckoutOverride)
+	}
+	ov, err := oneCheckoutOverride(present[0])
 	if err != nil {
 		return err
 	}
@@ -141,6 +151,30 @@ type checkoutOverride struct {
 	repo  string
 }
 
+type checkoutDoc struct {
+	CodeForge string `json:"code_forge"`
+	RepoOwner string `json:"repo_owner"`
+	RepoName  string `json:"repo_name"`
+	Head      struct {
+		Type  string `json:"type"`
+		Value string `json:"value"`
+	} `json:"head"`
+	CloneFrom      json.RawMessage `json:"clone_from"`
+	PreserveOrigin bool            `json:"preserve_origin"`
+}
+
+func decodeCheckout(raw string, dest any) error {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dest); err != nil {
+		return fmt.Errorf("%w: invalid override", errCheckoutOverride)
+	}
+	if dec.More() {
+		return fmt.Errorf("%w: invalid override", errCheckoutOverride)
+	}
+	return nil
+}
+
 func checkoutAbsent(raw string) bool {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -163,27 +197,21 @@ func checkoutAbsent(raw string) bool {
 }
 
 func oneCheckoutOverride(raw string) (checkoutOverride, error) {
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.DisallowUnknownFields()
-	var docs []struct {
-		CodeForge string `json:"code_forge"`
-		RepoOwner string `json:"repo_owner"`
-		RepoName  string `json:"repo_name"`
-		Head      struct {
-			Type  string `json:"type"`
-			Value string `json:"value"`
-		} `json:"head"`
-		CloneFrom      json.RawMessage `json:"clone_from"`
-		PreserveOrigin bool            `json:"preserve_origin"`
-	}
-	if err := dec.Decode(&docs); err != nil {
-		return checkoutOverride{}, fmt.Errorf("%w: invalid override", errCheckoutOverride)
-	}
-	if dec.More() {
-		return checkoutOverride{}, fmt.Errorf("%w: invalid override", errCheckoutOverride)
-	}
-	if len(docs) != 1 {
-		return checkoutOverride{}, fmt.Errorf("%w: override count", errCheckoutOverride)
+	raw = strings.TrimSpace(raw)
+	var docs []checkoutDoc
+	if strings.HasPrefix(raw, "[") {
+		if err := decodeCheckout(raw, &docs); err != nil {
+			return checkoutOverride{}, err
+		}
+		if len(docs) != 1 {
+			return checkoutOverride{}, fmt.Errorf("%w: override count", errCheckoutOverride)
+		}
+	} else {
+		var doc checkoutDoc
+		if err := decodeCheckout(raw, &doc); err != nil {
+			return checkoutOverride{}, err
+		}
+		docs = []checkoutDoc{doc}
 	}
 	doc := docs[0]
 	if doc.CodeForge != "GITHUB" || doc.RepoOwner == "" || doc.RepoName == "" {

@@ -54,7 +54,7 @@ func TestCheckoutGateSkipsNonRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	code := Run(context.Background(), Options{
-		Args:       []string{"agent", "run", "--task-id", "plain", "--model", "fake-model", "--idle-on-complete", "0s", "--repository-head-override-json", overrideJSON(t, "m6", "scratch", strings.Repeat("c0", 20))},
+		Args:       []string{"agent", "run", "--task-id", "plain", "--model", "fake-model", "--idle-on-complete", "0s", "--repository-head-override-json", overrideObject(t, "m6", "scratch", strings.Repeat("c0", 20))},
 		Env:        []string{"PATH=" + os.Getenv("PATH"), "OPENAI_BASE_URL=" + srv.URL},
 		Workspace:  dir,
 		RuntimeDir: rt,

@@ -114,7 +114,7 @@ func Run(ctx context.Context, opt Options) int {
 	if err != nil {
 		return finish(ExitConfigInvalid, "config_invalid", "task.json: "+err.Error())
 	}
-	if err := enforceLocalCheckout(ctx, opt.Workspace, inv.last("repository-head-override-json")); err != nil {
+	if err := enforceLocalCheckout(ctx, opt.Workspace, inv.Values["repository-head-override-json"]); err != nil {
 		if errors.Is(err, errCheckoutOverride) {
 			return finish(ExitConfigInvalid, "config_invalid", "checkout: "+err.Error())
 		}

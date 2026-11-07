@@ -96,7 +96,8 @@ and the worker forwards them as `--repository-head-override-json`. The in-repo
 `setup_command`, tools, or the model call.
 
 An empty override (`{}`, `[]`, `null`, or an empty string) is the conformance
-token and checks nothing out. One override is applied only when `code_forge` is
+token and checks nothing out. The worker passes one JSON object per repository.
+One object, or a one-element array, is applied only when `code_forge` is
 `GITHUB`, `head.type` is `COMMIT_SHA`, the value is 40 hex characters, and
 `clone_from` and `preserve_origin` are unset. The workspace must already be a
 real directory whose `origin` remote is that GitHub repository, whose `HEAD`
