@@ -487,6 +487,9 @@ spike_run_init t76
 spike_install_trap
 SPIKE_BOOK_STATE="$3/state"
 record_spawn_state() {
+  if [[ -f "$SPIKE_BOOK_STATE" ]]; then
+    return 0
+  fi
   printf 'critical=%s dash=%s deferred=%s\n' "${SPIKE_SPAWN_CRITICAL-}" "$-" "${SPIKE_STOP_DEFERRED-}" >"$SPIKE_BOOK_STATE"
 }
 trap record_spawn_state ERR
@@ -504,7 +507,19 @@ set +m
 if [[ "$kind" == seq-term ]]; then
   SPIKE_STOP_DEFERRED=TERM
 fi
-if [[ "$kind" == redirect ]]; then
+if [[ "$kind" == subshell ]]; then
+  (
+    printf 'outer=%s\nbashpid=%s\n' "$$" "$BASHPID" >"$3/ids"
+    spike_spawn --class transient broken sleep 600
+  )
+elif [[ "$kind" == nested ]]; then
+  (
+    (
+      printf 'outer=%s\nbashpid=%s\n' "$$" "$BASHPID" >"$3/ids"
+      spike_spawn --class transient broken sleep 600
+    )
+  )
+elif [[ "$kind" == redirect ]]; then
   spike_spawn --class transient --out "$3/notfile" broken sleep 600
 else
   spike_spawn --class transient broken sleep 600
@@ -566,6 +581,15 @@ EOF
       rm -rf "$dir"
       return 1
     fi
+  elif [[ "$kind" == subshell || "$kind" == nested ]]; then
+    local outer="" bashpid=""
+    outer="$(sed -n 's/^outer=//p' "$dir/ids")"
+    bashpid="$(sed -n 's/^bashpid=//p' "$dir/ids")"
+    if [[ -z "$outer" || -z "$bashpid" || "$outer" == "$bashpid" ]]; then
+      echo "spawn did not run in a subshell (outer=${outer} bashpid=${bashpid})" >&2
+      rm -rf "$dir"
+      return 1
+    fi
   elif [[ ! -f "$dir/state" ]] || ! grep -q '^critical=0 dash=.*e' "$dir/state" || grep -q 'dash=[^ ]*m' "$dir/state" || grep -q 'deferred=.' "$dir/state"; then
     echo "monitor or critical section not restored (exit ${ec})" >&2
     cat "$dir/state" >&2 || true
@@ -574,6 +598,68 @@ EOF
     return 1
   fi
   rm -rf "$dir"
+}
+
+# Reaping a failed spawn is allowed only for the process this shell forked.
+# A different lstart or args, or a parent other than this shell, stays up.
+# A child that ignores TERM is still killed after the identity recheck.
+case_reap_fork_identity() {
+  local dir pid lstart args ec
+  dir="$(mktemp -d)"
+  # shellcheck source=spike/lib/cleanup.sh
+  . "$LIB"
+  sleep 600 &
+  pid=$!
+  lstart="$(ps -o lstart= -p "$pid" 2>/dev/null || true)"
+  args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+  if [[ -z "$lstart" || -z "$args" ]]; then
+    echo "identity snapshot missing for ${pid}" >&2
+    kill -KILL "$pid" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  spike_reap_owned_child "$pid" "not-the-real-start" "$args"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "mismatched lstart was signalled: ${pid}" >&2
+    rm -rf "$dir"
+    return 1
+  fi
+  spike_reap_owned_child "$pid" "$lstart" "not-the-real-args"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "mismatched args were signalled: ${pid}" >&2
+    rm -rf "$dir"
+    return 1
+  fi
+  bash -c '
+    set -euo pipefail
+    . "$1"
+    spike_reap_owned_child "$2" "$3" "$4"
+  ' _ "$LIB" "$pid" "$lstart" "$args"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "subshell reaped an outer child: ${pid}" >&2
+    rm -rf "$dir"
+    return 1
+  fi
+  spike_reap_owned_child "$pid" "$lstart" "$args"
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "owned child survived a matching reap: ${pid}" >&2
+    kill -KILL "$pid" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  bash -c 'trap "" TERM; while true; do sleep 1; done' &
+  pid=$!
+  lstart="$(ps -o lstart= -p "$pid" 2>/dev/null || true)"
+  args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+  spike_reap_owned_child "$pid" "$lstart" "$args"
+  ec=0
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "TERM-ignoring child survived the recheck: ${pid}" >&2
+    kill -KILL "$pid" 2>/dev/null || true
+    ec=1
+  fi
+  rm -rf "$dir"
+  return "$ec"
 }
 
 case_playwright_argv() {
@@ -982,6 +1068,9 @@ run_case spawn-seq-failure case_spawn_bookkeeping_failure seq
 run_case spawn-record-failure case_spawn_bookkeeping_failure record
 run_case spawn-redirect-failure case_spawn_bookkeeping_failure redirect
 run_case spawn-seq-deferred-term case_spawn_bookkeeping_failure seq-term
+run_case spawn-seq-subshell case_spawn_bookkeeping_failure subshell
+run_case spawn-seq-nested case_spawn_bookkeeping_failure nested
+run_case reap-fork-identity case_reap_fork_identity
 run_case playwright-argv case_playwright_argv
 
 say "${PASS} passed, ${FAIL} failed"

@@ -118,24 +118,49 @@ spike_open_log() {
   fi
 }
 
+# spike_fork_still_owned reports whether pid is still the process this shell
+# forked. Inside a subshell $$ is the outer shell, so the parent is BASHPID.
+# lstart and args are the snapshot taken at the fork. Both are required.
+# A recycled pid of this same shell shares that parent and must not be
+# signalled. An empty snapshot is not identity, so it is not owned.
+spike_fork_still_owned() {
+  local pid="$1" want_lstart="$2" want_args="$3"
+  local ppid="" got_lstart="" got_args=""
+  if [[ -z "$pid" || "$pid" == "$BASHPID" || "$pid" == "$$" ]]; then
+    return 1
+  fi
+  if [[ -z "$want_lstart" || -z "$want_args" ]]; then
+    return 1
+  fi
+  ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ "$ppid" != "$BASHPID" ]]; then
+    return 1
+  fi
+  got_lstart="$(ps -o lstart= -p "$pid" 2>/dev/null || true)"
+  got_args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+  [[ "$got_lstart" == "$want_lstart" && "$got_args" == "$want_args" ]]
+}
+
 # spike_reap_owned_child stops a process this shell just forked when spawn
-# bookkeeping fails before that pid is recorded. A reused pid has a different
-# parent and is left alone.
+# bookkeeping fails before that pid is recorded. TERM and KILL each recheck
+# ownership. A pid that has already been reused is left alone.
 spike_reap_owned_child() {
-  local pid="$1" ppid=""
-  if [[ -z "$pid" || "$pid" == "$$" ]]; then
-    return 0
+  local pid="$1" want_lstart="$2" want_args="$3" signalled=0
+  if spike_fork_still_owned "$pid" "$want_lstart" "$want_args"; then
+    kill -TERM "$pid" 2>/dev/null || true
+    signalled=1
   fi
-  ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
-  if [[ "$ppid" != "$$" ]]; then
-    return 0
-  fi
-  kill -TERM "$pid" 2>/dev/null || true
-  ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
-  if [[ "$ppid" == "$$" ]]; then
+  if spike_fork_still_owned "$pid" "$want_lstart" "$want_args"; then
     kill -KILL "$pid" 2>/dev/null || true
+    signalled=1
   fi
-  wait "$pid" 2>/dev/null || true
+  if [[ "$signalled" -eq 1 ]] && ! spike_fork_still_owned "$pid" "$want_lstart" "$want_args"; then
+    # The forked process is gone. Collect it. A live pid here is a
+    # different process and must not be waited on.
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+    fi
+  fi
 }
 
 # spike_spawn records pid, pgid, and ps identity so a recycled pid is not
@@ -319,7 +344,7 @@ spike_spawn() {
     fi
   fi
   if [[ "$book_rc" -ne 0 ]]; then
-    spike_reap_owned_child "$pid"
+    spike_reap_owned_child "$pid" "$lstart" "$args"
     SPIKE_SPAWN_CRITICAL=0
   else
     SPIKE_LAST_PID="$pid"
