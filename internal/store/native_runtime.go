@@ -12,11 +12,6 @@ import (
 	"github.com/polds/factory/internal/definition"
 )
 
-// nativeBookkeepingHash is 32 zero bytes. It is not a credential. It fills
-// executions.run_token_sha256 for a coordination execution that the worker
-// queue does not lease.
-var nativeBookkeepingHash = make([]byte, 32)
-
 type taskHead struct {
 	ID           string
 	FactoryID    string
@@ -483,6 +478,8 @@ func insertNativeRunTx(ctx context.Context, tx pgx.Tx, r NewRun, parentRunID str
 	// parent_run_id is the stage predecessor. A completed-task wake stores the
 	// prior activation run here so the new run is linked. The delegation edge
 	// is parent_task_id, not parent_run_id.
+	// The run is queued the same way as every other worker run. Activation does
+	// not insert an execution or mark the run running.
 	r.ParentRunID = parentRunID
 	if err := validateNewRun(r); err != nil {
 		return "", err
@@ -491,50 +488,17 @@ func insertNativeRunTx(ctx context.Context, tx pgx.Tx, r NewRun, parentRunID str
 	if err != nil {
 		return "", err
 	}
-	if err := bindRunLinkage(ctx, tx, r); err != nil {
+	if err := insertRunTx(ctx, tx, id, r); err != nil {
 		return "", err
 	}
-	purpose, err := normalizePurpose(r.Purpose)
-	if err != nil {
+	if err := notifyRun(ctx, tx, id); err != nil {
 		return "", err
-	}
-	var agentID any
-	if r.AgentID != "" {
-		agentID = r.AgentID
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO runs (
-		    id, factory_id, agent_id, status, priority, pool, prompt, title, repo,
-		    work_item_id, parent_run_id, conversation_id, stage, model_id, purpose,
-		    started_at)
-		VALUES (
-		    $1, $2, $3, $4, $5, $6, $7, $8, $9,
-		    NULLIF($10, ''), NULLIF($11, ''), $12, $13, $14, $15, clock_timestamp())`,
-		id, r.FactoryID, agentID, StatusRunning, int(r.Priority), r.Pool, r.Prompt, r.Title, r.Repo,
-		r.WorkItemID, r.ParentRunID, r.ConversationID, r.Stage, r.ModelID, purpose,
-	); err != nil {
-		return "", fmt.Errorf("store: native run: %w", err)
 	}
 	return id, nil
 }
 
-func insertNativeExecTx(ctx context.Context, tx pgx.Tx, runID string) (string, error) {
-	id, err := NewID(PrefixExec)
-	if err != nil {
-		return "", err
-	}
-	var attempt int
-	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(MAX(attempt), 0) + 1 FROM executions WHERE run_id = $1`, runID).Scan(&attempt); err != nil {
-		return "", err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO executions (id, run_id, attempt, worker_id, state, run_token_sha256)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		id, runID, attempt, nativeWorkerID, ExecRunning, nativeBookkeepingHash); err != nil {
-		return "", fmt.Errorf("store: native execution: %w", err)
-	}
-	return id, nil
+func reserveNativeExecutionID() (string, error) {
+	return NewID(PrefixExec)
 }
 
 func finishExecTx(ctx context.Context, tx pgx.Tx, execID, state string) error {
@@ -555,6 +519,13 @@ func terminalNativeRunTx(ctx context.Context, tx pgx.Tx, runID, taskID, status, 
 	if runID == "" {
 		return nil
 	}
+	// Queue before the run row. Lease locks the queue row, then the run.
+	if err := lockRunQueueTx(ctx, tx, runID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
+		return fmt.Errorf("store: terminal native run: %w", err)
+	}
 	var existing string
 	err := tx.QueryRow(ctx, `SELECT status FROM native_terminal_evidence WHERE run_id = $1`, runID).Scan(&existing)
 	if err == nil {
@@ -565,9 +536,11 @@ func terminalNativeRunTx(ctx context.Context, tx pgx.Tx, runID, taskID, status, 
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE runs
-		SET status = $2, ended_at = clock_timestamp()
+		SET status = $2,
+		    ended_at = clock_timestamp(),
+		    cancel_requested = CASE WHEN $2 = $6 THEN true ELSE cancel_requested END
 		WHERE id = $1 AND status IN ($3, $4, $5)`,
-		runID, status, StatusQueued, StatusAssigned, StatusRunning); err != nil {
+		runID, status, StatusQueued, StatusAssigned, StatusRunning, StatusCancelled); err != nil {
 		return fmt.Errorf("store: terminal native run: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -575,6 +548,168 @@ func terminalNativeRunTx(ctx context.Context, tx pgx.Tx, runID, taskID, status, 
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (run_id) DO NOTHING`, runID, taskID, status, execID); err != nil {
 		return fmt.Errorf("store: terminal evidence: %w", err)
+	}
+	return nil
+}
+
+func lockRunQueueTx(ctx context.Context, tx pgx.Tx, runID string) error {
+	rows, err := tx.Query(ctx, `SELECT run_id FROM run_queue WHERE run_id = $1 FOR UPDATE`, runID)
+	if err != nil {
+		return fmt.Errorf("store: lock native queue: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("store: lock native queue: %w", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: lock native queue: %w", err)
+	}
+	return nil
+}
+
+// PrepareNativeTerminal locks a native task and its queue row before the run
+// row. Lease locks the queue row and then the run, so a native terminal that
+// already holds the run must not take the queue lock afterwards. A run with
+// no native activation locks nothing.
+func PrepareNativeTerminal(ctx context.Context, tx pgx.Tx, runID string) error {
+	if runID == "" {
+		return nil
+	}
+	var taskID string
+	err := tx.QueryRow(ctx, `
+		SELECT task_id FROM native_activations
+		WHERE run_id = $1
+		ORDER BY fence DESC
+		LIMIT 1`, runID).Scan(&taskID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("store: native terminal lock: %w", err)
+	}
+	if _, err := lockTask(ctx, tx, taskID); err != nil {
+		return err
+	}
+	if _, err := latestActivationByRunTx(ctx, tx, runID); err != nil {
+		return err
+	}
+	return lockRunQueueTx(ctx, tx, runID)
+}
+
+// ReconcileNativeTerminal writes native task evidence for a run that reached
+// a terminal status on the worker path. A legacy run is unchanged. A native
+// task that is not running keeps its status. Evidence is inserted once.
+func ReconcileNativeTerminal(ctx context.Context, tx pgx.Tx, runID, runStatus, execID string) error {
+	return reconcileNativeTerminalTx(ctx, tx, runID, runStatus, execID)
+}
+
+func reconcileNativeTerminalTx(ctx context.Context, tx pgx.Tx, runID, runStatus, execID string) error {
+	nativeStatus, ok := nativeStatusForRun(runStatus)
+	if !ok || runID == "" {
+		return nil
+	}
+	act, err := latestActivationByRunTx(ctx, tx, runID)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if execID == "" {
+		execID = act.ExecutionID
+	}
+	if err := bindNativeExecutionTx(ctx, tx, act, execID); err != nil {
+		return err
+	}
+	head, err := lockTask(ctx, tx, act.TaskID)
+	if err != nil {
+		return err
+	}
+	if err := terminalNativeRunTx(ctx, tx, runID, act.TaskID, runStatus, execID); err != nil {
+		return err
+	}
+	if head.Status != NativeRunning {
+		return nil
+	}
+	if act.CapacityHeld {
+		if err := releaseCapacityTx(ctx, tx, head.InvocationID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE native_tasks SET task_status = $2, execution_id = $3, updated_at = now()
+		WHERE id = $1`, act.TaskID, nativeStatus, execID); err != nil {
+		return fmt.Errorf("store: native terminal task: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE native_activations
+		SET state = $2, capacity_held = false, execution_id = $3
+		WHERE id = $1`, act.ID, nativeStatus, execID); err != nil {
+		return fmt.Errorf("store: native terminal activation: %w", err)
+	}
+	return nil
+}
+
+func nativeStatusForRun(status string) (string, bool) {
+	switch status {
+	case StatusSucceeded:
+		return NativeCompleted, true
+	case StatusFailed:
+		return NativeFailed, true
+	case StatusCancelled:
+		return NativeCancelled, true
+	default:
+		return "", false
+	}
+}
+
+func latestActivationByRunTx(ctx context.Context, tx pgx.Tx, runID string) (Activation, error) {
+	var act Activation
+	var prior *string
+	err := tx.QueryRow(ctx, `
+		SELECT id, task_id, invocation_id, run_id, execution_id, fence, state,
+		       stage_owner, capacity_held, prior_run_id
+		FROM native_activations
+		WHERE run_id = $1
+		ORDER BY fence DESC
+		LIMIT 1
+		FOR UPDATE`, runID).Scan(
+		&act.ID, &act.TaskID, &act.InvocationID, &act.RunID, &act.ExecutionID,
+		&act.Fence, &act.State, &act.StageOwner, &act.CapacityHeld, &prior,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Activation{}, ErrNotFound
+	}
+	if err != nil {
+		return Activation{}, err
+	}
+	if prior != nil {
+		act.PriorRunID = *prior
+	}
+	return act, nil
+}
+
+func bindNativeExecutionTx(ctx context.Context, tx pgx.Tx, act Activation, execID string) error {
+	if execID == "" || act.ID == "" || act.ExecutionID == execID {
+		return nil
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM executions WHERE id = $1)`, act.ExecutionID).Scan(&exists); err != nil {
+		return fmt.Errorf("store: bind native execution: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE native_activations SET execution_id = $2 WHERE id = $1`, act.ID, execID); err != nil {
+		return fmt.Errorf("store: bind native execution: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE native_tasks SET execution_id = $2
+		WHERE id = $1 AND activation_id = $3`, act.TaskID, execID, act.ID); err != nil {
+		return fmt.Errorf("store: bind native execution: %w", err)
 	}
 	return nil
 }
@@ -650,7 +785,7 @@ func insertActivationTx(ctx context.Context, tx pgx.Tx, act Activation) error {
 	return nil
 }
 
-func nativeRunInput(policy NativePolicy, fallback ClaimInput) NewRun {
+func nativeRunInput(policy NativePolicy, fallback ClaimInput, repo string) NewRun {
 	agent := fallback.AgentID
 	if agent == "" {
 		agent = policy.AgentID
@@ -670,9 +805,79 @@ func nativeRunInput(policy NativePolicy, fallback ClaimInput) NewRun {
 		Priority:   PriorityInteractive,
 		Prompt:     "native activation",
 		Title:      "native activation",
+		Repo:       repo,
 		WorkItemID: work,
 		Stage:      stage,
 	}
+}
+
+func invocationRepoTx(ctx context.Context, tx pgx.Tx, invocationID string) (string, error) {
+	var repo string
+	err := tx.QueryRow(ctx, `SELECT COALESCE(target_repository, '') FROM invocations WHERE id = $1`, invocationID).Scan(&repo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: native target: %w", err)
+	}
+	return repo, nil
+}
+
+// requeueNativeRunTx puts an existing non-terminal native run back on the
+// one queue row workers lease. Park and retry keep that same run.
+func requeueNativeRunTx(ctx context.Context, tx pgx.Tx, runID string) error {
+	if err := lockRunQueueTx(ctx, tx, runID); err != nil {
+		return err
+	}
+	var status string
+	err := tx.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1 FOR UPDATE`, runID).Scan(&status)
+	if err != nil {
+		return err
+	}
+	switch status {
+	case StatusQueued, StatusAssigned, StatusRunning:
+	case StatusSucceeded, StatusFailed, StatusCancelled:
+		return fmt.Errorf("%w: native run is terminal", ErrInputInvalid)
+	default:
+		return fmt.Errorf("%w: status %s", ErrInputInvalid, status)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE runs
+		SET status = $2, worker_id = NULL
+		WHERE id = $1`, runID, StatusQueued); err != nil {
+		return fmt.Errorf("store: requeue native run: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO run_queue (run_id, factory_id, pool, priority, enqueued_at)
+		SELECT id, factory_id, pool, priority, clock_timestamp()
+		FROM runs WHERE id = $1
+		ON CONFLICT (run_id) DO UPDATE
+		SET lease_until = NULL, owner_session = NULL`, runID); err != nil {
+		return fmt.Errorf("store: requeue native run: %w", err)
+	}
+	return notifyRun(ctx, tx, runID)
+}
+
+// parkNativeRunTx drops the queue row so a parked task cannot be leased.
+// An assigned or running run returns to queued and keeps its id.
+func parkNativeRunTx(ctx context.Context, tx pgx.Tx, runID string) error {
+	if runID == "" {
+		return nil
+	}
+	if err := lockRunQueueTx(ctx, tx, runID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
+		return fmt.Errorf("store: park native run: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE runs
+		SET status = $2, worker_id = NULL
+		WHERE id = $1 AND status IN ($3, $4)`,
+		runID, StatusQueued, StatusAssigned, StatusRunning); err != nil {
+		return fmt.Errorf("store: park native run: %w", err)
+	}
+	return nil
 }
 
 // NativeRunMayAdvance reports whether a terminal run may move the work item.

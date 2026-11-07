@@ -21,8 +21,6 @@ const (
 
 	// CeilingPrincipal is the audited actor for an authorized ceiling change.
 	CeilingPrincipal = "api_key:ops"
-
-	nativeWorkerID = "native-activation"
 )
 
 var (

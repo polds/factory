@@ -399,6 +399,9 @@ func (s *Store) StartExecution(ctx context.Context, runID, workerID string, toke
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := PrepareNativeTerminal(ctx, tx, runID); err != nil {
+		return Execution{}, err
+	}
 	var status string
 	err = tx.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1 FOR UPDATE`, runID).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -450,6 +453,15 @@ func (s *Store) StartExecution(ctx context.Context, runID, workerID string, toke
 	); err != nil {
 		return Execution{}, fmt.Errorf("store: start execution: %w", err)
 	}
+	act, actErr := latestActivationByRunTx(ctx, tx, runID)
+	if actErr != nil && !errors.Is(actErr, ErrNotFound) {
+		return Execution{}, actErr
+	}
+	if actErr == nil {
+		if err := bindNativeExecutionTx(ctx, tx, act, id); err != nil {
+			return Execution{}, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Execution{}, fmt.Errorf("store: start execution: %w", err)
 	}
@@ -479,6 +491,17 @@ func (s *Store) FinishExecution(ctx context.Context, execID string, t Terminal) 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	var pendingRun string
+	err = tx.QueryRow(ctx, `SELECT run_id FROM executions WHERE id = $1`, execID).Scan(&pendingRun)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: finish execution: %w", err)
+	}
+	if err := PrepareNativeTerminal(ctx, tx, pendingRun); err != nil {
+		return false, err
+	}
 	var details any
 	if len(t.FailureDetails) > 0 {
 		details = []byte(t.FailureDetails)
@@ -525,6 +548,9 @@ func (s *Store) FinishExecution(ctx context.Context, execID string, t Terminal) 
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
 		return false, fmt.Errorf("store: finish execution: %w", err)
+	}
+	if err := reconcileNativeTerminalTx(ctx, tx, runID, runStatus, execID); err != nil {
+		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("store: finish execution: %w", err)
@@ -637,6 +663,9 @@ func (s *Store) RequestCancel(ctx context.Context, runID string) (Run, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := PrepareNativeTerminal(ctx, tx, runID); err != nil {
+		return Run{}, err
+	}
 	var status string
 	err = tx.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1 FOR UPDATE`, runID).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -664,6 +693,9 @@ func (s *Store) RequestCancel(ctx context.Context, runID string) (Run, error) {
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
 			return Run{}, fmt.Errorf("store: cancel: %w", err)
+		}
+		if err := reconcileNativeTerminalTx(ctx, tx, runID, StatusCancelled, ""); err != nil {
+			return Run{}, err
 		}
 	case StatusRunning:
 		if _, err := tx.Exec(ctx, `UPDATE runs SET cancel_requested = true WHERE id = $1`, runID); err != nil {

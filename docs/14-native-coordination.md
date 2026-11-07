@@ -1,6 +1,6 @@
 # 14 — Native coordination spine
 
-M9-T records native tasks, a per-invocation ledger, an assignee inbox, and one coalesced wake intent. M9-N activates that wake: it freezes `reportsTo`, delegates, parks, joins, and reserves ancestor budgets. Creating a task still does not start a run. Activation does. There is no native dispatch route.
+M9-T records native tasks, a per-invocation ledger, an assignee inbox, and one coalesced wake intent. M9-N activates that wake: it freezes `reportsTo`, delegates, parks, joins, and reserves ancestor budgets. Creating a task still does not start a run. Activation enqueues one run on the existing `run_queue` and does not insert an execution. A worker lease and assignment create the execution and record that worker. There is no native dispatch route and no `native-activation` worker. A queued run is not evidence that the task executed.
 
 The contract remains `defined-factory/1`. `docs/13-defined-factory-contracts.md` states the rules. This page names the methods that implement the producer `M9-T` rows.
 
@@ -11,8 +11,8 @@ The contract remains `defined-factory/1`. `docs/13-defined-factory-contracts.md`
 | Task | `ntask_` | The native task. `task_ref` equals this id. |
 | Message | `nmsg_` | One canonical ledger event. |
 | Delivery | `ndlv_` | One assignee projection of a message. |
-| Activation | `nact_` | One fenced execution. Insert and assign do not start it. `POST .../activate` does. |
-| Execution | `exec_` | Stored only. Insert and assign do not start it. |
+| Activation | `nact_` | One fenced claim. `POST .../activate` enqueues the run and reserves an execution id. It does not insert `executions`. |
+| Execution | `exec_` | Inserted by worker `StartExecution` after lease. That call binds the id onto the activation. |
 
 Task, assignee, parent task, blockers, activation id, and execution id are different fields. `parent_task_id` is not `runs.parent_run_id`. `linear_issue` is not a column. The HTTP task body returns `linearIssue: null`.
 
@@ -38,7 +38,7 @@ Cursor is opaque (`n1.<ledger_seq>.<delivery_id>`). Limit is 1 through 100 and d
 
 ## Wake
 
-One `native_wake_intents` row per task. Comment and assign set it pending and route `assignee` to the task's current assignee. Reassign updates that same row and increments `coalesce_count`. Mention does not wake. The row survives a new store connection. `GetWake` returns `InvocationID`. The HTTP wake body does not. Reading the wake does not start a run. `ClaimActivation` does, using that stored invocation id.
+One `native_wake_intents` row per task. Comment and assign set it pending and route `assignee` to the task's current assignee. Reassign updates that same row and increments `coalesce_count`. Mention does not wake. The row survives a new store connection. `GetWake` returns `InvocationID`. The HTTP wake body does not. Reading the wake does not start a run. `ClaimActivation` enqueues one, using that stored invocation id. The run stays `queued`. Lease moves it to `assigned`. `StartExecution` moves it to `running` under the worker id and replaces the reserved execution id. Task status `running` means the activation holds the capacity slot, including while the run is still queued.
 
 ## HTTP
 

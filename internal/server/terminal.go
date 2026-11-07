@@ -154,6 +154,9 @@ func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := store.PrepareNativeTerminal(ctx, tx, runID); err != nil {
+		return false, err
+	}
 	var gotRun string
 	err = tx.QueryRow(ctx, `
 		UPDATE executions
@@ -262,6 +265,9 @@ func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason,
 	if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
 		return false, err
 	}
+	if err := store.ReconcileNativeTerminal(ctx, tx, runID, status, execID); err != nil {
+		return false, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
@@ -279,6 +285,9 @@ func (s *Server) cancelRun(ctx context.Context, runID string) (store.Run, error)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := store.PrepareNativeTerminal(ctx, tx, runID); err != nil {
+		return store.Run{}, err
+	}
 	var status string
 	err = tx.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1 FOR UPDATE`, runID).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -324,6 +333,9 @@ func (s *Server) cancelRun(ctx context.Context, runID string) (store.Run, error)
 		if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
 			return store.Run{}, err
 		}
+		if err := store.ReconcileNativeTerminal(ctx, tx, runID, store.StatusCancelled, execID); err != nil {
+			return store.Run{}, err
+		}
 	case store.StatusRunning:
 		if _, err := tx.Exec(ctx, `UPDATE runs SET cancel_requested = true WHERE id = $1`, runID); err != nil {
 			return store.Run{}, err
@@ -348,6 +360,9 @@ func (s *Server) commitBareCancel(ctx context.Context, runID string) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := store.PrepareNativeTerminal(ctx, tx, runID); err != nil {
+		return err
+	}
 	class, code, err := s.cancelClass(ctx, tx, runID)
 	if err != nil {
 		return err
@@ -380,6 +395,9 @@ func (s *Server) commitBareCancel(ctx context.Context, runID string) error {
 	}
 	payload := terminalPayload(s.now(), store.StatusCancelled, "", "", class, code, nil, prs)
 	if err := s.insertTerminalEvent(ctx, tx, runID, execID, payload); err != nil {
+		return err
+	}
+	if err := store.ReconcileNativeTerminal(ctx, tx, runID, store.StatusCancelled, execID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
