@@ -28,6 +28,7 @@ func TestPinnedRoleBundleAssignment(t *testing.T) {
 	}})
 	ctx := context.Background()
 	fac, agentID, itemID, invocationID := nativeLeaseFixture(t, env, "pipe", "native:bundle:assign", store.StagePlanning)
+	prepareBundleGoal(t, env, fac.ID, invocationID, itemID)
 	rootDir, tree, original := loadBundle(t)
 	policies := countQuery(t, env, `SELECT count(*) FROM native_policies`)
 	queued := countQuery(t, env, `SELECT count(*) FROM run_queue`)
@@ -277,16 +278,16 @@ func TestPinnedRoleBundleAssignment(t *testing.T) {
 		}
 	}
 	brokenInv := nativeInvocation(t, env, fac.ID, "", "native:bundle:missing-files")
-	brokenPolicy, brokenTask := openBundle(t, env, fac.ID, brokenInv, agentID, "", broken, 1, 4)
-	if brokenPolicy.Digest == "" {
-		t.Fatal("broken open")
-	}
+	policiesBefore := countQuery(t, env, `SELECT count(*) FROM native_policies WHERE invocation_id = $1`, brokenInv)
 	queueBefore := countQuery(t, env, `SELECT count(*) FROM run_queue`)
-	if _, err := coordination.ClaimActivation(ctx, env.srv.store, brokenTask.ID, store.ClaimInput{AgentID: agentID}); err == nil {
-		t.Fatal("missing seat files queued a run")
+	if _, _, err := env.srv.store.OpenNativeTree(ctx, store.OpenTreeInput{
+		FactoryID: fac.ID, InvocationID: brokenInv, AgentID: agentID,
+		Stage: store.StagePlanning, Tree: broken, CeilingCents: 2500, Slots: 1, MaxLive: 4,
+	}); err == nil {
+		t.Fatal("short seat opened a policy")
 	}
-	if countQuery(t, env, `SELECT count(*) FROM run_queue`) != queueBefore || countQuery(t, env, `SELECT count(*) FROM native_activations WHERE invocation_id = $1`, brokenInv) != 0 {
-		t.Fatal("missing seat files inserted a queue row")
+	if countQuery(t, env, `SELECT count(*) FROM native_policies WHERE invocation_id = $1`, brokenInv) != policiesBefore || countQuery(t, env, `SELECT count(*) FROM run_queue`) != queueBefore {
+		t.Fatal("short seat inserted a policy or queue row")
 	}
 }
 
@@ -299,6 +300,7 @@ func TestPinnedRoleBundleLifecycle(t *testing.T) {
 	}})
 	ctx := context.Background()
 	fac, agentID, itemID, invocationID := nativeLeaseFixture(t, env, "pipe", "native:bundle:cancel", store.StagePlanning)
+	prepareBundleGoal(t, env, fac.ID, invocationID, itemID)
 	dir, pins := rewriteBundle(t)
 	tree := loadBundleTree(t, dir, pins)
 	_, root := openBundle(t, env, fac.ID, invocationID, agentID, itemID, tree, 1, 4)
@@ -327,6 +329,7 @@ func TestPinnedRoleBundleLifecycle(t *testing.T) {
 	}
 
 	parkInv := nativeInvocation(t, env, fac.ID, "", "native:bundle:park")
+	prepareBundleGoal(t, env, fac.ID, parkInv, "")
 	_, parkRoot := openBundle(t, env, fac.ID, parkInv, agentID, "", tree, 1, 4)
 	parkAct, err := coordination.ClaimActivation(ctx, env.srv.store, parkRoot.ID, store.ClaimInput{AgentID: agentID})
 	if err != nil {
@@ -354,8 +357,13 @@ func TestPinnedRoleBundleLifecycle(t *testing.T) {
 	}
 
 	joinInv := nativeInvocation(t, env, fac.ID, "", "native:bundle:join")
+	prepareBundleGoal(t, env, fac.ID, joinInv, "")
 	_, joinRoot := openBundle(t, env, fac.ID, joinInv, agentID, "", tree, 1, 4)
 	joinAct, err := coordination.ClaimActivation(ctx, env.srv.store, joinRoot.ID, store.ClaimInput{AgentID: agentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joinRun, err := env.srv.store.GetRun(ctx, joinAct.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +397,7 @@ func TestPinnedRoleBundleLifecycle(t *testing.T) {
 		t.Fatalf("join %+v %v", joined, err)
 	}
 	parent, err := env.srv.store.GetRun(ctx, joinAct.RunID)
-	if err != nil || parent.Prompt != parkedPrompt(t, tree, "nils-aaberg") || parent.Status != store.StatusQueued {
+	if err != nil || parent.Prompt != joinRun.Prompt || parent.Status != store.StatusQueued {
 		t.Fatalf("joined parent %+v %v", parent, err)
 	}
 
@@ -397,6 +405,7 @@ func TestPinnedRoleBundleLifecycle(t *testing.T) {
 		return writeBundleDefinition(t, "pullRequest")
 	}})
 	prFac, prAgent, prItem, prInv := nativeLeaseFixture(t, prEnv, "pipe", "native:bundle:pr", store.StagePlanning)
+	prepareBundleGoal(t, prEnv, prFac.ID, prInv, prItem)
 	_, prRoot := openBundle(t, prEnv, prFac.ID, prInv, prAgent, prItem, tree, 1, 4)
 	prAct, err := coordination.ClaimActivation(ctx, prEnv.srv.store, prRoot.ID, store.ClaimInput{AgentID: prAgent})
 	if err != nil {
@@ -414,6 +423,7 @@ func TestPinnedRoleBundleLifecycle(t *testing.T) {
 
 	reportEnv := boot(t, bootOpts{definition: writeReportDefinition})
 	reportFac, reportAgent, reportItem, reportInv := nativeLeaseFixture(t, reportEnv, "scan", "native:bundle:report-missing", store.StagePlanning)
+	prepareBundleGoal(t, reportEnv, reportFac.ID, reportInv, reportItem)
 	_, reportRoot := openBundle(t, reportEnv, reportFac.ID, reportInv, reportAgent, reportItem, tree, 1, 4)
 	missingAct, err := coordination.ClaimActivation(ctx, reportEnv.srv.store, reportRoot.ID, store.ClaimInput{AgentID: reportAgent})
 	if err != nil {
@@ -435,6 +445,7 @@ func TestPinnedRoleBundleLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	okInv := nativeInvocation(t, reportEnv, reportFac.ID, okItem.ID, "native:bundle:report-present")
+	prepareBundleGoal(t, reportEnv, reportFac.ID, okInv, okItem.ID)
 	_, okRoot := openBundle(t, reportEnv, reportFac.ID, okInv, reportAgent, okItem.ID, tree, 1, 4)
 	okAct, err := coordination.ClaimActivation(ctx, reportEnv.srv.store, okRoot.ID, store.ClaimInput{AgentID: reportAgent})
 	if err != nil {
@@ -593,6 +604,31 @@ func copyPins(in map[string]map[string][]byte) map[string]map[string][]byte {
 	return out
 }
 
+const bundlePin = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+func prepareBundleGoal(t *testing.T, env *env, factoryID, invocationID, workItemID string) {
+	t.Helper()
+	ctx := context.Background()
+	if workItemID == "" {
+		item, err := env.srv.store.CreateWorkItem(ctx, store.NewWorkItem{
+			FactoryID: factoryID, Source: store.SourceManual, Title: "bundle title",
+			Body: "bundle-objective", Stage: store.StagePlanning,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		workItemID = item.ID
+		if _, err := env.raw.Exec(ctx, `UPDATE invocations SET work_item_id = $2 WHERE id = $1`, invocationID, workItemID); err != nil {
+			t.Fatal(err)
+		}
+	} else if _, err := env.raw.Exec(ctx, `UPDATE work_items SET title = 'bundle title', body = 'bundle-objective' WHERE id = $1`, workItemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.raw.Exec(ctx, `UPDATE invocations SET pinned_head_sha = $2, target_repository = 'example/fixture' WHERE id = $1`, invocationID, bundlePin); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func openBundle(t *testing.T, env *env, factoryID, invocationID, agentID, workItemID string, tree definition.NativeTree, slots, maxLive int) (store.NativePolicy, store.NativeTask) {
 	t.Helper()
 	// Slots stays 1 so the seats are not leased together. MaxLive stays at
@@ -665,15 +701,6 @@ func bundleSection(t *testing.T, prompt, name string) []byte {
 	return body[:n]
 }
 
-func parkedPrompt(t *testing.T, tree definition.NativeTree, slug string) string {
-	t.Helper()
-	prompt, err := definition.NativeSeatPrompt(tree.Personas, slug)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return prompt
-}
-
 func policyTree(policy store.NativePolicy) definition.NativeTree {
 	return definition.NativeTree{
 		NativeHierarchy:       policy.NativeHierarchy,
@@ -686,6 +713,7 @@ func policyTree(policy store.NativePolicy) definition.NativeTree {
 		SourceCommit:          policy.SourceCommit,
 		RosterSHA256:          policy.RosterSHA256,
 		RosterGitBlob:         policy.RosterGitBlob,
+		BundleMode:            policy.BundleMode,
 	}
 }
 

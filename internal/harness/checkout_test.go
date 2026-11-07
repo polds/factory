@@ -1,0 +1,550 @@
+package harness
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+)
+
+func TestCheckoutGateMaterializesRequestedCommit(t *testing.T) {
+	dir, _, second := twoCommitRepo(t, "https://github.com/example/fixture.git")
+	hookMark := filepath.Join(t.TempDir(), "hook")
+	writeHook(t, dir, hookMark)
+	code, calls, setup := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", second), second)
+	if code != ExitOK || calls != 1 || strings.TrimSpace(setup) != second {
+		t.Fatalf("code %d calls %d setup %q", code, calls, setup)
+	}
+	if head(t, dir) != second || !detached(t, dir) {
+		t.Fatalf("head %s detached %v", head(t, dir), detached(t, dir))
+	}
+	if _, err := os.Stat(hookMark); !os.IsNotExist(err) {
+		t.Fatal("hook ran")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a")); err != nil {
+		t.Fatal("earlier file removed")
+	}
+	bareCode, bareCalls, bareSetup := runWithoutOverride(t, dir, second)
+	if bareCode != ExitOK || bareCalls != 1 || strings.TrimSpace(bareSetup) != second || head(t, dir) != second {
+		t.Fatalf("absent flag code %d calls %d setup %q head %s", bareCode, bareCalls, bareSetup, head(t, dir))
+	}
+}
+
+func TestCheckoutGateRefusesExplicitEmptyOverride(t *testing.T) {
+	for _, raw := range []string{"{}", "[]", "null", "", "   "} {
+		t.Run(raw, func(t *testing.T) {
+			dir, first, _ := twoCommitRepo(t, "https://github.com/example/fixture.git")
+			before := dirEntries(t, dir)
+			code, calls, setup := runWithOverride(t, dir, raw, "")
+			if code != ExitConfigInvalid || calls != 0 || setup != "" || head(t, dir) != first || dirEntries(t, dir) != before {
+				t.Fatalf("code %d calls %d setup %q head %s", code, calls, setup, head(t, dir))
+			}
+		})
+	}
+}
+
+func TestCheckoutGateRefusesUnmaterializedWorkspace(t *testing.T) {
+	t.Run("non-repository", func(t *testing.T) {
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "keep.txt")
+		if err := os.WriteFile(marker, []byte("keep"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		before := dirEntries(t, dir)
+		code, calls, setup := runWithOverride(t, dir, overrideObject(t, "m6", "scratch", strings.Repeat("c0", 20)), "")
+		body, err := os.ReadFile(marker)
+		if code != ExitEnvironment || calls != 0 || setup != "" || err != nil || string(body) != "keep" || dirEntries(t, dir) != before {
+			t.Fatalf("code %d calls %d setup %q entries %q", code, calls, setup, dirEntries(t, dir))
+		}
+	})
+	t.Run("non-github origin", func(t *testing.T) {
+		dir, first, _ := twoCommitRepo(t, "https://git.example.test/m6/scratch.git")
+		before := dirEntries(t, dir)
+		code, calls, setup := runWithOverride(t, dir, overrideObject(t, "m6", "scratch", strings.Repeat("c0", 20)), "")
+		if code != ExitEnvironment || calls != 0 || setup != "" || head(t, dir) != first || dirEntries(t, dir) != before {
+			t.Fatalf("code %d calls %d setup %q head %s entries %q", code, calls, setup, head(t, dir), dirEntries(t, dir))
+		}
+	})
+}
+
+func dirEntries(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Name() == ".git" {
+			names = append(names, ".git")
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	return strings.Join(names, ",")
+}
+
+func TestCheckoutGateRefusesBeforeWork(t *testing.T) {
+	t.Run("mismatch", func(t *testing.T) {
+		dir, first, second := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		bin := filepath.Join(t.TempDir(), "bin")
+		if err := os.Mkdir(bin, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		script := "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = checkout ]; then\n    exec /usr/bin/git checkout --detach " + first + "\n  fi\ndone\nexec /usr/bin/git \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+		code, calls, setup := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", second), "")
+		if code != ExitEnvironment || calls != 0 || setup != "" {
+			t.Fatalf("code %d calls %d setup %q", code, calls, setup)
+		}
+	})
+	t.Run("missing", func(t *testing.T) {
+		dir, first, _ := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		code, calls, setup := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", strings.Repeat("b", 40)), "")
+		if code != ExitEnvironment || calls != 0 || setup != "" || head(t, dir) != first {
+			t.Fatalf("code %d calls %d head %s", code, calls, head(t, dir))
+		}
+	})
+	t.Run("invalid", func(t *testing.T) {
+		dir, first, _ := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		code, calls, _ := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", "not-a-sha"), "")
+		if code != ExitConfigInvalid || calls != 0 || head(t, dir) != first {
+			t.Fatalf("code %d calls %d", code, calls)
+		}
+	})
+	t.Run("dirty", func(t *testing.T) {
+		dir, first, second := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		if err := os.WriteFile(filepath.Join(dir, "a"), []byte("keep-me\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		code, calls, setup := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", second), "")
+		body, err := os.ReadFile(filepath.Join(dir, "a"))
+		if code != ExitEnvironment || calls != 0 || setup != "" || err != nil || string(body) != "keep-me\n" || head(t, dir) != first {
+			t.Fatalf("code %d calls %d body %q head %s", code, calls, body, head(t, dir))
+		}
+	})
+	t.Run("wrong repo", func(t *testing.T) {
+		dir, first, second := twoCommitRepo(t, "https://github.com/other/repo.git")
+		code, calls, _ := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", second), "")
+		if code != ExitEnvironment || calls != 0 || head(t, dir) != first {
+			t.Fatalf("code %d calls %d head %s", code, calls, head(t, dir))
+		}
+	})
+	t.Run("parent", func(t *testing.T) {
+		dir, first, second := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		sub := filepath.Join(dir, "nested")
+		if err := os.Mkdir(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		code, calls, _ := runWithOverride(t, sub, overrideJSON(t, "example", "fixture", second), "")
+		if code != ExitEnvironment || calls != 0 || head(t, dir) != first {
+			t.Fatalf("code %d calls %d head %s", code, calls, head(t, dir))
+		}
+	})
+	t.Run("symlink workspace", func(t *testing.T) {
+		dir, first, second := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		link := filepath.Join(t.TempDir(), "link")
+		if err := os.Symlink(dir, link); err != nil {
+			t.Fatal(err)
+		}
+		code, calls, _ := runWithOverride(t, link, overrideJSON(t, "example", "fixture", second), "")
+		if code != ExitEnvironment || calls != 0 || head(t, dir) != first {
+			t.Fatalf("code %d calls %d", code, calls)
+		}
+	})
+	t.Run("symlink git dir", func(t *testing.T) {
+		dir, first, second := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		moved := filepath.Join(t.TempDir(), "gitdir")
+		if err := os.Rename(filepath.Join(dir, ".git"), moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(moved, filepath.Join(dir, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		code, calls, _ := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", second), "")
+		cmd := exec.Command("git", "--git-dir", moved, "rev-parse", "HEAD")
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := strings.TrimSpace(string(out))
+		if code != ExitEnvironment || calls != 0 || got != first {
+			t.Fatalf("code %d calls %d head %s", code, calls, got)
+		}
+	})
+	t.Run("many overrides", func(t *testing.T) {
+		dir, first, second := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		raw := "[" + overrideObject(t, "example", "fixture", second) + "," + overrideObject(t, "example", "fixture", first) + "]"
+		code, calls, _ := runWithOverride(t, dir, raw, "")
+		if code != ExitConfigInvalid || calls != 0 || head(t, dir) != first {
+			t.Fatalf("code %d calls %d", code, calls)
+		}
+	})
+	t.Run("branch and tag", func(t *testing.T) {
+		dir, first, second := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		branch := strings.Replace(overrideJSON(t, "example", "fixture", second), "COMMIT_SHA", "BRANCH", 1)
+		code, calls, _ := runWithOverride(t, dir, branch, "")
+		if code != ExitConfigInvalid || calls != 0 || head(t, dir) != first {
+			t.Fatalf("branch code %d calls %d", code, calls)
+		}
+		gitCmd(t, dir, "tag", "-a", "-m", "tag", "mark", first)
+		tag := gitOut(t, dir, "rev-parse", "refs/tags/mark")
+		code, calls, _ = runWithOverride(t, dir, overrideJSON(t, "example", "fixture", tag), "")
+		if code != ExitEnvironment || calls != 0 || head(t, dir) != first {
+			t.Fatalf("tag code %d calls %d head %s", code, calls, head(t, dir))
+		}
+	})
+	t.Run("two remotes", func(t *testing.T) {
+		dir, first, second := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		gitCmd(t, dir, "remote", "add", "upstream", "https://github.com/example/fixture.git")
+		code, calls, _ := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", second), "")
+		if code != ExitEnvironment || calls != 0 || head(t, dir) != first {
+			t.Fatalf("code %d calls %d", code, calls)
+		}
+	})
+}
+
+func runWithOverride(t *testing.T, workspace, raw, wantHead string) (int, int, string) {
+	t.Helper()
+	return runCheckout(t, workspace, []string{"--repository-head-override-json", raw}, wantHead)
+}
+
+func runWithoutOverride(t *testing.T, workspace, wantHead string) (int, int, string) {
+	t.Helper()
+	return runCheckout(t, workspace, nil, wantHead)
+}
+
+func runCheckout(t *testing.T, workspace string, extra []string, wantHead string) (int, int, string) {
+	t.Helper()
+	rt := t.TempDir()
+	setupLog := filepath.Join(t.TempDir(), "setup-head")
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if wantHead != "" {
+			got, err := os.ReadFile(setupLog)
+			if err != nil || strings.TrimSpace(string(got)) != wantHead {
+				t.Errorf("model saw setup %q %v", got, err)
+			}
+		}
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	task, err := json.Marshal(map[string]string{
+		"prompt":        "do the task",
+		"model_id":      "fake-model",
+		"setup_command": "git rev-parse HEAD > " + setupLog,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rt, "task.json"), task, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"agent", "run", "--task-id", "checkout", "--model", "fake-model", "--idle-on-complete", "0s"}
+	args = append(args, extra...)
+	code := Run(context.Background(), Options{
+		Args:       args,
+		Env:        []string{"PATH=" + os.Getenv("PATH"), "OPENAI_BASE_URL=" + srv.URL, "OPENAI_API_KEY=test"},
+		Workspace:  workspace,
+		RuntimeDir: rt,
+	})
+	setup, err := os.ReadFile(setupLog)
+	if err != nil {
+		return code, int(calls.Load()), ""
+	}
+	return code, int(calls.Load()), string(setup)
+}
+
+func overrideJSON(t *testing.T, owner, repo, sha string) string {
+	t.Helper()
+	return "[" + overrideObject(t, owner, repo, sha) + "]"
+}
+
+func overrideObject(t *testing.T, owner, repo, sha string) string {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"code_forge": "GITHUB",
+		"repo_owner": owner,
+		"repo_name":  repo,
+		"head":       map[string]string{"type": "COMMIT_SHA", "value": sha},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestFilterDriverConfigured(t *testing.T) {
+	clean := "worktree\x00file:.git/config.worktree\x00filter.pwn.clean\ntouch sentinel; cat\x00"
+	smudge := "local\x00file:.git/config\x00filter.pwn.smudge\ncat\x00"
+	process := "command\x00file:/tmp/extra\x00filter.pwn.process\nproc\x00"
+	if !configHasFilter(clean) || !configHasFilter(smudge) || !configHasFilter(process) || !configHasFilter("broken") {
+		t.Fatal("driver not detected")
+	}
+	plain := "local\x00file:.git/config\x00filter.pwn.required\ntrue\x00local\x00file:.git/config\x00core.bare\nfalse\x00"
+	blank := "local\x00file:.git/config\x00filter.pwn.clean\n\x00"
+	if configHasFilter("") || configHasFilter(plain) || configHasFilter(blank) {
+		t.Fatal("non-command treated as a driver")
+	}
+}
+
+func configHasFilter(raw string) bool {
+	entries, err := configEntries(raw)
+	if err != nil {
+		return true
+	}
+	for _, entry := range entries {
+		if filterCommand(entry.key, entry.value) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCheckoutGateRefusesFilterDrivers(t *testing.T) {
+	t.Run("clean and smudge", func(t *testing.T) {
+		dir, start, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		gitCmd(t, dir, "config", "filter.pwn.clean", script)
+		gitCmd(t, dir, "config", "filter.pwn.smudge", script)
+		assertFilterRefused(t, dir, start, pin, sentinel)
+	})
+	t.Run("process", func(t *testing.T) {
+		dir, start, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		gitCmd(t, dir, "config", "filter.pwn.process", script)
+		assertFilterRefused(t, dir, start, pin, sentinel)
+	})
+	t.Run("included config", func(t *testing.T) {
+		dir, start, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		inc := filepath.Join(t.TempDir(), "extra.config")
+		body := "[filter \"pwn\"]\n\tclean = " + script + "\n\tsmudge = " + script + "\n"
+		if err := os.WriteFile(inc, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "config", "include.path", inc)
+		assertFilterRefused(t, dir, start, pin, sentinel)
+	})
+	t.Run("clean on status", func(t *testing.T) {
+		dir, start, pin := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("* filter=pwn\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "config", "filter.pwn.clean", script)
+		gitCmd(t, dir, "config", "filter.pwn.required", "true")
+		assertFilterRefused(t, dir, start, pin, sentinel)
+	})
+	t.Run("parent env does not inject a driver", func(t *testing.T) {
+		dir, _, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		t.Setenv("GIT_CONFIG_COUNT", "2")
+		t.Setenv("GIT_CONFIG_KEY_0", "filter.pwn.clean")
+		t.Setenv("GIT_CONFIG_VALUE_0", script)
+		t.Setenv("GIT_CONFIG_KEY_1", "filter.pwn.smudge")
+		t.Setenv("GIT_CONFIG_VALUE_1", script)
+		t.Setenv("GIT_CONFIG_PARAMETERS", "'filter.pwn.process="+script+"'")
+		code, calls, setup := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", pin), pin)
+		if code != ExitOK || calls != 1 || strings.TrimSpace(setup) != pin || head(t, dir) != pin {
+			t.Fatalf("code %d calls %d setup %q head %s", code, calls, setup, head(t, dir))
+		}
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+			t.Fatal("environment filter ran")
+		}
+	})
+	t.Run("worktree config", func(t *testing.T) {
+		dir, start, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		gitCmd(t, dir, "config", "extensions.worktreeConfig", "true")
+		gitCmd(t, dir, "config", "--worktree", "filter.pwn.clean", script)
+		gitCmd(t, dir, "config", "--worktree", "filter.pwn.smudge", script)
+		gitCmd(t, dir, "config", "--worktree", "filter.pwn.process", script)
+		before, err := os.ReadFile(filepath.Join(dir, ".git", "config.worktree"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertFilterRefused(t, dir, start, pin, sentinel)
+		after, err := os.ReadFile(filepath.Join(dir, ".git", "config.worktree"))
+		if err != nil || string(after) != string(before) {
+			t.Fatal("worktree config changed")
+		}
+	})
+	t.Run("worktree include", func(t *testing.T) {
+		dir, start, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		inc := filepath.Join(t.TempDir(), "extra.config")
+		body := "[filter \"pwn\"]\n\tclean = " + script + "\n\tsmudge = " + script + "\n\tprocess = " + script + "\n"
+		if err := os.WriteFile(inc, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "config", "extensions.worktreeConfig", "true")
+		gitCmd(t, dir, "config", "--worktree", "include.path", inc)
+		assertFilterRefused(t, dir, start, pin, sentinel)
+	})
+	t.Run("inactive branch include", func(t *testing.T) {
+		dir, start, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		inc := filepath.Join(t.TempDir(), "side.config")
+		body := "[filter \"pwn\"]\n\tclean = " + script + "\n\tsmudge = " + script + "\n"
+		if err := os.WriteFile(inc, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "config", "includeIf.onbranch:side.path", inc)
+		assertFilterRefused(t, dir, start, pin, sentinel)
+	})
+	t.Run("absent flag stays legacy", func(t *testing.T) {
+		dir, start, _ := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		gitCmd(t, dir, "config", "filter.pwn.clean", script)
+		gitCmd(t, dir, "config", "filter.pwn.smudge", script)
+		code, calls, setup := runWithoutOverride(t, dir, start)
+		if code != ExitOK || calls != 1 || strings.TrimSpace(setup) != start || head(t, dir) != start {
+			t.Fatalf("code %d calls %d setup %q head %s", code, calls, setup, head(t, dir))
+		}
+	})
+}
+
+func assertFilterRefused(t *testing.T, dir, start, pin, sentinel string) {
+	t.Helper()
+	attrs := filepath.Join(dir, ".gitattributes")
+	beforeAttrs, err := os.ReadFile(attrs)
+	tracked := filepath.Join(dir, "a")
+	beforeFile, errFile := os.ReadFile(tracked)
+	beforeIndex := gitOut(t, dir, "ls-files", "--stage")
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if errFile != nil {
+		t.Fatal(errFile)
+	}
+	code, calls, setup := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", pin), "")
+	afterAttrs, errAfter := os.ReadFile(attrs)
+	afterFile, errTracked := os.ReadFile(tracked)
+	afterIndex := gitOut(t, dir, "ls-files", "--stage")
+	if code != ExitEnvironment || calls != 0 || setup != "" || head(t, dir) != start || errTracked != nil || string(afterFile) != string(beforeFile) || afterIndex != beforeIndex {
+		t.Fatalf("code %d calls %d setup %q head %s", code, calls, setup, head(t, dir))
+	}
+	if string(afterAttrs) != string(beforeAttrs) || (err == nil) != (errAfter == nil) {
+		t.Fatal("attributes changed")
+	}
+	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+		t.Fatal("filter ran")
+	}
+}
+
+func repoWithFilterAttribute(t *testing.T) (string, string, string) {
+	t.Helper()
+	dir, first, _ := twoCommitRepo(t, "https://github.com/example/fixture.git")
+	gitCmd(t, dir, "checkout", "--detach", first)
+	if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("* filter=pwn\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", ".gitattributes")
+	gitCmd(t, dir, "commit", "-m", "attributes")
+	pin := head(t, dir)
+	gitCmd(t, dir, "checkout", "--detach", first)
+	return dir, first, pin
+}
+
+func passThroughFilter(t *testing.T, sentinel string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "filter.sh")
+	body := "#!/bin/sh\ntouch " + shellQuote(sentinel) + "\ncat\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func twoCommitRepo(t *testing.T, origin string) (string, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.email", "t@example.com")
+	gitCmd(t, dir, "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(dir, "a"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "a")
+	gitCmd(t, dir, "commit", "-m", "a")
+	first := head(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "b"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "b")
+	gitCmd(t, dir, "commit", "-m", "b")
+	second := head(t, dir)
+	gitCmd(t, dir, "remote", "add", "origin", origin)
+	gitCmd(t, dir, "checkout", "--detach", first)
+	return dir, first, second
+}
+
+func writeHook(t *testing.T, dir, mark string) {
+	t.Helper()
+	hooks := filepath.Join(dir, ".git", "hooks")
+	body := []byte("#!/bin/sh\necho ran >> " + mark + "\n")
+	for _, name := range []string{"pre-checkout", "post-checkout"} {
+		path := filepath.Join(hooks, name)
+		if err := os.WriteFile(path, body, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func head(t *testing.T, dir string) string {
+	t.Helper()
+	return gitOut(t, dir, "rev-parse", "HEAD")
+}
+
+func detached(t *testing.T, dir string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "symbolic-ref", "--quiet", "HEAD")
+	cmd.Dir = dir
+	return cmd.Run() != nil
+}
+
+func gitCmd(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v %s", strings.Join(args, " "), err, out)
+	}
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %s: %v %s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}

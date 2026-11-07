@@ -7,12 +7,23 @@ import (
 	"time"
 )
 
+// NativeRoleFile is one frozen role file. Bytes are content, not a grant.
+type NativeRoleFile struct {
+	Name    string `json:"name"`
+	SHA256  string `json:"sha256"`
+	GitBlob string `json:"gitBlob"`
+	Bytes   []byte `json:"bytes"`
+}
+
 // NativePersona is one frozen roster entry.
 type NativePersona struct {
-	Name        string   `json:"name"`
-	ReportsTo   string   `json:"reportsTo"`
-	SpawnableBy []string `json:"spawnableBy"`
-	Role        string   `json:"role"`
+	Name            string           `json:"name"`
+	ReportsTo       string           `json:"reportsTo"`
+	SpawnableBy     []string         `json:"spawnableBy"`
+	Role            string           `json:"role"`
+	SourceReportsTo string           `json:"sourceReportsTo,omitempty"`
+	SourceDottedTo  string           `json:"sourceDottedTo,omitempty"`
+	Files           []NativeRoleFile `json:"files,omitempty"`
 }
 
 // NativeTreeRequest freezes a roster. Principal is not a field.
@@ -31,6 +42,10 @@ type NativeTreeRequest struct {
 	AgentID               string          `json:"agentId,omitempty"`
 	WorkItemID            string          `json:"workItemId,omitempty"`
 	Stage                 string          `json:"stage,omitempty"`
+	SourceCommit          string          `json:"sourceCommit,omitempty"`
+	RosterSHA256          string          `json:"rosterSha256,omitempty"`
+	RosterGitBlob         string          `json:"rosterGitBlob,omitempty"`
+	BundleMode            string          `json:"bundleMode,omitempty"`
 }
 
 // NativeTreeOpened is the pinned policy.

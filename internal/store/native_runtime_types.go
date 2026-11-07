@@ -66,7 +66,10 @@ type NativePolicy struct {
 	SourceCommit  string
 	RosterSHA256  string
 	RosterGitBlob string
-	CreatedAt     time.Time
+	// BundleMode is the personas envelope mode. Empty is a legacy array policy.
+	// role_files is inferred for a complete stored bundle that predates the field.
+	BundleMode string
+	CreatedAt  time.Time
 }
 
 // OpenTreeInput freezes the roster and inserts the root task. It does not claim a run.

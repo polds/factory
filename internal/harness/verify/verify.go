@@ -267,7 +267,6 @@ func checkFlags(bin string) error {
 		"--computer-use",
 		"--computer-use-model", "vision",
 		"--no-computer-use",
-		"--repository-head-override-json", "{}",
 		"--remove-repository-origins",
 		"--no-snapshot",
 		"--snapshot-upload-timeout", "1s",

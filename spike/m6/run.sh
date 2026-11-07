@@ -27,6 +27,9 @@
 #
 # The offline improver pushes the branch and does not open a pull
 # request, so factoryd's create is the 201 that carries improve.PRBody.
+# Offline also builds a disposable local m6/scratch commit and copies it
+# into each convention trial's own /workspace before the harness runs.
+# Live and live-ci do not build that fixture or rewrite the pin.
 # M6_IMPROVER_OPENS_PR=1 is the live-only branch: the improver opens
 # the request first and factoryd's create is 422, then a lookup.
 
@@ -270,6 +273,218 @@ prepare_definition() {
     judge="${M6_LIVE_MODEL_JUDGE:-$M6_LIVE_MODEL}"
   fi
   rewrite_models "$dest" "$agent" "$judge"
+  if [[ "$MODE" == offline ]]; then
+    m6_convention_fixture
+  fi
+}
+
+# m6_remove_owned deletes a script-owned directory under $WORK.
+# A symlink, another owner, or a path outside $WORK is refused.
+m6_remove_owned() {
+  local path="$1" resolved="" uid=""
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    return 0
+  fi
+  if [[ -L "$path" ]]; then
+    die "refusing to remove symlink $path"
+  fi
+  if ! resolved="$(resolve_wipe_path "$path")"; then
+    die "refusing to remove $path"
+  fi
+  uid="$(stat -c %u "$resolved")"
+  if [[ "$uid" != "$(id -u)" ]]; then
+    die "refusing to remove $resolved owned by $uid"
+  fi
+  wipe_dir "$resolved"
+}
+
+m6_bounded() {
+  local seconds="$1"
+  shift
+  command -v timeout >/dev/null || die "timeout not found"
+  timeout --signal=TERM --kill-after=5s "$seconds" "$@"
+}
+
+m6_git() {
+  m6_bounded 30 \
+    env GIT_CONFIG_NOSYSTEM=1 \
+    GIT_CONFIG_GLOBAL="${CONVENTION_EMPTY:-}" \
+    GIT_CONFIG_SYSTEM=/dev/null \
+    GIT_TERMINAL_PROMPT=0 \
+    GIT_NO_LAZY_FETCH=1 \
+    git "$@"
+}
+
+# m6_convention_fixture builds a local scratch repository and points the
+# disposable definition copy at that commit. Live and live-ci return
+# without writing. The tracked cite.yaml is not modified.
+m6_convention_fixture() {
+  local root="" seed="" cite="" hooks="" parent="" pin="" origin=""
+  if [[ "$MODE" != offline ]]; then
+    return 0
+  fi
+  [[ -n "${WORK:-}" && -n "${EVIDENCE:-}" ]] || die "convention fixture missing work directories"
+  root="$WORK/convention-fixture"
+  m6_remove_owned "$root"
+  mkdir -p "$root/seed" "$root/hooks" "$EVIDENCE"
+  : >"$root/empty-gitconfig"
+  CONVENTION_EMPTY="$root/empty-gitconfig"
+  seed="$root/seed"
+  hooks="$root/hooks"
+  cite="$WORK/definition/benchmarks/convention/tasks/cite.yaml"
+  [[ -f "$cite" ]] || die "convention fixture missing cite.yaml copy"
+  m6_git -C "$seed" init -b main
+  m6_git -C "$seed" remote add origin https://github.com/m6/scratch.git
+  printf 'base\n' >"$seed/base.txt"
+  m6_git -C "$seed" add base.txt
+  m6_git -C "$seed" -c user.email=factory@example.com -c user.name=factory commit -m base
+  parent="$(m6_git -C "$seed" rev-parse HEAD)"
+  printf 'pin\n' >"$seed/pin.txt"
+  m6_git -C "$seed" add pin.txt
+  m6_git -C "$seed" -c user.email=factory@example.com -c user.name=factory commit -m pin
+  pin="$(m6_git -C "$seed" rev-parse HEAD)"
+  m6_git -C "$seed" -c core.hooksPath="$hooks" checkout --detach "$parent"
+  origin="$(m6_git -C "$seed" remote get-url origin)"
+  [[ "$origin" == "https://github.com/m6/scratch.git" ]] || die "convention fixture origin $origin"
+  [[ "$parent" != "$pin" ]] || die "convention fixture did not create a distinct commit"
+  [[ -z "$(m6_git -C "$seed" status --porcelain=v1)" ]] || die "convention fixture is dirty"
+  python3 - "$cite" "$pin" <<'PY'
+import sys
+from pathlib import Path
+
+path, pin = sys.argv[1], sys.argv[2]
+file = Path(path)
+text = file.read_text(encoding="utf-8")
+old = "github.com:m6/scratch@c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff"
+if text.count(old) != 1:
+    raise SystemExit("cite.yaml copy does not contain one sentinel pin")
+file.write_text(text.replace(old, "github.com:m6/scratch@" + pin, 1), encoding="utf-8")
+PY
+  PINNED_SHA="$pin"
+  CONVENTION_PARENT="$parent"
+  printf 'origin %s\nparent %s\npin %s\n' "$origin" "$parent" "$pin" >"$EVIDENCE/convention-fixture.txt"
+}
+
+m6_convention_images() {
+  local root="$WORK/convention-fixture"
+  [[ "$MODE" == offline ]] || return 0
+  [[ -d "$root/seed/.git" ]] || die "convention fixture was not created"
+  command -v timeout >/dev/null || die "timeout not found"
+  cat >"$root/entrypoint.sh" <<'EOF'
+#!/bin/sh
+# Copy the offline scratch seed into this container's /workspace, then
+# run the harness. The copy stays at the parent commit. The harness gate
+# is what checks out the pinned commit.
+set -u
+here=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
+seed=/opt/m6-convention-seed
+copied=0
+before=""
+: >/tmp/m6-empty-gitconfig
+seedgit() {
+  GIT_CONFIG_NOSYSTEM=1 \
+    GIT_CONFIG_GLOBAL=/tmp/m6-empty-gitconfig \
+    GIT_CONFIG_SYSTEM=/dev/null \
+    GIT_TERMINAL_PROMPT=0 \
+    GIT_NO_LAZY_FETCH=1 \
+    git "$@"
+}
+if [ -d "$seed" ] && [ ! -L "$seed" ] && [ -d /workspace ] && [ ! -L /workspace ] && [ -z "$(ls -A /workspace 2>/dev/null)" ]; then
+  raw=""
+  count=0
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--repository-head-override-json" ]; then
+      raw=$arg
+      count=$((count + 1))
+    fi
+    prev=$arg
+  done
+  if [ "$count" -eq 1 ]; then
+    case "$raw" in
+      *'"code_forge":"GITHUB"'*)
+        case "$raw" in
+          *'"repo_owner":"m6"'*)
+            case "$raw" in
+              *'"repo_name":"scratch"'*)
+                case "$raw" in
+                  *'"clone_from"'* | *'"preserve_origin":true'*) ;;
+                  *)
+                    sha=$(printf '%s' "$raw" | sed -n 's/.*"value":"\([0-9a-f]\{40\}\)".*/\1/p')
+                    if [ -n "$sha" ] && seedgit -C "$seed" cat-file -e "$sha^{commit}" 2>/dev/null; then
+                      top=$(seedgit -C "$seed" rev-parse --show-toplevel)
+                      if [ "$top" = "$seed" ]; then
+                        before=$(seedgit -C "$seed" rev-parse --verify HEAD)
+                        cp -a "$seed"/. /workspace/ || exit 30
+                        now=$(seedgit -C /workspace rev-parse --verify HEAD)
+                        if [ "$now" = "$before" ]; then
+                          copied=1
+                        else
+                          exit 30
+                        fi
+                      fi
+                    fi
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
+        esac
+        ;;
+    esac
+  fi
+fi
+if [ "$copied" -eq 0 ]; then
+  exec "$here/factory-harness" "$@"
+fi
+printf 'm6-convention-gate before=%s\n' "$before" >&2
+set +e
+"$here/factory-harness" "$@"
+code=$?
+set -e
+after=$(seedgit -C /workspace rev-parse --verify HEAD 2>/dev/null || printf '%s' missing)
+printf 'm6-convention-gate after=%s\n' "$after" >&2
+sleep 2
+exit "$code"
+EOF
+  cat >"$root/task.Dockerfile" <<'EOF'
+FROM factory-m1-task:dev
+COPY seed/ /opt/m6-convention-seed/
+EOF
+  cat >"$root/harness.Dockerfile" <<'EOF'
+FROM factory-harness:dev
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod 755 /entrypoint.sh
+EOF
+  m6_bounded 300 docker build --platform "$OCI_PLATFORM" -t factory-m1-task:dev \
+    -f "$root/task.Dockerfile" "$root"
+  m6_bounded 300 docker build --platform "$OCI_PLATFORM" -t factory-harness:dev \
+    -f "$root/harness.Dockerfile" "$root"
+}
+
+m6_assert_convention_gate() {
+  local file="" before="" after="" found=0
+  local -a files=()
+  [[ "$MODE" == offline ]] || return 0
+  # specs and other offline entry points do not build the fixture.
+  [[ -n "${CONVENTION_PARENT:-}" ]] || return 0
+  [[ -n "${PINNED_SHA:-}" ]] || die "convention gate missing pin"
+  shopt -s nullglob
+  files=("$EVIDENCE"/gate-*.log)
+  shopt -u nullglob
+  [[ ${#files[@]} -gt 0 ]] || die "convention gate did not run"
+  for file in "${files[@]}"; do
+    before="$(grep -E '^m6-convention-gate before=[0-9a-f]{40}$' "$file" | tail -n 1 || true)"
+    after="$(grep -E '^m6-convention-gate after=[0-9a-f]{40}$' "$file" | tail -n 1 || true)"
+    [[ -n "$before" && -n "$after" ]] || continue
+    before="${before#m6-convention-gate before=}"
+    after="${after#m6-convention-gate after=}"
+    [[ "$before" == "$CONVENTION_PARENT" ]] || die "convention gate before $before"
+    [[ "$after" == "$PINNED_SHA" ]] || die "convention gate after $after"
+    [[ "$before" != "$after" ]] || die "convention gate did not move HEAD"
+    found=1
+  done
+  [[ "$found" -eq 1 ]] || die "convention gate evidence incomplete"
 }
 
 seed_git() {
@@ -389,6 +604,9 @@ build_images() {
     "$ROOT/spike/m1/task-image"
   docker build --platform "$OCI_PLATFORM" -t factoryd-git:dev \
     -f "$ROOT/spike/m5/factoryd-git.Dockerfile" "$ROOT/spike/m5"
+  if [[ "$MODE" == offline ]]; then
+    m6_convention_images
+  fi
   phase_report "image build" "$phase_start"
 }
 
@@ -438,7 +656,7 @@ start_router() {
 }
 
 watch_candidate_offline() {
-  local bare="$WORK/git/m6/factory.git" ref="" sha="" id="" cmd=""
+  local bare="$WORK/git/m6/factory.git" ref="" sha="" id="" cmd="" logs=""
   while [[ ! -f "$SIGNAL/stop" ]]; do
     # improve/<batch id> is refs/heads/improve/<id>, not refs/heads/improve.
     ref="$(git --git-dir="$bare" for-each-ref --format='%(refname)' 'refs/heads/improve/*' 2>/dev/null | head -n 1 || true)"
@@ -466,6 +684,16 @@ watch_candidate_offline() {
           mkdir -p "$EVIDENCE"
           printf 'task argv contains %s\n' "$PINNED_SHA" >"$EVIDENCE/head-override.txt"
           break
+        fi
+      done < <(docker ps -q --filter ancestor=factory-m1-task:dev 2>/dev/null || true)
+    fi
+    if [[ -n "${CONVENTION_PARENT:-}" ]]; then
+      while read -r id; do
+        [[ -n "$id" ]] || continue
+        logs="$(timeout --signal=TERM --kill-after=5s 5 docker logs "$id" 2>&1 | grep -F 'm6-convention-gate ' || true)"
+        if [[ -n "$logs" ]]; then
+          mkdir -p "$EVIDENCE"
+          printf '%s\n' "$logs" >"$EVIDENCE/gate-$id.log"
         fi
       done < <(docker ps -q --filter ancestor=factory-m1-task:dev 2>/dev/null || true)
     fi
@@ -1063,6 +1291,10 @@ m6_playwright_and_evidence() {
     ! grep -F "$PINNED_SHA" "$EVIDENCE/head-override.txt" >/dev/null 2>&1; then
     phase_report "evidence" "$evidence_start"
     die "pinned startingRepoRefs SHA is not in the factory logs or the task argv"
+  fi
+  if ! m6_assert_convention_gate; then
+    phase_report "evidence" "$evidence_start"
+    die "convention gate evidence"
   fi
   if ! assert_evidence; then
     phase_report "evidence" "$evidence_start"
