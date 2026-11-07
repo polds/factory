@@ -99,6 +99,45 @@ spike_read_field() {
   fi
 }
 
+# spike_open_log creates or appends a log path before the child is forked.
+# A background redirect that fails still returns 0 from bash, so checking it
+# after the fork would record a dead shell as a successful spawn.
+spike_open_log() {
+  local path="$1" append="$2"
+  if [[ -z "$path" ]]; then
+    return 0
+  fi
+  if [[ -d "$path" ]]; then
+    echo "spike_spawn: log path is a directory: $path" >&2
+    return 1
+  fi
+  if [[ "$append" -eq 1 ]]; then
+    : >>"$path"
+  else
+    : >"$path"
+  fi
+}
+
+# spike_reap_owned_child stops a process this shell just forked when spawn
+# bookkeeping fails before that pid is recorded. A reused pid has a different
+# parent and is left alone.
+spike_reap_owned_child() {
+  local pid="$1" ppid=""
+  if [[ -z "$pid" || "$pid" == "$$" ]]; then
+    return 0
+  fi
+  ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ "$ppid" != "$$" ]]; then
+    return 0
+  fi
+  kill -TERM "$pid" 2>/dev/null || true
+  ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ "$ppid" == "$$" ]]; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
 # spike_spawn records pid, pgid, and ps identity so a recycled pid is not
 # signalled. Stdout and stderr stay with the caller unless --out or --err
 # is set, which is how drivers keep their log paths.
@@ -175,83 +214,131 @@ spike_spawn() {
     return 1
   fi
   spike_ensure_reg
-  local monitor=0
+  local monitor=0 errexit=0
   case $- in
     *m*) monitor=1 ;;
   esac
+  case $- in
+    *e*) errexit=1 ;;
+  esac
+  # Bookkeeping after the fork must not abort under set -e before the child
+  # is recorded or reaped.
+  set +e
+  local pid="" launch_rc=0 book_rc=0 forked=0
   SPIKE_SPAWN_CRITICAL=1
-  set -m
-  # Same path for both streams uses one open (the >file 2>&1 form).
-  # Different paths stay split. --out alone leaves stderr with the caller.
-  if [[ -n "$out" && -n "$err" && "$out" == "$err" ]]; then
-    if [[ "$append" -eq 1 ]]; then
-      "$@" >>"$out" 2>&1 &
-    else
-      "$@" >"$out" 2>&1 &
-    fi
-  elif [[ -n "$out" && -n "$err" ]]; then
-    if [[ "$append" -eq 1 ]]; then
-      "$@" >>"$out" 2>>"$err" &
-    else
-      "$@" >"$out" 2>"$err" &
-    fi
-  elif [[ -n "$out" ]]; then
-    if [[ "$append" -eq 1 ]]; then
-      "$@" >>"$out" &
-    else
-      "$@" >"$out" &
-    fi
-  elif [[ -n "$err" ]]; then
-    if [[ "$append" -eq 1 ]]; then
-      "$@" 2>>"$err" &
-    else
-      "$@" 2>"$err" &
-    fi
-  else
-    "$@" &
+  if ! spike_open_log "$out" "$append"; then
+    book_rc=1
+  elif [[ "$err" != "$out" ]] && ! spike_open_log "$err" "$append"; then
+    book_rc=1
   fi
-  local pid=$!
-  if [[ "$monitor" -eq 0 ]]; then
-    set +m
+  if [[ "$book_rc" -eq 0 ]]; then
+    # The child inherits the options in force at the fork. Callers run
+    # set -e, and a backgrounded function must keep failing closed.
+    if [[ "$errexit" -eq 1 ]]; then
+      set -e
+    fi
+    set -m
+    # Same path for both streams uses one open (the >file 2>&1 form).
+    # Different paths stay split. --out alone leaves stderr with the caller.
+    if [[ -n "$out" && -n "$err" && "$out" == "$err" ]]; then
+      if [[ "$append" -eq 1 ]]; then
+        "$@" >>"$out" 2>&1 &
+      else
+        "$@" >"$out" 2>&1 &
+      fi
+    elif [[ -n "$out" && -n "$err" ]]; then
+      if [[ "$append" -eq 1 ]]; then
+        "$@" >>"$out" 2>>"$err" &
+      else
+        "$@" >"$out" 2>"$err" &
+      fi
+    elif [[ -n "$out" ]]; then
+      if [[ "$append" -eq 1 ]]; then
+        "$@" >>"$out" &
+      else
+        "$@" >"$out" &
+      fi
+    elif [[ -n "$err" ]]; then
+      if [[ "$append" -eq 1 ]]; then
+        "$@" 2>>"$err" &
+      else
+        "$@" 2>"$err" &
+      fi
+    else
+      "$@" &
+    fi
+    launch_rc=$?
+    pid=$!
+    forked=1
+    set +e
+    if [[ "$monitor" -eq 0 ]]; then
+      set +m
+    fi
   fi
   local pgid="" lstart="" args="" quoted="" part="" seq="" dir=""
-  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
-  lstart="$(ps -o lstart= -p "$pid" 2>/dev/null || true)"
-  args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
-  if [[ -z "$pgid" ]]; then
-    pgid="$pid"
+  if [[ "$forked" -eq 0 ]]; then
+    pid=""
+  elif [[ "$launch_rc" -ne 0 ]]; then
+    book_rc=$launch_rc
+  else
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+    lstart="$(ps -o lstart= -p "$pid" 2>/dev/null || true)"
+    args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+    if [[ -z "$pgid" ]]; then
+      pgid="$pid"
+    fi
+    quoted=""
+    for part in "$@"; do
+      quoted="${quoted}$(printf '%q' "$part") "
+    done
+    seq="$(spike_read_field "$SPIKE_REG/seq" 2>/dev/null || true)"
+    if [[ -z "$seq" || ! "$seq" =~ ^[0-9]+$ ]]; then
+      seq=0
+    fi
+    seq=$((seq + 1))
+    if ! printf '%s\n' "$seq" >"$SPIKE_REG/seq"; then
+      book_rc=1
+    fi
+    if [[ "$book_rc" -eq 0 ]]; then
+      dir=$(printf '%s/children/%04d' "$SPIKE_REG" "$seq")
+      if ! mkdir -p "$dir"; then
+        book_rc=1
+      fi
+    fi
+    if [[ "$book_rc" -eq 0 ]]; then
+      printf '%s\n' "$class" >"$dir/class" || book_rc=1
+      printf '%s\n' "$name" >"$dir/name" || book_rc=1
+      printf '%s\n' "$pid" >"$dir/pid" || book_rc=1
+      printf '%s\n' "$pgid" >"$dir/pgid" || book_rc=1
+      printf '%s\n' "$lstart" >"$dir/lstart" || book_rc=1
+      printf '%s\n' "$args" >"$dir/args" || book_rc=1
+      printf '%s\n' "$quoted" >"$dir/argv" || book_rc=1
+      printf '%s\n' "$out" >"$dir/out" || book_rc=1
+      printf '%s\n' "$err" >"$dir/err" || book_rc=1
+      printf '%s\n' "$append" >"$dir/append" || book_rc=1
+    fi
   fi
-  quoted=""
-  for part in "$@"; do
-    quoted="${quoted}$(printf '%q' "$part") "
-  done
-  seq="$(spike_read_field "$SPIKE_REG/seq")"
-  seq=$((seq + 1))
-  printf '%s\n' "$seq" >"$SPIKE_REG/seq"
-  dir=$(printf '%s/children/%04d' "$SPIKE_REG" "$seq")
-  mkdir -p "$dir"
-  printf '%s\n' "$class" >"$dir/class"
-  printf '%s\n' "$name" >"$dir/name"
-  printf '%s\n' "$pid" >"$dir/pid"
-  printf '%s\n' "$pgid" >"$dir/pgid"
-  printf '%s\n' "$lstart" >"$dir/lstart"
-  printf '%s\n' "$args" >"$dir/args"
-  printf '%s\n' "$quoted" >"$dir/argv"
-  printf '%s\n' "$out" >"$dir/out"
-  printf '%s\n' "$err" >"$dir/err"
-  printf '%s\n' "$append" >"$dir/append"
-  SPIKE_SPAWN_CRITICAL=0
-  SPIKE_LAST_PID="$pid"
-  # Callers (run_bounded, specs restart) read these after spike_spawn.
-  # shellcheck disable=SC2034
-  SPIKE_LAST_PGID="$pgid"
-  # shellcheck disable=SC2034
-  SPIKE_LAST_DIR="$dir"
+  if [[ "$book_rc" -ne 0 ]]; then
+    spike_reap_owned_child "$pid"
+    SPIKE_SPAWN_CRITICAL=0
+  else
+    SPIKE_LAST_PID="$pid"
+    # Callers (run_bounded, specs restart) read these after spike_spawn.
+    # shellcheck disable=SC2034
+    SPIKE_LAST_PGID="$pgid"
+    # shellcheck disable=SC2034
+    SPIKE_LAST_DIR="$dir"
+    SPIKE_SPAWN_CRITICAL=0
+  fi
+  if [[ "$errexit" -eq 1 ]]; then
+    set -e
+  fi
   if [[ -n "${SPIKE_STOP_DEFERRED:-}" ]]; then
     local why="${SPIKE_STOP_DEFERRED}"
     SPIKE_STOP_DEFERRED=
     spike_trap_cleanup "$why"
   fi
+  return "$book_rc"
 }
 
 # spike_respawn_child starts SPIKE_CHILD_<n>_* again. The record lives in

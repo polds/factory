@@ -466,6 +466,116 @@ case_signal_before_child_record() {
   rm -rf "$dir"
 }
 
+# A bookkeeping error after fork must not leave the child running, and must
+# restore monitor mode and the critical-section flag. kind=seq fails the seq
+# write. kind=record fails a later registry write. kind=redirect fails the
+# log open before fork. kind=seq-term is the seq failure with a deferred
+# TERM already latched.
+case_spawn_bookkeeping_failure() {
+  local kind="$1" dir ec foreign=0 driver_pid=0 waited=0
+  dir="$(mktemp -d)"
+  sleep 600 &
+  foreign=$!
+  cat >"$dir/driver.sh" <<'EOF'
+set -euo pipefail
+. "$1"
+kind="$2"
+reg="$3/reg"
+WORK="$3/work"
+SPIKE_REG="$reg"
+spike_run_init t76
+spike_install_trap
+SPIKE_BOOK_STATE="$3/state"
+record_spawn_state() {
+  printf 'critical=%s dash=%s deferred=%s\n' "${SPIKE_SPAWN_CRITICAL-}" "$-" "${SPIKE_STOP_DEFERRED-}" >"$SPIKE_BOOK_STATE"
+}
+trap record_spawn_state ERR
+if [[ "$kind" == record ]]; then
+  printf '0\n' >"$reg/seq"
+  mkdir -p "$reg/children/0001"
+  mkdir "$reg/children/0001/pid"
+elif [[ "$kind" == redirect ]]; then
+  mkdir "$3/notfile"
+else
+  rm -f "$reg/seq"
+  mkdir "$reg/seq"
+fi
+set +m
+if [[ "$kind" == seq-term ]]; then
+  SPIKE_STOP_DEFERRED=TERM
+fi
+if [[ "$kind" == redirect ]]; then
+  spike_spawn --class transient --out "$3/notfile" broken sleep 600
+else
+  spike_spawn --class transient broken sleep 600
+fi
+echo CONTINUED >"$3/continued"
+EOF
+  set +e
+  bash "$dir/driver.sh" "$LIB" "$kind" "$dir" >"$dir/out" 2>"$dir/err" &
+  driver_pid=$!
+  while [[ "$waited" -lt 5 ]]; do
+    if ! kill -0 "$driver_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$driver_pid" 2>/dev/null; then
+    kill -KILL "$driver_pid" 2>/dev/null || true
+    wait "$driver_pid" 2>/dev/null || true
+    ec=124
+  else
+    wait "$driver_pid"
+    ec=$?
+  fi
+  set -e
+  local orphans=""
+  orphans="$(pgrep -f '[s]leep 600' || true)"
+  if [[ -n "$orphans" ]]; then
+    orphans="$(printf '%s\n' "$orphans" | grep -vx "$foreign" || true)"
+  fi
+  if [[ -n "$orphans" ]]; then
+    echo "bookkeeping failure left sleep: ${orphans}" >&2
+    # shellcheck disable=SC2086 # pids from pgrep, one per line
+    kill -KILL $orphans 2>/dev/null || true
+    kill -KILL "$foreign" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  if ! kill -0 "$foreign" 2>/dev/null; then
+    echo "reap killed foreign sleep ${foreign}" >&2
+    rm -rf "$dir"
+    return 1
+  fi
+  kill -KILL "$foreign" 2>/dev/null || true
+  if [[ "$ec" -eq 0 || -f "$dir/continued" ]]; then
+    echo "spawn failure was ignored, exit ${ec}" >&2
+    rm -rf "$dir"
+    return 1
+  fi
+  if [[ "$ec" -eq 124 ]]; then
+    echo "spawn bookkeeping hung" >&2
+    rm -rf "$dir"
+    return 1
+  fi
+  if [[ "$kind" == seq-term ]]; then
+    if [[ "$ec" -ne 143 ]]; then
+      echo "deferred TERM exit ${ec}, want 143" >&2
+      cat "$dir/err" >&2 || true
+      rm -rf "$dir"
+      return 1
+    fi
+  elif [[ ! -f "$dir/state" ]] || ! grep -q '^critical=0 dash=.*e' "$dir/state" || grep -q 'dash=[^ ]*m' "$dir/state" || grep -q 'deferred=.' "$dir/state"; then
+    echo "monitor or critical section not restored (exit ${ec})" >&2
+    cat "$dir/state" >&2 || true
+    cat "$dir/err" >&2 || true
+    rm -rf "$dir"
+    return 1
+  fi
+  rm -rf "$dir"
+}
+
 case_playwright_argv() {
   local dir
   dir="$(mktemp -d)"
@@ -868,6 +978,10 @@ run_case reused-pid case_reused_pid
 run_case container-label case_container_label
 run_case keep-up case_keep_up
 run_case signal-before-child-record case_signal_before_child_record
+run_case spawn-seq-failure case_spawn_bookkeeping_failure seq
+run_case spawn-record-failure case_spawn_bookkeeping_failure record
+run_case spawn-redirect-failure case_spawn_bookkeeping_failure redirect
+run_case spawn-seq-deferred-term case_spawn_bookkeeping_failure seq-term
 run_case playwright-argv case_playwright_argv
 
 say "${PASS} passed, ${FAIL} failed"
