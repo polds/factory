@@ -1751,6 +1751,143 @@ run_case redact-evidence case_redact_evidence
 run_case playwright-failure-redacts case_playwright_failure_redacts
 run_case stateless-publish-gate case_stateless_publish_gate
 
+case_convention_fixture_offline() {
+  local dir="$ROOT/spike/m6/.work/case-convention-offline"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  local body
+  body=$(
+    cat <<'EOF'
+MODE=offline
+WORK="$M6_CASE_WORK"
+EVIDENCE="$WORK/evidence"
+mkdir -p "$WORK/definition/benchmarks/convention/tasks" "$WORK/definition/benchmarks/fault/tasks" "$EVIDENCE"
+cp "$M6_CASE_ROOT/deploy/m6-factory/benchmarks/convention/tasks/cite.yaml" \
+  "$WORK/definition/benchmarks/convention/tasks/cite.yaml"
+cp "$M6_CASE_ROOT/deploy/m6-factory/benchmarks/fault/tasks/break.yaml" \
+  "$WORK/definition/benchmarks/fault/tasks/break.yaml"
+sentinel="$PINNED_SHA"
+m6_convention_fixture
+[[ "$PINNED_SHA" != "$sentinel" ]]
+[[ "$CONVENTION_PARENT" != "$PINNED_SHA" ]]
+grep -F "github.com:m6/scratch@${PINNED_SHA}" \
+  "$WORK/definition/benchmarks/convention/tasks/cite.yaml" >/dev/null
+grep -F "github.com:m6/scratch@${sentinel}" \
+  "$WORK/definition/benchmarks/fault/tasks/break.yaml" >/dev/null
+[[ "$(git -C "$WORK/convention-fixture/seed" remote get-url origin)" == "https://github.com/m6/scratch.git" ]]
+[[ "$(git -C "$WORK/convention-fixture/seed" rev-parse HEAD)" == "$CONVENTION_PARENT" ]]
+git -C "$WORK/convention-fixture/seed" cat-file -e "${PINNED_SHA}^{commit}"
+[[ -z "$(git -C "$WORK/convention-fixture/seed" status --porcelain=v1)" ]]
+grep -F "pin $PINNED_SHA" "$EVIDENCE/convention-fixture.txt" >/dev/null
+EOF
+  )
+  m6_fresh "$body" M6_CASE_WORK="$dir" M6_CASE_ROOT="$ROOT"
+  rm -rf "$dir"
+}
+
+case_convention_fixture_live() {
+  local dir="$ROOT/spike/m6/.work/case-convention-live"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  local body
+  body=$(
+    cat <<'EOF'
+MODE=live
+WORK="$M6_CASE_WORK"
+EVIDENCE="$WORK/evidence"
+mkdir -p "$WORK/definition/benchmarks/convention/tasks" "$EVIDENCE"
+cp "$M6_CASE_ROOT/deploy/m6-factory/benchmarks/convention/tasks/cite.yaml" \
+  "$WORK/definition/benchmarks/convention/tasks/cite.yaml"
+sentinel="$PINNED_SHA"
+m6_convention_fixture
+[[ "$PINNED_SHA" == "$sentinel" ]]
+grep -F "github.com:m6/scratch@${sentinel}" \
+  "$WORK/definition/benchmarks/convention/tasks/cite.yaml" >/dev/null
+[[ ! -e "$WORK/convention-fixture" ]]
+EOF
+  )
+  m6_fresh "$body" M6_CASE_WORK="$dir" M6_CASE_ROOT="$ROOT"
+  rm -rf "$dir"
+}
+
+case_convention_gate_evidence() {
+  local dir="$ROOT/spike/m6/.work/case-convention-gate"
+  rm -rf "$dir"
+  mkdir -p "$dir/evidence"
+  local body
+  body=$(
+    cat <<'EOF'
+MODE=offline
+EVIDENCE="$M6_CASE_WORK/evidence"
+CONVENTION_PARENT=0123456789abcdef0123456789abcdef01234567
+PINNED_SHA=89abcdef0123456789abcdef0123456789abcdef01
+printf 'm6-convention-gate before=%s\nm6-convention-gate after=%s\n' \
+  "$CONVENTION_PARENT" "$PINNED_SHA" >"$EVIDENCE/gate-abc.log"
+m6_assert_convention_gate
+EOF
+  )
+  m6_fresh "$body" M6_CASE_WORK="$dir"
+  rm -rf "$dir"
+}
+
+case_convention_gate_unchanged() {
+  local dir="$ROOT/spike/m6/.work/case-convention-unchanged"
+  rm -rf "$dir"
+  mkdir -p "$dir/evidence"
+  local body
+  body=$(
+    cat <<'EOF'
+MODE=offline
+EVIDENCE="$M6_CASE_WORK/evidence"
+CONVENTION_PARENT=0123456789abcdef0123456789abcdef01234567
+PINNED_SHA="$CONVENTION_PARENT"
+printf 'm6-convention-gate before=%s\nm6-convention-gate after=%s\n' \
+  "$CONVENTION_PARENT" "$PINNED_SHA" >"$EVIDENCE/gate-abc.log"
+m6_assert_convention_gate
+EOF
+  )
+  m6_fresh "$body" M6_CASE_WORK="$dir"
+}
+
+case_convention_remove_symlink() {
+  local dir="$ROOT/spike/m6/.work/case-convention-symlink"
+  rm -rf "$dir"
+  mkdir -p "$dir/real"
+  ln -s real "$dir/link"
+  local body
+  body=$(
+    cat <<'EOF'
+WORK="$M6_CASE_WORK"
+m6_remove_owned "$WORK/link"
+EOF
+  )
+  m6_fresh "$body" M6_CASE_WORK="$dir"
+}
+
+case_convention_gate_skips_without_fixture() {
+  local dir="$ROOT/spike/m6/.work/case-convention-skip"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  local body
+  body=$(
+    cat <<'EOF'
+MODE=offline
+EVIDENCE="$M6_CASE_WORK"
+unset CONVENTION_PARENT
+m6_assert_convention_gate
+EOF
+  )
+  m6_fresh "$body" M6_CASE_WORK="$dir"
+  rm -rf "$dir"
+}
+
+run_case convention-gate-skips-without-fixture case_convention_gate_skips_without_fixture
+run_case convention-fixture-offline case_convention_fixture_offline
+run_case convention-fixture-live case_convention_fixture_live
+run_case convention-gate-evidence case_convention_gate_evidence
+expect_fail convention-gate-unchanged "convention gate did not move HEAD" case_convention_gate_unchanged
+expect_fail convention-remove-symlink "refusing to remove symlink" case_convention_remove_symlink
+
 if [[ "$fails" -ne 0 ]]; then
   printf '%s failed\n' "$fails" >&2
   exit 1
