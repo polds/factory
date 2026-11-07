@@ -140,9 +140,12 @@ Three properties this buys:
   should be one click in the console.
 
 **M6 applied.** factoryd fills `repository_head_overrides` on the assignment.
-The in-repo harness does not apply `--repository-head-override-json`, so the
-pinned SHA is not checked out by this harness. The flag and the skill path are
-in [05](05-harness-contract.md#invocation). Capture returns YAML and writes
+The worker forwards each one as `--repository-head-override-json`. An empty
+document still checks nothing out. An explicit `COMMIT_SHA` is checked out
+only when that commit is already in the workspace and the workspace `origin`
+is that GitHub repository; otherwise the harness stops before setup and before
+a model call. It does not fetch or clone. The flag and the skill path are in
+[05](05-harness-contract.md#invocation). Capture returns YAML and writes
 nothing ([09](09-web-console.md#scorers--benchmarks--improvement)).
 
 ### Trials and comparison

@@ -36,32 +36,45 @@ func TestCheckoutGateMaterializesRequestedCommit(t *testing.T) {
 	}
 }
 
-func TestCheckoutGateSkipsNonRepository(t *testing.T) {
-	dir := t.TempDir()
-	rt := t.TempDir()
-	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
-	}))
-	t.Cleanup(srv.Close)
-	task, err := json.Marshal(map[string]string{"prompt": "do the task", "model_id": "fake-model"})
+func TestCheckoutGateRefusesUnmaterializedWorkspace(t *testing.T) {
+	t.Run("non-repository", func(t *testing.T) {
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "keep.txt")
+		if err := os.WriteFile(marker, []byte("keep"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		before := dirEntries(t, dir)
+		code, calls, setup := runWithOverride(t, dir, overrideObject(t, "m6", "scratch", strings.Repeat("c0", 20)), "")
+		body, err := os.ReadFile(marker)
+		if code != ExitEnvironment || calls != 0 || setup != "" || err != nil || string(body) != "keep" || dirEntries(t, dir) != before {
+			t.Fatalf("code %d calls %d setup %q entries %q", code, calls, setup, dirEntries(t, dir))
+		}
+	})
+	t.Run("non-github origin", func(t *testing.T) {
+		dir, first, _ := twoCommitRepo(t, "https://git.example.test/m6/scratch.git")
+		before := dirEntries(t, dir)
+		code, calls, setup := runWithOverride(t, dir, overrideObject(t, "m6", "scratch", strings.Repeat("c0", 20)), "")
+		if code != ExitEnvironment || calls != 0 || setup != "" || head(t, dir) != first || dirEntries(t, dir) != before {
+			t.Fatalf("code %d calls %d setup %q head %s entries %q", code, calls, setup, head(t, dir), dirEntries(t, dir))
+		}
+	})
+}
+
+func dirEntries(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rt, "task.json"), task, 0o600); err != nil {
-		t.Fatal(err)
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Name() == ".git" {
+			names = append(names, ".git")
+			continue
+		}
+		names = append(names, entry.Name())
 	}
-	code := Run(context.Background(), Options{
-		Args:       []string{"agent", "run", "--task-id", "plain", "--model", "fake-model", "--idle-on-complete", "0s", "--repository-head-override-json", overrideObject(t, "m6", "scratch", strings.Repeat("c0", 20))},
-		Env:        []string{"PATH=" + os.Getenv("PATH"), "OPENAI_BASE_URL=" + srv.URL},
-		Workspace:  dir,
-		RuntimeDir: rt,
-	})
-	if code != ExitOK || calls.Load() != 1 {
-		t.Fatalf("code %d calls %d", code, calls.Load())
-	}
+	return strings.Join(names, ",")
 }
 
 func TestCheckoutGateRefusesBeforeWork(t *testing.T) {

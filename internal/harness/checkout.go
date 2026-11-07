@@ -65,9 +65,7 @@ func enforceLocalCheckout(ctx context.Context, workspace string, raws []string) 
 	g := gitRunner{ctx: ctx, dir: workspace, hooks: hooks, home: home}
 	top, err := g.text("rev-parse", "--show-toplevel")
 	if err != nil {
-		// The worker owns cloning. A cwd that is not a repository keeps the
-		// previous harness behavior and still runs setup and the model.
-		return nil
+		return fmt.Errorf("%w: not a repository", errCheckoutWorkspace)
 	}
 	if err := sameRealDir(workspace, top); err != nil {
 		return err
@@ -94,14 +92,10 @@ func enforceLocalCheckout(ctx context.Context, workspace string, raws []string) 
 	}
 	remote, err := g.text("remote", "get-url", "origin")
 	if err != nil {
-		return nil
+		return fmt.Errorf("%w: origin", errCheckoutWorkspace)
 	}
 	owner, repo, ok := githubRemote(remote)
-	if !ok {
-		// A local or non-GitHub origin is the worker's clone, not this gate.
-		return nil
-	}
-	if !strings.EqualFold(owner, ov.owner) || !strings.EqualFold(repo, ov.repo) {
+	if !ok || !strings.EqualFold(owner, ov.owner) || !strings.EqualFold(repo, ov.repo) {
 		return fmt.Errorf("%w: repository identity", errCheckoutWorkspace)
 	}
 	dirty, err := g.text("status", "--porcelain=v1", "--untracked-files=all")

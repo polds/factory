@@ -107,16 +107,18 @@ then runs `git checkout --detach <sha>` and requires the resulting `HEAD` to
 equal that commit, detached and clean, with the work tree toplevel at the
 workspace.
 
-Any other shape fails closed: more than one override, a branch head, an unknown
-field, a missing object in the matching GitHub repository, a non-commit object,
-a dirty tree, a different GitHub repository, a parent repository discovered
-above the workspace, or a symlink workspace or `.git`. Those failures happen
-before setup and before a model call. A working directory that is not a Git
-repository, or whose `origin` is not a GitHub remote, is left untouched so a
-worker-owned clone still reaches setup and the model. A dirty tree is left untouched. The gate does not fetch, force, reset,
-or clean. Each git command sets `core.hooksPath` to an empty directory and
-points global and system gitconfig at an empty file, so a hook in the
-repository does not run and user gitconfig is not read.
+Any other shape fails closed before setup and before a model call: more than
+one override, a branch head, an unknown field, a missing object, a non-commit
+object, a dirty tree, a different repository, an origin that is not GitHub, a
+working directory that is not a Git repository, a parent repository discovered
+above the workspace, or a symlink workspace or `.git`. An explicit pin is not
+optional when the workspace is missing or unrecognized. The gate does not
+fetch, force, reset, or clean, and it does not create a repository. A dirty
+tree is left untouched. Each git command sets `core.hooksPath` to an empty
+directory and points global and system gitconfig at an empty file, so a hook
+in the repository does not run and user gitconfig is not read. Only an absent
+override (`{}`, `[]`, `null`, or an empty string) keeps the previous behavior
+and runs setup and the model in the workspace as it already is.
 
 The checkout SHA is the invocation `pinned_head_sha` carried on the assignment.
 It is not proof that role blobs exist in that commit. `SourceCommit` on a role
