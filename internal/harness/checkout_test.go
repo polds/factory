@@ -286,13 +286,30 @@ func overrideObject(t *testing.T, owner, repo, sha string) string {
 }
 
 func TestFilterDriverConfigured(t *testing.T) {
-	clean := "filter.pwn.clean\ntouch sentinel; cat\x00"
-	if !filterDriverConfigured(clean) || !filterDriverConfigured("filter.pwn.smudge\ncat\x00") || !filterDriverConfigured("filter.pwn.process\nproc\x00") {
+	clean := "worktree\x00file:.git/config.worktree\x00filter.pwn.clean\ntouch sentinel; cat\x00"
+	smudge := "local\x00file:.git/config\x00filter.pwn.smudge\ncat\x00"
+	process := "command\x00file:/tmp/extra\x00filter.pwn.process\nproc\x00"
+	if !configHasFilter(clean) || !configHasFilter(smudge) || !configHasFilter(process) || !configHasFilter("broken") {
 		t.Fatal("driver not detected")
 	}
-	if filterDriverConfigured("") || filterDriverConfigured("filter.pwn.required\ntrue\x00") || filterDriverConfigured("filter.pwn.clean\n\x00") || filterDriverConfigured("core.bare\nfalse\x00") {
+	plain := "local\x00file:.git/config\x00filter.pwn.required\ntrue\x00local\x00file:.git/config\x00core.bare\nfalse\x00"
+	blank := "local\x00file:.git/config\x00filter.pwn.clean\n\x00"
+	if configHasFilter("") || configHasFilter(plain) || configHasFilter(blank) {
 		t.Fatal("non-command treated as a driver")
 	}
+}
+
+func configHasFilter(raw string) bool {
+	entries, err := configEntries(raw)
+	if err != nil {
+		return true
+	}
+	for _, entry := range entries {
+		if filterCommand(entry.key, entry.value) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCheckoutGateRefusesFilterDrivers(t *testing.T) {
@@ -352,6 +369,49 @@ func TestCheckoutGateRefusesFilterDrivers(t *testing.T) {
 			t.Fatal("environment filter ran")
 		}
 	})
+	t.Run("worktree config", func(t *testing.T) {
+		dir, start, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		gitCmd(t, dir, "config", "extensions.worktreeConfig", "true")
+		gitCmd(t, dir, "config", "--worktree", "filter.pwn.clean", script)
+		gitCmd(t, dir, "config", "--worktree", "filter.pwn.smudge", script)
+		gitCmd(t, dir, "config", "--worktree", "filter.pwn.process", script)
+		before, err := os.ReadFile(filepath.Join(dir, ".git", "config.worktree"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertFilterRefused(t, dir, start, pin, sentinel)
+		after, err := os.ReadFile(filepath.Join(dir, ".git", "config.worktree"))
+		if err != nil || string(after) != string(before) {
+			t.Fatal("worktree config changed")
+		}
+	})
+	t.Run("worktree include", func(t *testing.T) {
+		dir, start, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		inc := filepath.Join(t.TempDir(), "extra.config")
+		body := "[filter \"pwn\"]\n\tclean = " + script + "\n\tsmudge = " + script + "\n\tprocess = " + script + "\n"
+		if err := os.WriteFile(inc, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "config", "extensions.worktreeConfig", "true")
+		gitCmd(t, dir, "config", "--worktree", "include.path", inc)
+		assertFilterRefused(t, dir, start, pin, sentinel)
+	})
+	t.Run("inactive branch include", func(t *testing.T) {
+		dir, start, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		inc := filepath.Join(t.TempDir(), "side.config")
+		body := "[filter \"pwn\"]\n\tclean = " + script + "\n\tsmudge = " + script + "\n"
+		if err := os.WriteFile(inc, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "config", "includeIf.onbranch:side.path", inc)
+		assertFilterRefused(t, dir, start, pin, sentinel)
+	})
 	t.Run("absent flag stays legacy", func(t *testing.T) {
 		dir, start, _ := twoCommitRepo(t, "https://github.com/example/fixture.git")
 		sentinel := filepath.Join(t.TempDir(), "sentinel")
@@ -371,6 +431,7 @@ func assertFilterRefused(t *testing.T, dir, start, pin, sentinel string) {
 	beforeAttrs, err := os.ReadFile(attrs)
 	tracked := filepath.Join(dir, "a")
 	beforeFile, errFile := os.ReadFile(tracked)
+	beforeIndex := gitOut(t, dir, "ls-files", "--stage")
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
@@ -380,7 +441,8 @@ func assertFilterRefused(t *testing.T, dir, start, pin, sentinel string) {
 	code, calls, setup := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", pin), "")
 	afterAttrs, errAfter := os.ReadFile(attrs)
 	afterFile, errTracked := os.ReadFile(tracked)
-	if code != ExitEnvironment || calls != 0 || setup != "" || head(t, dir) != start || errTracked != nil || string(afterFile) != string(beforeFile) {
+	afterIndex := gitOut(t, dir, "ls-files", "--stage")
+	if code != ExitEnvironment || calls != 0 || setup != "" || head(t, dir) != start || errTracked != nil || string(afterFile) != string(beforeFile) || afterIndex != beforeIndex {
 		t.Fatalf("code %d calls %d setup %q head %s", code, calls, setup, head(t, dir))
 	}
 	if string(afterAttrs) != string(beforeAttrs) || (err == nil) != (errAfter == nil) {

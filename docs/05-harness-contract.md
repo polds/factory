@@ -119,10 +119,12 @@ fetch, force, reset, or clean, and it does not create a repository. A dirty
 tree is left untouched. Each git command sets `core.hooksPath` to an empty
 directory and points global and system gitconfig at an empty file, so a hook
 in the repository does not run and user gitconfig is not read. The git process
-does not receive `GIT_CONFIG_COUNT` or `GIT_CONFIG_PARAMETERS`. A local
-`filter.*.clean`, `filter.*.smudge`, or `filter.*.process` command, including
-one read through a config include, fails closed before `git status` and before
-`git checkout`. Attributes and the work tree are left as they were. Only omitting
+does not receive `GIT_CONFIG_COUNT` or `GIT_CONFIG_PARAMETERS`, and it does not
+read system or user gitconfig. Before `git status` or `git checkout`, the gate
+lists that same config: local, worktree, command-line overrides, and include
+paths, including a branch condition that is not true for the current `HEAD`.
+A `filter.*.clean`, `filter.*.smudge`, or `filter.*.process` command there
+fails closed. Attributes and the work tree are left as they were. Only omitting
 the flag keeps the previous behavior and runs setup and the model in the
 workspace as it already is. The harness gate runs after the worker's own setup
 command. It does not run before that command.

@@ -288,39 +288,144 @@ func dirInside(root, path string) error {
 }
 
 func refuseFilterDrivers(g gitRunner) error {
-	out, code, err := g.stdout("-c", "alias.config=", "config", "--local", "--includes", "--null", "--list")
-	if err != nil {
-		return fmt.Errorf("%w: filter config: %w", errCheckoutWorkspace, err)
-	}
-	if code != 0 || filterDriverConfigured(out) {
-		return fmt.Errorf("%w: filter driver", errCheckoutWorkspace)
+	// status and checkout read one config: system and global are disabled on
+	// the git process, then local, worktree (when extensions.worktreeConfig
+	// is set), command-line -c, and include paths. Branch conditions are
+	// read even when they do not match the current HEAD, because checkout
+	// changes that context before the next git command.
+	seen := map[string]struct{}{}
+	if err := readCheckoutConfig(g, "", seen); err != nil {
+		return err
 	}
 	return nil
 }
 
-func filterDriverConfigured(raw string) bool {
+type configEntry struct {
+	scope  string
+	origin string
+	key    string
+	value  string
+}
+
+func readCheckoutConfig(g gitRunner, file string, seen map[string]struct{}) error {
+	if len(seen) > 32 {
+		return fmt.Errorf("%w: filter config", errCheckoutWorkspace)
+	}
+	args := []string{"-c", "alias.config=", "config", "--includes", "--show-scope", "--show-origin", "--null", "--list"}
+	if file != "" {
+		if _, ok := seen[file]; ok {
+			return nil
+		}
+		seen[file] = struct{}{}
+		args = []string{"-c", "alias.config=", "config", "--file", file, "--includes", "--show-scope", "--show-origin", "--null", "--list"}
+	}
+	out, code, err := g.stdout(args...)
+	if err != nil {
+		return fmt.Errorf("%w: filter config: %w", errCheckoutWorkspace, err)
+	}
+	entries, err := configEntries(out)
+	if err != nil || code != 0 {
+		return fmt.Errorf("%w: filter config", errCheckoutWorkspace)
+	}
+	var includes []configEntry
+	for _, entry := range entries {
+		if filterCommand(entry.key, entry.value) {
+			return fmt.Errorf("%w: filter driver", errCheckoutWorkspace)
+		}
+		if includePathKey(entry.key) {
+			includes = append(includes, entry)
+		}
+	}
+	for _, entry := range includes {
+		path, err := resolveInclude(g, entry.origin, entry.value)
+		if err != nil {
+			return fmt.Errorf("%w: filter config", errCheckoutWorkspace)
+		}
+		if err := readCheckoutConfig(g, path, seen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func configEntries(raw string) ([]configEntry, error) {
 	raw = strings.TrimRight(raw, "\x00")
 	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, "\x00")
+	if len(parts)%3 != 0 {
+		return nil, errors.New("config shape")
+	}
+	entries := make([]configEntry, 0, len(parts)/3)
+	for i := 0; i < len(parts); i += 3 {
+		key, value, ok := strings.Cut(parts[i+2], "\n")
+		if !ok {
+			return nil, errors.New("config shape")
+		}
+		entries = append(entries, configEntry{
+			scope:  parts[i],
+			origin: parts[i+1],
+			key:    key,
+			value:  value,
+		})
+	}
+	return entries, nil
+}
+
+func filterCommand(key, value string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if !strings.HasPrefix(key, "filter.") {
 		return false
 	}
-	for _, rec := range strings.Split(raw, "\x00") {
-		key, value, ok := strings.Cut(rec, "\n")
-		if !ok {
-			continue
-		}
-		key = strings.ToLower(strings.TrimSpace(key))
-		if !strings.HasPrefix(key, "filter.") {
-			continue
-		}
-		name := strings.TrimPrefix(key, "filter.")
-		if !strings.HasSuffix(name, ".clean") && !strings.HasSuffix(name, ".smudge") && !strings.HasSuffix(name, ".process") {
-			continue
-		}
-		if strings.TrimSpace(value) != "" {
-			return true
-		}
+	name := strings.TrimPrefix(key, "filter.")
+	if !strings.HasSuffix(name, ".clean") && !strings.HasSuffix(name, ".smudge") && !strings.HasSuffix(name, ".process") {
+		return false
 	}
-	return false
+	return strings.TrimSpace(value) != ""
+}
+
+func includePathKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "include.path" {
+		return true
+	}
+	return strings.HasPrefix(key, "includeif.") && strings.HasSuffix(key, ".path")
+}
+
+func resolveInclude(g gitRunner, origin, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", errors.New("empty include")
+	}
+	switch {
+	case strings.HasPrefix(value, "~/"):
+		value = filepath.Join(g.home, value[2:])
+	case strings.HasPrefix(value, "~"):
+		return "", errors.New("include user")
+	case !filepath.IsAbs(value):
+		base, err := configOriginDir(g, origin)
+		if err != nil {
+			return "", err
+		}
+		value = filepath.Join(base, value)
+	}
+	return filepath.Clean(value), nil
+}
+
+func configOriginDir(g gitRunner, origin string) (string, error) {
+	const prefix = "file:"
+	if !strings.HasPrefix(origin, prefix) {
+		return "", errors.New("include origin")
+	}
+	path := strings.TrimPrefix(origin, prefix)
+	if path == "" {
+		return "", errors.New("include origin")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(g.dir, path)
+	}
+	return filepath.Dir(path), nil
 }
 
 func splitLines(raw string) []string {
