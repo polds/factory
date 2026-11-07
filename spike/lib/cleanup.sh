@@ -33,6 +33,13 @@
 spike_trap_cleanup() {
   local code=$?
   local why="${1:-EXIT}"
+  # A signal can arrive after fork and before the child is recorded.
+  # Defer teardown until spike_spawn finishes that record. Exiting here
+  # would orphan the child.
+  if [[ "${SPIKE_SPAWN_CRITICAL:-}" == 1 && "$why" != EXIT ]]; then
+    SPIKE_STOP_DEFERRED="$why"
+    return 0
+  fi
   spike_teardown_begin "$why" || return 0
   spike_teardown_finish "$code"
 }
@@ -172,6 +179,7 @@ spike_spawn() {
   case $- in
     *m*) monitor=1 ;;
   esac
+  SPIKE_SPAWN_CRITICAL=1
   set -m
   # Same path for both streams uses one open (the >file 2>&1 form).
   # Different paths stay split. --out alone leaves stderr with the caller.
@@ -232,12 +240,18 @@ spike_spawn() {
   printf '%s\n' "$out" >"$dir/out"
   printf '%s\n' "$err" >"$dir/err"
   printf '%s\n' "$append" >"$dir/append"
+  SPIKE_SPAWN_CRITICAL=0
   SPIKE_LAST_PID="$pid"
   # Callers (run_bounded, specs restart) read these after spike_spawn.
   # shellcheck disable=SC2034
   SPIKE_LAST_PGID="$pgid"
   # shellcheck disable=SC2034
   SPIKE_LAST_DIR="$dir"
+  if [[ -n "${SPIKE_STOP_DEFERRED:-}" ]]; then
+    local why="${SPIKE_STOP_DEFERRED}"
+    SPIKE_STOP_DEFERRED=
+    spike_trap_cleanup "$why"
+  fi
 }
 
 # spike_respawn_child starts SPIKE_CHILD_<n>_* again. The record lives in

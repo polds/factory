@@ -328,8 +328,10 @@ EOF
 }
 
 case_keep_up() {
-  local dir mode child_stack
+  local dir mode child_stack transient_pid unrelated_pid d class pid
   dir="$(mktemp -d)"
+  sleep 600 &
+  unrelated_pid=$!
   write_driver "$dir/driver.sh" "$dir/reg" "$dir/work" <<EOF
 KEEP_UP=1
 spike_spawn --class stack stacker sleep 600
@@ -343,44 +345,124 @@ umask 077
 chmod 600 $(printf '%q' "$dir/stack.env")
 exit 0
 EOF
-  "$dir/driver.sh" >"$dir/out" 2>"$dir/err"
-  child_stack="$(awk -F= '/^SPIKE_CHILD_1_PID=/{print $2}' "$dir/stack.env" | tr -d "'")"
-  # %q may quote the pid as 123 or $'123'. Accept a plain integer.
-  child_stack="$(python3 -c 'import ast,sys; print(ast.literal_eval(sys.argv[1]))' "$child_stack")"
-  if ! kill -0 "$child_stack" 2>/dev/null; then
-    echo "stack child died under KEEP_UP" >&2
+  "$dir/driver.sh" >"$dir/out" 2>"$dir/err" || true
+  child_stack=""
+  transient_pid=""
+  for d in "$dir/reg"/children/*; do
+    [[ -d "$d" ]] || continue
+    class="$(tr -d '\n' <"$d/class")"
+    pid="$(tr -d '\n' <"$d/pid")"
+    if [[ "$class" == stack ]]; then
+      child_stack="$pid"
+    fi
+    if [[ "$class" == transient ]]; then
+      transient_pid="$pid"
+    fi
+  done
+  if [[ -z "$child_stack" || -z "$transient_pid" ]]; then
+    echo "registry missing stack or transient" >&2
+    kill -KILL "$unrelated_pid" 2>/dev/null || true
+    if [[ -n "$child_stack" ]]; then
+      kill -KILL "$child_stack" 2>/dev/null || true
+    fi
+    if [[ -n "$transient_pid" ]]; then
+      kill -KILL "$transient_pid" 2>/dev/null || true
+    fi
     return 1
   fi
-  if pgrep -fc '[s]leep 600' >/dev/null; then
-    local n
-    n="$(pgrep -fc '[s]leep 600' || true)"
-    if [[ "$n" -ne 1 ]]; then
-      echo "expected 1 surviving sleep, saw ${n}" >&2
-      kill -KILL "$child_stack" 2>/dev/null || true
-      return 1
-    fi
-  else
-    echo "stack sleep is not visible to pgrep" >&2
+  if ! kill -0 "$child_stack" 2>/dev/null; then
+    echo "stack child died under KEEP_UP" >&2
+    kill -KILL "$unrelated_pid" 2>/dev/null || true
+    return 1
+  fi
+  if kill -0 "$transient_pid" 2>/dev/null; then
+    echo "transient ${transient_pid} still alive after driver exit" >&2
+    kill -KILL "$child_stack" "$transient_pid" "$unrelated_pid" 2>/dev/null || true
+    return 1
+  fi
+  if ! kill -0 "$unrelated_pid" 2>/dev/null; then
+    echo "unrelated sleep was killed" >&2
     kill -KILL "$child_stack" 2>/dev/null || true
     return 1
   fi
   mode="$(python3 -c 'import os,sys; print(format(os.stat(sys.argv[1]).st_mode & 0o777, "03o"))' "$dir/stack.env")"
   if [[ "$mode" != 600 ]]; then
     echo "stack.env mode ${mode}, want 600" >&2
-    kill -KILL "$child_stack" 2>/dev/null || true
+    kill -KILL "$child_stack" "$unrelated_pid" 2>/dev/null || true
     return 1
   fi
   if ! grep -F stacker "$dir/stack.env" >/dev/null; then
     echo "stack.env missing stack child" >&2
-    kill -KILL "$child_stack" 2>/dev/null || true
+    kill -KILL "$child_stack" "$unrelated_pid" 2>/dev/null || true
     return 1
   fi
   if grep -F transient "$dir/stack.env" >/dev/null; then
     echo "stack.env recorded a transient child" >&2
-    kill -KILL "$child_stack" 2>/dev/null || true
+    kill -KILL "$child_stack" "$unrelated_pid" 2>/dev/null || true
     return 1
   fi
-  kill -KILL "$child_stack" 2>/dev/null || true
+  kill -KILL "$child_stack" "$unrelated_pid" 2>/dev/null || true
+  rm -rf "$dir"
+}
+
+# A TERM that arrives after sleep is forked and before that pid is recorded
+# used to exit the driver with an empty registry and leave the sleep running.
+case_signal_before_child_record() {
+  local dir ec pid
+  dir="$(mktemp -d)"
+  set +e
+  bash -c '
+    set -euo pipefail
+    . "$1"
+    SPIKE_REG="$2/reg"
+    WORK="$2/work"
+    spike_run_init t76
+    spike_install_trap
+    SPIKE_SPAWN_CRITICAL=1
+    sleep 600 &
+    pid=$!
+    printf "%s\n" "$pid" > "$2/sleep.pid"
+    spike_trap_cleanup TERM
+    mkdir -p "$SPIKE_REG/children/0001"
+    printf "%s\n" transient > "$SPIKE_REG/children/0001/class"
+    printf "%s\n" fg > "$SPIKE_REG/children/0001/name"
+    printf "%s\n" "$pid" > "$SPIKE_REG/children/0001/pid"
+    pgid="$(ps -o pgid= -p "$pid" | tr -d "[:space:]" || true)"
+    printf "%s\n" "${pgid:-$pid}" > "$SPIKE_REG/children/0001/pgid"
+    printf "%s\n" "$(ps -o lstart= -p "$pid" || true)" > "$SPIKE_REG/children/0001/lstart"
+    printf "%s\n" "$(ps -o args= -p "$pid" || true)" > "$SPIKE_REG/children/0001/args"
+    printf "1\n" > "$SPIKE_REG/seq"
+    SPIKE_SPAWN_CRITICAL=0
+    why="${SPIKE_STOP_DEFERRED:-}"
+    SPIKE_STOP_DEFERRED=
+    if [[ -z "$why" ]]; then
+      echo "signal was not deferred" >&2
+      exit 1
+    fi
+    spike_trap_cleanup "$why"
+    echo should-have-exited >&2
+    exit 1
+  ' _ "$LIB" "$dir" >"$dir/out" 2>"$dir/err"
+  ec=$?
+  set -e
+  pid="$(cat "$dir/sleep.pid" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    echo "unrecorded sleep ${pid} survived the signal" >&2
+    kill -KILL "$pid" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  if [[ "$ec" -ne 143 ]]; then
+    echo "exit ${ec}, want 143" >&2
+    cat "$dir/err" >&2 || true
+    rm -rf "$dir"
+    return 1
+  fi
+  if grep -F should-have-exited "$dir/err" >/dev/null 2>&1; then
+    echo "deferred cleanup did not exit" >&2
+    rm -rf "$dir"
+    return 1
+  fi
   rm -rf "$dir"
 }
 
@@ -785,6 +867,7 @@ run_case idempotent case_idempotent
 run_case reused-pid case_reused_pid
 run_case container-label case_container_label
 run_case keep-up case_keep_up
+run_case signal-before-child-record case_signal_before_child_record
 run_case playwright-argv case_playwright_argv
 
 say "${PASS} passed, ${FAIL} failed"
