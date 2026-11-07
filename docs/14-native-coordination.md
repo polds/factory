@@ -4,6 +4,8 @@ M9-T records native tasks, a per-invocation ledger, an assignee inbox, and one c
 
 The contract remains `defined-factory/1`. `docs/13-defined-factory-contracts.md` states the rules. This page names the methods that implement the producer `M9-T` rows.
 
+A persona with frozen role files supplies that seat's activation prompt from those four files. A persona without files keeps the prompt `native activation`. The bytes are not grants: they do not add secrets, repositories, token scopes, model ids, or schedules, and the native tree list does not grow a persona payload. `Synthetic: true` is the existing roster gate, not evidence that the source organization executed or that a model ran. The source commit, roster content hashes, and source reporting edges stay on the stored policy and survive a reload. Task goal, evidence, and checkout are not this prompt.
+
 ## Identities
 
 | Id | Prefix | Meaning |

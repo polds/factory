@@ -11,6 +11,15 @@ func TestNativeTreeProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Digest of proofTree() through treeDigest on c447f17 and on this head.
+	// The copy of SpawnableBy uses append, so the root's nil slice encodes as
+	// [] and the SHA256 is 14faa769.... aee80d35... is that same JSON with the
+	// root spawnableBy left null. New omitempty fields stay empty, so this hex
+	// does not move.
+	const witnessDigest = "14faa7694f746a143133d339b3243aafef69e9bda270000fee48b737324a1c82"
+	if checked.Digest != witnessDigest {
+		t.Fatalf("witness digest %s", checked.Digest)
+	}
 	if checked.Root != "coordinator" || checked.Depth["specialist-a"] != 2 || checked.Digest == "" {
 		t.Fatalf("tree %+v", checked)
 	}

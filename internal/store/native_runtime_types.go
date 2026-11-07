@@ -60,7 +60,13 @@ type NativePolicy struct {
 	AgentID               string
 	WorkItemID            string
 	Stage                 string
-	CreatedAt             time.Time
+	// SourceCommit, RosterSHA256, and RosterGitBlob are the pinned snapshot
+	// identity stored in the personas jsonb envelope. They are empty for a
+	// legacy witness policy.
+	SourceCommit  string
+	RosterSHA256  string
+	RosterGitBlob string
+	CreatedAt     time.Time
 }
 
 // OpenTreeInput freezes the roster and inserts the root task. It does not claim a run.

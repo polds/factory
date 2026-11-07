@@ -104,7 +104,11 @@ func startActivationTx(ctx context.Context, tx pgx.Tx, head taskHead, in ClaimIn
 	if err != nil {
 		return Activation{}, err
 	}
-	run, err := insertNativeRunTx(ctx, tx, nativeRunInput(policy, in, repo), priorRun)
+	runIn, err := nativeRunInput(policy, in, repo, head.Assignee)
+	if err != nil {
+		return Activation{}, err
+	}
+	run, err := insertNativeRunTx(ctx, tx, runIn, priorRun)
 	if err != nil {
 		return Activation{}, err
 	}

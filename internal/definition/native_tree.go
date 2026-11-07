@@ -27,12 +27,25 @@ var (
 	ErrDelegationDenied = errors.New("delegation_denied")
 )
 
+// RoleFile is one frozen role file. Bytes are the raw file, not a grant.
+type RoleFile struct {
+	Name    string `json:"name"`
+	SHA256  string `json:"sha256"`
+	GitBlob string `json:"gitBlob"`
+	Bytes   []byte `json:"bytes"`
+}
+
 // NativePersona is one frozen roster entry. ReportsTo empty is the root.
+// Source fields and Files are empty on the legacy witness tree. omitempty
+// keeps that tree's digest stable.
 type NativePersona struct {
-	Name        string   `json:"name"`
-	ReportsTo   string   `json:"reportsTo"`
-	SpawnableBy []string `json:"spawnableBy"`
-	Role        string   `json:"role"`
+	Name            string     `json:"name"`
+	ReportsTo       string     `json:"reportsTo"`
+	SpawnableBy     []string   `json:"spawnableBy"`
+	Role            string     `json:"role"`
+	SourceReportsTo string     `json:"sourceReportsTo,omitempty"`
+	SourceDottedTo  string     `json:"sourceDottedTo,omitempty"`
+	Files           []RoleFile `json:"files,omitempty"`
 }
 
 // NativeTree is the roster and delegation policy frozen for one invocation.
@@ -47,6 +60,12 @@ type NativeTree struct {
 	AtumRoster            bool
 	Delegation            string
 	Synthetic             bool
+	// SourceCommit, RosterSHA256, and RosterGitBlob identify the pinned
+	// snapshot. They are empty on the legacy witness tree. The store keeps
+	// them with the policy so a reload can rebuild this digest.
+	SourceCommit  string
+	RosterSHA256  string
+	RosterGitBlob string
 }
 
 // NativeTreeResult is the frozen roster. Digest does not change when the definition reloads.
@@ -208,6 +227,9 @@ func treeDigest(in NativeTree) (string, error) {
 		Delegation            string          `json:"delegation"`
 		AtumRoster            bool            `json:"atumRoster"`
 		Synthetic             bool            `json:"synthetic"`
+		SourceCommit          string          `json:"sourceCommit,omitempty"`
+		RosterSHA256          string          `json:"rosterSha256,omitempty"`
+		RosterGitBlob         string          `json:"rosterGitBlob,omitempty"`
 	}{
 		Personas:              personas,
 		MaxDepth:              in.MaxDepth,
@@ -216,6 +238,9 @@ func treeDigest(in NativeTree) (string, error) {
 		Delegation:            in.Delegation,
 		AtumRoster:            in.AtumRoster,
 		Synthetic:             in.Synthetic,
+		SourceCommit:          in.SourceCommit,
+		RosterSHA256:          in.RosterSHA256,
+		RosterGitBlob:         in.RosterGitBlob,
 	})
 	if err != nil {
 		return "", err
