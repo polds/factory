@@ -641,8 +641,8 @@
       "fieldPath": "delegationEdgeId,parentRunId",
       "baseline": {
         "file": "internal/store/native_runtime.go",
-        "start": 478,
-        "end": 478,
+        "start": 479,
+        "end": 479,
         "anchor": "parent_run_id is the stage predecessor"
       },
       "decision": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
@@ -1037,8 +1037,8 @@
       "fieldPath": "descendants",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 614,
-        "end": 614,
+        "start": 643,
+        "end": 643,
         "anchor": "spawn_denied"
       },
       "decision": "Cancel and pause cascade over the chosen subtree and later spawn is spawn_denied.",
@@ -1055,8 +1055,8 @@
       "fieldPath": "audit.board.resume",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 742,
-        "end": 742,
+        "start": 770,
+        "end": 770,
         "anchor": "BoardResume"
       },
       "decision": "Board resume is an authorized audited transition. It does not mutate the cancelled run's terminal evidence.",
@@ -1073,8 +1073,8 @@
       "fieldPath": "failedChildPolicy",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 497,
-        "end": 497,
+        "start": 526,
+        "end": 526,
         "anchor": "fail_parent"
       },
       "decision": "fail_parent does not synthesize and does not spawn a replacement.",
@@ -1091,8 +1091,8 @@
       "fieldPath": "blockers",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 564,
-        "end": 564,
+        "start": 593,
+        "end": 593,
         "anchor": "unresolved children"
       },
       "decision": "Join does not synthesize while a required child is live or unresolved.",
@@ -1109,8 +1109,8 @@
       "fieldPath": "idempotencyKey",
       "baseline": {
         "file": "internal/store/native_runtime.go",
-        "start": 144,
-        "end": 144,
+        "start": 145,
+        "end": 145,
         "anchor": "idempotency key"
       },
       "decision": "Duplicate delegate delivery does not create a second child or a second reservation.",

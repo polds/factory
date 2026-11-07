@@ -206,7 +206,7 @@ func (s *Store) ParkNative(ctx context.Context, in ParkInput) (Activation, error
 	if err != nil {
 		return Activation{}, err
 	}
-	if err := finishExecTx(ctx, tx, act.ExecutionID, ExecCompleted); err != nil {
+	if _, err := finishExecTx(ctx, tx, act.ExecutionID, ExecCompleted); err != nil {
 		return Activation{}, err
 	}
 	if err := parkNativeRunTx(ctx, tx, act.RunID); err != nil {
@@ -402,7 +402,7 @@ func (s *Store) RetryExecution(ctx context.Context, taskID string) (Activation, 
 	if err != nil {
 		return Activation{}, err
 	}
-	if err := finishExecTx(ctx, tx, prior.ExecutionID, ExecFailed); err != nil {
+	if _, err := finishExecTx(ctx, tx, prior.ExecutionID, ExecOrphaned); err != nil {
 		return Activation{}, err
 	}
 	if _, err := tx.Exec(ctx, `
@@ -469,16 +469,45 @@ func completeTx(ctx context.Context, tx pgx.Tx, taskID string, failed bool) (Act
 		runStatus = StatusFailed
 		execState = ExecFailed
 	}
-	if err := finishExecTx(ctx, tx, act.ExecutionID, execState); err != nil {
+	finished, err := finishExecTx(ctx, tx, act.ExecutionID, execState)
+	if err != nil {
 		return Activation{}, err
+	}
+	if finished == 0 && !failed {
+		var runStatusNow string
+		if err := tx.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1`, act.RunID).Scan(&runStatusNow); err != nil {
+			return Activation{}, err
+		}
+		if runStatusNow != StatusSucceeded {
+			return Activation{}, fmt.Errorf("%w: queued run is not execution success", ErrInputInvalid)
+		}
+	}
+	if finished == 0 && failed {
+		var runStatusNow string
+		if err := tx.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1`, act.RunID).Scan(&runStatusNow); err != nil {
+			return Activation{}, err
+		}
+		switch runStatusNow {
+		case StatusFailed:
+		case StatusCancelled, StatusSucceeded:
+			return Activation{}, fmt.Errorf("%w: run is %s", ErrInputInvalid, runStatusNow)
+		default:
+			// A child failure can fail a parent that has not started. That is
+			// not a worker success and it does not invent a completed execution.
+			if err := terminalNativeRunTx(ctx, tx, act.RunID, taskID, StatusFailed, act.ExecutionID); err != nil {
+				return Activation{}, err
+			}
+		}
 	}
 	if act.CapacityHeld {
 		if err := releaseCapacityTx(ctx, tx, head.InvocationID); err != nil {
 			return Activation{}, err
 		}
 	}
-	if err := terminalNativeRunTx(ctx, tx, act.RunID, taskID, runStatus, act.ExecutionID); err != nil {
-		return Activation{}, err
+	if finished > 0 {
+		if err := terminalNativeRunTx(ctx, tx, act.RunID, taskID, runStatus, act.ExecutionID); err != nil {
+			return Activation{}, err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE native_tasks SET task_status = $2, updated_at = now() WHERE id = $1`, taskID, status); err != nil {
@@ -695,23 +724,22 @@ func (s *Store) CancelNativeSubtree(ctx context.Context, in SubtreeInput) (Subtr
 		if err != nil {
 			return SubtreeResult{}, err
 		}
-		if act.CapacityHeld {
-			if err := releaseCapacityTx(ctx, tx, head.InvocationID); err != nil {
-				return SubtreeResult{}, err
-			}
-		}
 		if in.Pause {
-			if err := lockRunQueueTx(ctx, tx, act.RunID); err != nil {
-				return SubtreeResult{}, err
-			}
-			if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, act.RunID); err != nil {
+			// Fence before releasing the slot. A worker that already holds
+			// the execution must not be able to start, succeed, or append.
+			if err := fencePausedNativeRunTx(ctx, tx, act.RunID); err != nil {
 				return SubtreeResult{}, err
 			}
 		} else {
-			if err := finishExecTx(ctx, tx, act.ExecutionID, ExecCancelled); err != nil {
+			if _, err := finishExecTx(ctx, tx, act.ExecutionID, ExecCancelled); err != nil {
 				return SubtreeResult{}, err
 			}
 			if err := terminalNativeRunTx(ctx, tx, act.RunID, id, runStatus, act.ExecutionID); err != nil {
+				return SubtreeResult{}, err
+			}
+		}
+		if act.CapacityHeld {
+			if err := releaseCapacityTx(ctx, tx, head.InvocationID); err != nil {
 				return SubtreeResult{}, err
 			}
 		}

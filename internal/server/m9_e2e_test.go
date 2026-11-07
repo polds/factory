@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/polds/factory/internal/client"
 	"github.com/polds/factory/internal/harness"
@@ -148,16 +149,18 @@ func TestM9NativeToolsE2E(t *testing.T) {
 
 	specATok := m9Token(t, specA, row.Row.ID, harness.RoleSpecialist, worker)
 	specBTok := m9Token(t, specB, row.Row.ID, harness.RoleSpecialist, worker)
-	m9Dispatch(t, specATools, specATok, "native_activate", map[string]string{
+	specARun := m9Dispatch(t, specATools, specATok, "native_activate", map[string]string{
 		"taskId": specA, "invocationId": row.Row.ID,
-	})
+	}).Payload
+	m9Execute(t, env, specARun)
 	m9Dispatch(t, specATools, specATok, "native_complete", map[string]string{
 		"taskId": specA, "invocationId": row.Row.ID,
 	})
 	m9StillOpen(t, env, item.ID)
-	m9Dispatch(t, specBTools, specBTok, "native_activate", map[string]string{
+	specBRun := m9Dispatch(t, specBTools, specBTok, "native_activate", map[string]string{
 		"taskId": specB, "invocationId": row.Row.ID,
-	})
+	}).Payload
+	m9Execute(t, env, specBRun)
 	m9Dispatch(t, specBTools, specBTok, "native_complete", map[string]string{
 		"taskId": specB, "invocationId": row.Row.ID,
 	})
@@ -170,6 +173,7 @@ func TestM9NativeToolsE2E(t *testing.T) {
 	if status != store.NativeRunning || runID != leadRun || unresolved != 0 {
 		t.Fatalf("lead join wake %+v want run %s", woke, leadRun)
 	}
+	m9Execute(t, env, leadRun)
 	m9Dispatch(t, leadTools, leadTok, "native_complete", map[string]string{
 		"taskId": leadID, "invocationId": row.Row.ID,
 	})
@@ -202,6 +206,7 @@ func TestM9NativeToolsE2E(t *testing.T) {
 		t.Fatalf("ack %q inbox %q", acked.Payload, inbox.Payload)
 	}
 
+	m9Execute(t, env, coordRun)
 	m9Dispatch(t, coordTools, coord, "native_complete", map[string]string{
 		"taskId": opened.RootTaskID, "invocationId": row.Row.ID,
 	})
@@ -253,6 +258,18 @@ func m9Token(t *testing.T, taskID, invocationID, role string, grants []string) h
 		t.Fatal(err)
 	}
 	return tok
+}
+
+func m9Execute(t *testing.T, env *env, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	leased, err := env.srv.store.Lease(ctx, "default", time.Minute, 1)
+	if err != nil || len(leased) != 1 || leased[0].RunID != runID {
+		t.Fatalf("lease %+v %v want %s", leased, err, runID)
+	}
+	if _, err := env.srv.store.StartExecution(ctx, runID, "m9-worker", tokenHash(runID)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func m9Dispatch(t *testing.T, tools harness.NativeTools, tok harness.RunToken, name string, args map[string]string) harness.ToolResult {

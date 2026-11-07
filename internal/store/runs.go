@@ -352,31 +352,99 @@ func (s *Store) Requeue(ctx context.Context, runID, reason string) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	tag, err := tx.Exec(ctx, `
-		UPDATE run_queue
-		SET attempts = attempts + 1, lease_until = NULL, owner_session = NULL
-		WHERE run_id = $1`, runID)
+	n, err := touchRunQueueTx(ctx, tx, runID, true)
 	if err != nil {
-		return fmt.Errorf("store: requeue: %w", err)
+		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if n == 0 {
 		return ErrNotFound
 	}
-	tag, err = tx.Exec(ctx, `
-		UPDATE runs
-		SET status = $2, worker_id = NULL
-		WHERE id = $1 AND status IN ($3, $4)`,
-		runID, StatusQueued, StatusQueued, StatusAssigned)
+	n, err = markRunQueuedTx(ctx, tx, runID, false)
 	if err != nil {
-		return fmt.Errorf("store: requeue: %w", err)
+		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if n == 0 {
 		return fmt.Errorf("store: requeue %s: run is not queued or assigned", runID)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("store: requeue: %w", err)
 	}
 	return nil
+}
+
+// touchRunQueueTx clears the lease on an existing queue row.
+// bump counts a worker rejection. Native park continuation does not.
+func touchRunQueueTx(ctx context.Context, tx pgx.Tx, runID string, bump bool) (int64, error) {
+	q := `
+		UPDATE run_queue
+		SET lease_until = NULL, owner_session = NULL
+		WHERE run_id = $1`
+	if bump {
+		q = `
+		UPDATE run_queue
+		SET attempts = attempts + 1, lease_until = NULL, owner_session = NULL
+		WHERE run_id = $1`
+	}
+	tag, err := tx.Exec(ctx, q, runID)
+	if err != nil {
+		return 0, fmt.Errorf("store: requeue: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// insertRunQueueTx inserts the queue row when the run is not already queued.
+func insertRunQueueTx(ctx context.Context, tx pgx.Tx, runID string) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO run_queue (run_id, factory_id, pool, priority, enqueued_at)
+		SELECT id, factory_id, pool, priority, clock_timestamp()
+		FROM runs WHERE id = $1
+		ON CONFLICT (run_id) DO NOTHING`, runID); err != nil {
+		return fmt.Errorf("store: requeue: %w", err)
+	}
+	return nil
+}
+
+// markRunQueuedTx returns the run to queued. allowRunning is the native
+// retry and park path. Worker Requeue leaves a running run alone.
+func markRunQueuedTx(ctx context.Context, tx pgx.Tx, runID string, allowRunning bool) (int64, error) {
+	statuses := []string{StatusQueued, StatusAssigned}
+	if allowRunning {
+		statuses = append(statuses, StatusRunning)
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE runs
+		SET status = $2, worker_id = NULL
+		WHERE id = $1 AND status = ANY($3::text[])`,
+		runID, StatusQueued, statuses)
+	if err != nil {
+		return 0, fmt.Errorf("store: requeue: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// refusePausedNativeRunTx stops a paused or cancelled native task from
+// taking another worker execution.
+func refusePausedNativeRunTx(ctx context.Context, tx pgx.Tx, runID string) error {
+	var status string
+	err := tx.QueryRow(ctx, `
+		SELECT t.task_status
+		FROM native_activations a
+		JOIN native_tasks t ON t.id = a.task_id
+		WHERE a.run_id = $1
+		ORDER BY a.fence DESC
+		LIMIT 1`, runID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("store: native run: %w", err)
+	}
+	switch status {
+	case NativePaused, NativeCancelled:
+		return fmt.Errorf("%w: task is %s", ErrInputInvalid, status)
+	default:
+		return nil
+	}
 }
 
 // StartExecution opens a new execution for a leased run and stores the token
@@ -412,6 +480,9 @@ func (s *Store) StartExecution(ctx context.Context, runID, workerID string, toke
 	}
 	if status != StatusAssigned && status != StatusRunning {
 		return Execution{}, fmt.Errorf("store: run %s is %s", runID, status)
+	}
+	if err := refusePausedNativeRunTx(ctx, tx, runID); err != nil {
+		return Execution{}, err
 	}
 	var live int
 	if err := tx.QueryRow(ctx, `
@@ -610,12 +681,16 @@ func (s *Store) ExpireLeases(ctx context.Context, now time.Time) ([]OrphanedExec
 		return []OrphanedExecution{}, nil
 	}
 
+	revoked, err := revokedTokenHash()
+	if err != nil {
+		return nil, err
+	}
 	orphanedRows, err := tx.Query(ctx, `
 		UPDATE executions
-		SET state = $2, ended_at = $3
+		SET state = $2, ended_at = $3, run_token_sha256 = $6
 		WHERE run_id = ANY($1) AND state IN ($4, $5)
 		RETURNING id, run_id, worker_id`,
-		ids, ExecOrphaned, now, ExecAssigned, ExecRunning)
+		ids, ExecOrphaned, now, ExecAssigned, ExecRunning, revoked)
 	if err != nil {
 		return nil, fmt.Errorf("store: expire leases: %w", err)
 	}

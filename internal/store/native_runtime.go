@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -501,18 +502,33 @@ func reserveNativeExecutionID() (string, error) {
 	return NewID(PrefixExec)
 }
 
-func finishExecTx(ctx context.Context, tx pgx.Tx, execID, state string) error {
+func finishExecTx(ctx context.Context, tx pgx.Tx, execID, state string) (int64, error) {
 	if execID == "" {
-		return nil
+		return 0, nil
 	}
-	if _, err := tx.Exec(ctx, `
+	revoked, err := revokedTokenHash()
+	if err != nil {
+		return 0, err
+	}
+	// Retire the worker token with the execution. A later retry or pause must
+	// not authenticate as this attempt.
+	tag, err := tx.Exec(ctx, `
 		UPDATE executions
-		SET state = $2, ended_at = clock_timestamp()
+		SET state = $2, ended_at = clock_timestamp(), run_token_sha256 = $5
 		WHERE id = $1 AND state IN ($3, $4)`,
-		execID, state, ExecRunning, ExecAssigned); err != nil {
-		return fmt.Errorf("store: finish native execution: %w", err)
+		execID, state, ExecRunning, ExecAssigned, revoked)
+	if err != nil {
+		return 0, fmt.Errorf("store: finish native execution: %w", err)
 	}
-	return nil
+	return tag.RowsAffected(), nil
+}
+
+func revokedTokenHash() ([]byte, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return nil, fmt.Errorf("store: revoke run token: %w", err)
+	}
+	return buf, nil
 }
 
 func terminalNativeRunTx(ctx context.Context, tx pgx.Tx, runID, taskID, status, execID string) error {
@@ -696,12 +712,15 @@ func bindNativeExecutionTx(ctx context.Context, tx pgx.Tx, act Activation, execI
 	if execID == "" || act.ID == "" || act.ExecutionID == execID {
 		return nil
 	}
-	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM executions WHERE id = $1)`, act.ExecutionID).Scan(&exists); err != nil {
+	var state string
+	err := tx.QueryRow(ctx, `SELECT state FROM executions WHERE id = $1`, act.ExecutionID).Scan(&state)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("store: bind native execution: %w", err)
 	}
-	if exists {
-		return nil
+	// A reserved id has no row. Rewind and lease expiry leave an orphaned,
+	// failed, cancelled, or completed row. Only a live execution stays bound.
+	if err == nil && (state == ExecAssigned || state == ExecRunning) {
+		return fmt.Errorf("store: native execution %s is live", act.ExecutionID)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE native_activations SET execution_id = $2 WHERE id = $1`, act.ID, execID); err != nil {
 		return fmt.Errorf("store: bind native execution: %w", err)
@@ -829,33 +848,57 @@ func requeueNativeRunTx(ctx context.Context, tx pgx.Tx, runID string) error {
 	if err := lockRunQueueTx(ctx, tx, runID); err != nil {
 		return err
 	}
-	var status string
-	err := tx.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1 FOR UPDATE`, runID).Scan(&status)
+	n, err := markRunQueuedTx(ctx, tx, runID, true)
 	if err != nil {
 		return err
 	}
-	switch status {
-	case StatusQueued, StatusAssigned, StatusRunning:
-	case StatusSucceeded, StatusFailed, StatusCancelled:
+	if n == 0 {
 		return fmt.Errorf("%w: native run is terminal", ErrInputInvalid)
-	default:
-		return fmt.Errorf("%w: status %s", ErrInputInvalid, status)
+	}
+	n, err = touchRunQueueTx(ctx, tx, runID, false)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		if err := insertRunQueueTx(ctx, tx, runID); err != nil {
+			return err
+		}
+	}
+	return notifyRun(ctx, tx, runID)
+}
+
+// fencePausedNativeRunTx makes a paused task's run impossible to start or
+// finish as success. A live worker execution is cancelled and its token is
+// replaced before the caller releases capacity.
+func fencePausedNativeRunTx(ctx context.Context, tx pgx.Tx, runID string) error {
+	if runID == "" {
+		return nil
+	}
+	if err := lockRunQueueTx(ctx, tx, runID); err != nil {
+		return err
+	}
+	revoked, err := revokedTokenHash()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE executions
+		SET state = $2, ended_at = clock_timestamp(), run_token_sha256 = $3
+		WHERE run_id = $1 AND state IN ($4, $5)`,
+		runID, ExecCancelled, revoked, ExecAssigned, ExecRunning); err != nil {
+		return fmt.Errorf("store: pause native run: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM run_queue WHERE run_id = $1`, runID); err != nil {
+		return fmt.Errorf("store: pause native run: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE runs
 		SET status = $2, worker_id = NULL
-		WHERE id = $1`, runID, StatusQueued); err != nil {
-		return fmt.Errorf("store: requeue native run: %w", err)
+		WHERE id = $1 AND status IN ($3, $4)`,
+		runID, StatusQueued, StatusAssigned, StatusRunning); err != nil {
+		return fmt.Errorf("store: pause native run: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO run_queue (run_id, factory_id, pool, priority, enqueued_at)
-		SELECT id, factory_id, pool, priority, clock_timestamp()
-		FROM runs WHERE id = $1
-		ON CONFLICT (run_id) DO UPDATE
-		SET lease_until = NULL, owner_session = NULL`, runID); err != nil {
-		return fmt.Errorf("store: requeue native run: %w", err)
-	}
-	return notifyRun(ctx, tx, runID)
+	return nil
 }
 
 // parkNativeRunTx drops the queue row so a parked task cannot be leased.

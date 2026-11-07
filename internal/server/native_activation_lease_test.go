@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/coordination"
 	"github.com/polds/factory/internal/invocation"
 	"github.com/polds/factory/internal/store"
@@ -63,7 +65,7 @@ func TestNativeQueuedAssignmentStageAndCancel(t *testing.T) {
 	if !ok {
 		t.Fatal("agent binding missing")
 	}
-	asg := env.srv.assignment(ctx, run, exec, bound, map[string]string{"FACTORY_RUN_TOKEN": "native-lease-token"})
+	asg := env.srv.assignment(ctx, run, exec, bound, map[string]string{"FACTORY_RUN_TOKEN": "worker-real"})
 	if asg.TaskID != run.ID || asg.ExecutionID != exec.ID || asg.Task == nil || asg.Task.Definition.Prompt != run.Prompt {
 		t.Fatal("assignment did not carry the queued run")
 	}
@@ -215,6 +217,101 @@ func TestNativeReportWithoutPullRequest(t *testing.T) {
 	if pulls != 0 {
 		t.Fatal("report success required a pull request")
 	}
+}
+
+func TestNativeAssignOneRewindRebinds(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writePipeline(t, 1)
+	}})
+	ctx := context.Background()
+	fac, agentID, itemID, invocationID := nativeLeaseFixture(t, env, "pipe", "native:assign:1", store.StagePlanning)
+	rootID := openServerTree(t, env, fac.ID, invocationID, agentID, itemID, store.StagePlanning, 1)
+	act, err := coordination.ClaimActivation(ctx, env.srv.store, rootID, store.ClaimInput{AgentID: agentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := env.srv.store.GetRun(ctx, act.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.srv.assignOne(ctx, run, "missing-worker", boundAgent{})
+	var firstExec, firstState string
+	if err := env.raw.QueryRow(ctx, `
+		SELECT e.id, e.state
+		FROM executions e
+		JOIN native_activations a ON a.execution_id = e.id
+		WHERE a.id = $1`, act.ID).Scan(&firstExec, &firstState); err != nil {
+		t.Fatal(err)
+	}
+	if firstState != store.ExecOrphaned {
+		t.Fatalf("rewind state %s", firstState)
+	}
+	rewound, err := env.srv.store.GetRun(ctx, act.RunID)
+	if err != nil || rewound.Status != store.StatusQueued {
+		t.Fatalf("rewound %+v %v", rewound, err)
+	}
+	env.srv.assignOne(ctx, rewound, "missing-worker", boundAgent{})
+	var secondExec, secondState string
+	if err := env.raw.QueryRow(ctx, `
+		SELECT e.id, e.state
+		FROM executions e
+		JOIN native_activations a ON a.execution_id = e.id
+		WHERE a.id = $1`, act.ID).Scan(&secondExec, &secondState); err != nil {
+		t.Fatal(err)
+	}
+	if secondExec == firstExec || secondState != store.ExecOrphaned {
+		t.Fatalf("second %s %s first %s", secondExec, secondState, firstExec)
+	}
+	applied, err := env.srv.store.FinishExecution(ctx, firstExec, store.Terminal{State: store.ExecCompleted})
+	if err != nil || applied {
+		t.Fatalf("stale finish %v %v", applied, err)
+	}
+	stale, err := env.srv.store.GetRun(ctx, act.RunID)
+	if err != nil || stale.Status == store.StatusSucceeded {
+		t.Fatalf("stale run %+v %v", stale, err)
+	}
+
+	leased, err := env.srv.store.Lease(ctx, "default", time.Minute, 1)
+	if err != nil || len(leased) != 1 || leased[0].RunID != act.RunID {
+		t.Fatalf("lease %+v %v", leased, err)
+	}
+	live, err := env.srv.store.StartExecution(ctx, act.RunID, "worker-live", tokenHash("live-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := env.srv.matchToken(ctx, act.RunID, tokenHash("live-token")); err != nil || !ok {
+		t.Fatalf("live token ok %v %v", ok, err)
+	}
+	if err := env.srv.IngestEvents(ctx, act.RunID, "live-token", 0, [][]byte{
+		[]byte(`{"type":"message.delta","ts":"2026-11-07T00:00:00Z"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.srv.store.ExpireLeases(ctx, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := env.srv.matchToken(ctx, act.RunID, tokenHash("live-token")); err != nil || ok {
+		t.Fatalf("stale token ok %v %v", ok, err)
+	}
+	if err := env.srv.IngestEvents(ctx, act.RunID, "live-token", 1, [][]byte{
+		[]byte(`{"type":"message.delta","ts":"2026-11-07T00:00:01Z"}`),
+	}); !errors.Is(err, api.ErrUnauthorized) {
+		t.Fatalf("ingest %v", err)
+	}
+	if _, err := env.srv.NextSteers(ctx, "live-token", act.RunID, "", 0); !errors.Is(err, api.ErrUnauthorized) {
+		t.Fatalf("steer %v", err)
+	}
+	var bound string
+	if err := env.raw.QueryRow(ctx, `SELECT execution_id FROM native_activations WHERE id = $1`, act.ID).Scan(&bound); err != nil {
+		t.Fatal(err)
+	}
+	if bound != live.ID {
+		t.Fatalf("activation %s live %s", bound, live.ID)
+	}
+	_ = live
 }
 
 func nativeLeaseFixture(t *testing.T, env *env, factoryUID, key, itemStage string) (store.Factory, string, string, string) {

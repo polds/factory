@@ -12,7 +12,7 @@ The contract remains `defined-factory/1`. `docs/13-defined-factory-contracts.md`
 | Message | `nmsg_` | One canonical ledger event. |
 | Delivery | `ndlv_` | One assignee projection of a message. |
 | Activation | `nact_` | One fenced claim. `POST .../activate` enqueues the run and reserves an execution id. It does not insert `executions`. |
-| Execution | `exec_` | Inserted by worker `StartExecution` after lease. That call binds the id onto the activation. |
+| Execution | `exec_` | Inserted by worker `StartExecution` after lease. That call binds the activation to the execution it opened. A reserved id, or an orphaned, failed, cancelled, or completed execution, is replaced. A live execution is not. |
 
 Task, assignee, parent task, blockers, activation id, and execution id are different fields. `parent_task_id` is not `runs.parent_run_id`. `linear_issue` is not a column. The HTTP task body returns `linearIssue: null`.
 
@@ -38,7 +38,7 @@ Cursor is opaque (`n1.<ledger_seq>.<delivery_id>`). Limit is 1 through 100 and d
 
 ## Wake
 
-One `native_wake_intents` row per task. Comment and assign set it pending and route `assignee` to the task's current assignee. Reassign updates that same row and increments `coalesce_count`. Mention does not wake. The row survives a new store connection. `GetWake` returns `InvocationID`. The HTTP wake body does not. Reading the wake does not start a run. `ClaimActivation` enqueues one, using that stored invocation id. The run stays `queued`. Lease moves it to `assigned`. `StartExecution` moves it to `running` under the worker id and replaces the reserved execution id. Task status `running` means the activation holds the capacity slot, including while the run is still queued.
+One `native_wake_intents` row per task. Comment and assign set it pending and route `assignee` to the task's current assignee. Reassign updates that same row and increments `coalesce_count`. Mention does not wake. The row survives a new store connection. `GetWake` returns `InvocationID`. The HTTP wake body does not. Reading the wake does not start a run. `ClaimActivation` enqueues one, using that stored invocation id. The run stays `queued`. Lease moves it to `assigned`. `StartExecution` moves it to `running` under the worker id and binds that execution. Binding replaces a reserved id or a non-live execution. It does not replace an execution that is still `assigned` or `running`. Task status `running` means the activation holds the capacity slot, including while the run is still queued. Success completion requires that live execution; a queued run is not execution success. Pause removes the queue row and, when a worker execution is live, cancels that execution and replaces its token before releasing capacity. The paused run is not left `assigned` or `running` and is not marked succeeded. Board resume remains the audited path for a cancelled task.
 
 ## HTTP
 

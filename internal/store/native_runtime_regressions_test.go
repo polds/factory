@@ -311,9 +311,11 @@ func setJoinPolicy(t *testing.T, h *harness, childID, policy string) {
 
 func finishChild(t *testing.T, h *harness, ctx context.Context, taskID, agentID string, failed bool) {
 	t.Helper()
-	if _, err := coordination.ClaimActivation(ctx, h.st, taskID, store.ClaimInput{AgentID: agentID}); err != nil {
+	act, err := coordination.ClaimActivation(ctx, h.st, taskID, store.ClaimInput{AgentID: agentID})
+	if err != nil {
 		t.Fatal(err)
 	}
+	startNativeRun(t, h, act.RunID, "worker-child")
 	if _, err := coordination.Complete(ctx, h.st, taskID, failed); err != nil {
 		t.Fatal(err)
 	}

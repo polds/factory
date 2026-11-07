@@ -379,6 +379,7 @@ func TestNativeWakeCompletedPreservesTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	startNativeRun(t, h, act.RunID, "worker-wake")
 	if _, err := coordination.Complete(ctx, h.st, rootID, false); err != nil {
 		t.Fatal(err)
 	}

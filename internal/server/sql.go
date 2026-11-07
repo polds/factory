@@ -92,10 +92,14 @@ func (s *Server) releaseClaim(ctx context.Context, runID string) error {
 func (s *Server) rewind(ctx context.Context, runID, execID string) error {
 	s.leaseMu.Lock()
 	defer s.leaseMu.Unlock()
+	revoked := make([]byte, 32)
+	if _, err := rand.Read(revoked); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(ctx, `
 		UPDATE executions
-		SET state = 'orphaned', ended_at = clock_timestamp()
-		WHERE id = $1 AND state IN ('assigned', 'running')`, execID); err != nil {
+		SET state = 'orphaned', ended_at = clock_timestamp(), run_token_sha256 = $2
+		WHERE id = $1 AND state IN ('assigned', 'running')`, execID, revoked); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(ctx, `
@@ -234,7 +238,7 @@ func (s *Server) matchToken(ctx context.Context, runID string, sum []byte) (stri
 	rows, err := s.db.Query(ctx, `
 		SELECT id, run_token_sha256
 		FROM executions
-		WHERE run_id = $1
+		WHERE run_id = $1 AND state IN ('assigned', 'running', 'completed', 'failed')
 		ORDER BY attempt DESC`, runID)
 	if err != nil {
 		return "", false, err
