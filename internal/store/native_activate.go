@@ -9,8 +9,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ClaimNativeActivation reads the wake row and starts one fenced execution.
-// A second claim while the task is running is claim_fenced.
+// ClaimNativeActivation reads the wake row and enqueues one run.
+// The task status running means the slot is held. The run stays queued
+// until a worker leases it. A second claim while the task is running is
+// claim_fenced. No execution row is inserted.
 func (s *Store) ClaimNativeActivation(ctx context.Context, in ClaimInput) (Activation, error) {
 	if in.TaskID == "" || in.InvocationID == "" {
 		return Activation{}, fmt.Errorf("%w: claim task and invocation", ErrInputInvalid)
@@ -98,11 +100,15 @@ func startActivationTx(ctx context.Context, tx pgx.Tx, head taskHead, in ClaimIn
 	if err := acquireCapacityTx(ctx, tx, head.InvocationID); err != nil {
 		return Activation{}, err
 	}
-	run, err := insertNativeRunTx(ctx, tx, nativeRunInput(policy, in), priorRun)
+	repo, err := invocationRepoTx(ctx, tx, head.InvocationID)
 	if err != nil {
 		return Activation{}, err
 	}
-	execID, err := insertNativeExecTx(ctx, tx, run)
+	run, err := insertNativeRunTx(ctx, tx, nativeRunInput(policy, in, repo), priorRun)
+	if err != nil {
+		return Activation{}, err
+	}
+	execID, err := reserveNativeExecutionID()
 	if err != nil {
 		return Activation{}, err
 	}
@@ -146,7 +152,10 @@ func resumeParkTx(ctx context.Context, tx pgx.Tx, head taskHead, in ClaimInput) 
 	if err := acquireCapacityTx(ctx, tx, head.InvocationID); err != nil {
 		return Activation{}, err
 	}
-	execID, err := insertNativeExecTx(ctx, tx, prior.RunID)
+	if err := requeueNativeRunTx(ctx, tx, prior.RunID); err != nil {
+		return Activation{}, err
+	}
+	execID, err := reserveNativeExecutionID()
 	if err != nil {
 		return Activation{}, err
 	}
@@ -197,7 +206,10 @@ func (s *Store) ParkNative(ctx context.Context, in ParkInput) (Activation, error
 	if err != nil {
 		return Activation{}, err
 	}
-	if err := finishExecTx(ctx, tx, act.ExecutionID, ExecCompleted); err != nil {
+	if _, err := finishExecTx(ctx, tx, act.ExecutionID, ExecCompleted); err != nil {
+		return Activation{}, err
+	}
+	if err := parkNativeRunTx(ctx, tx, act.RunID); err != nil {
 		return Activation{}, err
 	}
 	if act.CapacityHeld {
@@ -390,14 +402,17 @@ func (s *Store) RetryExecution(ctx context.Context, taskID string) (Activation, 
 	if err != nil {
 		return Activation{}, err
 	}
-	if err := finishExecTx(ctx, tx, prior.ExecutionID, ExecFailed); err != nil {
+	if _, err := finishExecTx(ctx, tx, prior.ExecutionID, ExecOrphaned); err != nil {
 		return Activation{}, err
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE native_activations SET capacity_held = false WHERE id = $1`, prior.ID); err != nil {
 		return Activation{}, err
 	}
-	execID, err := insertNativeExecTx(ctx, tx, prior.RunID)
+	if err := requeueNativeRunTx(ctx, tx, prior.RunID); err != nil {
+		return Activation{}, err
+	}
+	execID, err := reserveNativeExecutionID()
 	if err != nil {
 		return Activation{}, err
 	}
@@ -454,16 +469,45 @@ func completeTx(ctx context.Context, tx pgx.Tx, taskID string, failed bool) (Act
 		runStatus = StatusFailed
 		execState = ExecFailed
 	}
-	if err := finishExecTx(ctx, tx, act.ExecutionID, execState); err != nil {
+	finished, err := finishExecTx(ctx, tx, act.ExecutionID, execState)
+	if err != nil {
 		return Activation{}, err
+	}
+	if finished == 0 && !failed {
+		var runStatusNow string
+		if err := tx.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1`, act.RunID).Scan(&runStatusNow); err != nil {
+			return Activation{}, err
+		}
+		if runStatusNow != StatusSucceeded {
+			return Activation{}, fmt.Errorf("%w: queued run is not execution success", ErrInputInvalid)
+		}
+	}
+	if finished == 0 && failed {
+		var runStatusNow string
+		if err := tx.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1`, act.RunID).Scan(&runStatusNow); err != nil {
+			return Activation{}, err
+		}
+		switch runStatusNow {
+		case StatusFailed:
+		case StatusCancelled, StatusSucceeded:
+			return Activation{}, fmt.Errorf("%w: run is %s", ErrInputInvalid, runStatusNow)
+		default:
+			// A child failure can fail a parent that has not started. That is
+			// not a worker success and it does not invent a completed execution.
+			if err := terminalNativeRunTx(ctx, tx, act.RunID, taskID, StatusFailed, act.ExecutionID); err != nil {
+				return Activation{}, err
+			}
+		}
 	}
 	if act.CapacityHeld {
 		if err := releaseCapacityTx(ctx, tx, head.InvocationID); err != nil {
 			return Activation{}, err
 		}
 	}
-	if err := terminalNativeRunTx(ctx, tx, act.RunID, taskID, runStatus, act.ExecutionID); err != nil {
-		return Activation{}, err
+	if finished > 0 {
+		if err := terminalNativeRunTx(ctx, tx, act.RunID, taskID, runStatus, act.ExecutionID); err != nil {
+			return Activation{}, err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE native_tasks SET task_status = $2, updated_at = now() WHERE id = $1`, taskID, status); err != nil {
@@ -680,16 +724,22 @@ func (s *Store) CancelNativeSubtree(ctx context.Context, in SubtreeInput) (Subtr
 		if err != nil {
 			return SubtreeResult{}, err
 		}
-		if act.CapacityHeld {
-			if err := releaseCapacityTx(ctx, tx, head.InvocationID); err != nil {
+		if in.Pause {
+			// Fence before releasing the slot. A worker that already holds
+			// the execution must not be able to start, succeed, or append.
+			if err := fencePausedNativeRunTx(ctx, tx, act.RunID); err != nil {
 				return SubtreeResult{}, err
 			}
-		}
-		if !in.Pause {
-			if err := finishExecTx(ctx, tx, act.ExecutionID, ExecCancelled); err != nil {
+		} else {
+			if _, err := finishExecTx(ctx, tx, act.ExecutionID, ExecCancelled); err != nil {
 				return SubtreeResult{}, err
 			}
 			if err := terminalNativeRunTx(ctx, tx, act.RunID, id, runStatus, act.ExecutionID); err != nil {
+				return SubtreeResult{}, err
+			}
+		}
+		if act.CapacityHeld {
+			if err := releaseCapacityTx(ctx, tx, head.InvocationID); err != nil {
 				return SubtreeResult{}, err
 			}
 		}

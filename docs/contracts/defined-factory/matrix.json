@@ -371,8 +371,8 @@
       "fieldPath": "target.pullRequest,products.outputPullRequest",
       "baseline": {
         "file": "internal/server/terminal.go",
-        "start": 686,
-        "end": 691,
+        "start": 706,
+        "end": 711,
         "anchor": "open_pr_url"
       },
       "decision": "The input pull request never satisfies requires pullRequest.",
@@ -389,8 +389,8 @@
       "fieldPath": "requires",
       "baseline": {
         "file": "internal/server/terminal.go",
-        "start": 520,
-        "end": 527,
+        "start": 541,
+        "end": 548,
         "anchor": "pullRequestMissing"
       },
       "decision": "Opt-in requires pullRequest still fails closed with no_work_product when no output pull request was recorded.",
@@ -461,8 +461,8 @@
       "fieldPath": "products.report",
       "baseline": {
         "file": "internal/server/terminal.go",
-        "start": 610,
-        "end": 620,
+        "start": 631,
+        "end": 641,
         "anchor": "reportMissing"
       },
       "decision": "Missing report when report is required fails with report_missing. It does not reuse no_work_product.",
@@ -641,8 +641,8 @@
       "fieldPath": "delegationEdgeId,parentRunId",
       "baseline": {
         "file": "internal/store/native_runtime.go",
-        "start": 483,
-        "end": 483,
+        "start": 479,
+        "end": 479,
         "anchor": "parent_run_id is the stage predecessor"
       },
       "decision": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
@@ -911,8 +911,8 @@
       "fieldPath": "workerCapacity",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 182,
-        "end": 182,
+        "start": 191,
+        "end": 191,
         "anchor": "capacityReleased"
       },
       "decision": "Capacity 1 still finishes the tree because a manager parks and releases its slot before the child runs.",
@@ -929,8 +929,8 @@
       "fieldPath": "state,blockers",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 181,
-        "end": 181,
+        "start": 190,
+        "end": 190,
         "anchor": "records blockers"
       },
       "decision": "Park is per task, records blockers, and releases worker capacity. Today's suspension is one per work item.",
@@ -947,8 +947,8 @@
       "fieldPath": "capabilities.steer",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 233,
-        "end": 233,
+        "start": 245,
+        "end": 245,
         "anchor": "negotiatedSteer"
       },
       "decision": "A running recipient is steered only when steer was negotiated. Otherwise the input stays pending.",
@@ -965,8 +965,8 @@
       "fieldPath": "linkedFromRunId",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 312,
-        "end": 312,
+        "start": 324,
+        "end": 324,
         "anchor": "WakeCompleted"
       },
       "decision": "Waking a completed task creates a new linked run. The prior terminal row stays immutable.",
@@ -983,8 +983,8 @@
       "fieldPath": "runId,executionId",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 375,
-        "end": 375,
+        "start": 387,
+        "end": 387,
         "anchor": "RetryExecution"
       },
       "decision": "Infrastructure retry creates a new execution of the same run.",
@@ -1001,8 +1001,8 @@
       "fieldPath": "executionId",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 66,
-        "end": 66,
+        "start": 68,
+        "end": 68,
         "anchor": "ResumePark"
       },
       "decision": "Park continuation creates a new execution of the same run.",
@@ -1019,8 +1019,8 @@
       "fieldPath": "status",
       "baseline": {
         "file": "internal/store/native_runtime_types.go",
-        "start": 34,
-        "end": 34,
+        "start": 32,
+        "end": 32,
         "anchor": "cancelled_no_resurrect"
       },
       "decision": "A cancelled task does not auto-resurrect.",
@@ -1037,8 +1037,8 @@
       "fieldPath": "descendants",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 599,
-        "end": 599,
+        "start": 643,
+        "end": 643,
         "anchor": "spawn_denied"
       },
       "decision": "Cancel and pause cascade over the chosen subtree and later spawn is spawn_denied.",
@@ -1055,8 +1055,8 @@
       "fieldPath": "audit.board.resume",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 722,
-        "end": 722,
+        "start": 770,
+        "end": 770,
         "anchor": "BoardResume"
       },
       "decision": "Board resume is an authorized audited transition. It does not mutate the cancelled run's terminal evidence.",
@@ -1073,8 +1073,8 @@
       "fieldPath": "failedChildPolicy",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 482,
-        "end": 482,
+        "start": 526,
+        "end": 526,
         "anchor": "fail_parent"
       },
       "decision": "fail_parent does not synthesize and does not spawn a replacement.",
@@ -1091,8 +1091,8 @@
       "fieldPath": "blockers",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 549,
-        "end": 549,
+        "start": 593,
+        "end": 593,
         "anchor": "unresolved children"
       },
       "decision": "Join does not synthesize while a required child is live or unresolved.",
@@ -1109,8 +1109,8 @@
       "fieldPath": "idempotencyKey",
       "baseline": {
         "file": "internal/store/native_runtime.go",
-        "start": 149,
-        "end": 149,
+        "start": 145,
+        "end": 145,
         "anchor": "idempotency key"
       },
       "decision": "Duplicate delegate delivery does not create a second child or a second reservation.",

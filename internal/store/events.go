@@ -41,6 +41,14 @@ func (s *Store) AppendEvents(ctx context.Context, runID, execID string, startIdx
 	if owner != runID {
 		return nil, fmt.Errorf("store: execution %s belongs to run %s", execID, owner)
 	}
+	var execState string
+	if err := tx.QueryRow(ctx, `SELECT state FROM executions WHERE id = $1`, execID).Scan(&execState); err != nil {
+		return nil, fmt.Errorf("store: append events: %w", err)
+	}
+	// Orphaned and cancelled attempts are retired: rewind, lease expiry, pause,
+	// and native retry. Completed and failed stay writable so a harness can
+	// post the terminal classification and the server can record archive failure.
+	writable := execState == ExecAssigned || execState == ExecRunning || execState == ExecCompleted || execState == ExecFailed
 
 	seqs := make([]int64, len(evs))
 	for i, raw := range evs {
@@ -49,7 +57,18 @@ func (s *Store) AppendEvents(ctx context.Context, runID, execID string, startIdx
 			return nil, err
 		}
 		idx := startIdx + i
-		seq, err := insertEvent(ctx, tx, runID, execID, idx, meta, raw)
+		seq, existed, err := existingEventSeq(ctx, tx, execID, idx)
+		if err != nil {
+			return nil, err
+		}
+		if existed {
+			seqs[i] = seq
+			continue
+		}
+		if !writable {
+			return nil, fmt.Errorf("%w: execution %s is %s", ErrInputInvalid, execID, execState)
+		}
+		seq, err = insertEvent(ctx, tx, runID, execID, idx, meta, raw)
 		if err != nil {
 			return nil, err
 		}
@@ -94,17 +113,22 @@ func eventMeta(raw json.RawMessage) (parsedEvent, error) {
 	return parsedEvent{Type: meta.Type, TS: ts}, nil
 }
 
-func insertEvent(ctx context.Context, tx pgx.Tx, runID, execID string, idx int, meta parsedEvent, raw json.RawMessage) (int64, error) {
+func existingEventSeq(ctx context.Context, tx pgx.Tx, execID string, idx int) (int64, bool, error) {
 	var seq int64
 	err := tx.QueryRow(ctx, `
 		SELECT seq FROM run_events WHERE execution_id = $1 AND idx = $2`, execID, idx).Scan(&seq)
 	if err == nil {
-		return seq, nil
+		return seq, true, nil
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return 0, fmt.Errorf("store: append event %d: %w", idx, err)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
 	}
-	err = tx.QueryRow(ctx, `
+	return 0, false, fmt.Errorf("store: append event %d: %w", idx, err)
+}
+
+func insertEvent(ctx context.Context, tx pgx.Tx, runID, execID string, idx int, meta parsedEvent, raw json.RawMessage) (int64, error) {
+	var seq int64
+	err := tx.QueryRow(ctx, `
 		INSERT INTO run_events (run_id, seq, execution_id, idx, ts, type, payload_json)
 		VALUES (
 		    $1,

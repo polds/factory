@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/polds/factory/internal/client"
 	"github.com/polds/factory/internal/coordination"
@@ -69,6 +70,7 @@ func TestNativeStageOwnerAdvance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	leaseAndStartServer(t, env, child.RunID)
 	if _, err := coordination.Complete(ctx, env.srv.store, lead.Child.ID, false); err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +82,7 @@ func TestNativeStageOwnerAdvance(t *testing.T) {
 	if got.Status != store.WorkItemOpen || got.Stage != store.StagePlanning {
 		t.Fatalf("child advanced %+v", got)
 	}
+	leaseAndStartServer(t, env, owner.RunID)
 	if _, err := coordination.Complete(ctx, env.srv.store, root.ID, false); err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +127,33 @@ func TestNativeRuntimeHTTP(t *testing.T) {
 	views, err := env.srv.ListNativeTrees(ctx, "pipe")
 	if err != nil || len(views) != 1 || views[0].StageOwner != "coordinator" {
 		t.Fatalf("views %+v %v", views, err)
+	}
+}
+
+func leaseAndStartServer(t *testing.T, env *env, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	run, err := env.srv.store.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status == store.StatusQueued {
+		leased, err := env.srv.store.Lease(ctx, run.Pool, time.Minute, 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, row := range leased {
+			if row.RunID == runID {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("lease missed %s in %+v", runID, leased)
+		}
+	}
+	if _, err := env.srv.store.StartExecution(ctx, runID, "stage-worker", tokenHash(runID)); err != nil {
+		t.Fatal(err)
 	}
 }
 
