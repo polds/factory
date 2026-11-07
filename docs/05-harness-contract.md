@@ -81,7 +81,7 @@ upstream worker can drive it:
 | `--computer-use`, `--computer-use-model`, `--no-computer-use` | Computer-use toggles |
 | `--idle-on-complete <dur>` | Stay alive for follow-ups after the conversation ends |
 | `--skip-initial-turn` | Attach without prompting (handoff/continuation) |
-| `--repository-head-override-json` | Accepted. The worker passes frozen checkout JSON. This harness does not apply it (below). |
+| `--repository-head-override-json` | Accepted. Empty `{}`, `[]`, `null`, or an empty string checks nothing out. One supported local `COMMIT_SHA` override is checked out before setup or a model call. Any other document fails before those steps. |
 | `--remove-repository-origins` | Strip remotes after clone |
 | `--no-snapshot`, `--snapshot-upload-timeout`, `--snapshot-script-timeout` | Snapshot control |
 | `--bedrock-inference-role`, `--bedrock-role-region` | AWS STS AssumeRoleWithWebIdentity |
@@ -92,11 +92,34 @@ plane plus an older harness must not deadlock on an unrecognized token.
 
 **M6 applied.** factoryd fills `repository_head_overrides` on the assignment,
 and the worker forwards them as `--repository-head-override-json`. The in-repo
-`generic-openai` harness accepts that flag and does not read it, so the pinned
-SHA is not checked out. Replay is wired through the assignment, not through
-the checkout. Skill bodies are a different path: factoryd sets
-`FACTORY_SKILL_TEXT`, and the harness appends that text to the system prompt.
-`skill_spec` on the assignment is not consumed.
+`generic-openai` harness reads that flag after `task.json` is loaded and before
+`setup_command`, tools, or the model call.
+
+An empty override (`{}`, `[]`, `null`, or an empty string) is the conformance
+token and checks nothing out. One override is applied only when `code_forge` is
+`GITHUB`, `head.type` is `COMMIT_SHA`, the value is 40 hex characters, and
+`clone_from` and `preserve_origin` are unset. The workspace must already be a
+real directory whose `origin` remote is that GitHub repository, whose `HEAD`
+can move to that existing local commit, and whose `.git` is a directory inside
+the workspace. The initial `HEAD` may be a different local commit. The gate
+then runs `git checkout --detach <sha>` and requires the resulting `HEAD` to
+equal that commit, detached and clean, with the work tree toplevel at the
+workspace.
+
+Any other shape fails closed: more than one override, a branch head, an unknown
+field, a missing object, a non-commit object, a dirty tree, a different
+repository, a parent repository discovered above the workspace, or a symlink
+workspace or `.git`. Those failures happen before setup and before a model
+call. A dirty tree is left untouched. The gate does not fetch, force, reset,
+or clean. Each git command sets `core.hooksPath` to an empty directory and
+points global and system gitconfig at an empty file, so a hook in the
+repository does not run and user gitconfig is not read.
+
+The checkout SHA is the invocation `pinned_head_sha` carried on the assignment.
+It is not proof that role blobs exist in that commit. `SourceCommit` on a role
+bundle remains a caller-supplied identity string. Skill bodies are a different
+path: factoryd sets `FACTORY_SKILL_TEXT`, and the harness appends that text to
+the system prompt. `skill_spec` on the assignment is not consumed.
 
 Richer configuration arrives as JSON at `/var/run/factory/task.json` (the
 `agent_config_snapshot` from the assignment — [04](04-protocols-and-apis.md)), because a

@@ -66,6 +66,9 @@ type NativeTree struct {
 	SourceCommit  string
 	RosterSHA256  string
 	RosterGitBlob string
+	// BundleMode is role_files when the roster is an explicit seat bundle.
+	// Empty is the legacy witness. omitempty keeps that digest stable.
+	BundleMode string
 }
 
 // NativeTreeResult is the frozen roster. Digest does not change when the definition reloads.
@@ -230,6 +233,7 @@ func treeDigest(in NativeTree) (string, error) {
 		SourceCommit          string          `json:"sourceCommit,omitempty"`
 		RosterSHA256          string          `json:"rosterSha256,omitempty"`
 		RosterGitBlob         string          `json:"rosterGitBlob,omitempty"`
+		BundleMode            string          `json:"bundleMode,omitempty"`
 	}{
 		Personas:              personas,
 		MaxDepth:              in.MaxDepth,
@@ -241,6 +245,7 @@ func treeDigest(in NativeTree) (string, error) {
 		SourceCommit:          in.SourceCommit,
 		RosterSHA256:          in.RosterSHA256,
 		RosterGitBlob:         in.RosterGitBlob,
+		BundleMode:            in.BundleMode,
 	})
 	if err != nil {
 		return "", err

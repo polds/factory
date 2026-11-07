@@ -569,8 +569,8 @@
       "fieldPath": "personas.reportsTo,policySnapshot",
       "baseline": {
         "file": "internal/definition/native_tree.go",
-        "start": 78,
-        "end": 78,
+        "start": 81,
+        "end": 81,
         "anchor": "ValidateNativeTree"
       },
       "decision": "Native mode freezes one synthetic root, an acyclic connected depth-2 tree, direct-manager delegation, and no ancestor shortcut. It is not an Atum roster.",
@@ -587,8 +587,8 @@
       "fieldPath": "nativeHierarchy",
       "baseline": {
         "file": "internal/definition/native_tree.go",
-        "start": 79,
-        "end": 79,
+        "start": 82,
+        "end": 82,
         "anchor": "reportsTo omitted"
       },
       "decision": "Legacy factories may omit reportsTo. The field is not enforced unless native hierarchy is on.",
@@ -641,8 +641,8 @@
       "fieldPath": "delegationEdgeId,parentRunId",
       "baseline": {
         "file": "internal/store/native_runtime.go",
-        "start": 541,
-        "end": 541,
+        "start": 568,
+        "end": 568,
         "anchor": "parent_run_id is the stage predecessor"
       },
       "decision": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",
@@ -659,8 +659,8 @@
       "fieldPath": "reportsTo",
       "baseline": {
         "file": "internal/definition/native_tree.go",
-        "start": 150,
-        "end": 150,
+        "start": 153,
+        "end": 153,
         "anchor": "reportsTo does not grant"
       },
       "decision": "Reporting line does not grant secret or repository access.",
@@ -1001,8 +1001,8 @@
       "fieldPath": "executionId",
       "baseline": {
         "file": "internal/store/native_activate.go",
-        "start": 68,
-        "end": 68,
+        "start": 69,
+        "end": 69,
         "anchor": "ResumePark"
       },
       "decision": "Park continuation creates a new execution of the same run.",
@@ -1109,8 +1109,8 @@
       "fieldPath": "idempotencyKey",
       "baseline": {
         "file": "internal/store/native_runtime.go",
-        "start": 149,
-        "end": 149,
+        "start": 155,
+        "end": 155,
         "anchor": "idempotency key"
       },
       "decision": "Duplicate delegate delivery does not create a second child or a second reservation.",
@@ -1359,8 +1359,8 @@
       "fieldPath": "workflow,internalWorkers",
       "baseline": {
         "file": "internal/harness/run.go",
-        "start": 117,
-        "end": 123,
+        "start": 124,
+        "end": 130,
         "anchor": "adapterName"
       },
       "decision": "Internal workers stay in-session. Workflow stays main-loop-only. They are not roster nodes.",
@@ -1449,8 +1449,8 @@
       "fieldPath": "outcome",
       "baseline": {
         "file": "internal/harness/run.go",
-        "start": 132,
-        "end": 134,
+        "start": 139,
+        "end": 141,
         "anchor": "OPENAI_BASE_URL"
       },
       "decision": "Credential isolation is an adapter-level result. Child environment isolation alone is not accepted. An unproven boundary blocks live.",

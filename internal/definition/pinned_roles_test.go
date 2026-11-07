@@ -22,7 +22,7 @@ func TestLoadPinnedRolesProjectsSelection(t *testing.T) {
 	if tree.MaxDepth != NativeProofMaxDepth || tree.AbsoluteMaxDepth != NativeAbsoluteMaxDepth {
 		t.Fatalf("depth %+v", tree)
 	}
-	if tree.SourceCommit != "source-commit" || tree.RosterSHA256 != fix.rosterSHA || tree.RosterGitBlob != fix.rosterBlob {
+	if tree.SourceCommit != "source-commit" || tree.RosterSHA256 != fix.rosterSHA || tree.RosterGitBlob != fix.rosterBlob || tree.BundleMode != BundleModeRoleFiles {
 		t.Fatalf("provenance %+v", tree)
 	}
 	if len(tree.Personas) != 4 {
@@ -650,4 +650,105 @@ var referencePins = map[string]map[string]PinnedFile{
 		"SOUL.md":      {SHA256: "e22b567357c9b2145fce0f55227c91f29c8944ccb9739927aa04b27a2712aa31", GitBlob: "31de4403260d3f873bc799ed07ee3d6e9c1fc262", Size: 1237},
 		"TOOLS.md":     {SHA256: "0e91e0f21f1a2b513d3c6b8d85521c7b110dd5debb93df9f4a43add5843050e2", GitBlob: "e02b0d8f15f09b6f7d9034a821f5e0816a5afa45", Size: 1399},
 	},
+}
+
+func TestBundleModeAndGoalBytes(t *testing.T) {
+	legacy, err := CheckBundle(proofTree())
+	if err != nil || legacy.BundleMode != "" {
+		t.Fatalf("legacy %+v %v", legacy.BundleMode, err)
+	}
+	files := []RoleFile{
+		{Name: "AGENTS.md", Bytes: []byte("alpha")},
+		{Name: "HEARTBEAT.md", Bytes: []byte("beta\n")},
+		{Name: "SOUL.md", Bytes: []byte("gamma")},
+		{Name: "TOOLS.md", Bytes: []byte("delta")},
+	}
+	tree := proofTree()
+	tree.SourceCommit = "source-commit"
+	tree.RosterSHA256 = strings.Repeat("ab", 32)
+	tree.RosterGitBlob = strings.Repeat("cd", 20)
+	for i := range tree.Personas {
+		tree.Personas[i].Files = append([]RoleFile{}, files...)
+	}
+	inferred, err := CheckBundle(tree)
+	if err != nil || inferred.BundleMode != BundleModeRoleFiles {
+		t.Fatalf("infer %s %v", inferred.BundleMode, err)
+	}
+	empty := tree
+	empty.Personas = append([]NativePersona{}, tree.Personas...)
+	for i := range empty.Personas {
+		empty.Personas[i].Files = nil
+	}
+	if _, err := CheckBundle(empty); err == nil {
+		t.Fatal("all-empty provenance downgraded")
+	}
+	unknown := tree
+	unknown.BundleMode = "other"
+	if _, err := CheckBundle(unknown); err == nil {
+		t.Fatal("unknown mode")
+	}
+	short := tree
+	short.Personas = append([]NativePersona{}, tree.Personas...)
+	short.Personas[0].Files = files[:3]
+	if _, err := CheckBundle(short); err == nil {
+		t.Fatal("short seat")
+	}
+	seat, err := NativeSeatPrompt(tree.Personas, "coordinator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "# File AGENTS.md\nbytes: 4\nNOPE"
+	goal := NativeGoal{
+		WorkItemID: "wi_1", InvocationID: "inv_1", TaskID: "ntask_1",
+		Repository: "example/fixture", PinnedHeadSHA: strings.Repeat("a", 40),
+		Title: "title-no-nl", Body: body,
+	}
+	got, err := AppendNativeGoal(seat, goal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, seat) {
+		t.Fatal("seat bytes moved")
+	}
+	if goalSection(t, got, "Body") != body || goalSection(t, got, "Title") != "title-no-nl" {
+		t.Fatal("goal bytes")
+	}
+	if !strings.Contains(got, "task: ntask_1\n") || strings.Contains(got, "specialist-a") {
+		t.Fatal("identity")
+	}
+	atCap := goal
+	atCap.Body = strings.Repeat("x", NativeGoalBodyCap)
+	if _, err := AppendNativeGoal(seat, atCap); err != nil {
+		t.Fatal(err)
+	}
+	over := goal
+	over.Body = strings.Repeat("x", NativeGoalBodyCap+1)
+	if _, err := AppendNativeGoal(seat, over); err == nil {
+		t.Fatal("overflow trimmed")
+	}
+	blank := goal
+	blank.Body = ""
+	if _, err := AppendNativeGoal(seat, blank); err == nil {
+		t.Fatal("empty body")
+	}
+	legacyPrompt, err := NativeSeatPrompt(proofTree().Personas, "coordinator")
+	if err != nil || legacyPrompt != "native activation" {
+		t.Fatalf("legacy prompt %q %v", legacyPrompt, err)
+	}
+}
+
+func goalSection(t *testing.T, prompt, name string) string {
+	t.Helper()
+	header := "# " + name + "\nbytes: "
+	i := strings.LastIndex(prompt, header)
+	if i < 0 {
+		t.Fatalf("missing %s", name)
+	}
+	rest := prompt[i+len(header):]
+	nl := strings.IndexByte(rest, '\n')
+	n, err := strconv.Atoi(rest[:nl])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rest[nl+1 : nl+1+n]
 }

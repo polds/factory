@@ -27,7 +27,17 @@ func (s *Server) OpenNativeTree(ctx context.Context, factoryUID, invocationID st
 	}
 	personas := make([]definition.NativePersona, len(req.Personas))
 	for i, p := range req.Personas {
-		personas[i] = definition.NativePersona{Name: p.Name, ReportsTo: p.ReportsTo, SpawnableBy: p.SpawnableBy, Role: p.Role}
+		files := make([]definition.RoleFile, len(p.Files))
+		for j, file := range p.Files {
+			files[j] = definition.RoleFile{
+				Name: file.Name, SHA256: file.SHA256, GitBlob: file.GitBlob,
+				Bytes: append([]byte{}, file.Bytes...),
+			}
+		}
+		personas[i] = definition.NativePersona{
+			Name: p.Name, ReportsTo: p.ReportsTo, SpawnableBy: p.SpawnableBy, Role: p.Role,
+			SourceReportsTo: p.SourceReportsTo, SourceDottedTo: p.SourceDottedTo, Files: files,
+		}
 	}
 	policy, task, err := coordination.OpenTree(ctx, s.store, store.OpenTreeInput{
 		FactoryID:    fac.ID,
@@ -47,6 +57,10 @@ func (s *Server) OpenNativeTree(ctx context.Context, factoryUID, invocationID st
 			AllowAncestorShortcut: req.AllowAncestorShortcut,
 			Delegation:            req.Delegation,
 			Synthetic:             req.Synthetic,
+			SourceCommit:          req.SourceCommit,
+			RosterSHA256:          req.RosterSHA256,
+			RosterGitBlob:         req.RosterGitBlob,
+			BundleMode:            req.BundleMode,
 		},
 	})
 	if err != nil {

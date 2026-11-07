@@ -221,11 +221,16 @@ The dispatch command's job is to hand the payload to a runtime and return quickl
 - **Checkout.** The control plane resolves `repositories` + `required_repos` into a
   prepared checkout list, mints a scoped forge token, and the harness clones into
   `/workspace/<repo>`. `deferred: true` repos are skipped unless required.
-- **Head overrides.** A benchmark trial puts frozen SHAs on the assignment
-  (`repository_head_overrides`, including `clone_from` and `preserve_origin`).
-  The worker forwards that JSON as `--repository-head-override-json`. The in-repo
-  harness accepts the flag and does not check the pinned SHA out
-  (`internal/harness/argv.go`).
+- **Head overrides.** A benchmark trial or an invocation pin puts frozen SHAs
+  on the assignment (`repository_head_overrides`). The worker forwards that JSON
+  as `--repository-head-override-json`. The in-repo harness checks out one
+  supported local `COMMIT_SHA` before setup or a model call, and only when the
+  workspace `origin` is that GitHub repository and the commit object is already
+  local. Empty override JSON checks nothing out. A branch head, `clone_from`,
+  `preserve_origin`, a second override, a missing object, a dirty tree, or a
+  path that is not the workspace repository fails before setup. The gate does
+  not fetch, force, reset, or clean (`internal/harness/checkout.go`). The
+  checkout SHA is not an attestation that role files belong to that commit.
 - **Origin stripping.** `--remove-repository-origins` removes remotes after clone, so an
   agent cannot push to a repository the run was not meant to touch. Cheap, effective, and
   the right default for untrusted intake.

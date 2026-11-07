@@ -57,11 +57,16 @@ func (s *Store) OpenNativeTree(ctx context.Context, in OpenTreeInput) (NativePol
 	if !in.Tree.NativeHierarchy {
 		return NativePolicy{}, NativeTask{}, fmt.Errorf("%w: native hierarchy is off", ErrInputInvalid)
 	}
+	ready, err := definition.CheckBundle(in.Tree)
+	if err != nil {
+		return NativePolicy{}, NativeTask{}, fmt.Errorf("%w: %w", ErrInputInvalid, err)
+	}
+	in.Tree = ready
 	checked, err := definition.ValidateNativeTree(in.Tree)
 	if err != nil {
 		return NativePolicy{}, NativeTask{}, err
 	}
-	body, err := marshalNativePersonas(in.Tree.Personas, in.Tree.SourceCommit, in.Tree.RosterSHA256, in.Tree.RosterGitBlob)
+	body, err := marshalNativePersonas(in.Tree.Personas, in.Tree.SourceCommit, in.Tree.RosterSHA256, in.Tree.RosterGitBlob, in.Tree.BundleMode)
 	if err != nil {
 		return NativePolicy{}, NativeTask{}, err
 	}
@@ -79,6 +84,7 @@ func (s *Store) OpenNativeTree(ctx context.Context, in OpenTreeInput) (NativePol
 		SourceCommit:          in.Tree.SourceCommit,
 		RosterSHA256:          in.Tree.RosterSHA256,
 		RosterGitBlob:         in.Tree.RosterGitBlob,
+		BundleMode:            in.Tree.BundleMode,
 		CeilingCents:          in.CeilingCents,
 		CapacitySlots:         in.Slots,
 		MaxLive:               in.MaxLive,
@@ -442,7 +448,7 @@ func loadPolicyTx(ctx context.Context, q interface {
 	if err != nil {
 		return NativePolicy{}, fmt.Errorf("store: native policy: %w", err)
 	}
-	loaded, commit, rosterSHA, rosterBlob, err := unmarshalNativePersonas(personas)
+	loaded, commit, rosterSHA, rosterBlob, mode, err := unmarshalNativePersonas(personas)
 	if err != nil {
 		return NativePolicy{}, err
 	}
@@ -450,14 +456,15 @@ func loadPolicyTx(ctx context.Context, q interface {
 	policy.SourceCommit = commit
 	policy.RosterSHA256 = rosterSHA
 	policy.RosterGitBlob = rosterBlob
+	policy.BundleMode = mode
 	return policy, nil
 }
 
 // marshalNativePersonas stores persona JSON. A legacy tree with no source pin
 // stays a JSON array. A pinned snapshot stores the source commit and roster
 // content hashes in the same jsonb value so reload does not keep only the digest.
-func marshalNativePersonas(personas []definition.NativePersona, commit, rosterSHA, rosterBlob string) ([]byte, error) {
-	if commit == "" && rosterSHA == "" && rosterBlob == "" {
+func marshalNativePersonas(personas []definition.NativePersona, commit, rosterSHA, rosterBlob, mode string) ([]byte, error) {
+	if commit == "" && rosterSHA == "" && rosterBlob == "" && mode == "" {
 		return json.Marshal(personas)
 	}
 	return json.Marshal(struct {
@@ -465,39 +472,59 @@ func marshalNativePersonas(personas []definition.NativePersona, commit, rosterSH
 		SourceCommit  string                     `json:"sourceCommit,omitempty"`
 		RosterSHA256  string                     `json:"rosterSha256,omitempty"`
 		RosterGitBlob string                     `json:"rosterGitBlob,omitempty"`
+		BundleMode    string                     `json:"bundleMode,omitempty"`
 	}{
 		Personas:      personas,
 		SourceCommit:  commit,
 		RosterSHA256:  rosterSHA,
 		RosterGitBlob: rosterBlob,
+		BundleMode:    mode,
 	})
 }
 
-func unmarshalNativePersonas(raw []byte) ([]definition.NativePersona, string, string, string, error) {
+func unmarshalNativePersonas(raw []byte) ([]definition.NativePersona, string, string, string, string, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
-		return nil, "", "", "", fmt.Errorf("%w: personas", ErrInputInvalid)
+		return nil, "", "", "", "", fmt.Errorf("%w: personas", ErrInputInvalid)
 	}
 	if trimmed[0] == '[' {
 		var personas []definition.NativePersona
 		if err := json.Unmarshal(trimmed, &personas); err != nil {
-			return nil, "", "", "", err
+			return nil, "", "", "", "", err
 		}
-		return personas, "", "", "", nil
+		mode, err := definition.CheckBundle(definition.NativeTree{Personas: personas})
+		if err != nil {
+			return nil, "", "", "", "", fmt.Errorf("%w: %w", ErrInputInvalid, err)
+		}
+		if mode.BundleMode != "" {
+			return nil, "", "", "", "", fmt.Errorf("%w: bundle metadata", ErrInputInvalid)
+		}
+		return personas, "", "", "", "", nil
 	}
 	var doc struct {
 		Personas      []definition.NativePersona `json:"personas"`
 		SourceCommit  string                     `json:"sourceCommit"`
 		RosterSHA256  string                     `json:"rosterSha256"`
 		RosterGitBlob string                     `json:"rosterGitBlob"`
+		BundleMode    string                     `json:"bundleMode"`
 	}
 	if err := json.Unmarshal(trimmed, &doc); err != nil {
-		return nil, "", "", "", err
+		return nil, "", "", "", "", err
 	}
 	if doc.Personas == nil {
-		return nil, "", "", "", fmt.Errorf("%w: personas", ErrInputInvalid)
+		return nil, "", "", "", "", fmt.Errorf("%w: personas", ErrInputInvalid)
 	}
-	return doc.Personas, doc.SourceCommit, doc.RosterSHA256, doc.RosterGitBlob, nil
+	ready, err := definition.CheckBundle(definition.NativeTree{
+		Personas:      doc.Personas,
+		SourceCommit:  doc.SourceCommit,
+		RosterSHA256:  doc.RosterSHA256,
+		RosterGitBlob: doc.RosterGitBlob,
+		BundleMode:    doc.BundleMode,
+	})
+	if err != nil {
+		return nil, "", "", "", "", fmt.Errorf("%w: %w", ErrInputInvalid, err)
+	}
+	return doc.Personas, doc.SourceCommit, doc.RosterSHA256, doc.RosterGitBlob, ready.BundleMode, nil
 }
 
 func rootTaskTx(ctx context.Context, tx pgx.Tx, invocationID string) (NativeTask, error) {
@@ -866,7 +893,7 @@ func insertActivationTx(ctx context.Context, tx pgx.Tx, act Activation) error {
 	return nil
 }
 
-func nativeRunInput(policy NativePolicy, fallback ClaimInput, repo, assignee string) (NewRun, error) {
+func nativeRunInput(ctx context.Context, tx pgx.Tx, policy NativePolicy, fallback ClaimInput, repo, assignee string) (NewRun, error) {
 	agent := fallback.AgentID
 	if agent == "" {
 		agent = policy.AgentID
@@ -879,9 +906,12 @@ func nativeRunInput(policy NativePolicy, fallback ClaimInput, repo, assignee str
 	if stage == "" {
 		stage = policy.Stage
 	}
-	prompt, err := definition.NativeSeatPrompt(policy.Personas, assignee)
+	prompt, goalWork, err := nativePrompt(ctx, tx, policy, fallback, assignee)
 	if err != nil {
 		return NewRun{}, err
+	}
+	if work == "" {
+		work = goalWork
 	}
 	return NewRun{
 		FactoryID:  policy.FactoryID,
@@ -893,6 +923,76 @@ func nativeRunInput(policy NativePolicy, fallback ClaimInput, repo, assignee str
 		Repo:       repo,
 		WorkItemID: work,
 		Stage:      stage,
+	}, nil
+}
+
+func nativePrompt(ctx context.Context, tx pgx.Tx, policy NativePolicy, fallback ClaimInput, assignee string) (string, string, error) {
+	switch policy.BundleMode {
+	case "":
+		if policy.SourceCommit != "" || policy.RosterSHA256 != "" || policy.RosterGitBlob != "" {
+			return "", "", fmt.Errorf("%w: bundle metadata", ErrInputInvalid)
+		}
+		prompt, err := definition.NativeSeatPrompt(policy.Personas, assignee)
+		if err != nil {
+			return "", "", fmt.Errorf("%w: %w", ErrInputInvalid, err)
+		}
+		return prompt, "", nil
+	case definition.BundleModeRoleFiles:
+		seat, err := definition.NativeSeatPrompt(policy.Personas, assignee)
+		if err != nil {
+			return "", "", fmt.Errorf("%w: %w", ErrInputInvalid, err)
+		}
+		goal, err := loadNativeGoal(ctx, tx, policy, fallback)
+		if err != nil {
+			return "", "", err
+		}
+		prompt, err := definition.AppendNativeGoal(seat, goal)
+		if err != nil {
+			return "", "", fmt.Errorf("%w: %w", ErrInputInvalid, err)
+		}
+		return prompt, goal.WorkItemID, nil
+	default:
+		return "", "", fmt.Errorf("%w: unknown bundle mode", ErrInputInvalid)
+	}
+}
+
+func loadNativeGoal(ctx context.Context, tx pgx.Tx, policy NativePolicy, fallback ClaimInput) (definition.NativeGoal, error) {
+	var pin, repo, work string
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE(pinned_head_sha, ''), COALESCE(target_repository, ''), COALESCE(work_item_id, '')
+		FROM invocations WHERE id = $1`, policy.InvocationID).Scan(&pin, &repo, &work)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return definition.NativeGoal{}, fmt.Errorf("%w: invocation", ErrInputInvalid)
+	}
+	if err != nil {
+		return definition.NativeGoal{}, err
+	}
+	if work == "" {
+		work = policy.WorkItemID
+	}
+	if work == "" {
+		work = fallback.WorkItemID
+	}
+	var title, body string
+	if work != "" {
+		err = tx.QueryRow(ctx, `
+			SELECT COALESCE(title, ''), COALESCE(body, '')
+			FROM work_items WHERE id = $1`, work).Scan(&title, &body)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return definition.NativeGoal{}, fmt.Errorf("%w: work item", ErrInputInvalid)
+		}
+		if err != nil {
+			return definition.NativeGoal{}, err
+		}
+	}
+	return definition.NativeGoal{
+		WorkItemID:    work,
+		InvocationID:  policy.InvocationID,
+		TaskID:        fallback.TaskID,
+		Repository:    repo,
+		PinnedHeadSHA: pin,
+		Title:         title,
+		Body:          body,
 	}, nil
 }
 
