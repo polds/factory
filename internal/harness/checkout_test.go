@@ -285,6 +285,140 @@ func overrideObject(t *testing.T, owner, repo, sha string) string {
 	return string(raw)
 }
 
+func TestFilterDriverConfigured(t *testing.T) {
+	clean := "filter.pwn.clean\ntouch sentinel; cat\x00"
+	if !filterDriverConfigured(clean) || !filterDriverConfigured("filter.pwn.smudge\ncat\x00") || !filterDriverConfigured("filter.pwn.process\nproc\x00") {
+		t.Fatal("driver not detected")
+	}
+	if filterDriverConfigured("") || filterDriverConfigured("filter.pwn.required\ntrue\x00") || filterDriverConfigured("filter.pwn.clean\n\x00") || filterDriverConfigured("core.bare\nfalse\x00") {
+		t.Fatal("non-command treated as a driver")
+	}
+}
+
+func TestCheckoutGateRefusesFilterDrivers(t *testing.T) {
+	t.Run("clean and smudge", func(t *testing.T) {
+		dir, start, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		gitCmd(t, dir, "config", "filter.pwn.clean", script)
+		gitCmd(t, dir, "config", "filter.pwn.smudge", script)
+		assertFilterRefused(t, dir, start, pin, sentinel)
+	})
+	t.Run("process", func(t *testing.T) {
+		dir, start, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		gitCmd(t, dir, "config", "filter.pwn.process", script)
+		assertFilterRefused(t, dir, start, pin, sentinel)
+	})
+	t.Run("included config", func(t *testing.T) {
+		dir, start, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		inc := filepath.Join(t.TempDir(), "extra.config")
+		body := "[filter \"pwn\"]\n\tclean = " + script + "\n\tsmudge = " + script + "\n"
+		if err := os.WriteFile(inc, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "config", "include.path", inc)
+		assertFilterRefused(t, dir, start, pin, sentinel)
+	})
+	t.Run("clean on status", func(t *testing.T) {
+		dir, start, pin := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("* filter=pwn\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "config", "filter.pwn.clean", script)
+		gitCmd(t, dir, "config", "filter.pwn.required", "true")
+		assertFilterRefused(t, dir, start, pin, sentinel)
+	})
+	t.Run("parent env does not inject a driver", func(t *testing.T) {
+		dir, _, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		t.Setenv("GIT_CONFIG_COUNT", "2")
+		t.Setenv("GIT_CONFIG_KEY_0", "filter.pwn.clean")
+		t.Setenv("GIT_CONFIG_VALUE_0", script)
+		t.Setenv("GIT_CONFIG_KEY_1", "filter.pwn.smudge")
+		t.Setenv("GIT_CONFIG_VALUE_1", script)
+		t.Setenv("GIT_CONFIG_PARAMETERS", "'filter.pwn.process="+script+"'")
+		code, calls, setup := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", pin), pin)
+		if code != ExitOK || calls != 1 || strings.TrimSpace(setup) != pin || head(t, dir) != pin {
+			t.Fatalf("code %d calls %d setup %q head %s", code, calls, setup, head(t, dir))
+		}
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+			t.Fatal("environment filter ran")
+		}
+	})
+	t.Run("absent flag stays legacy", func(t *testing.T) {
+		dir, start, _ := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		gitCmd(t, dir, "config", "filter.pwn.clean", script)
+		gitCmd(t, dir, "config", "filter.pwn.smudge", script)
+		code, calls, setup := runWithoutOverride(t, dir, start)
+		if code != ExitOK || calls != 1 || strings.TrimSpace(setup) != start || head(t, dir) != start {
+			t.Fatalf("code %d calls %d setup %q head %s", code, calls, setup, head(t, dir))
+		}
+	})
+}
+
+func assertFilterRefused(t *testing.T, dir, start, pin, sentinel string) {
+	t.Helper()
+	attrs := filepath.Join(dir, ".gitattributes")
+	beforeAttrs, err := os.ReadFile(attrs)
+	tracked := filepath.Join(dir, "a")
+	beforeFile, errFile := os.ReadFile(tracked)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if errFile != nil {
+		t.Fatal(errFile)
+	}
+	code, calls, setup := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", pin), "")
+	afterAttrs, errAfter := os.ReadFile(attrs)
+	afterFile, errTracked := os.ReadFile(tracked)
+	if code != ExitEnvironment || calls != 0 || setup != "" || head(t, dir) != start || errTracked != nil || string(afterFile) != string(beforeFile) {
+		t.Fatalf("code %d calls %d setup %q head %s", code, calls, setup, head(t, dir))
+	}
+	if string(afterAttrs) != string(beforeAttrs) || (err == nil) != (errAfter == nil) {
+		t.Fatal("attributes changed")
+	}
+	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+		t.Fatal("filter ran")
+	}
+}
+
+func repoWithFilterAttribute(t *testing.T) (string, string, string) {
+	t.Helper()
+	dir, first, _ := twoCommitRepo(t, "https://github.com/example/fixture.git")
+	gitCmd(t, dir, "checkout", "--detach", first)
+	if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("* filter=pwn\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", ".gitattributes")
+	gitCmd(t, dir, "commit", "-m", "attributes")
+	pin := head(t, dir)
+	gitCmd(t, dir, "checkout", "--detach", first)
+	return dir, first, pin
+}
+
+func passThroughFilter(t *testing.T, sentinel string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "filter.sh")
+	body := "#!/bin/sh\ntouch " + shellQuote(sentinel) + "\ncat\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
 func twoCommitRepo(t *testing.T, origin string) (string, string, string) {
 	t.Helper()
 	dir := t.TempDir()

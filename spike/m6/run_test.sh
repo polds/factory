@@ -1810,6 +1810,8 @@ EOF
   rm -rf "$dir"
 }
 
+# case_convention_gate_evidence checks the log parser. The offline driver is
+# the proof that the harness gate moved HEAD.
 case_convention_gate_evidence() {
   local dir="$ROOT/spike/m6/.work/case-convention-gate"
   rm -rf "$dir"

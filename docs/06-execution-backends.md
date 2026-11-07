@@ -229,8 +229,10 @@ The dispatch command's job is to hand the payload to a runtime and return quickl
   object is already local. The flag is omitted when there is no override. A
   supplied empty document fails before those steps. A branch head, `clone_from`,
   `preserve_origin`, a second override, a missing object, a dirty tree, or a
-  path that is not the workspace repository fails before setup. The gate does
-  not fetch, force, reset, or clean (`internal/harness/checkout.go`). The
+  path that is not the workspace repository fails before setup. A local filter
+  clean, smudge, or process command fails before `git status` and before
+  checkout. The gate does not fetch, force, reset, or clean
+  (`internal/harness/checkout.go`). The
   checkout SHA is not an attestation that role files belong to that commit.
 - **Origin stripping.** `--remove-repository-origins` removes remotes after clone, so an
   agent cannot push to a repository the run was not meant to touch. Cheap, effective, and

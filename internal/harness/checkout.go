@@ -91,6 +91,9 @@ func enforceLocalCheckout(ctx context.Context, workspace string, raws []string) 
 	if !ok || !strings.EqualFold(owner, ov.owner) || !strings.EqualFold(repo, ov.repo) {
 		return fmt.Errorf("%w: repository identity", errCheckoutWorkspace)
 	}
+	if err := refuseFilterDrivers(g); err != nil {
+		return err
+	}
 	dirty, err := g.text("status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("%w: status", errCheckoutWorkspace)
@@ -284,6 +287,42 @@ func dirInside(root, path string) error {
 	return nil
 }
 
+func refuseFilterDrivers(g gitRunner) error {
+	out, code, err := g.stdout("-c", "alias.config=", "config", "--local", "--includes", "--null", "--list")
+	if err != nil {
+		return fmt.Errorf("%w: filter config: %w", errCheckoutWorkspace, err)
+	}
+	if code != 0 || filterDriverConfigured(out) {
+		return fmt.Errorf("%w: filter driver", errCheckoutWorkspace)
+	}
+	return nil
+}
+
+func filterDriverConfigured(raw string) bool {
+	raw = strings.TrimRight(raw, "\x00")
+	if raw == "" {
+		return false
+	}
+	for _, rec := range strings.Split(raw, "\x00") {
+		key, value, ok := strings.Cut(rec, "\n")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		if !strings.HasPrefix(key, "filter.") {
+			continue
+		}
+		name := strings.TrimPrefix(key, "filter.")
+		if !strings.HasSuffix(name, ".clean") && !strings.HasSuffix(name, ".smudge") && !strings.HasSuffix(name, ".process") {
+			continue
+		}
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func splitLines(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil
@@ -310,6 +349,20 @@ func (g gitRunner) text(args ...string) (string, error) {
 }
 
 func (g gitRunner) run(args ...string) (string, int, error) {
+	stdout, stderr, code, err := g.exec(args...)
+	text := stdout + stderr
+	if len(text) > 240 {
+		text = text[:240]
+	}
+	return text, code, err
+}
+
+func (g gitRunner) stdout(args ...string) (string, int, error) {
+	stdout, _, code, err := g.exec(args...)
+	return stdout, code, err
+}
+
+func (g gitRunner) exec(args ...string) (string, string, int, error) {
 	ctx, cancel := context.WithTimeout(g.ctx, 20*time.Second)
 	defer cancel()
 	full := []string{
@@ -322,6 +375,8 @@ func (g gitRunner) run(args ...string) (string, int, error) {
 	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = g.dir
+	// Parent GIT_CONFIG_COUNT, GIT_CONFIG_PARAMETERS, and GIT_CONFIG_KEY_*
+	// are not copied. Those variables can define filter drivers.
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + g.home,
@@ -333,20 +388,19 @@ func (g gitRunner) run(args ...string) (string, int, error) {
 		"GIT_NO_LAZY_FETCH=1",
 		"GCM_INTERACTIVE=never",
 	}
-	out, err := cmd.CombinedOutput()
-	text := string(out)
-	if len(text) > 240 {
-		text = text[:240]
-	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
 	if ctx.Err() != nil {
-		return text, -1, fmt.Errorf("%w: git timed out", errCheckoutWorkspace)
+		return stdout.String(), stderr.String(), -1, fmt.Errorf("%w: git timed out", errCheckoutWorkspace)
 	}
 	if err == nil {
-		return text, 0, nil
+		return stdout.String(), stderr.String(), 0, nil
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
-		return text, exit.ExitCode(), nil
+		return stdout.String(), stderr.String(), exit.ExitCode(), nil
 	}
-	return text, -1, err
+	return stdout.String(), stderr.String(), -1, err
 }

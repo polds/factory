@@ -118,7 +118,11 @@ optional when the workspace is missing or unrecognized. The gate does not
 fetch, force, reset, or clean, and it does not create a repository. A dirty
 tree is left untouched. Each git command sets `core.hooksPath` to an empty
 directory and points global and system gitconfig at an empty file, so a hook
-in the repository does not run and user gitconfig is not read. Only omitting
+in the repository does not run and user gitconfig is not read. The git process
+does not receive `GIT_CONFIG_COUNT` or `GIT_CONFIG_PARAMETERS`. A local
+`filter.*.clean`, `filter.*.smudge`, or `filter.*.process` command, including
+one read through a config include, fails closed before `git status` and before
+`git checkout`. Attributes and the work tree are left as they were. Only omitting
 the flag keeps the previous behavior and runs setup and the model in the
 workspace as it already is. The harness gate runs after the worker's own setup
 command. It does not run before that command.
