@@ -36,6 +36,34 @@ func TestCheckoutGateMaterializesRequestedCommit(t *testing.T) {
 	}
 }
 
+func TestCheckoutGateSkipsNonRepository(t *testing.T) {
+	dir := t.TempDir()
+	rt := t.TempDir()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	task, err := json.Marshal(map[string]string{"prompt": "do the task", "model_id": "fake-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rt, "task.json"), task, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code := Run(context.Background(), Options{
+		Args:       []string{"agent", "run", "--task-id", "plain", "--model", "fake-model", "--idle-on-complete", "0s", "--repository-head-override-json", overrideJSON(t, "m6", "scratch", strings.Repeat("c0", 20))},
+		Env:        []string{"PATH=" + os.Getenv("PATH"), "OPENAI_BASE_URL=" + srv.URL},
+		Workspace:  dir,
+		RuntimeDir: rt,
+	})
+	if code != ExitOK || calls.Load() != 1 {
+		t.Fatalf("code %d calls %d", code, calls.Load())
+	}
+}
+
 func TestCheckoutGateRefusesBeforeWork(t *testing.T) {
 	t.Run("mismatch", func(t *testing.T) {
 		dir, first, second := twoCommitRepo(t, "https://github.com/example/fixture.git")

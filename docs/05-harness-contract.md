@@ -107,10 +107,12 @@ equal that commit, detached and clean, with the work tree toplevel at the
 workspace.
 
 Any other shape fails closed: more than one override, a branch head, an unknown
-field, a missing object, a non-commit object, a dirty tree, a different
-repository, a parent repository discovered above the workspace, or a symlink
-workspace or `.git`. Those failures happen before setup and before a model
-call. A dirty tree is left untouched. The gate does not fetch, force, reset,
+field, a missing object in the matching GitHub repository, a non-commit object,
+a dirty tree, a different GitHub repository, a parent repository discovered
+above the workspace, or a symlink workspace or `.git`. Those failures happen
+before setup and before a model call. A working directory that is not a Git
+repository, or whose `origin` is not a GitHub remote, is left untouched so a
+worker-owned clone still reaches setup and the model. A dirty tree is left untouched. The gate does not fetch, force, reset,
 or clean. Each git command sets `core.hooksPath` to an empty directory and
 points global and system gitconfig at an empty file, so a hook in the
 repository does not run and user gitconfig is not read.
