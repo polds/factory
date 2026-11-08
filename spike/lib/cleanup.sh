@@ -121,44 +121,51 @@ spike_open_log() {
   fi
 }
 
-# spike_gate_open builds an anonymous pipe. SPIKE_GATE_R is the read end and
-# SPIKE_GATE_W is the write end. No FIFO and no extra helper. The process
-# substitution that creates the pipe exits immediately and does not hold the
-# write end.
-spike_gate_open() {
-  local rw=""
-  SPIKE_GATE_R=
-  SPIKE_GATE_W=
+# spike_pipe_open sets name_r and name_w to the two ends of an anonymous pipe.
+# The process substitution that creates it exits immediately.
+spike_pipe_open() {
+  local rname="$1" wname="$2" rw="" tmp_r="" tmp_w=""
+  printf -v "$rname" '%s' ""
+  printf -v "$wname" '%s' ""
   exec {rw}<> <(:) || return 1
   # shellcheck disable=SC2102
-  exec {SPIKE_GATE_R}</proc/self/fd/"$rw" || {
+  exec {tmp_r}</proc/self/fd/"$rw" || {
     eval "exec ${rw}>&-"
     return 1
   }
   # shellcheck disable=SC2102
-  exec {SPIKE_GATE_W}>/proc/self/fd/"$rw" || {
+  exec {tmp_w}>/proc/self/fd/"$rw" || {
     eval "exec ${rw}>&-"
-    eval "exec ${SPIKE_GATE_R}>&-"
-    SPIKE_GATE_R=
+    eval "exec ${tmp_r}>&-"
     return 1
   }
   eval "exec ${rw}>&-"
+  printf -v "$rname" '%s' "$tmp_r"
+  printf -v "$wname" '%s' "$tmp_w"
 }
 
-# spike_gate_release closes the gate. EXIT calls this before any fork so a
-# teardown child cannot inherit the write end and pin the waiter.
-spike_gate_release() {
-  local fd=""
-  fd="${SPIKE_GATE_W:-}"
-  SPIKE_GATE_W=
+# spike_close_fd closes the fd number stored in the named global and clears it.
+spike_close_fd() {
+  local name="$1" fd=""
+  fd="${!name:-}"
+  printf -v "$name" '%s' ""
   if [[ "$fd" =~ ^[0-9]+$ ]]; then
     eval "exec ${fd}>&-"
   fi
-  fd="${SPIKE_GATE_R:-}"
+}
+
+# spike_gate_open builds the go pipe.
+spike_gate_open() {
   SPIKE_GATE_R=
-  if [[ "$fd" =~ ^[0-9]+$ ]]; then
-    eval "exec ${fd}>&-"
-  fi
+  SPIKE_GATE_W=
+  spike_pipe_open SPIKE_GATE_R SPIKE_GATE_W
+}
+
+# spike_gate_release closes the go pipe. EXIT calls this before any fork so
+# a teardown child cannot inherit the write end and pin the waiter.
+spike_gate_release() {
+  spike_close_fd SPIKE_GATE_W
+  spike_close_fd SPIKE_GATE_R
 }
 
 # spike_gate_send writes the go byte. SIGPIPE is ignored only for this write
@@ -197,18 +204,6 @@ spike_gate_waiter() {
     exec "$@"
   fi
   "$@"
-}
-
-# spike_cmdline is the argv text ps -o args prints after an external exec.
-spike_cmdline() {
-  local part="" out=""
-  for part in "$@"; do
-    if [[ -n "$out" ]]; then
-      out+=" "
-    fi
-    out+="$part"
-  done
-  printf '%s' "$out"
 }
 
 # spike_spawn records pid, pgid, and ps identity so a recycled pid is not
@@ -299,7 +294,7 @@ spike_spawn() {
   set +e
   local pid="" book_rc=0 run_kind="" typed=""
   local pgid="" lstart="" args="" live_args="" quoted="" part="" seq="" dir=""
-  local i="" got=""
+  local got="" why=""
   if ! spike_open_log "$out" "$append"; then
     book_rc=1
   fi
@@ -367,11 +362,10 @@ spike_spawn() {
     if [[ -z "$pgid" ]]; then
       pgid="$pid"
     fi
-    if [[ "$run_kind" == external ]]; then
-      args="$(spike_cmdline "$@")"
-    else
-      args="$live_args"
-    fi
+    # Store the image ps shows now. The joined argv is the command that has
+    # not exec'd yet. Recording it makes an immediate stop skip this waiter,
+    # and the same pid becomes that command after the driver exits.
+    args="$live_args"
     # Empty identity is not a signal. Leave the waiter blocked and close
     # the write end below so the user command never starts.
     if [[ -z "$lstart" || -z "$args" ]]; then
@@ -423,11 +417,12 @@ spike_spawn() {
     spike_gate_release
   else
     spike_gate_release
-    if [[ "$run_kind" == external ]]; then
-      # ps -o args after exec is the running command. A joined argv is not
-      # that string when an argument contains a newline. This is the image
-      # transition, not a retry of an empty snapshot.
-      for i in 1 2 3 4 5 6 7 8 9 10; do
+    # If exec has already replaced the waiter, record that image. If it has
+    # not, the file still holds the waiter line ps showed before go, and
+    # stop matches the process that is actually running. Never store an
+    # argv ps has not shown.
+    if [[ "$run_kind" == external && -n "$dir" ]]; then
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
         got="$(ps -o args= -p "$pid" 2>/dev/null || true)"
         if [[ -n "$got" && "$got" != "$live_args" ]]; then
           printf '%s\n' "$got" >"$dir/args" || book_rc=1
@@ -450,7 +445,7 @@ spike_spawn() {
     set -e
   fi
   if [[ -n "${SPIKE_STOP_DEFERRED:-}" ]]; then
-    local why="${SPIKE_STOP_DEFERRED}"
+    why="${SPIKE_STOP_DEFERRED}"
     SPIKE_STOP_DEFERRED=
     spike_trap_cleanup "$why"
   fi

@@ -638,6 +638,103 @@ case_gate_post_go_identity() {
   rm -rf "$dir"
 }
 
+# execve of sleep is delayed 500ms. Stop and EXIT must kill the waiter while
+# it is still Bash. Recording the future sleep argv makes stop skip it, and
+# the same pid becomes /bin/sleep after the driver exits.
+case_gate_delayed_exec() {
+  local mode="$1" dir foreign=0 pid="" ec=0
+  dir="$(mktemp -d)"
+  cat >"$dir/delay.c" <<'EOF'
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <string.h>
+#include <unistd.h>
+int execve(const char *path, char *const argv[], char *const envp[]) {
+  static int (*real_execve)(const char *, char *const[], char *const[]) = 0;
+  const char *base;
+  if (!real_execve)
+    real_execve = dlsym(RTLD_NEXT, "execve");
+  base = strrchr(path, '/');
+  base = base ? base + 1 : path;
+  if (strcmp(base, "sleep") == 0)
+    usleep(500000);
+  return real_execve(path, argv, envp);
+}
+EOF
+  if ! gcc -shared -fPIC -o "$dir/delay.so" "$dir/delay.c" -ldl >"$dir/gcc.out" 2>"$dir/gcc.err"; then
+    echo "delay library did not build" >&2
+    cat "$dir/gcc.err" >&2 || true
+    rm -rf "$dir"
+    return 1
+  fi
+  sleep 45 &
+  foreign=$!
+  set +e
+  LD_PRELOAD="$dir/delay.so" bash -c '
+    set -u
+    . "$1"
+    mode="$2"
+    SPIKE_REG="$3/reg"
+    WORK="$3/work"
+    spike_run_init t76
+    spike_install_trap
+    spike_spawn --class transient delayed /bin/sleep 30
+    pid=$SPIKE_LAST_PID
+    printf "%s\n" "$pid" >"$3/pid"
+    printf "%s\n" "$(cat "$SPIKE_LAST_DIR/args")" >"$3/recorded"
+    printf "%s\n" "$(ps -o args= -p "$pid" 2>/dev/null || true)" >"$3/live"
+    printf "%s\n" "$(awk "/^State:/ {print \$2}" /proc/"$pid"/status)" >"$3/state"
+    if [[ "$mode" == stop ]]; then
+      spike_stop_processes
+      if kill -0 "$pid" 2>/dev/null; then
+        printf yes >"$3/stop_alive"
+      else
+        printf no >"$3/stop_alive"
+      fi
+    fi
+    exit 0
+  ' _ "$LIB" "$mode" "$dir" >"$dir/out" 2>"$dir/err"
+  ec=$?
+  set -e
+  pid="$(cat "$dir/pid" 2>/dev/null || true)"
+  if [[ "$ec" -ne 0 ]]; then
+    echo "delayed exec driver exit ${ec}" >&2
+    cat "$dir/err" >&2 || true
+    [[ -n "$pid" ]] && kill -KILL "$pid" 2>/dev/null || true
+    kill -KILL "$foreign" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  if [[ "$(cat "$dir/state" 2>/dev/null || true)" != "S" ]]; then
+    echo "delayed exec state=$(cat "$dir/state" 2>/dev/null || echo missing)" >&2
+    [[ -n "$pid" ]] && kill -KILL "$pid" 2>/dev/null || true
+    kill -KILL "$foreign" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  if [[ "$mode" == stop && "$(cat "$dir/stop_alive" 2>/dev/null || true)" != "no" ]]; then
+    echo "stop left waiter alive recorded=[$(cat "$dir/recorded" 2>/dev/null || true)] live=[$(cat "$dir/live" 2>/dev/null || true)]" >&2
+    [[ -n "$pid" ]] && kill -KILL "$pid" 2>/dev/null || true
+    kill -KILL "$foreign" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    echo "after exit pid ${pid} still $(ps -o args= -p "$pid" 2>/dev/null || true)" >&2
+    kill -KILL "$pid" 2>/dev/null || true
+    kill -KILL "$foreign" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  if ! kill -0 "$foreign" 2>/dev/null; then
+    echo "delayed exec killed foreign sleep ${foreign}" >&2
+    rm -rf "$dir"
+    return 1
+  fi
+  kill -KILL "$foreign" 2>/dev/null || true
+  rm -rf "$dir"
+}
+
 # A same-shell function runs only after go. Its process stays the shell.
 case_gate_function() {
   local dir pid kids=""
@@ -1315,6 +1412,8 @@ run_case gate-parent-exit case_gate_parent_exit
 run_case gate-exit-before-go case_gate_exit_before_go
 run_case gate-sigpipe case_gate_sigpipe
 run_case gate-exit-closes-first case_gate_exit_closes_first
+run_case gate-delayed-exec-stop case_gate_delayed_exec stop
+run_case gate-delayed-exec-exit case_gate_delayed_exec exit
 run_case playwright-argv case_playwright_argv
 
 say "${PASS} passed, ${FAIL} failed"
