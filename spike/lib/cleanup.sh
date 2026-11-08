@@ -33,13 +33,16 @@
 spike_trap_cleanup() {
   local code=$?
   local why="${1:-EXIT}"
-  # A signal can arrive after fork and before the child is recorded.
-  # Defer teardown until spike_spawn finishes that record. Exiting here
-  # would orphan the child.
+  # A signal can arrive after the gate opens and before the command is
+  # released. Defer INT and TERM until spike_spawn closes the gate or sends
+  # go. EXIT is not deferred. Close the write end before teardown forks:
+  # a background sibling started while that fd is still open would keep the
+  # waiter blocked. Foreground tools release the inherited fd when they exit.
   if [[ "${SPIKE_SPAWN_CRITICAL:-}" == 1 && "$why" != EXIT ]]; then
     SPIKE_STOP_DEFERRED="$why"
     return 0
   fi
+  spike_gate_release
   spike_teardown_begin "$why" || return 0
   spike_teardown_finish "$code"
 }
@@ -118,49 +121,94 @@ spike_open_log() {
   fi
 }
 
-# spike_fork_still_owned reports whether pid is still the process this shell
-# forked. Inside a subshell $$ is the outer shell, so the parent is BASHPID.
-# lstart and args are the snapshot taken at the fork. Both are required.
-# A recycled pid of this same shell shares that parent and must not be
-# signalled. An empty snapshot is not identity, so it is not owned.
-spike_fork_still_owned() {
-  local pid="$1" want_lstart="$2" want_args="$3"
-  local ppid="" got_lstart="" got_args=""
-  if [[ -z "$pid" || "$pid" == "$BASHPID" || "$pid" == "$$" ]]; then
+# spike_gate_open builds an anonymous pipe. SPIKE_GATE_R is the read end and
+# SPIKE_GATE_W is the write end. No FIFO and no extra helper. The process
+# substitution that creates the pipe exits immediately and does not hold the
+# write end.
+spike_gate_open() {
+  local rw=""
+  SPIKE_GATE_R=
+  SPIKE_GATE_W=
+  exec {rw}<> <(:) || return 1
+  # shellcheck disable=SC2102
+  exec {SPIKE_GATE_R}</proc/self/fd/"$rw" || {
+    eval "exec ${rw}>&-"
     return 1
-  fi
-  if [[ -z "$want_lstart" || -z "$want_args" ]]; then
+  }
+  # shellcheck disable=SC2102
+  exec {SPIKE_GATE_W}>/proc/self/fd/"$rw" || {
+    eval "exec ${rw}>&-"
+    eval "exec ${SPIKE_GATE_R}>&-"
+    SPIKE_GATE_R=
     return 1
-  fi
-  ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
-  if [[ "$ppid" != "$BASHPID" ]]; then
-    return 1
-  fi
-  got_lstart="$(ps -o lstart= -p "$pid" 2>/dev/null || true)"
-  got_args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
-  [[ "$got_lstart" == "$want_lstart" && "$got_args" == "$want_args" ]]
+  }
+  eval "exec ${rw}>&-"
 }
 
-# spike_reap_owned_child stops a process this shell just forked when spawn
-# bookkeeping fails before that pid is recorded. TERM and KILL each recheck
-# ownership. A pid that has already been reused is left alone.
-spike_reap_owned_child() {
-  local pid="$1" want_lstart="$2" want_args="$3" signalled=0
-  if spike_fork_still_owned "$pid" "$want_lstart" "$want_args"; then
-    kill -TERM "$pid" 2>/dev/null || true
-    signalled=1
+# spike_gate_release closes the gate. EXIT calls this before any fork so a
+# teardown child cannot inherit the write end and pin the waiter.
+spike_gate_release() {
+  local fd=""
+  fd="${SPIKE_GATE_W:-}"
+  SPIKE_GATE_W=
+  if [[ "$fd" =~ ^[0-9]+$ ]]; then
+    eval "exec ${fd}>&-"
   fi
-  if spike_fork_still_owned "$pid" "$want_lstart" "$want_args"; then
-    kill -KILL "$pid" 2>/dev/null || true
-    signalled=1
+  fd="${SPIKE_GATE_R:-}"
+  SPIKE_GATE_R=
+  if [[ "$fd" =~ ^[0-9]+$ ]]; then
+    eval "exec ${fd}>&-"
   fi
-  if [[ "$signalled" -eq 1 ]] && ! spike_fork_still_owned "$pid" "$want_lstart" "$want_args"; then
-    # The forked process is gone. Collect it. A live pid here is a
-    # different process and must not be waited on.
-    if ! kill -0 "$pid" 2>/dev/null; then
-      wait "$pid" 2>/dev/null || true
+}
+
+# spike_gate_send writes the go byte. SIGPIPE is ignored only for this write
+# and the caller's PIPE trap is restored.
+spike_gate_send() {
+  local fd="$1" rc=0 prev=""
+  prev="$(trap -p PIPE || true)"
+  trap '' PIPE
+  # A missing reader raises SIGPIPE. The trap keeps the shell alive; the
+  # builtin still reports the write error, which is not a driver failure.
+  { printf '\n' >&"$fd"; } 2>/dev/null || rc=$?
+  if [[ -n "$prev" ]]; then
+    eval "$prev"
+  else
+    trap - PIPE
+  fi
+  return "$rc"
+}
+
+# spike_gate_waiter blocks until the parent sends go. It drops the write end
+# before reading. A shell function or builtin then runs here. An external
+# command replaces this shell, so the recorded pid becomes that command.
+spike_gate_waiter() {
+  local kind="$1"
+  shift
+  if [[ "${SPIKE_GATE_W:-}" =~ ^[0-9]+$ ]]; then
+    eval "exec ${SPIKE_GATE_W}>&-"
+  fi
+  if ! IFS= read -r _ <&"${SPIKE_GATE_R}"; then
+    exit 7
+  fi
+  if [[ "${SPIKE_GATE_R:-}" =~ ^[0-9]+$ ]]; then
+    eval "exec ${SPIKE_GATE_R}>&-"
+  fi
+  if [[ "$kind" == external ]]; then
+    exec "$@"
+  fi
+  "$@"
+}
+
+# spike_cmdline is the argv text ps -o args prints after an external exec.
+spike_cmdline() {
+  local part="" out=""
+  for part in "$@"; do
+    if [[ -n "$out" ]]; then
+      out+=" "
     fi
-  fi
+    out+="$part"
+  done
+  printf '%s' "$out"
 }
 
 # spike_spawn records pid, pgid, and ps identity so a recycled pid is not
@@ -246,19 +294,29 @@ spike_spawn() {
   case $- in
     *e*) errexit=1 ;;
   esac
-  # Bookkeeping after the fork must not abort under set -e before the child
-  # is recorded or reaped.
+  # Bookkeeping must not abort under set -e before the write end is closed.
+  # The user command does not run until that close is a go byte.
   set +e
-  local pid="" launch_rc=0 book_rc=0 forked=0
-  SPIKE_SPAWN_CRITICAL=1
+  local pid="" book_rc=0 run_kind="" typed=""
+  local pgid="" lstart="" args="" live_args="" quoted="" part="" seq="" dir=""
+  local i="" got=""
   if ! spike_open_log "$out" "$append"; then
     book_rc=1
-  elif [[ "$err" != "$out" ]] && ! spike_open_log "$err" "$append"; then
+  fi
+  typed="$(type -t -- "$1" 2>/dev/null || true)"
+  case "$typed" in
+    function | builtin) run_kind=shell ;;
+    *) run_kind=external ;;
+  esac
+  if [[ "$book_rc" -eq 0 ]] && ! spike_gate_open; then
     book_rc=1
   fi
+  # From here until spike_gate_release, do not start another background
+  # process. A sibling that inherits the write end pins the waiter. Peter
+  # accepted that constraint. Foreground commands are fine: they drop the
+  # inherited fd when they exit. This is not a claim about arbitrary siblings.
   if [[ "$book_rc" -eq 0 ]]; then
-    # The child inherits the options in force at the fork. Callers run
-    # set -e, and a backgrounded function must keep failing closed.
+    SPIKE_SPAWN_CRITICAL=1
     if [[ "$errexit" -eq 1 ]]; then
       set -e
     fi
@@ -267,51 +325,60 @@ spike_spawn() {
     # Different paths stay split. --out alone leaves stderr with the caller.
     if [[ -n "$out" && -n "$err" && "$out" == "$err" ]]; then
       if [[ "$append" -eq 1 ]]; then
-        "$@" >>"$out" 2>&1 &
+        spike_gate_waiter "$run_kind" "$@" >>"$out" 2>&1 &
       else
-        "$@" >"$out" 2>&1 &
+        spike_gate_waiter "$run_kind" "$@" >"$out" 2>&1 &
       fi
     elif [[ -n "$out" && -n "$err" ]]; then
       if [[ "$append" -eq 1 ]]; then
-        "$@" >>"$out" 2>>"$err" &
+        spike_gate_waiter "$run_kind" "$@" >>"$out" 2>>"$err" &
       else
-        "$@" >"$out" 2>"$err" &
+        spike_gate_waiter "$run_kind" "$@" >"$out" 2>"$err" &
       fi
     elif [[ -n "$out" ]]; then
       if [[ "$append" -eq 1 ]]; then
-        "$@" >>"$out" &
+        spike_gate_waiter "$run_kind" "$@" >>"$out" &
       else
-        "$@" >"$out" &
+        spike_gate_waiter "$run_kind" "$@" >"$out" &
       fi
     elif [[ -n "$err" ]]; then
       if [[ "$append" -eq 1 ]]; then
-        "$@" 2>>"$err" &
+        spike_gate_waiter "$run_kind" "$@" 2>>"$err" &
       else
-        "$@" 2>"$err" &
+        spike_gate_waiter "$run_kind" "$@" 2>"$err" &
       fi
     else
-      "$@" &
+      spike_gate_waiter "$run_kind" "$@" &
     fi
-    launch_rc=$?
     pid=$!
-    forked=1
     set +e
     if [[ "$monitor" -eq 0 ]]; then
       set +m
     fi
+    if [[ "${SPIKE_GATE_R:-}" =~ ^[0-9]+$ ]]; then
+      eval "exec ${SPIKE_GATE_R}>&-"
+      SPIKE_GATE_R=
+    fi
   fi
-  local pgid="" lstart="" args="" quoted="" part="" seq="" dir=""
-  if [[ "$forked" -eq 0 ]]; then
-    pid=""
-  elif [[ "$launch_rc" -ne 0 ]]; then
-    book_rc=$launch_rc
-  else
+  if [[ "$book_rc" -eq 0 ]]; then
     pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
     lstart="$(ps -o lstart= -p "$pid" 2>/dev/null || true)"
-    args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+    live_args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
     if [[ -z "$pgid" ]]; then
       pgid="$pid"
     fi
+    if [[ "$run_kind" == external ]]; then
+      args="$(spike_cmdline "$@")"
+    else
+      args="$live_args"
+    fi
+    # Empty identity is not a signal. Leave the waiter blocked and close
+    # the write end below so the user command never starts.
+    if [[ -z "$lstart" || -z "$args" ]]; then
+      book_rc=1
+    fi
+  fi
+  if [[ "$book_rc" -eq 0 ]]; then
     quoted=""
     for part in "$@"; do
       quoted="${quoted}$(printf '%q' "$part") "
@@ -324,37 +391,61 @@ spike_spawn() {
     if ! printf '%s\n' "$seq" >"$SPIKE_REG/seq"; then
       book_rc=1
     fi
-    if [[ "$book_rc" -eq 0 ]]; then
-      dir=$(printf '%s/children/%04d' "$SPIKE_REG" "$seq")
-      if ! mkdir -p "$dir"; then
-        book_rc=1
-      fi
+  fi
+  if [[ "$book_rc" -eq 0 ]]; then
+    dir=$(printf '%s/children/%04d' "$SPIKE_REG" "$seq")
+    if ! mkdir -p "$dir"; then
+      book_rc=1
     fi
-    if [[ "$book_rc" -eq 0 ]]; then
-      printf '%s\n' "$class" >"$dir/class" || book_rc=1
-      printf '%s\n' "$name" >"$dir/name" || book_rc=1
-      printf '%s\n' "$pid" >"$dir/pid" || book_rc=1
-      printf '%s\n' "$pgid" >"$dir/pgid" || book_rc=1
-      printf '%s\n' "$lstart" >"$dir/lstart" || book_rc=1
-      printf '%s\n' "$args" >"$dir/args" || book_rc=1
-      printf '%s\n' "$quoted" >"$dir/argv" || book_rc=1
-      printf '%s\n' "$out" >"$dir/out" || book_rc=1
-      printf '%s\n' "$err" >"$dir/err" || book_rc=1
-      printf '%s\n' "$append" >"$dir/append" || book_rc=1
+  fi
+  if [[ "$book_rc" -eq 0 ]]; then
+    printf '%s\n' "$class" >"$dir/class" || book_rc=1
+    printf '%s\n' "$name" >"$dir/name" || book_rc=1
+    printf '%s\n' "$pid" >"$dir/pid" || book_rc=1
+    printf '%s\n' "$pgid" >"$dir/pgid" || book_rc=1
+    printf '%s\n' "$lstart" >"$dir/lstart" || book_rc=1
+    printf '%s\n' "$args" >"$dir/args" || book_rc=1
+    printf '%s\n' "$quoted" >"$dir/argv" || book_rc=1
+    printf '%s\n' "$out" >"$dir/out" || book_rc=1
+    printf '%s\n' "$err" >"$dir/err" || book_rc=1
+    printf '%s\n' "$append" >"$dir/append" || book_rc=1
+  fi
+  if [[ "$book_rc" -eq 0 ]]; then
+    if ! spike_gate_send "$SPIKE_GATE_W"; then
+      book_rc=1
     fi
   fi
   if [[ "$book_rc" -ne 0 ]]; then
-    spike_reap_owned_child "$pid" "$lstart" "$args"
-    SPIKE_SPAWN_CRITICAL=0
+    if [[ -n "$dir" && -d "$dir" ]]; then
+      rm -rf "$dir"
+    fi
+    # No numeric signal. EOF makes the waiter exit before exec.
+    spike_gate_release
   else
+    spike_gate_release
+    if [[ "$run_kind" == external ]]; then
+      # ps -o args after exec is the running command. A joined argv is not
+      # that string when an argument contains a newline. This is the image
+      # transition, not a retry of an empty snapshot.
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        got="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+        if [[ -n "$got" && "$got" != "$live_args" ]]; then
+          printf '%s\n' "$got" >"$dir/args" || book_rc=1
+          break
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+          break
+        fi
+      done
+    fi
     SPIKE_LAST_PID="$pid"
     # Callers (run_bounded, specs restart) read these after spike_spawn.
     # shellcheck disable=SC2034
     SPIKE_LAST_PGID="$pgid"
     # shellcheck disable=SC2034
     SPIKE_LAST_DIR="$dir"
-    SPIKE_SPAWN_CRITICAL=0
   fi
+  SPIKE_SPAWN_CRITICAL=0
   if [[ "$errexit" -eq 1 ]]; then
     set -e
   fi

@@ -506,6 +506,8 @@ fi
 set +m
 if [[ "$kind" == seq-term ]]; then
   SPIKE_STOP_DEFERRED=TERM
+elif [[ "$kind" == seq-int ]]; then
+  SPIKE_STOP_DEFERRED=INT
 fi
 if [[ "$kind" == subshell ]]; then
   (
@@ -574,9 +576,13 @@ EOF
     rm -rf "$dir"
     return 1
   fi
-  if [[ "$kind" == seq-term ]]; then
-    if [[ "$ec" -ne 143 ]]; then
-      echo "deferred TERM exit ${ec}, want 143" >&2
+  if [[ "$kind" == seq-term || "$kind" == seq-int ]]; then
+    local want=143
+    if [[ "$kind" == seq-int ]]; then
+      want=130
+    fi
+    if [[ "$ec" -ne "$want" ]]; then
+      echo "deferred signal exit ${ec}, want ${want}" >&2
       cat "$dir/err" >&2 || true
       rm -rf "$dir"
       return 1
@@ -600,66 +606,297 @@ EOF
   rm -rf "$dir"
 }
 
-# Reaping a failed spawn is allowed only for the process this shell forked.
-# A different lstart or args, or a parent other than this shell, stays up.
-# A child that ignores TERM is still killed after the identity recheck.
-case_reap_fork_identity() {
-  local dir pid lstart args ec
+# After go, an external command's recorded lstart and args match ps, and a
+# normal stop kills that process. lstart is still one-second text.
+case_gate_post_go_identity() {
+  local dir pid rec_l rec_a live_l live_a
   dir="$(mktemp -d)"
   # shellcheck source=spike/lib/cleanup.sh
   . "$LIB"
-  sleep 600 &
-  pid=$!
-  lstart="$(ps -o lstart= -p "$pid" 2>/dev/null || true)"
-  args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
-  if [[ -z "$lstart" || -z "$args" ]]; then
-    echo "identity snapshot missing for ${pid}" >&2
+  SPIKE_REG="$dir/reg"
+  WORK="$dir/work"
+  spike_run_init t76
+  spike_spawn --class transient ident sleep 30
+  pid="$SPIKE_LAST_PID"
+  rec_l="$(spike_read_field "$SPIKE_LAST_DIR/lstart")"
+  rec_a="$(spike_read_field "$SPIKE_LAST_DIR/args")"
+  live_l="$(ps -o lstart= -p "$pid" 2>/dev/null || true)"
+  live_a="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+  if [[ "$rec_l" != "$live_l" || "$rec_a" != "$live_a" || "$live_a" != "sleep 30" ]]; then
+    echo "post-go identity rec=[$rec_l][$rec_a] live=[$live_l][$live_a]" >&2
     kill -KILL "$pid" 2>/dev/null || true
     rm -rf "$dir"
     return 1
   fi
-  spike_reap_owned_child "$pid" "not-the-real-start" "$args"
-  if ! kill -0 "$pid" 2>/dev/null; then
-    echo "mismatched lstart was signalled: ${pid}" >&2
+  spike_stop_processes
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "recorded sleep was not stopped" >&2
+    kill -KILL "$pid" 2>/dev/null || true
     rm -rf "$dir"
     return 1
   fi
-  spike_reap_owned_child "$pid" "$lstart" "not-the-real-args"
-  if ! kill -0 "$pid" 2>/dev/null; then
-    echo "mismatched args were signalled: ${pid}" >&2
+  rm -rf "$dir"
+}
+
+# A same-shell function runs only after go. Its process stays the shell.
+case_gate_function() {
+  local dir pid kids=""
+  dir="$(mktemp -d)"
+  # shellcheck source=spike/lib/cleanup.sh
+  . "$LIB"
+  # spike_spawn runs this function in a subshell of this shell.
+  # shellcheck disable=SC2329
+  gate_fn() {
+    printf 'RAN\n' >"$1"
+    sleep 30
+  }
+  SPIKE_REG="$dir/reg"
+  WORK="$dir/work"
+  spike_run_init t76
+  spike_spawn --class transient fn gate_fn "$dir/ran"
+  pid="$SPIKE_LAST_PID"
+  sleep 0.2
+  if [[ "$(cat "$dir/ran" 2>/dev/null || true)" != "RAN" ]]; then
+    echo "function did not run" >&2
+    kids="$(ps -o pid= --ppid "$pid" 2>/dev/null || true)"
+    # shellcheck disable=SC2086
+    kill -KILL $pid $kids 2>/dev/null || true
     rm -rf "$dir"
     return 1
   fi
+  if [[ "$(spike_read_field "$SPIKE_LAST_DIR/args")" != "$(ps -o args= -p "$pid" 2>/dev/null || true)" ]]; then
+    echo "function identity drifted" >&2
+    kids="$(ps -o pid= --ppid "$pid" 2>/dev/null || true)"
+    # shellcheck disable=SC2086
+    kill -KILL $pid $kids 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  kids="$(ps -o pid= --ppid "$pid" 2>/dev/null || true)"
+  # shellcheck disable=SC2086
+  kill -KILL $pid $kids 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  rm -rf "$dir"
+}
+
+# The released command is not tied to the parent's exit.
+case_gate_parent_exit() {
+  local dir pid
+  dir="$(mktemp -d)"
   bash -c '
     set -euo pipefail
     . "$1"
-    spike_reap_owned_child "$2" "$3" "$4"
-  ' _ "$LIB" "$pid" "$lstart" "$args"
+    SPIKE_REG="$2/reg"
+    WORK="$2/work"
+    spike_run_init t76
+    spike_spawn --class stack hold sleep 30
+    printf "%s\n" "$SPIKE_LAST_PID" >"$2/pid"
+  ' _ "$LIB" "$dir"
+  pid="$(cat "$dir/pid")"
+  sleep 0.2
   if ! kill -0 "$pid" 2>/dev/null; then
-    echo "subshell reaped an outer child: ${pid}" >&2
+    echo "released sleep died with the parent" >&2
     rm -rf "$dir"
     return 1
   fi
-  spike_reap_owned_child "$pid" "$lstart" "$args"
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "owned child survived a matching reap: ${pid}" >&2
+  if [[ "$(ps -o args= -p "$pid" 2>/dev/null || true)" != "sleep 30" ]]; then
+    echo "surviving process is not sleep" >&2
     kill -KILL "$pid" 2>/dev/null || true
     rm -rf "$dir"
     return 1
   fi
-  bash -c 'trap "" TERM; while true; do sleep 1; done' &
-  pid=$!
-  lstart="$(ps -o lstart= -p "$pid" 2>/dev/null || true)"
-  args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
-  spike_reap_owned_child "$pid" "$lstart" "$args"
-  ec=0
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "TERM-ignoring child survived the recheck: ${pid}" >&2
-    kill -KILL "$pid" 2>/dev/null || true
-    ec=1
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  rm -rf "$dir"
+}
+
+# EXIT while the waiter is blocked closes the write end. The user command
+# does not start. spike_teardown_finish exits this driver.
+case_gate_exit_before_go() {
+  local dir
+  dir="$(mktemp -d)"
+  bash -c '
+    set -euo pipefail
+    . "$1"
+    mark="$2/marker"
+    SPIKE_REG="$2/reg"
+    WORK="$2/work"
+    spike_run_init t76
+    spike_install_trap
+    spike_gate_open
+    (
+      eval "exec ${SPIKE_GATE_W}>&-"
+      if ! IFS= read -r _ <&"${SPIKE_GATE_R}"; then
+        printf EOF >"$mark"
+        exit 7
+      fi
+      printf RAN >"$mark"
+      exec sleep 600
+    ) &
+    eval "exec ${SPIKE_GATE_R}>&-"
+    SPIKE_GATE_R=
+    spike_trap_cleanup EXIT
+  ' _ "$LIB" "$dir" >"$dir/out" 2>"$dir/err" || true
+  if [[ "$(cat "$dir/marker" 2>/dev/null || true)" != "EOF" ]]; then
+    echo "EXIT before go marker=$(cat "$dir/marker" 2>/dev/null || echo missing)" >&2
+    cat "$dir/err" >&2 || true
+    rm -rf "$dir"
+    return 1
+  fi
+  if pgrep -f '[s]leep 600' >/dev/null; then
+    echo "EXIT before go started sleep" >&2
+    # shellcheck disable=SC2046
+    kill -KILL $(pgrep -f '[s]leep 600') 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
   fi
   rm -rf "$dir"
-  return "$ec"
+}
+
+# The go write must not kill the shell when the reader is already gone,
+# and it must not leave the caller's PIPE trap changed.
+case_gate_sigpipe() {
+  local rc=0 before after
+  # shellcheck source=spike/lib/cleanup.sh
+  . "$LIB"
+  before="$(trap -p PIPE || true)"
+  spike_gate_open
+  eval "exec ${SPIKE_GATE_R}>&-"
+  SPIKE_GATE_R=
+  # The pipe's creating process can still hold a read end for a moment.
+  # A write then succeeds. Retry until that holder exits and the write fails.
+  set +e
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    spike_gate_send "$SPIKE_GATE_W"
+    rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      break
+    fi
+  done
+  set -e
+  after="$(trap -p PIPE || true)"
+  spike_gate_release
+  if [[ "$rc" -eq 0 || "$rc" -eq 141 ]]; then
+    echo "go write status ${rc}" >&2
+    return 1
+  fi
+  if [[ "$before" != "$after" ]]; then
+    echo "PIPE trap changed" >&2
+    return 1
+  fi
+}
+
+# A background command started from teardown must not keep the waiter up,
+# because the write end is closed before that fork. A sibling started while
+# the write end is still open would pin the waiter; production does not
+# start one. This is the constraint Peter accepted, not a general sibling proof.
+case_gate_exit_closes_first() {
+  local dir extra=""
+  dir="$(mktemp -d)"
+  bash -c '
+    set -euo pipefail
+    . "$1"
+    mark="$2"
+    SPIKE_REG="$2/reg"
+    WORK="$2/work"
+    spike_run_init t76
+    spike_install_trap
+    spike_cleanup_pre() {
+      sleep 30 &
+      printf "%s\n" "$!" >"$mark/extra"
+      if kill -0 "$!" 2>/dev/null; then
+        printf alive >"$mark/extra_state"
+      fi
+    }
+    spike_gate_open
+    (
+      eval "exec ${SPIKE_GATE_W}>&-"
+      if ! IFS= read -r _ <&"${SPIKE_GATE_R}"; then
+        printf EOF >"$mark/marker"
+        exit 7
+      fi
+      printf RAN >"$mark/marker"
+      exec sleep 600
+    ) &
+    eval "exec ${SPIKE_GATE_R}>&-"
+    SPIKE_GATE_R=
+    spike_trap_cleanup EXIT
+  ' _ "$LIB" "$dir" >"$dir/out" 2>"$dir/err" || true
+  extra="$(cat "$dir/extra" 2>/dev/null || true)"
+  if [[ "$(cat "$dir/marker" 2>/dev/null || true)" != "EOF" ]]; then
+    echo "waiter was not released before teardown" >&2
+    [[ -n "$extra" ]] && kill -KILL "$extra" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  if [[ "$(cat "$dir/extra_state" 2>/dev/null || true)" != "alive" ]]; then
+    echo "teardown child was not alive after the write end closed" >&2
+    [[ -n "$extra" ]] && kill -KILL "$extra" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  if [[ -n "$extra" ]] && kill -0 "$extra" 2>/dev/null; then
+    kill -KILL "$extra" 2>/dev/null || true
+    wait "$extra" 2>/dev/null || true
+  fi
+  rm -rf "$dir"
+}
+
+# An empty ps identity must not start the user command and must not signal
+# a foreign pid. The registry write also fails.
+case_spawn_empty_identity() {
+  local dir foreign=0 ec orphans=""
+  dir="$(mktemp -d)"
+  sleep 600 &
+  foreign=$!
+  mkdir -p "$dir/bin"
+  cat >"$dir/bin/ps" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "$dir/bin/ps"
+  cat >"$dir/driver.sh" <<'EOF'
+set -euo pipefail
+. "$1"
+export PATH="$2:${PATH}"
+reg="$3/reg"
+WORK="$3/work"
+SPIKE_REG="$reg"
+spike_run_init t76
+spike_install_trap
+rm -f "$reg/seq"
+mkdir "$reg/seq"
+spike_spawn --class transient broken sleep 600
+echo CONTINUED >"$3/continued"
+EOF
+  set +e
+  bash "$dir/driver.sh" "$LIB" "$dir/bin" "$dir" >"$dir/out" 2>"$dir/err"
+  ec=$?
+  set -e
+  orphans="$(pgrep -f '[s]leep 600' || true)"
+  if [[ -n "$orphans" ]]; then
+    orphans="$(printf '%s\n' "$orphans" | grep -vx "$foreign" || true)"
+  fi
+  if [[ -n "$orphans" ]]; then
+    echo "empty identity left sleep: ${orphans}" >&2
+    # shellcheck disable=SC2086
+    kill -KILL $orphans 2>/dev/null || true
+    kill -KILL "$foreign" 2>/dev/null || true
+    rm -rf "$dir"
+    return 1
+  fi
+  if ! kill -0 "$foreign" 2>/dev/null; then
+    echo "empty identity killed foreign sleep ${foreign}" >&2
+    rm -rf "$dir"
+    return 1
+  fi
+  kill -KILL "$foreign" 2>/dev/null || true
+  if [[ "$ec" -eq 0 || -f "$dir/continued" ]]; then
+    echo "empty identity spawn was ignored, exit ${ec}" >&2
+    rm -rf "$dir"
+    return 1
+  fi
+  rm -rf "$dir"
 }
 
 case_playwright_argv() {
@@ -1070,7 +1307,14 @@ run_case spawn-redirect-failure case_spawn_bookkeeping_failure redirect
 run_case spawn-seq-deferred-term case_spawn_bookkeeping_failure seq-term
 run_case spawn-seq-subshell case_spawn_bookkeeping_failure subshell
 run_case spawn-seq-nested case_spawn_bookkeeping_failure nested
-run_case reap-fork-identity case_reap_fork_identity
+run_case spawn-seq-deferred-int case_spawn_bookkeeping_failure seq-int
+run_case spawn-empty-identity case_spawn_empty_identity
+run_case gate-post-go-identity case_gate_post_go_identity
+run_case gate-function case_gate_function
+run_case gate-parent-exit case_gate_parent_exit
+run_case gate-exit-before-go case_gate_exit_before_go
+run_case gate-sigpipe case_gate_sigpipe
+run_case gate-exit-closes-first case_gate_exit_closes_first
 run_case playwright-argv case_playwright_argv
 
 say "${PASS} passed, ${FAIL} failed"
