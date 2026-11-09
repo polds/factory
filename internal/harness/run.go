@@ -114,6 +114,18 @@ func Run(ctx context.Context, opt Options) int {
 	if err != nil {
 		return finish(ExitConfigInvalid, "config_invalid", "task.json: "+err.Error())
 	}
+	if proofSetupDisabled(opt.Env, task) {
+		task, err = MaterializeAssigned(ctx, opt, inv)
+		if err != nil {
+			if errors.Is(err, errPreHarnessSetup) {
+				return finish(ExitConfigInvalid, "config_invalid", "pre-harness setup refused")
+			}
+			if errors.Is(err, errCheckoutOverride) {
+				return finish(ExitConfigInvalid, "config_invalid", "checkout: "+err.Error())
+			}
+			return finish(ExitEnvironment, "environment_setup_failed", "checkout: "+err.Error())
+		}
+	}
 	if err := enforceLocalCheckout(ctx, opt.Workspace, inv.Values["repository-head-override-json"]); err != nil {
 		if errors.Is(err, errCheckoutOverride) {
 			return finish(ExitConfigInvalid, "config_invalid", "checkout: "+err.Error())
@@ -157,7 +169,11 @@ func Run(ctx context.Context, opt Options) int {
 		return finish(ExitConfigInvalid, "config_invalid", "FACTORY_MAX_TURNS: "+err.Error())
 	}
 
-	if task.SetupCommand != "" {
+	if proofSetupDisabled(opt.Env, task) {
+		if strings.TrimSpace(task.SetupCommand) != "" {
+			return finish(ExitConfigInvalid, "config_invalid", "pre-harness setup refused")
+		}
+	} else if task.SetupCommand != "" {
 		cmd := exec.CommandContext(ctx, "sh", "-c", task.SetupCommand)
 		cmd.Dir = opt.Workspace
 		cmd.Env = scrubEnv(opt.Env, toolEnvDeny(task.HarnessAuthEnv))

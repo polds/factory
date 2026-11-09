@@ -233,7 +233,13 @@ The dispatch command's job is to hand the payload to a runtime and return quickl
   clean, smudge, or process command in the config those git commands read,
   including worktree config and includes, fails before `git status` and before
   checkout. The gate does not fetch, force, reset, or clean
-  (`internal/harness/checkout.go`). The
+  (`internal/harness/checkout.go`). For a `role_files` assignment the harness
+  first copies `FACTORY_LOCAL_OBJECT_SOURCE` into an empty workspace when that
+  variable names a local repository that already contains the pinned commit,
+  writes `task.json` from the assignment, and refuses `FACTORY_UNTRUSTED_SETUP`
+  and a pre-existing `setup_command`. It does not fetch. The upstream worker
+  backend `setup_command` still runs before this process when the worker
+  configuration sets it. The
   checkout SHA is not an attestation that role files belong to that commit.
 - **Origin stripping.** `--remove-repository-origins` removes remotes after clone, so an
   agent cannot push to a repository the run was not meant to touch. Cheap, effective, and
