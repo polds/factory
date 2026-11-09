@@ -137,8 +137,8 @@
       "fieldPath": "targetPin.headSha,targetPin.baseSha,targetPin.refSha",
       "baseline": {
         "file": "internal/server/assign.go",
-        "start": 211,
-        "end": 215,
+        "start": 219,
+        "end": 223,
         "anchor": "invocationCheckoutOverrides"
       },
       "decision": "Resolve the pull request head and base, or the ref, once. Checkout uses the pinned SHA, not the SHA written in the prompt.",
@@ -371,8 +371,8 @@
       "fieldPath": "target.pullRequest,products.outputPullRequest",
       "baseline": {
         "file": "internal/server/terminal.go",
-        "start": 706,
-        "end": 711,
+        "start": 713,
+        "end": 718,
         "anchor": "open_pr_url"
       },
       "decision": "The input pull request never satisfies requires pullRequest.",
@@ -389,8 +389,8 @@
       "fieldPath": "requires",
       "baseline": {
         "file": "internal/server/terminal.go",
-        "start": 541,
-        "end": 548,
+        "start": 549,
+        "end": 556,
         "anchor": "pullRequestMissing"
       },
       "decision": "Opt-in requires pullRequest still fails closed with no_work_product when no output pull request was recorded.",
@@ -461,8 +461,8 @@
       "fieldPath": "products.report",
       "baseline": {
         "file": "internal/server/terminal.go",
-        "start": 631,
-        "end": 641,
+        "start": 635,
+        "end": 645,
         "anchor": "reportMissing"
       },
       "decision": "Missing report when report is required fails with report_missing. It does not reuse no_work_product.",
@@ -1359,8 +1359,8 @@
       "fieldPath": "workflow,internalWorkers",
       "baseline": {
         "file": "internal/harness/run.go",
-        "start": 136,
-        "end": 142,
+        "start": 139,
+        "end": 145,
         "anchor": "adapterName"
       },
       "decision": "Internal workers stay in-session. Workflow stays main-loop-only. They are not roster nodes.",
@@ -1449,8 +1449,8 @@
       "fieldPath": "outcome",
       "baseline": {
         "file": "internal/harness/run.go",
-        "start": 151,
-        "end": 153,
+        "start": 154,
+        "end": 156,
         "anchor": "OPENAI_BASE_URL"
       },
       "decision": "Credential isolation is an adapter-level result. Child environment isolation alone is not accepted. An unproven boundary blocks live.",
@@ -1485,8 +1485,8 @@
       "fieldPath": "dockerSocket,foreignCheckoutWrite",
       "baseline": {
         "file": "internal/server/assign.go",
-        "start": 177,
-        "end": 181,
+        "start": 185,
+        "end": 189,
         "anchor": "DockerImage"
       },
       "decision": "An untrusted task gets no Docker socket, no foreign checkout write, and no broad secret mount.",

@@ -18,6 +18,14 @@ type TaskFile struct {
 	PinnedHeadSHA   string   `json:"pinned_head_sha,omitempty"`
 	BundleMode      string   `json:"bundle_mode,omitempty"`
 	PreHarnessSetup string   `json:"pre_harness_setup,omitempty"`
+	// EvidencePackage is one relative go test package. It is not a shell command
+	// and it is not read from the prompt.
+	EvidencePackage string `json:"evidence_package,omitempty"`
+	// MutationPath is one relative file the evidence step may rewrite.
+	MutationPath string `json:"mutation_path,omitempty"`
+	// EvidenceStatus is privilege_unavailable when the server could not create
+	// the disposable database. Empty means the harness should run the package.
+	EvidenceStatus string `json:"evidence_status,omitempty"`
 }
 
 func LoadTaskFile(path string) (TaskFile, error) {

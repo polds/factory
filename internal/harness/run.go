@@ -132,6 +132,9 @@ func Run(ctx context.Context, opt Options) int {
 		}
 		return finish(ExitEnvironment, "environment_setup_failed", "checkout: "+err.Error())
 	}
+	if task.EvidencePackage != "" {
+		return runEvidence(ctx, opt, task, log, finish)
+	}
 
 	name := inv.HarnessName()
 	if name == "" {
