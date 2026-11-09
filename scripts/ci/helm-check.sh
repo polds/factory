@@ -2,6 +2,8 @@
 # Lint the factory chart, fail an empty image tag, and diff helm template
 # output against the committed goldens. Drift exits non-zero.
 # UPDATE_GOLDENS=1 rewrites deploy/helm/factory/tests/golden.
+# The proof-worker script runs in this same check. set -e propagates its
+# nonzero status, including the setup and teardown render refusals.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -266,5 +268,10 @@ if [[ -f "${regen}" ]]; then
 else
   echo "workerpool regen.sh absent; skip"
 fi
+
+# Proof-pool render refusals. Goldens do not catch deletion of the template
+# fail. This script's nonzero status exits the check before "helm-check ok".
+echo "proof worker render"
+bash "${chart}/tests/proof-worker.sh"
 
 echo "helm-check ok"
