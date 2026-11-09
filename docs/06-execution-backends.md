@@ -244,7 +244,10 @@ The dispatch command's job is to hand the payload to a runtime and return quickl
   `63dbb8a` runs it before the harness whenever the config value is
   non-empty. The assignment env does not clear that value. Default Helm
   `workers[].kubernetesBackend` does not set `setupCommand`. The
-  `deploy/worker/kubernetes.example.yaml` sample does. The
+  `deploy/worker/kubernetes.example.yaml` sample omits both commands. A Helm
+  worker with `proof: true` fails to render if `setupCommand` or
+  `teardownCommand` is set, and the rendered config has neither key. A
+  worker without `proof` still renders a configured command. The
   checkout SHA is not an attestation that role files belong to that commit.
 - **Origin stripping.** `--remove-repository-origins` removes remotes after clone, so an
   agent cannot push to a repository the run was not meant to touch. Cheap, effective, and

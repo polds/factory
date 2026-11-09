@@ -105,11 +105,11 @@ func placeLocalWorkspace(ctx context.Context, workspace, source, sha string) err
 	if err := refuseParentRepository(ctx, workspace); err != nil {
 		return err
 	}
-	empty, err := workspaceEmpty(workspace)
+	ready, err := workspaceReadyForSource(workspace)
 	if err != nil {
 		return err
 	}
-	if source != "" && empty && !samePath(source, workspace) {
+	if source != "" && ready && !samePath(source, workspace) {
 		if err := vetLocalSource(ctx, source, sha); err != nil {
 			return err
 		}
@@ -118,6 +118,9 @@ func placeLocalWorkspace(ctx context.Context, workspace, source, sha string) err
 		}
 		if err := copyGitTree(source, workspace); err != nil {
 			_ = os.RemoveAll(workspace)
+			return err
+		}
+		if err := removeWorkerEnvFiles(workspace); err != nil {
 			return err
 		}
 		// A copied index keeps an untracked-cache entry for the source path.
@@ -147,7 +150,10 @@ func refuseWorkspaceSymlink(path string) error {
 	return nil
 }
 
-func workspaceEmpty(path string) (bool, error) {
+// workspaceReadyForSource reports whether a local source may be copied.
+// The pinned direct worker creates an empty oz-env-* file in the workspace
+// before it execs the harness, so that file does not mean a checkout exists.
+func workspaceReadyForSource(path string) (bool, error) {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return true, nil
@@ -158,11 +164,35 @@ func workspaceEmpty(path string) (bool, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return false, fmt.Errorf("%w: workspace is not a real directory", errCheckoutWorkspace)
 	}
+	if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
+		return false, nil
+	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return false, fmt.Errorf("%w: workspace: %w", errCheckoutWorkspace, err)
 	}
-	return len(entries) == 0, nil
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "oz-env-") {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func removeWorkerEnvFiles(workspace string) error {
+	entries, err := os.ReadDir(workspace)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "oz-env-") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(workspace, entry.Name())); err != nil {
+			return fmt.Errorf("%w: worker env file: %w", errCheckoutWorkspace, err)
+		}
+	}
+	return nil
 }
 
 func refuseParentRepository(ctx context.Context, workspace string) error {
