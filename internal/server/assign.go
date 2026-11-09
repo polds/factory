@@ -125,6 +125,13 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 	if err := s.attachEvidence(ctx, run, env); err != nil {
 		return nil, err
 	}
+	if env[harness.EnvReviewHead] != "" {
+		secret := env["GH_TOKEN"]
+		delete(env, "GH_TOKEN")
+		if secret != "" {
+			env["FACTORY_SECRET_VALUES"] = removeNeedle(env["FACTORY_SECRET_VALUES"], secret)
+		}
+	}
 	if s.evidenceAttempt != nil {
 		if err := s.evidenceAttempt(); err != nil {
 			return nil, err
@@ -213,17 +220,60 @@ func (s *Server) assignment(ctx context.Context, run store.Run, exec store.Execu
 		spec := prepared.skillSpec
 		asg.Task.AgentConfigSnapshot.SkillSpec = &spec
 	}
-	if prepErr == nil && len(prepared.overrides) > 0 {
-		asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides = prepared.overrides
-	}
-	if pinned, pinErr := s.invocationCheckoutOverrides(ctx, run.WorkItemID); pinErr == nil && len(pinned) > 0 {
-		asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides = append(
-			asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides, pinned...)
+	if sha := strings.TrimSpace(env[harness.EnvReviewHead]); commitHex40(sha) {
+		owner, repo, ok := reviewRemote(env[harness.EnvOriginURL])
+		if ok {
+			asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides = []protocol.RepositoryHeadOverride{{
+				CodeForge: "GITHUB",
+				RepoOwner: owner,
+				RepoName:  repo,
+				Head: protocol.RepositoryHeadRef{
+					Type:  protocol.RepositoryHeadTypeCommitSHA,
+					Value: sha,
+				},
+			}}
+		}
+	} else {
+		if prepErr == nil && len(prepared.overrides) > 0 {
+			asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides = prepared.overrides
+		}
+		if pinned, pinErr := s.invocationCheckoutOverrides(ctx, run.WorkItemID); pinErr == nil && len(pinned) > 0 {
+			asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides = append(
+				asg.Task.AgentConfigSnapshot.RepositoryHeadOverrides, pinned...)
+		}
 	}
 	if s.readOnlyForgeTarget(run) || readOnlyHarness(bound.agent.Harness) {
 		asg = applyUntrustedConstraints(asg)
 	}
 	return asg
+}
+
+func reviewRemote(raw string) (string, string, bool) {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimSuffix(strings.TrimSuffix(raw, "/"), ".git")
+	const prefix = "https://github.com/"
+	if !strings.HasPrefix(raw, prefix) {
+		return "", "", false
+	}
+	owner, repo, ok := strings.Cut(strings.TrimPrefix(raw, prefix), "/")
+	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		return "", "", false
+	}
+	return owner, repo, true
+}
+
+func removeNeedle(list, needle string) string {
+	if needle == "" || list == "" {
+		return list
+	}
+	var kept []string
+	for _, part := range strings.Split(list, "\n") {
+		if part == "" || part == needle || strings.Contains(part, needle) {
+			continue
+		}
+		kept = append(kept, part)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func newRunToken() (string, error) {

@@ -148,9 +148,12 @@ setup step, and a Kubernetes init container). Setting
 values omit `setupCommand`, so that rendered config does not run one. A
 deployment that sets it is outside this harness path.
 
-The checkout SHA is the invocation `pinned_head_sha` carried on the assignment.
-It is not proof that role blobs exist in that commit. `SourceCommit` on a role
-bundle remains a caller-supplied identity string. Skill bodies are a different
+The checkout SHA is the invocation `pinned_head_sha` carried on the assignment,
+except for the frozen reviewer, whose one override is the implementer's produced
+SHA and replaces that pin. It is not proof that role blobs exist in that commit.
+When `sourceCommit` is 40 hex, factoryd compares `org/roster.yaml` and each
+selected seat file in a local git directory and does not fetch. A non-hex
+caller label stays a caller-supplied identity string. Skill bodies are a different
 path: factoryd sets `FACTORY_SKILL_TEXT`, and the harness appends that text to
 the system prompt. `skill_spec` on the assignment is not consumed.
 
@@ -366,7 +369,10 @@ line is not a pass. A missing `go` binary is `tool_error`. When
 `mutation_path` is set, the harness rewrites the first `factoryEvidencePass`
 in that file, expects `tests_failed`, restores the blob with `git cat-file`,
 and expects `tests_passed`. It does not run `git checkout`, `git clean`, or
-`git reset`. This step does not call a model. `JoinNative` does not read the
+`git reset`. This step does not call a model. An implementer run with no `evidence_package`
+emits `workspace.head` after the model loop. Its text is the 40-hex workspace
+SHA. The bundle file is uploaded and removed. A reviewer run does not take the
+model path. `JoinNative` does not read the
 transcript.
 
 ## Claude Code adapter

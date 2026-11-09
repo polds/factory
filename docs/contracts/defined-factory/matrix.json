@@ -137,8 +137,8 @@
       "fieldPath": "targetPin.headSha,targetPin.baseSha,targetPin.refSha",
       "baseline": {
         "file": "internal/server/assign.go",
-        "start": 219,
-        "end": 223,
+        "start": 238,
+        "end": 242,
         "anchor": "invocationCheckoutOverrides"
       },
       "decision": "Resolve the pull request head and base, or the ref, once. Checkout uses the pinned SHA, not the SHA written in the prompt.",
@@ -1359,8 +1359,8 @@
       "fieldPath": "workflow,internalWorkers",
       "baseline": {
         "file": "internal/harness/run.go",
-        "start": 139,
-        "end": 145,
+        "start": 144,
+        "end": 150,
         "anchor": "adapterName"
       },
       "decision": "Internal workers stay in-session. Workflow stays main-loop-only. They are not roster nodes.",
@@ -1449,8 +1449,8 @@
       "fieldPath": "outcome",
       "baseline": {
         "file": "internal/harness/run.go",
-        "start": 154,
-        "end": 156,
+        "start": 159,
+        "end": 161,
         "anchor": "OPENAI_BASE_URL"
       },
       "decision": "Credential isolation is an adapter-level result. Child environment isolation alone is not accepted. An unproven boundary blocks live.",

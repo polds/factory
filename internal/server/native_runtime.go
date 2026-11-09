@@ -39,6 +39,22 @@ func (s *Server) OpenNativeTree(ctx context.Context, factoryUID, invocationID st
 			SourceReportsTo: p.SourceReportsTo, SourceDottedTo: p.SourceDottedTo, Files: files,
 		}
 	}
+	tree := definition.NativeTree{
+		NativeHierarchy:       req.NativeHierarchy,
+		Personas:              personas,
+		MaxDepth:              req.MaxDepth,
+		AbsoluteMaxDepth:      req.AbsoluteMaxDepth,
+		AllowAncestorShortcut: req.AllowAncestorShortcut,
+		Delegation:            req.Delegation,
+		Synthetic:             req.Synthetic,
+		SourceCommit:          req.SourceCommit,
+		RosterSHA256:          req.RosterSHA256,
+		RosterGitBlob:         req.RosterGitBlob,
+		BundleMode:            req.BundleMode,
+	}
+	if err := s.attestIfCommit(ctx, tree); err != nil {
+		return api.NativeTreeOpened{}, err
+	}
 	policy, task, err := coordination.OpenTree(ctx, s.store, store.OpenTreeInput{
 		FactoryID:    fac.ID,
 		InvocationID: invocationID,
@@ -49,19 +65,7 @@ func (s *Server) OpenNativeTree(ctx context.Context, factoryUID, invocationID st
 		Slots:        slots,
 		MaxLive:      maxLive,
 		SharedKey:    req.SharedKey,
-		Tree: definition.NativeTree{
-			NativeHierarchy:       req.NativeHierarchy,
-			Personas:              personas,
-			MaxDepth:              req.MaxDepth,
-			AbsoluteMaxDepth:      req.AbsoluteMaxDepth,
-			AllowAncestorShortcut: req.AllowAncestorShortcut,
-			Delegation:            req.Delegation,
-			Synthetic:             req.Synthetic,
-			SourceCommit:          req.SourceCommit,
-			RosterSHA256:          req.RosterSHA256,
-			RosterGitBlob:         req.RosterGitBlob,
-			BundleMode:            req.BundleMode,
-		},
+		Tree:         tree,
 	})
 	if err != nil {
 		return api.NativeTreeOpened{}, nativeStoreErr(err)
@@ -71,6 +75,10 @@ func (s *Server) OpenNativeTree(ctx context.Context, factoryUID, invocationID st
 
 func (s *Server) DelegateNative(ctx context.Context, factoryUID, taskID string, req api.NativeDelegateRequest) (api.NativeDelegateResult, error) {
 	fac, task, err := s.nativeHead(ctx, factoryUID, taskID)
+	if err != nil {
+		return api.NativeDelegateResult{}, err
+	}
+	copied, err := s.reviewerHead(ctx, task.InvocationID, req.Assignee)
 	if err != nil {
 		return api.NativeDelegateResult{}, err
 	}
@@ -89,6 +97,12 @@ func (s *Server) DelegateNative(ctx context.Context, factoryUID, taskID string, 
 	})
 	if err != nil {
 		return api.NativeDelegateResult{}, nativeStoreErr(err)
+	}
+	if copied.HeadSHA != "" {
+		copied.TaskID = out.Child.ID
+		if err := s.store.PutProducedHead(ctx, copied); err != nil {
+			return api.NativeDelegateResult{}, err
+		}
 	}
 	return api.NativeDelegateResult{
 		ChildID: out.Child.ID, ReservationID: out.ReservationID,
@@ -135,12 +149,16 @@ func (s *Server) WakeNativeRun(ctx context.Context, factoryUID, taskID string, r
 }
 
 func (s *Server) JoinNative(ctx context.Context, factoryUID, taskID string) (api.NativeJoinResult, error) {
-	if _, _, err := s.nativeHead(ctx, factoryUID, taskID); err != nil {
+	_, parent, err := s.nativeHead(ctx, factoryUID, taskID)
+	if err != nil {
 		return api.NativeJoinResult{}, err
 	}
 	out, err := coordination.Join(ctx, s.store, store.JoinInput{TaskID: taskID})
 	if err != nil {
 		return api.NativeJoinResult{}, nativeStoreErr(err)
+	}
+	if err := s.requireReadyImplementer(ctx, parent); err != nil {
+		return api.NativeJoinResult{}, err
 	}
 	if out.StageOwner && out.RunID != "" && out.Status == store.NativeFailed {
 		s.advanceAfterTerminal(ctx, out.RunID)

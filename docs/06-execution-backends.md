@@ -235,7 +235,11 @@ The dispatch command's job is to hand the payload to a runtime and return quickl
   checkout. The gate does not fetch, force, reset, or clean
   (`internal/harness/checkout.go`). For a `role_files` assignment the harness
   first copies `FACTORY_LOCAL_OBJECT_SOURCE` into an empty workspace when that
-  variable names a local repository that already contains the pinned commit,
+  variable names a local repository that already contains the pinned commit.
+  The reviewer does not use that variable. It installs `runs/<run>/<exec>/head.bundle`
+  and then runs the same checkout gate. A missing object or a different tip
+  fails before evidence and before a model call. The object is deleted after
+  that checkout.
   writes `task.json` from the assignment, and refuses `FACTORY_UNTRUSTED_SETUP`
   and a pre-existing `setup_command`. It does not fetch. The source is
   refused when it is a symlink, a worktree gitfile, has a filter driver, or

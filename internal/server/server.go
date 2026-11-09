@@ -479,6 +479,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.Handle("GET /api/v1/selfhosted/worker/ws", s.gw)
+	s.mountProducedBundle(mux)
 	mux.Handle("/api/", s.api)
 	mux.Handle("GET /healthz", s.api)
 	if s.consoleOn() {
