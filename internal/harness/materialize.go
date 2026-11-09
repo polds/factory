@@ -35,6 +35,12 @@ const (
 	// EnvTestDSN is the disposable database URL. It is the only database URL
 	// added to the task environment.
 	EnvTestDSN = "DREAMD_TEST_DSN"
+	// EnvReviewHead is the produced commit the reviewer must check out.
+	EnvReviewHead = "FACTORY_REVIEW_HEAD"
+	// EnvBundleURL is the factoryd URL of that commit's bundle.
+	EnvBundleURL = "FACTORY_BUNDLE_URL"
+	// EnvOriginURL is the GitHub remote the checkout gate expects.
+	EnvOriginURL = "FACTORY_ORIGIN_URL"
 )
 
 var errPreHarnessSetup = errors.New("pre-harness setup refused")
@@ -89,7 +95,11 @@ func MaterializeAssigned(ctx context.Context, opt Options, inv Invocation) (Task
 	if existing.PinnedHeadSHA != "" && !strings.EqualFold(existing.PinnedHeadSHA, ov.sha) {
 		return TaskFile{}, fmt.Errorf("%w: pin", errCheckoutOverride)
 	}
-	if err := placeLocalWorkspace(ctx, opt.Workspace, lookupEnv(opt.Env, EnvLocalSource), ov.sha); err != nil {
+	if lookupEnv(opt.Env, EnvReviewHead) != "" {
+		if err := installProducedBundle(ctx, opt, ov.sha); err != nil {
+			return TaskFile{}, err
+		}
+	} else if err := placeLocalWorkspace(ctx, opt.Workspace, lookupEnv(opt.Env, EnvLocalSource), ov.sha); err != nil {
 		return TaskFile{}, err
 	}
 	pkg := lookupEnv(opt.Env, EnvEvidencePackage)

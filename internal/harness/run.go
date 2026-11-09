@@ -84,8 +84,13 @@ func Run(ctx context.Context, opt Options) int {
 		stopSteer  func()
 		steerURL   string
 		steerToken secretValue
+		recordHead bool
 	)
 	finish := func(code int, status, summary string) int {
+		if recordHead {
+			recordHead = false
+			_ = RecordWorkspaceHead(ctx, opt, log)
+		}
 		// Stop the poller before the terminal event so a late capability
 		// cannot land after it.
 		if stopSteer != nil {
@@ -222,6 +227,7 @@ func Run(ctx context.Context, opt Options) int {
 		if prompt == "" {
 			return finish(ExitConfigInvalid, "config_invalid", "prompt is empty")
 		}
+		recordHead = task.EvidencePackage == ""
 		code, status, summaryRun := conv.run(ctx, prompt)
 		summary = summaryRun
 		if code != ExitOK {
@@ -256,6 +262,7 @@ func Run(ctx context.Context, opt Options) int {
 		if !ok {
 			break
 		}
+		recordHead = task.EvidencePackage == ""
 		code, status := applyFollowup(next)
 		if code != ExitOK || conv.parked {
 			return finish(code, status, summary)
@@ -270,6 +277,7 @@ func Run(ctx context.Context, opt Options) int {
 		if !ok {
 			break
 		}
+		recordHead = task.EvidencePackage == ""
 		code, status := applyFollowup(followUp{text: msg.Text, steerID: msg.ID})
 		if code != ExitOK || conv.parked {
 			return finish(code, status, summary)
@@ -296,6 +304,7 @@ func Run(ctx context.Context, opt Options) int {
 			if !ok {
 				break
 			}
+			recordHead = task.EvidencePackage == ""
 			code, status := applyFollowup(followUp{text: msg.Text, steerID: msg.ID})
 			if code != ExitOK || conv.parked {
 				return finish(code, status, summary)

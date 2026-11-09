@@ -45,6 +45,7 @@ func TestNativeBundleHTTPHarnessCheckout(t *testing.T) {
 	}
 	dir, pins := rewriteBundle(t)
 	tree := loadBundleTree(t, dir, pins)
+	pinRoleSource(t, dir, &tree)
 	c := &client.Client{BaseURL: env.base, APIKey: env.apiKey}
 	wire, err := json.Marshal(clientBundleRequest(tree))
 	if err != nil || !strings.Contains(string(wire), `"bundleMode":"role_files"`) || !strings.Contains(string(wire), `"sourceCommit"`) {

@@ -34,6 +34,16 @@ func (s *Server) attachEvidence(ctx context.Context, run store.Run, env map[stri
 	if !s.evidenceRequested(env) {
 		return nil
 	}
+	seat, err := s.classifySeat(ctx, run)
+	if err != nil {
+		return err
+	}
+	if seat.kind == "other" {
+		return nil
+	}
+	if seat.kind == "reviewer" {
+		return s.attachReviewerEvidence(ctx, run, env, seat)
+	}
 	pkg := strings.TrimSpace(os.Getenv("FACTORY_EVIDENCE_PACKAGE"))
 	if pkg == "" {
 		return nil
@@ -49,6 +59,53 @@ func (s *Server) attachEvidence(ctx context.Context, run store.Run, env map[stri
 	if mut != "" {
 		env[harness.EnvEvidenceMutation] = mut
 	}
+	if s.store == nil || run.ID == "" {
+		return errors.New("server: disposable run")
+	}
+	dsn, priv, err := s.ensureDisposable(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	if priv {
+		env[harness.EnvEvidenceStatus] = harness.EvidencePrivilegeUnavailable
+		return nil
+	}
+	env[harness.EnvTestDSN] = dsn
+	for _, needle := range harness.RedactionNeedles([]string{dsn}) {
+		env["FACTORY_SECRET_VALUES"] = appendSecret(env["FACTORY_SECRET_VALUES"], needle)
+	}
+	return nil
+}
+
+func (s *Server) attachReviewerEvidence(ctx context.Context, run store.Run, env map[string]string, seat seatClass) error {
+	row, err := s.store.GetProducedHead(ctx, seat.taskID)
+	if err != nil || row.State != store.ProducedReady || !commitHex40(row.HeadSHA) {
+		return errors.New("produced head: reviewer: missing SHA")
+	}
+	pkg := strings.TrimSpace(os.Getenv("FACTORY_EVIDENCE_PACKAGE"))
+	if pkg == "" {
+		return errors.New("produced head: reviewer: FACTORY_EVIDENCE_PACKAGE unset")
+	}
+	mut := strings.TrimSpace(os.Getenv("FACTORY_EVIDENCE_MUTATION"))
+	if mut == "" {
+		return errors.New("produced head: reviewer: FACTORY_EVIDENCE_MUTATION unset")
+	}
+	if err := harness.EvidencePackagePath(pkg); err != nil {
+		return err
+	}
+	if err := harness.EvidenceMutationPath(mut); err != nil {
+		return err
+	}
+	ovs, err := s.invocationCheckoutOverrides(ctx, run.WorkItemID)
+	if err != nil || len(ovs) != 1 || ovs[0].RepoOwner == "" || ovs[0].RepoName == "" {
+		return errors.New("produced head: reviewer: repository missing")
+	}
+	env[harness.EnvEvidencePackage] = pkg
+	env[harness.EnvEvidenceMutation] = mut
+	env[harness.EnvReviewHead] = row.HeadSHA
+	env[harness.EnvOriginURL] = "https://github.com/" + ovs[0].RepoOwner + "/" + ovs[0].RepoName + ".git"
+	base := strings.TrimRight(s.cfg.TaskServerURL, "/")
+	env[harness.EnvBundleURL] = base + "/api/v1/agent/runs/" + run.ID + "/head.bundle"
 	if s.store == nil || run.ID == "" {
 		return errors.New("server: disposable run")
 	}

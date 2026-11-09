@@ -23,6 +23,10 @@ const pullURLTrail = ".,;:!?)]}>\"'"
 // evidence command. tool.result stays a digest and does not use this type.
 const EventEvidenceTest = "evidence.test"
 
+// EventWorkspaceHead is the implementer workspace commit. Its text is the
+// 40-hex SHA and nothing else. tool.result stays a digest.
+const EventWorkspaceHead = "workspace.head"
+
 // Event is one NDJSON record from Harness Contract v1.
 type Event struct {
 	TS            string `json:"ts"`
