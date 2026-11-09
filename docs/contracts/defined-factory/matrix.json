@@ -137,8 +137,8 @@
       "fieldPath": "targetPin.headSha,targetPin.baseSha,targetPin.refSha",
       "baseline": {
         "file": "internal/server/assign.go",
-        "start": 208,
-        "end": 212,
+        "start": 211,
+        "end": 215,
         "anchor": "invocationCheckoutOverrides"
       },
       "decision": "Resolve the pull request head and base, or the ref, once. Checkout uses the pinned SHA, not the SHA written in the prompt.",
@@ -1359,8 +1359,8 @@
       "fieldPath": "workflow,internalWorkers",
       "baseline": {
         "file": "internal/harness/run.go",
-        "start": 124,
-        "end": 130,
+        "start": 136,
+        "end": 142,
         "anchor": "adapterName"
       },
       "decision": "Internal workers stay in-session. Workflow stays main-loop-only. They are not roster nodes.",
@@ -1449,8 +1449,8 @@
       "fieldPath": "outcome",
       "baseline": {
         "file": "internal/harness/run.go",
-        "start": 139,
-        "end": 141,
+        "start": 151,
+        "end": 153,
         "anchor": "OPENAI_BASE_URL"
       },
       "decision": "Credential isolation is an adapter-level result. Child environment isolation alone is not accepted. An unproven boundary blocks live.",
@@ -1485,8 +1485,8 @@
       "fieldPath": "dockerSocket,foreignCheckoutWrite",
       "baseline": {
         "file": "internal/server/assign.go",
-        "start": 174,
-        "end": 178,
+        "start": 177,
+        "end": 181,
         "anchor": "DockerImage"
       },
       "decision": "An untrusted task gets no Docker socket, no foreign checkout write, and no broad secret mount.",

@@ -126,8 +126,27 @@ paths, including a branch condition that is not true for the current `HEAD`.
 A `filter.*.clean`, `filter.*.smudge`, or `filter.*.process` command there
 fails closed. Attributes and the work tree are left as they were. Only omitting
 the flag keeps the previous behavior and runs setup and the model in the
-workspace as it already is. The harness gate runs after the worker's own setup
-command. It does not run before that command.
+workspace as it already is. A `role_files` assignment sets
+`FACTORY_PRE_HARNESS_SETUP=disabled` and `FACTORY_BUNDLE_MODE=role_files` on
+the task env. Before the checkout gate, the harness writes `task.json` from
+that assignment: the prompt, which already holds the seat bytes and the goal,
+the model, the pinned head, and the bundle mode. When
+`FACTORY_LOCAL_OBJECT_SOURCE` names an existing local repository and the
+workspace is empty, the harness copies that repository into the workspace and
+leaves `HEAD` on the commit it already had. The copy does not fetch or
+checkout. It removes the copied index untracked cache, which is tied to the
+source path, and does not refresh or reset the work tree. The checkout gate then runs. `FACTORY_UNTRUSTED_SETUP`, and a
+`setup_command` already present in `task.json`, are not executed. The copy is
+refused when the source is a symlink, a gitfile worktree, a git dir outside
+the source, a tree that contains a filter driver, an origin that is not a
+plain GitHub remote, or a symlink whose target leaves the source. The
+upstream worker's own `setup_command` is worker configuration, not an
+assignment field. `oz-agent-worker` `63dbb8a` runs that command before
+`factory-harness` whenever it is non-empty (`internal/worker/direct.go`
+setup step, and a Kubernetes init container). Setting
+`FACTORY_PRE_HARNESS_SETUP` does not clear it. The default Helm worker
+values omit `setupCommand`, so that rendered config does not run one. A
+deployment that sets it is outside this harness path.
 
 The checkout SHA is the invocation `pinned_head_sha` carried on the assignment.
 It is not proof that role blobs exist in that commit. `SourceCommit` on a role
@@ -310,7 +329,7 @@ OpenAI-compatible stub. They do not call a vendor.
 | --- | --- |
 | Prompt | `task.json` field `prompt`, otherwise `FACTORY_TASK_PROMPT` |
 | Secrets | `task.json` `secrets`, plus newline-separated `FACTORY_SECRET_VALUES` |
-| Setup | `task.json` `setup_command`. Non-zero exit is code 30 |
+| Setup | `task.json` `setup_command`. Non-zero exit is code 30. A `role_files` proof assignment sets `FACTORY_PRE_HARNESS_SETUP=disabled` and does not run that command or `FACTORY_UNTRUSTED_SETUP` |
 | Model endpoint | `OPENAI_BASE_URL` + `/chat/completions`. `OPENAI_API_KEY` if set |
 | Runtime directory | `FACTORY_RUNTIME_DIR`, default `/var/run/factory` |
 | Follow-up | While `--idle-on-complete` is a positive duration, read `{runtime}/followup.json` as `{"prompt":"..."}` |

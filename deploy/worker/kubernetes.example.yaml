@@ -18,8 +18,9 @@ backend:
     coding_cli_sidecars:
       claude-code: ghcr.io/acme/claude-cli:1.9.0
       codex: ghcr.io/acme/codex-cli:0.7.2
-    setup_command: /opt/scripts/pre-task.sh
-    teardown_command: /opt/scripts/post-task.sh
+    # A proof worker must not set setup_command or teardown_command.
+    # A non-proof pool may. The pinned worker runs a non-empty setup_command
+    # before the harness and does not consult FACTORY_PRE_HARNESS_SETUP.
     active_deadline_seconds: 28800
     ttl_seconds_after_finished: 86400
     workspace_size_limit: 20Gi

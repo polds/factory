@@ -119,6 +119,9 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 		env["GH_TOKEN"] = minted
 		env["FACTORY_SECRET_VALUES"] = appendSecret(env["FACTORY_SECRET_VALUES"], minted)
 	}
+	if err := s.applyRoleFilesProof(ctx, run, env); err != nil {
+		return nil, err
+	}
 	return env, nil
 }
 

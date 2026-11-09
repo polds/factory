@@ -233,7 +233,21 @@ The dispatch command's job is to hand the payload to a runtime and return quickl
   clean, smudge, or process command in the config those git commands read,
   including worktree config and includes, fails before `git status` and before
   checkout. The gate does not fetch, force, reset, or clean
-  (`internal/harness/checkout.go`). The
+  (`internal/harness/checkout.go`). For a `role_files` assignment the harness
+  first copies `FACTORY_LOCAL_OBJECT_SOURCE` into an empty workspace when that
+  variable names a local repository that already contains the pinned commit,
+  writes `task.json` from the assignment, and refuses `FACTORY_UNTRUSTED_SETUP`
+  and a pre-existing `setup_command`. It does not fetch. The source is
+  refused when it is a symlink, a worktree gitfile, has a filter driver, or
+  its origin is not a plain GitHub remote. The upstream worker
+  `setup_command` is static worker configuration. Pinned `oz-agent-worker`
+  `63dbb8a` runs it before the harness whenever the config value is
+  non-empty. The assignment env does not clear that value. Default Helm
+  `workers[].kubernetesBackend` does not set `setupCommand`. The
+  `deploy/worker/kubernetes.example.yaml` sample omits both commands. A Helm
+  worker with `proof: true` fails to render if `setupCommand` or
+  `teardownCommand` is set, and the rendered config has neither key. A
+  worker without `proof` still renders a configured command. The
   checkout SHA is not an attestation that role files belong to that commit.
 - **Origin stripping.** `--remove-repository-origins` removes remotes after clone, so an
   agent cannot push to a repository the run was not meant to touch. Cheap, effective, and

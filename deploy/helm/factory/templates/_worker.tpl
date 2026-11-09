@@ -122,6 +122,9 @@ data:
 {{- $root := index . 0 -}}
 {{- $worker := index . 1 -}}
 {{- $kb := $worker.kubernetesBackend -}}
+{{- if and $worker.proof (or $kb.setupCommand $kb.teardownCommand) -}}
+{{- fail (printf "proof pool %s cannot set setupCommand or teardownCommand" $worker.name) -}}
+{{- end -}}
 worker_id: {{ required "workers[].workerId is required" $worker.workerId | quote }}
 cleanup: {{ $worker.cleanup }}
 max_concurrent_tasks: {{ $worker.maxConcurrentTasks }}
@@ -141,11 +144,11 @@ backend:
     {{- if $kb.sidecarImage }}
     sidecar_image: {{ $kb.sidecarImage | quote }}
     {{- end }}
-    {{- if $kb.setupCommand }}
+    {{- if and (not $worker.proof) $kb.setupCommand }}
     setup_command: |-
       {{- $kb.setupCommand | nindent 6 }}
     {{- end }}
-    {{- if $kb.teardownCommand }}
+    {{- if and (not $worker.proof) $kb.teardownCommand }}
     teardown_command: |-
       {{- $kb.teardownCommand | nindent 6 }}
     {{- end }}

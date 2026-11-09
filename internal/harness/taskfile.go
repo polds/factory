@@ -10,11 +10,14 @@ import (
 // also arrive as FACTORY_TASK_PROMPT, which the worker will forward because
 // it copies assignment env_vars into the task process.
 type TaskFile struct {
-	Prompt         string   `json:"prompt,omitempty"`
-	ModelID        string   `json:"model_id,omitempty"`
-	Secrets        []string `json:"secrets,omitempty"`
-	SetupCommand   string   `json:"setup_command,omitempty"`
-	HarnessAuthEnv []string `json:"harness_auth_env,omitempty"`
+	Prompt          string   `json:"prompt,omitempty"`
+	ModelID         string   `json:"model_id,omitempty"`
+	Secrets         []string `json:"secrets,omitempty"`
+	SetupCommand    string   `json:"setup_command,omitempty"`
+	HarnessAuthEnv  []string `json:"harness_auth_env,omitempty"`
+	PinnedHeadSHA   string   `json:"pinned_head_sha,omitempty"`
+	BundleMode      string   `json:"bundle_mode,omitempty"`
+	PreHarnessSetup string   `json:"pre_harness_setup,omitempty"`
 }
 
 func LoadTaskFile(path string) (TaskFile, error) {
