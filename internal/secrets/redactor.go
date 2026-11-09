@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 	"sync"
 
@@ -66,7 +65,7 @@ func (r *Redactor) Needles() []string {
 
 // Text redacts inline credentials and known needles from s.
 func (r *Redactor) Text(s string) string {
-	s = redactCredentialPatterns(s)
+	s = definition.RedactCredentialValues(s)
 	s = harness.Redact(s, r.Needles())
 	return s
 }
@@ -115,52 +114,3 @@ func redactJSONValue(v any, r *Redactor) any {
 		return v
 	}
 }
-
-func redactCredentialPatterns(s string) string {
-	type swap struct{ from, to string }
-	var reps []swap
-	seen := map[string]bool{}
-	add := func(from, to string) {
-		if from == "" || seen[from] {
-			return
-		}
-		seen[from] = true
-		reps = append(reps, swap{from, to})
-	}
-	for _, cred := range definition.CredentialValues(s) {
-		switch cred.Kind {
-		case definition.CredentialBearer, definition.CredentialBasic:
-			core, _ := peelTrailer(cred.Value)
-			if definition.ExactSecretRef(core) {
-				continue
-			}
-			add(core, "{{REDACTED}}")
-		case definition.CredentialToken:
-			add(cred.Value, "REDACTED")
-		default:
-			panic(fmt.Sprintf("secrets: unhandled credential kind %d", int(neverCredentialKind(cred.Kind))))
-		}
-	}
-	sort.Slice(reps, func(i, j int) bool { return len(reps[i].from) > len(reps[j].from) })
-	for _, rep := range reps {
-		s = strings.ReplaceAll(s, rep.from, rep.to)
-	}
-	return s
-}
-
-func peelTrailer(token string) (string, string) {
-	// Copied from internal/convert/redact.go. convert is outside M10-S paths,
-	// so this stays a local copy until a later consolidation pass.
-	i := len(token)
-	for i > 0 {
-		switch token[i-1] {
-		case '"', '\'', '`', ',':
-			i--
-		default:
-			return token[:i], token[i:]
-		}
-	}
-	return "", token
-}
-
-func neverCredentialKind(kind definition.CredentialKind) definition.CredentialKind { return kind }
