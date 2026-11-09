@@ -72,21 +72,27 @@ type bundleResult struct {
 	counts factoryv1.FactoryResourceCounts
 }
 
+// addBundleFiles merges files into the bundle. The same path and content is
+// kept once. A repeated path with different content is an error.
+func addBundleFiles(out *bundleResult, seen map[string]string, files []api.DefinitionFile) error {
+	for _, file := range files {
+		if prev, ok := seen[file.Path]; ok && prev != file.Content {
+			return fmt.Errorf("duplicate definition path %s", file.Path)
+		}
+		if _, ok := seen[file.Path]; ok {
+			continue
+		}
+		seen[file.Path] = file.Content
+		out.files = append(out.files, file)
+	}
+	return nil
+}
+
 func (r *FactoryReconciler) bundle(ctx context.Context, factory *factoryv1.Factory) (bundleResult, error) {
 	var out bundleResult
 	seen := map[string]string{}
 	add := func(files []api.DefinitionFile) error {
-		for _, file := range files {
-			if prev, ok := seen[file.Path]; ok && prev != file.Content {
-				return fmt.Errorf("duplicate definition path %s", file.Path)
-			}
-			if _, ok := seen[file.Path]; ok {
-				continue
-			}
-			seen[file.Path] = file.Content
-			out.files = append(out.files, file)
-		}
-		return nil
+		return addBundleFiles(&out, seen, files)
 	}
 	files, err := filesFromObject(factory, factory.Spec.Files)
 	if err != nil {
@@ -95,7 +101,10 @@ func (r *FactoryReconciler) bundle(ctx context.Context, factory *factoryv1.Facto
 	if err := add(files); err != nil {
 		return out, err
 	}
-	agents, err := r.agentsFor(ctx, factory)
+	var agentList factoryv1.FactoryAgentList
+	agents, err := ownedItems(ctx, r, factory, &agentList, &agentList.Items, func(item *factoryv1.FactoryAgent) *factoryv1.LocalRef {
+		return item.Spec.FactoryRef
+	})
 	if err != nil {
 		return out, err
 	}
@@ -109,7 +118,10 @@ func (r *FactoryReconciler) bundle(ctx context.Context, factory *factoryv1.Facto
 			return out, err
 		}
 	}
-	autos, err := r.automationsFor(ctx, factory)
+	var automationList factoryv1.AutomationList
+	autos, err := ownedItems(ctx, r, factory, &automationList, &automationList.Items, func(item *factoryv1.Automation) *factoryv1.LocalRef {
+		return item.Spec.FactoryRef
+	})
 	if err != nil {
 		return out, err
 	}
@@ -123,7 +135,10 @@ func (r *FactoryReconciler) bundle(ctx context.Context, factory *factoryv1.Facto
 			return out, err
 		}
 	}
-	runners, err := r.runnersFor(ctx, factory)
+	var runnerList factoryv1.RunnerList
+	runners, err := ownedItems(ctx, r, factory, &runnerList, &runnerList.Items, func(item *factoryv1.Runner) *factoryv1.LocalRef {
+		return item.Spec.FactoryRef
+	})
 	if err != nil {
 		return out, err
 	}
@@ -137,7 +152,10 @@ func (r *FactoryReconciler) bundle(ctx context.Context, factory *factoryv1.Facto
 			return out, err
 		}
 	}
-	scorers, err := r.scorersFor(ctx, factory)
+	var scorerList factoryv1.ScorerList
+	scorers, err := ownedItems(ctx, r, factory, &scorerList, &scorerList.Items, func(item *factoryv1.Scorer) *factoryv1.LocalRef {
+		return item.Spec.FactoryRef
+	})
 	if err != nil {
 		return out, err
 	}
@@ -164,63 +182,53 @@ func (r *FactoryReconciler) addRefKind(ctx context.Context, factory *factoryv1.F
 		if err != nil {
 			return err
 		}
-		for _, file := range got {
-			if prev, ok := seen[file.Path]; ok && prev != file.Content {
-				return fmt.Errorf("duplicate definition path %s", file.Path)
-			}
-			if _, ok := seen[file.Path]; ok {
-				continue
-			}
-			seen[file.Path] = file.Content
-			out.files = append(out.files, file)
-		}
-		return nil
+		return addBundleFiles(out, seen, got)
 	}
-	var routers factoryv1.ModelRouterList
-	if err := r.List(ctx, &routers, client.InNamespace(factory.Namespace)); err != nil {
+	var routerList factoryv1.ModelRouterList
+	routers, err := ownedItems(ctx, r, factory, &routerList, &routerList.Items, func(item *factoryv1.ModelRouter) *factoryv1.LocalRef {
+		return item.Spec.FactoryRef
+	})
+	if err != nil {
 		return err
 	}
-	for i := range routers.Items {
-		if !owns(factory, routers.Items[i].Spec.FactoryRef, r, ctx) {
-			continue
-		}
-		if err := addObj(&routers.Items[i], routers.Items[i].Spec.Files); err != nil {
+	for i := range routers {
+		if err := addObj(&routers[i], routers[i].Spec.Files); err != nil {
 			return err
 		}
 	}
-	var skills factoryv1.SkillList
-	if err := r.List(ctx, &skills, client.InNamespace(factory.Namespace)); err != nil {
+	var skillList factoryv1.SkillList
+	skills, err := ownedItems(ctx, r, factory, &skillList, &skillList.Items, func(item *factoryv1.Skill) *factoryv1.LocalRef {
+		return item.Spec.FactoryRef
+	})
+	if err != nil {
 		return err
 	}
-	for i := range skills.Items {
-		if !owns(factory, skills.Items[i].Spec.FactoryRef, r, ctx) {
-			continue
-		}
-		if err := addObj(&skills.Items[i], skills.Items[i].Spec.Files); err != nil {
+	for i := range skills {
+		if err := addObj(&skills[i], skills[i].Spec.Files); err != nil {
 			return err
 		}
 	}
-	var hooks factoryv1.FactoryWebhookList
-	if err := r.List(ctx, &hooks, client.InNamespace(factory.Namespace)); err != nil {
+	var hookList factoryv1.FactoryWebhookList
+	hooks, err := ownedItems(ctx, r, factory, &hookList, &hookList.Items, func(item *factoryv1.FactoryWebhook) *factoryv1.LocalRef {
+		return item.Spec.FactoryRef
+	})
+	if err != nil {
 		return err
 	}
-	for i := range hooks.Items {
-		if !owns(factory, hooks.Items[i].Spec.FactoryRef, r, ctx) {
-			continue
-		}
-		if err := addObj(&hooks.Items[i], hooks.Items[i].Spec.Files); err != nil {
+	for i := range hooks {
+		if err := addObj(&hooks[i], hooks[i].Spec.Files); err != nil {
 			return err
 		}
 	}
-	var benches factoryv1.BenchmarkSuiteList
-	if err := r.List(ctx, &benches, client.InNamespace(factory.Namespace)); err != nil {
+	var benchList factoryv1.BenchmarkSuiteList
+	benches, err := ownedItems(ctx, r, factory, &benchList, &benchList.Items, func(item *factoryv1.BenchmarkSuite) *factoryv1.LocalRef {
+		return item.Spec.FactoryRef
+	})
+	if err != nil {
 		return err
 	}
-	for i := range benches.Items {
-		if !owns(factory, benches.Items[i].Spec.FactoryRef, r, ctx) {
-			continue
-		}
-		if err := addObj(&benches.Items[i], benches.Items[i].Spec.Files); err != nil {
+	for i := range benches {
+		if err := addObj(&benches[i], benches[i].Spec.Files); err != nil {
 			return err
 		}
 	}

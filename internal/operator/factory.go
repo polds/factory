@@ -354,57 +354,18 @@ func (r *FactoryReconciler) writeAnnotations(ctx context.Context, key types.Name
 	})
 }
 
-func (r *FactoryReconciler) agentsFor(ctx context.Context, factory *factoryv1.Factory) ([]factoryv1.FactoryAgent, error) {
-	var list factoryv1.FactoryAgentList
-	if err := r.List(ctx, &list, client.InNamespace(factory.Namespace)); err != nil {
+// ownedItems lists one kind in the Factory's namespace and returns the items
+// this Factory owns, in list order. items must be the address of list.Items
+// so List fills the slice the filter reads. A List error is returned unwrapped.
+func ownedItems[T any](ctx context.Context, r *FactoryReconciler, factory *factoryv1.Factory, list client.ObjectList, items *[]T, ref func(*T) *factoryv1.LocalRef) ([]T, error) {
+	if err := r.List(ctx, list, client.InNamespace(factory.Namespace)); err != nil {
 		return nil, err
 	}
-	var out []factoryv1.FactoryAgent
-	for i := range list.Items {
-		if owns(factory, list.Items[i].Spec.FactoryRef, r, ctx) {
-			out = append(out, list.Items[i])
-		}
-	}
-	return out, nil
-}
-
-func (r *FactoryReconciler) automationsFor(ctx context.Context, factory *factoryv1.Factory) ([]factoryv1.Automation, error) {
-	var list factoryv1.AutomationList
-	if err := r.List(ctx, &list, client.InNamespace(factory.Namespace)); err != nil {
-		return nil, err
-	}
-	var out []factoryv1.Automation
-	for i := range list.Items {
-		if owns(factory, list.Items[i].Spec.FactoryRef, r, ctx) {
-			out = append(out, list.Items[i])
-		}
-	}
-	return out, nil
-}
-
-func (r *FactoryReconciler) runnersFor(ctx context.Context, factory *factoryv1.Factory) ([]factoryv1.Runner, error) {
-	var list factoryv1.RunnerList
-	if err := r.List(ctx, &list, client.InNamespace(factory.Namespace)); err != nil {
-		return nil, err
-	}
-	var out []factoryv1.Runner
-	for i := range list.Items {
-		if owns(factory, list.Items[i].Spec.FactoryRef, r, ctx) {
-			out = append(out, list.Items[i])
-		}
-	}
-	return out, nil
-}
-
-func (r *FactoryReconciler) scorersFor(ctx context.Context, factory *factoryv1.Factory) ([]factoryv1.Scorer, error) {
-	var list factoryv1.ScorerList
-	if err := r.List(ctx, &list, client.InNamespace(factory.Namespace)); err != nil {
-		return nil, err
-	}
-	var out []factoryv1.Scorer
-	for i := range list.Items {
-		if owns(factory, list.Items[i].Spec.FactoryRef, r, ctx) {
-			out = append(out, list.Items[i])
+	var out []T
+	for i := range *items {
+		item := &(*items)[i]
+		if owns(factory, ref(item), r, ctx) {
+			out = append(out, *item)
 		}
 	}
 	return out, nil
