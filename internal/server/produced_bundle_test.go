@@ -190,7 +190,10 @@ func TestProducedHeadReviewerPipeline(t *testing.T) {
 		t.Fatal("bad tip stored a SHA")
 	}
 	bundleClients.Delete(env.srv)
+	savedEndpoint := env.srv.cfg.S3.Endpoint
+	env.srv.cfg.S3.Endpoint = ""
 	postBundle(t, env, viktorAct.RunID, "bundle-token", tip, bundle)
+	env.srv.cfg.S3.Endpoint = savedEndpoint
 	if _, err := env.srv.store.GetProducedHead(ctx, viktor.ChildID); err == nil {
 		t.Fatal("missing artifact client stored a SHA")
 	}
