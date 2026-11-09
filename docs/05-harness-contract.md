@@ -136,10 +136,17 @@ workspace is empty, the harness copies that repository into the workspace and
 leaves `HEAD` on the commit it already had. The copy does not fetch or
 checkout. It removes the copied index untracked cache, which is tied to the
 source path, and does not refresh or reset the work tree. The checkout gate then runs. `FACTORY_UNTRUSTED_SETUP`, and a
-`setup_command` already present in `task.json`, are not executed. The upstream
-worker backend `setup_command` still runs before `factory-harness` when that
-worker configuration sets it. This repository does not change that worker
-configuration.
+`setup_command` already present in `task.json`, are not executed. The copy is
+refused when the source is a symlink, a gitfile worktree, a git dir outside
+the source, a tree that contains a filter driver, an origin that is not a
+plain GitHub remote, or a symlink whose target leaves the source. The
+upstream worker's own `setup_command` is worker configuration, not an
+assignment field. `oz-agent-worker` `63dbb8a` runs that command before
+`factory-harness` whenever it is non-empty (`internal/worker/direct.go`
+setup step, and a Kubernetes init container). Setting
+`FACTORY_PRE_HARNESS_SETUP` does not clear it. The default Helm worker
+values omit `setupCommand`, so that rendered config does not run one. A
+deployment that sets it is outside this harness path.
 
 The checkout SHA is the invocation `pinned_head_sha` carried on the assignment.
 It is not proof that role blobs exist in that commit. `SourceCommit` on a role

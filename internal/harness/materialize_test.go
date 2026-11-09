@@ -189,6 +189,87 @@ func TestProofFailuresStayBeforeSetupAndModel(t *testing.T) {
 	})
 }
 
+func TestLocalSourceContainment(t *testing.T) {
+	t.Run("filter driver", func(t *testing.T) {
+		source, _, pin := repoWithFilterAttribute(t)
+		sentinel := filepath.Join(t.TempDir(), "sentinel")
+		script := passThroughFilter(t, sentinel)
+		gitCmd(t, source, "config", "filter.pwn.clean", script)
+		gitCmd(t, source, "config", "filter.pwn.smudge", script)
+		workspace := filepath.Join(t.TempDir(), "workspace")
+		opt := proofOptions(t, workspace, "", source, pin, "prompt")
+		code, calls, _ := runProof(t, opt, "")
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) || code != ExitEnvironment || calls != 0 {
+			t.Fatalf("code %d calls %d err %v", code, calls, err)
+		}
+		if _, err := os.Stat(workspace); !os.IsNotExist(err) {
+			t.Fatal("unsafe source was copied")
+		}
+	})
+	t.Run("hook", func(t *testing.T) {
+		source, _, pin := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		mark := filepath.Join(t.TempDir(), "hook")
+		writeHook(t, source, mark)
+		workspace := filepath.Join(t.TempDir(), "workspace")
+		opt := proofOptions(t, workspace, "", source, pin, "prompt")
+		code, calls, _ := runProof(t, opt, pin)
+		if _, err := os.Stat(mark); !os.IsNotExist(err) || code != ExitOK || calls != 1 {
+			t.Fatalf("code %d calls %d err %v", code, calls, err)
+		}
+	})
+	t.Run("worktree", func(t *testing.T) {
+		source, first, pin := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		wt := filepath.Join(t.TempDir(), "wt")
+		gitCmd(t, source, "worktree", "add", "--detach", wt, first)
+		workspace := filepath.Join(t.TempDir(), "workspace")
+		opt := proofOptions(t, workspace, "", wt, pin, "prompt")
+		code, calls, _ := runProof(t, opt, "")
+		if code != ExitEnvironment || calls != 0 {
+			t.Fatalf("code %d calls %d", code, calls)
+		}
+		if _, err := os.Stat(workspace); !os.IsNotExist(err) {
+			t.Fatal("worktree copied")
+		}
+	})
+	t.Run("symlink escape", func(t *testing.T) {
+		source, _, pin := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		outside := filepath.Join(t.TempDir(), "secret")
+		if err := os.WriteFile(outside, []byte("secret-bytes\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(source, "leak")); err != nil {
+			t.Fatal(err)
+		}
+		workspace := filepath.Join(t.TempDir(), "workspace")
+		opt := proofOptions(t, workspace, "", source, pin, "prompt")
+		code, calls, _ := runProof(t, opt, "")
+		if code != ExitEnvironment || calls != 0 {
+			t.Fatalf("code %d calls %d", code, calls)
+		}
+		if _, err := os.Stat(workspace); !os.IsNotExist(err) {
+			t.Fatal("escaped symlink copied")
+		}
+		body, err := os.ReadFile(outside)
+		if err != nil || string(body) != "secret-bytes\n" {
+			t.Fatalf("outside %q %v", body, err)
+		}
+	})
+	t.Run("credential origin", func(t *testing.T) {
+		source, _, pin := twoCommitRepo(t, "https://github.com/example/fixture.git")
+		gitCmd(t, source, "remote", "set-url", "origin", "https://x-access-token:supersecret@github.com/example/fixture.git")
+		workspace := filepath.Join(t.TempDir(), "workspace")
+		opt := proofOptions(t, workspace, "", source, pin, "prompt")
+		inv := ParseArgs(opt.Args)
+		_, err := MaterializeAssigned(context.Background(), opt, inv)
+		if err == nil || strings.Contains(err.Error(), "supersecret") {
+			t.Fatalf("err %v", err)
+		}
+		if _, statErr := os.Stat(workspace); !os.IsNotExist(statErr) {
+			t.Fatal("credential remote copied")
+		}
+	})
+}
+
 func TestLegacySetupStillRunsWithoutProofFlag(t *testing.T) {
 	dir, _, pin := twoCommitRepo(t, "https://github.com/example/fixture.git")
 	code, calls, setup := runWithOverride(t, dir, overrideJSON(t, "example", "fixture", pin), pin)

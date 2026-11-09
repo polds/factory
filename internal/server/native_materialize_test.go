@@ -91,6 +91,10 @@ func TestNativeAssignmentMaterializesTrustedTask(t *testing.T) {
 	if taskEnv[harness.EnvPreHarnessSetup] != harness.PreHarnessSetupDisabled || taskEnv[harness.EnvBundleMode] != definition.BundleModeRoleFiles {
 		t.Fatalf("proof env %+v", taskEnv)
 	}
+	asgRaw, err := json.Marshal(asg)
+	if err != nil || strings.Contains(string(asgRaw), "setup_command") || strings.Contains(string(asgRaw), "setupCommand") {
+		t.Fatalf("assignment carries a worker setup switch: %v", err)
+	}
 	if taskEnv["FACTORY_TASK_PROMPT"] != run.Prompt || asg.Task == nil || asg.Task.Definition.Prompt != run.Prompt {
 		t.Fatal("assignment dropped the queued prompt")
 	}
@@ -158,11 +162,18 @@ func TestNativeAssignmentMaterializesTrustedTask(t *testing.T) {
 		t.Fatalf("code %d calls %d err %v", code, calls, err)
 	}
 
-	missingSrc, missingHead, _ := serverTwoCommitRepo(t)
+	// A second repo with the same tree and author second can hash to the same
+	// commit, so the missing object is an explicit SHA that is not in repo.
 	missingWS := filepath.Join(t.TempDir(), "missing")
-	missing := assignedProofOptions(t, asg, missingWS, t.TempDir(), missingSrc)
+	missing := assignedProofOptions(t, asg, missingWS, t.TempDir(), repo)
+	absent := strings.Repeat("b", 40)
+	for i, arg := range missing.Args {
+		if arg == "--repository-head-override-json" && i+1 < len(missing.Args) {
+			missing.Args[i+1] = strings.ReplaceAll(missing.Args[i+1], headSHA, absent)
+		}
+	}
 	code, calls = runAssigned(t, missing)
-	if _, err := os.Stat(missingWS); !os.IsNotExist(err) || code == harness.ExitOK || calls != 0 || headOf(t, missingSrc) != missingHead {
+	if _, err := os.Stat(missingWS); !os.IsNotExist(err) || code == harness.ExitOK || calls != 0 || headOf(t, repo) != first {
 		t.Fatalf("code %d calls %d err %v", code, calls, err)
 	}
 }

@@ -110,16 +110,14 @@ func placeLocalWorkspace(ctx context.Context, workspace, source, sha string) err
 		return err
 	}
 	if source != "" && empty && !samePath(source, workspace) {
-		if err := refuseWorkspaceSymlink(source); err != nil {
-			return err
-		}
-		if err := objectIsCommit(ctx, source, sha); err != nil {
+		if err := vetLocalSource(ctx, source, sha); err != nil {
 			return err
 		}
 		if err := os.MkdirAll(workspace, 0o755); err != nil {
 			return fmt.Errorf("%w: workspace: %w", errCheckoutWorkspace, err)
 		}
 		if err := copyGitTree(source, workspace); err != nil {
+			_ = os.RemoveAll(workspace)
 			return err
 		}
 		// A copied index keeps an untracked-cache entry for the source path.
@@ -221,6 +219,69 @@ func gitToplevel(ctx context.Context, dir string) (string, bool, error) {
 	return top, found, nil
 }
 
+// vetLocalSource checks the local object source before any copy. It refuses a
+// symlink, a worktree gitfile, a git dir outside the source, a filter driver,
+// and an origin URL that is not a plain GitHub remote. Git commands use an
+// empty hooks directory and do not fetch or checkout.
+func vetLocalSource(ctx context.Context, source, sha string) error {
+	if err := refuseWorkspaceSymlink(source); err != nil {
+		return err
+	}
+	gitPath := filepath.Join(source, ".git")
+	info, err := os.Lstat(gitPath)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: git dir", errCheckoutWorkspace)
+	}
+	return withGit(ctx, source, func(g gitRunner) error {
+		top, err := g.text("rev-parse", "--show-toplevel")
+		if err != nil {
+			return fmt.Errorf("%w: not a repository", errCheckoutWorkspace)
+		}
+		if err := sameRealDir(source, top); err != nil {
+			return err
+		}
+		absGit, err := g.text("rev-parse", "--absolute-git-dir")
+		if err != nil {
+			return fmt.Errorf("%w: git dir", errCheckoutWorkspace)
+		}
+		if err := dirInside(source, absGit); err != nil {
+			return fmt.Errorf("%w: git dir escapes workspace", errCheckoutWorkspace)
+		}
+		if err := refuseFilterDrivers(g); err != nil {
+			return err
+		}
+		remote, err := g.text("remote", "get-url", "origin")
+		if err != nil {
+			return fmt.Errorf("%w: origin", errCheckoutWorkspace)
+		}
+		if _, _, ok := githubRemote(remote); !ok || originHasUserinfo(remote) {
+			return fmt.Errorf("%w: repository identity", errCheckoutWorkspace)
+		}
+		kind, err := g.text("cat-file", "-t", sha)
+		if err != nil || kind != "commit" {
+			return fmt.Errorf("%w: missing object", errCheckoutWorkspace)
+		}
+		return nil
+	})
+}
+
+func originHasUserinfo(raw string) bool {
+	scheme, rest, ok := strings.Cut(strings.TrimSpace(raw), "://")
+	if !ok {
+		return false
+	}
+	host, _, _ := strings.Cut(rest, "/")
+	user, _, hasUser := strings.Cut(host, "@")
+	if !hasUser {
+		return false
+	}
+	// ssh://git@github.com/ is the standard remote, not a credential.
+	if scheme == "ssh" && user == "git" {
+		return false
+	}
+	return true
+}
+
 func dropUntrackedCache(ctx context.Context, dir string) error {
 	err := withGit(ctx, dir, func(g gitRunner) error {
 		_, gitErr := g.text("update-index", "--no-untracked-cache")
@@ -302,6 +363,9 @@ func copyGitTree(src, dst string) error {
 			if err != nil {
 				return err
 			}
+			if linkEscapes(srcAbs, path, link) {
+				return fmt.Errorf("%w: symlink escapes source", errCheckoutWorkspace)
+			}
 			return os.Symlink(link, target)
 		case info.IsDir():
 			return os.MkdirAll(target, 0o755)
@@ -340,6 +404,14 @@ func copyStrings(in []string) []string {
 		return nil
 	}
 	return append([]string{}, in...)
+}
+
+func linkEscapes(root, linkPath, link string) bool {
+	target := link
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(linkPath), target)
+	}
+	return !pathInside(root, filepath.Clean(target))
 }
 
 func pathInside(root, path string) bool {
