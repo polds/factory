@@ -353,7 +353,21 @@ The task container is that boundary. Tool subprocesses do not receive
 
 Events go to `{runtime}/events.ndjson`. Secret values are replaced with
 `[REDACTED]` before a `tool.call` or assistant text is written. `tool.result`
-carries a digest, not the output.
+carries a digest, not the output. `evidence.test` is a separate event. The
+harness writes it only when `task.json` `evidence_package` names one relative
+`go test` package. That package is server-side. It is not taken from the
+prompt. The body is redacted, then truncated to 256 KiB. The marker
+`[truncated]` stays inside that cap. `output_digest` is the sha256 of the
+redacted bytes, and the untruncated bytes are not stored. Status is
+`tests_passed`, `tests_failed`, `skip_only`, `tool_error`,
+`pgvector_unavailable`, or `privilege_unavailable`. Zero `Action:run` events,
+or only skips, is `skip_only`, including `ok` with no tests. A printed `PASS`
+line is not a pass. A missing `go` binary is `tool_error`. When
+`mutation_path` is set, the harness rewrites the first `factoryEvidencePass`
+in that file, expects `tests_failed`, restores the blob with `git cat-file`,
+and expects `tests_passed`. It does not run `git checkout`, `git clean`, or
+`git reset`. This step does not call a model. `JoinNative` does not read the
+transcript.
 
 ## Claude Code adapter
 

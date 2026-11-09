@@ -247,8 +247,23 @@ The dispatch command's job is to hand the payload to a runtime and return quickl
   `deploy/worker/kubernetes.example.yaml` sample omits both commands. A Helm
   worker with `proof: true` fails to render if `setupCommand` or
   `teardownCommand` is set, and the rendered config has neither key. A
-  worker without `proof` still renders a configured command. The
-  checkout SHA is not an attestation that role files belong to that commit.
+  worker without `proof` still renders a configured command.
+  `FACTORY_PRE_HARNESS_SETUP=disabled` does not stop that configured command.
+  The checkout SHA is not an attestation that role files belong to that commit.
+  An evidence run asks factoryd for one disposable database and login.
+  `CREATE DATABASE` is outside a transaction. The ledger row is inserted
+  first and stores no DSN and no password. The task receives
+  `DREAMD_TEST_DSN` only. `FACTORY_DATABASE_URL` and
+  `FACTORY_DISPOSABLE_ADMIN_URL` stay on the server. The login is
+  `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`. Connect is
+  revoked from `PUBLIC` on the Factory database, `postgres`, and `template1`,
+  after the admin role is granted connect. Each disposable database then
+  grants connect only to that run's role. A missing `vector` extension records
+  `pgvector_unavailable` and is not success. The CI image stays
+  `postgres:16-alpine`. Restart does not drop a `ready` row. Terminal, and a
+  startup sweep of stale `creating` rows whose run is not executing plus rows
+  already `dropping`, drop quoted names that match `dreamd_` plus 32 hex
+  digits. A name that fails that pattern is not interpolated.
 - **Origin stripping.** `--remove-repository-origins` removes remotes after clone, so an
   agent cannot push to a repository the run was not meant to touch. Cheap, effective, and
   the right default for untrusted intake.

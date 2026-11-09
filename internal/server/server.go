@@ -198,6 +198,19 @@ type Server struct {
 	// scheduleGate blocks loop until closed. Nil in production.
 	scheduleGate <-chan struct{}
 
+	disposableOp        sync.Mutex
+	disposableMu        sync.Mutex
+	disposablePasswords map[string]string
+	// disposableDropFor shortens DROP DATABASE when a test holds a session.
+	// Zero uses the production timeout.
+	disposableDropFor time.Duration
+	// evidenceBundleForTest selects the evidence path without a role_files row.
+	// Production leaves it false.
+	evidenceBundleForTest bool
+	// evidenceAttempt runs at the end of taskEnv. Tests return one transient
+	// error so taskEnvRetry provisions a single database.
+	evidenceAttempt func() error
+
 	// integ is the M4 ingress, automation, and outbound runtime.
 	integ m4State
 
@@ -296,29 +309,30 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 	bridge := outbound.NewBridge()
 	bridge.BindStore(st)
 	s := &Server{
-		cfg:          cfg,
-		log:          cfg.Log,
-		store:        st,
-		bridge:       bridge,
-		db:           pool,
-		leader:       leader,
-		session:      session,
-		sessionID:    sessionID,
-		sessionHeld:  true,
-		sessionCfg:   sessionCfg,
-		hub:          events.NewHub(),
-		ctx:          runCtx,
-		cancel:       cancel,
-		pings:        make(chan beat, 32),
-		wake:         make(chan struct{}, 1),
-		steerWake:    make(chan struct{}, 1),
-		live:         map[string]execRec{},
-		byRun:        map[string]string{},
-		idleSince:    map[string]time.Time{},
-		grace:        map[string]*time.Timer{},
-		suspended:    map[string]struct{}{},
-		schemas:      schemaHandler(cfg.SchemasPath),
-		scheduleGate: cfg.ScheduleGate,
+		cfg:                 cfg,
+		log:                 cfg.Log,
+		store:               st,
+		bridge:              bridge,
+		db:                  pool,
+		leader:              leader,
+		session:             session,
+		sessionID:           sessionID,
+		sessionHeld:         true,
+		sessionCfg:          sessionCfg,
+		hub:                 events.NewHub(),
+		ctx:                 runCtx,
+		cancel:              cancel,
+		pings:               make(chan beat, 32),
+		wake:                make(chan struct{}, 1),
+		steerWake:           make(chan struct{}, 1),
+		live:                map[string]execRec{},
+		byRun:               map[string]string{},
+		idleSince:           map[string]time.Time{},
+		grace:               map[string]*time.Timer{},
+		suspended:           map[string]struct{}{},
+		schemas:             schemaHandler(cfg.SchemasPath),
+		scheduleGate:        cfg.ScheduleGate,
+		disposablePasswords: map[string]string{},
 	}
 	s.PinTarget = s.pinTargetProduction
 	s.gw = gateway.New(s.authenticate, s, s.log)
@@ -332,6 +346,10 @@ func Open(ctx context.Context, cfg Config) (*Server, error) {
 		return nil, err
 	}
 	if err := s.sweepFailureClasses(runCtx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	if err := s.sweepDisposable(runCtx); err != nil {
 		_ = s.Close()
 		return nil, err
 	}

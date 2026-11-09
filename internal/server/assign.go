@@ -122,6 +122,14 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 	if err := s.applyRoleFilesProof(ctx, run, env); err != nil {
 		return nil, err
 	}
+	if err := s.attachEvidence(ctx, run, env); err != nil {
+		return nil, err
+	}
+	if s.evidenceAttempt != nil {
+		if err := s.evidenceAttempt(); err != nil {
+			return nil, err
+		}
+	}
 	return env, nil
 }
 

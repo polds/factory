@@ -136,6 +136,7 @@ func (s *Server) finish(ctx context.Context, runID, execID, state, reason, summa
 	s.noteAfterTerminal(ctx, runID, before)
 	s.nudge()
 	s.noteMeasurement(ctx, runID)
+	s.releaseDisposable(ctx, runID)
 }
 
 // commitFinish applies one terminal transition and inserts run.terminal
@@ -266,6 +267,9 @@ func (s *Server) commitFinish(ctx context.Context, runID, execID, state, reason,
 		return false, err
 	}
 	if err := store.ReconcileNativeTerminal(ctx, tx, runID, status, execID); err != nil {
+		return false, err
+	}
+	if err := store.MarkDisposableDropping(ctx, tx, runID); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {

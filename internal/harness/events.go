@@ -19,6 +19,10 @@ var pullURLRe = regexp.MustCompile(`https://[^\s"'<>]+/pull/[0-9]+`)
 // pullURLTrail is punctuation a sentence can glue onto a copied URL.
 const pullURLTrail = ".,;:!?)]}>\"'"
 
+// EventEvidenceTest is the redacted, capped stdout and stderr of one
+// evidence command. tool.result stays a digest and does not use this type.
+const EventEvidenceTest = "evidence.test"
+
 // Event is one NDJSON record from Harness Contract v1.
 type Event struct {
 	TS            string `json:"ts"`

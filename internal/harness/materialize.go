@@ -26,6 +26,15 @@ const (
 	EnvLocalSource = "FACTORY_LOCAL_OBJECT_SOURCE"
 	// EnvUntrustedSetup is a worker setup command. Proof mode never executes it.
 	EnvUntrustedSetup = "FACTORY_UNTRUSTED_SETUP"
+	// EnvEvidencePackage is the one relative go test package for an evidence run.
+	EnvEvidencePackage = "FACTORY_EVIDENCE_PACKAGE"
+	// EnvEvidenceMutation is the one relative file an evidence run may rewrite.
+	EnvEvidenceMutation = "FACTORY_EVIDENCE_MUTATION"
+	// EnvEvidenceStatus carries privilege_unavailable when creation was denied.
+	EnvEvidenceStatus = "FACTORY_EVIDENCE_STATUS"
+	// EnvTestDSN is the disposable database URL. It is the only database URL
+	// added to the task environment.
+	EnvTestDSN = "DREAMD_TEST_DSN"
 )
 
 var errPreHarnessSetup = errors.New("pre-harness setup refused")
@@ -83,6 +92,18 @@ func MaterializeAssigned(ctx context.Context, opt Options, inv Invocation) (Task
 	if err := placeLocalWorkspace(ctx, opt.Workspace, lookupEnv(opt.Env, EnvLocalSource), ov.sha); err != nil {
 		return TaskFile{}, err
 	}
+	pkg := lookupEnv(opt.Env, EnvEvidencePackage)
+	if err := EvidencePackagePath(pkg); err != nil {
+		return TaskFile{}, fmt.Errorf("%w: evidence package", errCheckoutOverride)
+	}
+	mut := lookupEnv(opt.Env, EnvEvidenceMutation)
+	if err := EvidenceMutationPath(mut); err != nil {
+		return TaskFile{}, fmt.Errorf("%w: mutation path", errCheckoutOverride)
+	}
+	status := lookupEnv(opt.Env, EnvEvidenceStatus)
+	if status != "" && status != EvidencePrivilegeUnavailable {
+		return TaskFile{}, fmt.Errorf("%w: evidence status", errCheckoutOverride)
+	}
 	task := TaskFile{
 		Prompt:          prompt,
 		ModelID:         model,
@@ -91,6 +112,9 @@ func MaterializeAssigned(ctx context.Context, opt Options, inv Invocation) (Task
 		PinnedHeadSHA:   ov.sha,
 		BundleMode:      mode,
 		PreHarnessSetup: PreHarnessSetupDisabled,
+		EvidencePackage: pkg,
+		MutationPath:    mut,
+		EvidenceStatus:  status,
 	}
 	if err := writeTaskFile(path, task); err != nil {
 		return TaskFile{}, err
