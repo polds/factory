@@ -439,16 +439,42 @@ func seatNames(policy store.NativePolicy) (implementer, reviewer string, ok bool
 	return impls[0], leaves[0], true
 }
 
-// attestIfCommit runs only when sourceCommit is 40 hex. A legacy label is unchanged.
-func (s *Server) attestIfCommit(ctx context.Context, tree definition.NativeTree) error {
-	if !commitHex40(tree.SourceCommit) {
+// attestIfCommit rejects a role_files open whose sourceCommit is not 40 hex
+// before the policy insert. A frozen policy is returned as-is. A legacy tree
+// with no pins and no seat files is not a git lookup.
+func (s *Server) attestIfCommit(ctx context.Context, invocationID string, tree definition.NativeTree) error {
+	if invocationID != "" && s.store != nil {
+		_, err := s.store.GetNativePolicy(ctx, invocationID)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+	}
+	if !roleFilesNeedsAttest(tree) {
 		return nil
+	}
+	if !commitHex40(tree.SourceCommit) {
+		return errors.New("attest: sourceCommit: not a commit")
 	}
 	dir := strings.TrimSpace(os.Getenv("FACTORY_ROLE_SOURCE"))
 	if dir == "" {
 		return errors.New("attest: FACTORY_ROLE_SOURCE: absent object")
 	}
 	return definition.AttestRoleSource(ctx, dir, tree.SourceCommit, tree)
+}
+
+func roleFilesNeedsAttest(tree definition.NativeTree) bool {
+	if tree.BundleMode == definition.BundleModeRoleFiles || tree.SourceCommit != "" || tree.RosterSHA256 != "" || tree.RosterGitBlob != "" {
+		return true
+	}
+	for _, persona := range tree.Personas {
+		if len(persona.Files) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func signEmptyDelete(req *http.Request, accessKey, secretKey, region string, now time.Time) error {

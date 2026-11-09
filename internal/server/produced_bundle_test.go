@@ -324,6 +324,40 @@ func TestProducedHeadReviewerPipeline(t *testing.T) {
 	}
 }
 
+func TestRoleFilesLabelIsNotACommit(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writeBundleDefinition(t, "")
+	}})
+	ctx := context.Background()
+	fac, agentID, itemID, invocationID := nativeLeaseFixture(t, env, "pipe", "native:d5:label", store.StagePlanning)
+	prepareBundleGoal(t, env, fac.ID, invocationID, itemID)
+	rootDir, _, pins := loadBundle(t)
+	tree := loadBundleTree(t, rootDir, pins)
+	if tree.SourceCommit != "source-commit" || tree.BundleMode != definition.BundleModeRoleFiles {
+		t.Fatalf("fixture %+v", tree.SourceCommit)
+	}
+	before := countQuery(t, env, `SELECT count(*) FROM native_policies WHERE invocation_id = $1`, invocationID)
+	_, err := env.srv.OpenNativeTree(ctx, "pipe", invocationID, apiTree(tree, agentID, itemID))
+	if err == nil || !strings.Contains(err.Error(), "sourceCommit") || !strings.Contains(err.Error(), "not a commit") || strings.Contains(err.Error(), "source-commit") || strings.Contains(err.Error(), "SEAT:") {
+		t.Fatal(err)
+	}
+	if countQuery(t, env, `SELECT count(*) FROM native_policies WHERE invocation_id = $1`, invocationID) != before {
+		t.Fatal("label inserted a policy")
+	}
+	pinRoleSource(t, rootDir, &tree)
+	opened, err := env.srv.OpenNativeTree(ctx, "pipe", invocationID, apiTree(tree, agentID, itemID))
+	if err != nil || opened.RootTaskID == "" {
+		t.Fatal(err)
+	}
+	policy, err := env.srv.store.GetNativePolicy(ctx, invocationID)
+	if err != nil || policy.SourceCommit != tree.SourceCommit || !commitHex40(policy.SourceCommit) {
+		t.Fatalf("stored %s %v", policy.SourceCommit, err)
+	}
+}
+
 func apiTree(tree definition.NativeTree, agentID, workID string) api.NativeTreeRequest {
 	req := api.NativeTreeRequest{
 		MaxDepth: tree.MaxDepth, AbsoluteMaxDepth: tree.AbsoluteMaxDepth,
@@ -396,6 +430,13 @@ func postBundle(t *testing.T, env *env, runID, token, sha string, body []byte) i
 	}
 	defer func() { _ = res.Body.Close() }()
 	return res.StatusCode
+}
+
+func pinRoleSource(t *testing.T, dir string, tree *definition.NativeTree) {
+	t.Helper()
+	commitRoleSource(t, dir)
+	tree.SourceCommit = strings.TrimSpace(gitServer(t, dir, "rev-parse", "HEAD"))
+	t.Setenv("FACTORY_ROLE_SOURCE", dir)
 }
 
 func commitRoleSource(t *testing.T, dir string) {

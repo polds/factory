@@ -130,6 +130,7 @@ func queueRoleFiles(t *testing.T, env *env, key, body, sha string) (string, stri
 	}
 	dir, pins := rewriteBundle(t)
 	tree := loadBundleTree(t, dir, pins)
+	pinRoleSource(t, dir, &tree)
 	c := &client.Client{BaseURL: env.base, APIKey: env.apiKey}
 	fac, err := env.srv.factory(ctx, "pipe")
 	if err != nil {

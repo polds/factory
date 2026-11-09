@@ -151,9 +151,10 @@ deployment that sets it is outside this harness path.
 The checkout SHA is the invocation `pinned_head_sha` carried on the assignment,
 except for the frozen reviewer, whose one override is the implementer's produced
 SHA and replaces that pin. It is not proof that role blobs exist in that commit.
-When `sourceCommit` is 40 hex, factoryd compares `org/roster.yaml` and each
-selected seat file in a local git directory and does not fetch. A non-hex
-caller label stays a caller-supplied identity string. Skill bodies are a different
+A `role_files` open whose `sourceCommit` is not 40 hex fails before insert.
+A 40-hex commit is compared with `org/roster.yaml` and each selected seat
+file in a local git directory and does not fetch. A legacy tree with no pins
+and no seat files is not a git lookup. Skill bodies are a different
 path: factoryd sets `FACTORY_SKILL_TEXT`, and the harness appends that text to
 the system prompt. `skill_spec` on the assignment is not consumed.
 

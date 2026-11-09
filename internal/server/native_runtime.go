@@ -52,7 +52,7 @@ func (s *Server) OpenNativeTree(ctx context.Context, factoryUID, invocationID st
 		RosterGitBlob:         req.RosterGitBlob,
 		BundleMode:            req.BundleMode,
 	}
-	if err := s.attestIfCommit(ctx, tree); err != nil {
+	if err := s.attestIfCommit(ctx, invocationID, tree); err != nil {
 		return api.NativeTreeOpened{}, err
 	}
 	policy, task, err := coordination.OpenTree(ctx, s.store, store.OpenTreeInput{
