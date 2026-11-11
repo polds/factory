@@ -45,15 +45,19 @@ type Config struct {
 	// replaces that default on the model request. An empty API key omits
 	// Authorization unless one of these lines sets it.
 	InferenceExtraHeaders []inference.Header
-	Secrets               map[string]string
-	WorkerPool            string
-	WorkerPlatform        string
-	WorkerMaxConcurrent   int
-	S3                    artifacts.S3
-	CancelGrace           time.Duration
-	LeaseTTL              time.Duration
-	Now                   func() time.Time
-	Log                   *slog.Logger
+	// SpendPrice is the JSON price document for role_files model calls.
+	// Empty reads FACTORY_SPEND_PRICE from the process environment. The
+	// harness receives the same document and does not choose W.
+	SpendPrice          string
+	Secrets             map[string]string
+	WorkerPool          string
+	WorkerPlatform      string
+	WorkerMaxConcurrent int
+	S3                  artifacts.S3
+	CancelGrace         time.Duration
+	LeaseTTL            time.Duration
+	Now                 func() time.Time
+	Log                 *slog.Logger
 	// SchemasPath is the directory of schemas/<version>/*.json. Empty
 	// searches upward from the working directory and the executable.
 	// When that search misses, the handler serves the embedded schemas.
@@ -210,6 +214,9 @@ type Server struct {
 	// evidenceAttempt runs at the end of taskEnv. Tests return one transient
 	// error so taskEnvRetry provisions a single database.
 	evidenceAttempt func() error
+	// reserveObserver records each spend reserve attempt, including denials.
+	// Nil in production.
+	reserveObserver func(cents int64, status int)
 
 	// integ is the M4 ingress, automation, and outbound runtime.
 	integ m4State
@@ -480,6 +487,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.Handle("GET /api/v1/selfhosted/worker/ws", s.gw)
 	s.mountProducedBundle(mux)
+	s.mountRunSpend(mux)
 	mux.Handle("/api/", s.api)
 	mux.Handle("GET /healthz", s.api)
 	if s.consoleOn() {

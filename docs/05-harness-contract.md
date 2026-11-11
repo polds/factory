@@ -352,8 +352,32 @@ ends the conversation and exits without waiting out `--idle-on-complete`.
 `write` and `edit` refuse a path outside the workspace.
 `bash` is not jailed by the process.
 The task container is that boundary. Tool subprocesses do not receive
-`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FACTORY_SECRET_VALUES`, or names listed in
-`task.json` `harness_auth_env`.
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `FACTORY_SECRET_VALUES`,
+`FACTORY_SPEND_URL`, `FACTORY_SPEND_PRICE`, or names listed in `task.json`
+`harness_auth_env`.
+
+When `OPENAI_API_KEY`, `FACTORY_RUN_TOKEN`, `FACTORY_SPEND_URL`,
+`FACTORY_SECRET_VALUES`, or inference extra headers are set, the harness
+re-execs itself before tools run. Those values cross the exec on a pipe that
+is read to EOF and closed, and they are omitted from the new process
+environment, so `/proc/<pid>/environ` does not hold them. Remaining
+descriptors are marked close-on-exec before the first tool. On Linux the
+process sets itself non-dumpable. `FACTORY_HARNESS_NO_REEXEC=1` skips the
+re-exec; that is the failure switch for the seat-isolation check.
+`FACTORY_HARNESS_KEEP_DUMPABLE=1` leaves the process dumpable so a test can
+read the environment block. Production leaves it unset.
+
+When `FACTORY_SPEND_URL` is set, the harness reserves a server-computed
+worst case before every model request, sends `max_tokens` from
+`FACTORY_SPEND_PRICE`, and settles `x-litellm-response-cost` rounded up to
+cents. The server computes that worst case from the same price document. A
+reserve of 0 or below it is refused, and the request is not sent. A prompt
+whose serialized messages plus tools exceed `prompt_byte_cap` is not sent.
+An error, the 60 second client timeout, a cancel, or a 200 without the cost
+header settles the full worst case, records `missing_usage`, and does not
+send another request. HTTP 402 is `backend_allowance_exhausted`: one request,
+no retry. A settled cost above the reservation pauses the run. A run without
+`FACTORY_SPEND_URL` does not reserve. An evidence run does not reserve.
 
 Events go to `{runtime}/events.ndjson`. Secret values are replaced with
 `[REDACTED]` before a `tool.call` or assistant text is written. `tool.result`

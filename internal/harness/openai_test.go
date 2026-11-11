@@ -30,7 +30,7 @@ func TestCompleteChatSendsExtraHeaders(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	if _, err := completeChat(t.Context(), srv.URL, "sk-api-key-value", extra, chatRequest{Model: "m"}); err != nil {
+	if _, err := completeChat(t.Context(), srv.URL, "sk-api-key-value", extra, chatRequest{Model: "m"}, 0); err != nil {
 		t.Fatal(err)
 	}
 	if got.Get("Authorization") != "Bearer oauth-planted-token" {
@@ -53,7 +53,7 @@ func TestCompleteChatUnsetHeadersUnchanged(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	if _, err := completeChat(t.Context(), srv.URL, "sk-api-key-value", nil, chatRequest{Model: "m"}); err != nil {
+	if _, err := completeChat(t.Context(), srv.URL, "sk-api-key-value", nil, chatRequest{Model: "m"}, 0); err != nil {
 		t.Fatal(err)
 	}
 	if got.Get("Authorization") != "Bearer sk-api-key-value" || got.Get("Content-Type") != "application/json" {
@@ -84,7 +84,7 @@ func TestCompleteChatOmitsEmptyAuthorization(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	if _, err := completeChat(t.Context(), srv.URL, "", extra, chatRequest{Model: "m"}); err != nil {
+	if _, err := completeChat(t.Context(), srv.URL, "", extra, chatRequest{Model: "m"}, 0); err != nil {
 		t.Fatal(err)
 	}
 	if got.Get("Authorization") != "" {
@@ -107,7 +107,7 @@ func TestCompleteChatRedactsHeaderValue(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, err = completeChat(t.Context(), srv.URL, "", extra, chatRequest{Model: "m"})
+	_, err = completeChat(t.Context(), srv.URL, "", extra, chatRequest{Model: "m"}, 0)
 	if err == nil {
 		t.Fatal("expected provider error")
 	}
@@ -351,6 +351,10 @@ func TestClassifyProviderRequestShape(t *testing.T) {
 		if summary != err.Error() {
 			t.Fatalf("%d summary %s", httpStatus, summary)
 		}
+	}
+	code, status, summary = classifyProvider(&providerError{Status: 402, Message: "allowance"}, 1, 2)
+	if code != ExitConfigInvalid || status != "backend_allowance_exhausted" || summary != "provider HTTP 402: allowance" {
+		t.Fatalf("402: %d %s %s", code, status, summary)
 	}
 	code, status, summary = classifyProvider(&providerError{Status: 500, Message: "down"}, 1, 2)
 	if code != ExitModelUnavailable || status != "model_unavailable" || summary != "provider HTTP 500: down" {

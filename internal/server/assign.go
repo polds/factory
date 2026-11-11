@@ -137,6 +137,7 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 			return nil, err
 		}
 	}
+	s.attachSpend(run, env)
 	return env, nil
 }
 

@@ -354,6 +354,8 @@ func scrubEnv(parent, drop []string) []string {
 		"ANTHROPIC_API_KEY":       true,
 		"FACTORY_SECRET_VALUES":   true,
 		inference.ExtraHeadersEnv: true,
+		EnvSpendURL:               true,
+		EnvSpendPrice:             true,
 	}
 	for _, k := range drop {
 		deny[k] = true
