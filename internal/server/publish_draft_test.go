@@ -183,6 +183,18 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		}
 		assertState(t, env, fix.invocationID, store.DraftFailed)
 	})
+	t.Run("pause during pre-post list", func(t *testing.T) {
+		stopDuringPrePostList(t, env, tree, key, "pause-list", true, false)
+	})
+	t.Run("cancel during pre-post list", func(t *testing.T) {
+		stopDuringPrePostList(t, env, tree, key, "cancel-list", false, false)
+	})
+	t.Run("pause during adopt list", func(t *testing.T) {
+		stopDuringPrePostList(t, env, tree, key, "pause-adopt", true, true)
+	})
+	t.Run("cancel during adopt list", func(t *testing.T) {
+		stopDuringPrePostList(t, env, tree, key, "cancel-adopt", false, true)
+	})
 	t.Run("existing ref", func(t *testing.T) {
 		fix := preparePublication(t, env, tree, "existing-ref", true, "good")
 		fake := newPublishGitHub(t, fix.sha, "ref")
@@ -203,6 +215,7 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		if fake.count("POST", "/northstar-ai-labs/dreaming.git/git-receive-pack") != 0 {
 			t.Fatal("existing pull still pushed")
 		}
+		assertState(t, env, fix.invocationID, store.DraftFailed)
 	})
 	t.Run("pulls forbidden", func(t *testing.T) {
 		fix := preparePublication(t, env, tree, "forbidden", true, "good")
@@ -216,6 +229,7 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		if fake.count("POST", "/northstar-ai-labs/dreaming.git/git-receive-pack") != 0 {
 			t.Fatal("403 still pushed")
 		}
+		assertState(t, env, fix.invocationID, store.DraftFailed)
 	})
 	t.Run("not draft", func(t *testing.T) {
 		fix := preparePublication(t, env, tree, "not-draft", true, "good")
@@ -432,6 +446,33 @@ func finishRoot(t *testing.T, env *env, fix pubFix, complete bool) pubFix {
 	return fix
 }
 
+func stopDuringPrePostList(t *testing.T, env *env, tree definition.NativeTree, key *rsa.PrivateKey, name string, pause, adopt bool) {
+	t.Helper()
+	fix := preparePublication(t, env, tree, name, true, "open")
+	fake := newPublishGitHub(t, fix.sha, "")
+	if adopt {
+		ref, err := publicationRef(fix.invocationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fake.adoptRef = ref
+	}
+	fake.onListed = func() {
+		if _, err := env.srv.CancelNativeSubtree(context.Background(), "pipe", fix.rootID, pause); err != nil {
+			t.Errorf("gate %v", err)
+		}
+	}
+	fix = finishRoot(t, env, fix, false)
+	armPublisher(t, env, key, fake)
+	if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err != nil {
+		t.Fatal(err)
+	}
+	if fake.count("POST", "/repos/northstar-ai-labs/dreaming/pulls") != 0 {
+		t.Fatal("pre-post list gate still posted")
+	}
+	assertState(t, env, fix.invocationID, store.DraftFailed)
+}
+
 func evidencePayloads(mode string) []json.RawMessage {
 	red := testLine("fail", "TestTenantIsolation")
 	green := testLine("pass", "TestTenantIsolation")
@@ -644,10 +685,6 @@ func (a argLog) text(t *testing.T) string {
 	return string(raw)
 }
 
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
 type publishGitHub struct {
 	srv       *httptest.Server
 	project   string
@@ -658,6 +695,9 @@ type publishGitHub struct {
 	wantSHA   string
 	onToken   func()
 	onReceive func()
+	onListed  func()
+	adoptRef  string
+	pushed    bool
 }
 
 func newPublishGitHub(t *testing.T, sha, mode string) *publishGitHub {
@@ -748,6 +788,21 @@ func (f *publishGitHub) serve(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`[{"number":8,"html_url":"https://github.com/northstar-ai-labs/dreaming/pull/8","draft":false,"state":"closed","head":{"ref":"factory/dreaming-454-old","sha":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}}]`))
 			return
 		}
+		f.mu.Lock()
+		pushed := f.pushed
+		listed := f.onListed
+		if pushed {
+			f.onListed = nil
+		}
+		adopt := f.adoptRef
+		f.mu.Unlock()
+		if pushed && listed != nil {
+			listed()
+		}
+		if pushed && adopt != "" {
+			_, _ = fmt.Fprintf(w, `[{"number":11,"html_url":"https://github.com/northstar-ai-labs/dreaming/pull/11","draft":true,"state":"open","head":{"ref":%q,"sha":%q}}]`, adopt, f.wantSHA)
+			return
+		}
 		_, _ = w.Write([]byte(`[]`))
 	case r.Method == http.MethodPost && r.URL.Path == "/repos/northstar-ai-labs/dreaming/pulls":
 		if f.mode == "422" {
@@ -774,8 +829,13 @@ func (f *publishGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"number":9,"html_url":"https://github.com/northstar-ai-labs/dreaming/pull/9","draft":true,"state":"open","head":{"ref":%q,"sha":%q}}`, f.headRef(r), f.wantSHA)
 	case strings.Contains(r.URL.Path, "/northstar-ai-labs/dreaming.git/"):
 		f.gitHTTP(w, r)
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git-receive-pack") && f.onReceive != nil {
-			f.onReceive()
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git-receive-pack") {
+			f.mu.Lock()
+			f.pushed = true
+			f.mu.Unlock()
+			if f.onReceive != nil {
+				f.onReceive()
+			}
 		}
 	default:
 		http.NotFound(w, r)

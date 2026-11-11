@@ -187,7 +187,7 @@ func (s *Server) publishFromRow(ctx context.Context, task store.NativeTask, row 
 	if err := s.rootAllows(ctx, task); err != nil {
 		return s.failDraft(ctx, row, err)
 	}
-	if err := s.openDraft(ctx, client, token, row, pass, git); err != nil {
+	if err := s.openDraft(ctx, client, token, task, row, pass, git); err != nil {
 		return s.failDraft(ctx, row, err)
 	}
 	s.deletePublishedObject(ctx, pass.impl)
@@ -227,7 +227,7 @@ func (s *Server) pushDraft(ctx context.Context, task store.NativeTask, row store
 	return advanced, nil
 }
 
-func (s *Server) openDraft(ctx context.Context, client *github.Client, token github.Token, row store.DraftPublication, pass reviewPass, git draftGit) error {
+func (s *Server) openDraft(ctx context.Context, client *github.Client, token github.Token, task store.NativeTask, row store.DraftPublication, pass reviewPass, git draftGit) error {
 	heads, err := git.listRemote(publishRefPrefix)
 	if err != nil {
 		return scrubbedPublish(err, token)
@@ -251,9 +251,17 @@ func (s *Server) openDraft(ctx context.Context, client *github.Client, token git
 		if !ours.Draft || !strings.EqualFold(ours.HeadSHA, pass.x) {
 			return refuse(reasonHeadMismatch)
 		}
+		// Re-read after the prefix list, before the adopt is recorded.
+		if err := s.rootAllowsPublish(ctx, task); err != nil {
+			return err
+		}
 		_, err := s.store.AdvanceDraft(ctx, row.InvocationID, store.DraftPushed, store.DraftOpened, store.DraftAdvance{
 			GitRef: row.GitRef, PRNumber: ours.Number, PRURL: ours.URL, Draft: true,
 		})
+		return err
+	}
+	// Re-read after the prefix list, immediately before POST /pulls.
+	if err := s.rootAllowsPublish(ctx, task); err != nil {
 		return err
 	}
 	body := publicationBody(pass)
@@ -340,6 +348,20 @@ func (s *Server) failDraft(ctx context.Context, row store.DraftPublication, caus
 		}
 	}
 	return cause
+}
+
+func (s *Server) rootAllowsPublish(ctx context.Context, task store.NativeTask) error {
+	if err := s.rootAllows(ctx, task); err != nil {
+		return err
+	}
+	blocked, err := s.store.PublicationSpendBlocked(ctx, task.InvocationID)
+	if err != nil {
+		return err
+	}
+	if blocked {
+		return refuse(reasonSpend)
+	}
+	return nil
 }
 
 func (s *Server) rootAllows(ctx context.Context, task store.NativeTask) error {
