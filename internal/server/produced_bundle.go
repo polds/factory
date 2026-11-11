@@ -185,13 +185,20 @@ func (s *Server) removeProducedBundle(r *http.Request) error {
 	if _, ok, err := s.matchToken(r.Context(), runID, tokenHash(token)); err != nil || !ok {
 		return errBundleUnauthorized
 	}
-	_, taskID, _, err := s.store.RunSeat(r.Context(), runID)
+	_, taskID, invocationID, err := s.store.RunSeat(r.Context(), runID)
 	if err != nil {
 		return err
 	}
 	row, err := s.store.GetProducedHead(r.Context(), taskID)
 	if err != nil {
 		return err
+	}
+	retain, err := s.retainProducedBundle(r.Context(), invocationID)
+	if err != nil {
+		return err
+	}
+	if retain {
+		return nil
 	}
 	client := s.objects()
 	if client == nil {

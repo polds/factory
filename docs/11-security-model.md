@@ -174,7 +174,8 @@ to an agent, identity created or used, approval decided (who, when, what), run s
 revoked, egress denial, and improvement PR opened or merged.
 
 Retention is configurable and exportable to your SIEM over OTLP. Audit events never contain
-secret material.
+secret material. A draft publication records the SHA, ref, and pull request number. It does
+not record the installation token.
 
 ## Threats and mitigations
 
@@ -186,6 +187,7 @@ secret material.
 | **Compromised worker API key** | Pool-bound keys, rotatable with overlap. A leaked key drains one pool's queue, not the deployment's. |
 | **Agent weakening its own supervision** | The validator rejects any definition change that weakens `pipeline.approvals`; the improvement loop cannot merge ([08](08-measure-and-self-improvement.md#guard-rails)). |
 | **Unreviewed self-improvement** | All proposals are PRs; the loop has no merge permission; definition PRs get the config check; blast-radius limit routes large changes to admins. |
+| **Seat publishes or merges with a task token** | No seat receives a GitHub write token for the draft publication. factoryd mints that token after the reviewer passes the exact SHA. The publisher has no merge, ready, label, reviewer, or comment call. |
 | **Secret leaked into a transcript** | Redaction at output boundaries, plus short TTL so a stale transcript is low-value. Not sufficient alone — hence narrow scoping. |
 | **Docker socket escape** | Treat the worker host as a single trust domain; prefer the Kubernetes or per-run-VM backend for untrusted work. |
 | **Malicious definition PR** | Pre-merge config check, branch protection, CODEOWNERS on the definition tree. A definition PR can grant secrets and change models — review it like production IAM. |
