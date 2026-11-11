@@ -16,7 +16,7 @@
 #   go module              go mod verify, go mod tidy -diff
 #   shell                  shfmt and shellcheck
 #   yaml                   yamllint
-#   docker                 hadolint
+#   docker                 hadolint; Go image stage >= go.mod toolchain
 #   workflows              actionlint
 #   vuln                   govulncheck
 #   harness image          sidecar image smoke
@@ -314,6 +314,8 @@ jobs:
             exit 1
           fi
           "${HOME}/.local/bin/hadolint" "${files[@]}"
+      - name: Check Dockerfile Go toolchain
+        run: ./scripts/ci/go-toolchain-match.sh
 
   actions:
     name: workflows
