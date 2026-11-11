@@ -3,6 +3,7 @@ package dreaminglive
 import (
 	"context"
 	"crypto/rand"
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -193,7 +194,8 @@ func RunLive(ctx context.Context, in ChainInput) (ChainResult, error) {
 	}
 	parent, err := gitRev(work, "HEAD^")
 	if err != nil || parent != pin {
-		return ChainResult{}, fmt.Errorf("published commit parent %s is not the pin", parent)
+		head, _ := gitRev(work, "HEAD")
+		return ChainResult{}, fmt.Errorf("published commit %s parent %q is not the pin %s", head, parent, pin)
 	}
 	oskarRun, oskarExec, err := delegateOskar(ctx, in, seat)
 	if err != nil {
@@ -231,11 +233,22 @@ func rehearsalMode(mode string) bool {
 }
 
 func clonePin(role, dest string) error {
-	cmd := exec.Command("git", "clone", "--local", role, dest)
+	cmd := exec.Command("git", "clone", "--no-hardlinks", role, dest)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("clone pin: %s", strings.TrimSpace(string(out)))
+	}
+	for _, pair := range [][2]string{
+		{"user.email", "dreaming@example.com"},
+		{"user.name", "dreaming"},
+		{"commit.gpgsign", "false"},
+	} {
+		cfg := exec.Command("git", "-C", dest, "config", pair[0], pair[1])
+		cfg.Env = cmd.Env
+		if out, err := cfg.CombinedOutput(); err != nil {
+			return fmt.Errorf("git config %s: %s", pair[0], strings.TrimSpace(string(out)))
+		}
 	}
 	return nil
 }
@@ -255,6 +268,11 @@ func runViktorHarness(ctx context.Context, in ChainInput, seat openedSeat, work 
 		return "", err
 	}
 	defer func() { _ = os.RemoveAll(rt) }()
+	home, err := os.MkdirTemp("", "dreaming-live-home-")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.RemoveAll(home) }()
 	goal, err := LoadGoal()
 	if err != nil {
 		return "", err
@@ -266,9 +284,11 @@ func runViktorHarness(ctx context.Context, in ChainInput, seat openedSeat, work 
 	if err := os.WriteFile(filepath.Join(rt, "task.json"), raw, 0o600); err != nil {
 		return "", err
 	}
+	var stderr bytes.Buffer
 	code := harness.Run(ctx, harness.Options{
 		Args: []string{"--task-id", seat.viktorRun, "--model", ModelID},
 		Env: harnessEnv(in.BaseURL, seat.viktorRun, seat.token,
+			"HOME="+home,
 			"OPENAI_BASE_URL="+in.ModelURL,
 			"OPENAI_API_KEY="+in.ModelKey,
 			harness.EnvSpendURL+"="+in.BaseURL+"/api/v1/agent/runs/"+seat.viktorRun+"/spend",
@@ -278,11 +298,15 @@ func runViktorHarness(ctx context.Context, in ChainInput, seat openedSeat, work 
 		),
 		Workspace:   work,
 		RuntimeDir:  rt,
-		Stderr:      io.Discard,
+		Stderr:      &stderr,
 		ChatTimeout: 15 * time.Second,
 	})
 	if code != 0 {
-		return "", fmt.Errorf("viktor harness exit %d", code)
+		msg := strings.TrimSpace(stderr.String())
+		if len(msg) > 400 {
+			msg = msg[len(msg)-400:]
+		}
+		return "", fmt.Errorf("viktor harness exit %d: %s", code, msg)
 	}
 	return gitRev(work, "HEAD")
 }
@@ -323,10 +347,15 @@ func runOskarHarness(ctx context.Context, in ChainInput, runID, token, work stri
 	if err := os.WriteFile(filepath.Join(rt, "task.json"), raw, 0o600); err != nil {
 		return err
 	}
+	home, err := os.MkdirTemp("", "dreaming-oskar-home-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(home) }()
 	code := harness.Run(ctx, harness.Options{
 		Args: []string{"--task-id", runID},
 		Env: harnessEnv(in.BaseURL, runID, token,
-			"GOTOOLCHAIN=local",
+			"HOME="+home,
 		),
 		Workspace:  work,
 		RuntimeDir: rt,
@@ -341,7 +370,6 @@ func runOskarHarness(ctx context.Context, in ChainInput, runID, token, work stri
 func harnessEnv(base, runID, token string, extra ...string) []string {
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + os.Getenv("HOME"),
 		"GOTOOLCHAIN=local",
 		"FACTORY_EVENTS_URL=" + base + "/api/v1/agent/runs/" + runID + "/events:ingest",
 		"FACTORY_RUN_TOKEN=" + token,

@@ -730,7 +730,7 @@ func TestGatherPassesAndRunsChain(t *testing.T) {
 		w.Header().Set("x-litellm-response-cost", "0.01")
 		w.Header().Set("Content-Type", "application/json")
 		if calls == 1 {
-			command := "set -e\ncat > oracle/tenant_test.go << 'EOF'\npackage oracle\n\nimport \"testing\"\n\nfunc TestTenantIsolation(t *testing.T) {\n\tif tenant() != \"factoryEvidencePass\" {\n\t\tt.Fatal(\"tenant\")\n\t}\n}\n\nfunc tenant() string { return \"factoryEvidencePass\" }\nEOF\ngit add oracle/tenant_test.go\ngit commit -m tenant\n"
+			command := "set -e\ncat > oracle/tenant_test.go << 'EOF'\npackage oracle\n\nimport \"testing\"\n\nfunc TestTenantIsolation(t *testing.T) {\n\tif tenant() != \"factoryEvidencePass\" {\n\t\tt.Fatal(\"tenant\")\n\t}\n}\n\nfunc tenant() string { return \"factoryEvidencePass\" }\nEOF\ngit add oracle/tenant_test.go\ngit -c user.email=dreaming@example.com -c user.name=dreaming -c commit.gpgsign=false commit -m tenant\n"
 			args, _ := json.Marshal(map[string]string{"command": command})
 			_, _ = fmt.Fprintf(w, `{"model":"%s","choices":[{"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":%s}}]}}]}`, ModelID, strconv.Quote(string(args)))
 			return
