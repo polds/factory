@@ -450,22 +450,54 @@ func factoryHarnessBin() (string, error) {
 	return harnessBinPath, harnessBinErr
 }
 
-// execHarness runs cmd/factory-harness inside a fresh PID namespace.
-// PrepareProcess re-execs that process with seat secrets on a pipe.
-// The namespace init dies with the seat, which kills setsid survivors.
-// cmd.Env is an allowlist, never a raw os.Environ pass-through.
+// execHarness runs cmd/factory-harness under a subreaper.
+// PrepareProcess re-execs the harness with seat secrets on a pipe.
+// The subreaper's own environment is allowlisted. When the harness exits,
+// the subreaper SIGKILLs every process that was reparented to it, including
+// a setsid child. User namespaces are not required.
 func execHarness(ctx context.Context, args, env []string, workspace string) (int, string, error) {
 	bin, err := factoryHarnessBin()
 	if err != nil {
 		return 0, "", err
 	}
-	argv := append([]string{"--user", "--map-root-user", "--pid", "--fork", "--kill-child", "--", bin}, args...)
-	cmd := exec.CommandContext(ctx, "unshare", argv...)
+	script, err := os.CreateTemp("", "seat-reap-")
+	if err != nil {
+		return 0, "", err
+	}
+	if _, err := script.WriteString(seatReaper); err != nil {
+		_ = script.Close()
+		return 0, "", err
+	}
+	if err := script.Close(); err != nil {
+		return 0, "", err
+	}
+	defer func() { _ = os.Remove(script.Name()) }()
+	if err := os.Chmod(script.Name(), 0o700); err != nil {
+		return 0, "", err
+	}
+	payload, err := json.Marshal(filterSeatEnv(os.Environ(), env))
+	if err != nil {
+		return 0, "", err
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return 0, "", err
+	}
+	if _, err := writer.Write(payload); err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
+		return 0, "", err
+	}
+	_ = writer.Close()
+	argv := append([]string{script.Name(), bin}, args...)
+	cmd := exec.CommandContext(ctx, "python3", argv...)
 	cmd.Dir = workspace
-	cmd.Env = filterSeatEnv(os.Environ(), env)
+	cmd.ExtraFiles = []*os.File{reader}
+	cmd.Env = filterSeatEnv(os.Environ(), []string{"FACTORY_SEAT_ENV_FD=3"})
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err = cmd.Run()
+	_ = reader.Close()
 	if err == nil {
 		return 0, stderr.String(), nil
 	}
@@ -476,6 +508,59 @@ func execHarness(ctx context.Context, args, env []string, workspace string) (int
 	return 0, stderr.String(), err
 }
 
+const seatReaper = `import json, os, signal, subprocess, sys, time
+import ctypes
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.prctl(36, 1) != 0:
+    sys.exit(1)
+fd = int(os.environ["FACTORY_SEAT_ENV_FD"])
+raw = os.fdopen(fd).read()
+items = json.loads(raw)
+env = {}
+for item in items:
+    key, sep, val = item.partition("=")
+    if sep:
+        env[key] = val
+proc = subprocess.Popen(sys.argv[1:], env=env)
+code = proc.wait()
+me = os.getpid()
+for _ in range(10):
+    kids = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            st = open("/proc/" + name + "/status").read()
+        except OSError:
+            continue
+        for line in st.splitlines():
+            if line.startswith("PPid:") and int(line.split()[1]) == me:
+                kids.append(int(name))
+    if not kids:
+        break
+    for kid in kids:
+        try:
+            os.kill(kid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    time.sleep(0.05)
+left = []
+for name in os.listdir("/proc"):
+    if not name.isdigit():
+        continue
+    try:
+        st = open("/proc/" + name + "/status").read()
+    except OSError:
+        continue
+    for line in st.splitlines():
+        if line.startswith("PPid:") and int(line.split()[1]) == me:
+            left.append(name)
+if left:
+    sys.stderr.write("seat descendants survived: " + " ".join(left) + "\n")
+    sys.exit(1)
+sys.exit(code if isinstance(code, int) and code >= 0 else 1)
+`
+
 // filterSeatEnv keeps allowlisted keys from src and then applies extra.
 // A driver sentinel in src is dropped. extra is the seat list built by the driver.
 func filterSeatEnv(src, extra []string) []string {
@@ -484,7 +569,8 @@ func filterSeatEnv(src, extra []string) []string {
 		"USER": true, "LOGNAME": true, "TERM": true,
 		"GOTOOLCHAIN": true, "GOCACHE": true, "GOPATH": true, "GOROOT": true, "GOMODCACHE": true,
 		"FACTORY_RUNTIME_DIR": true, "FACTORY_EVENTS_URL": true, "FACTORY_RUN_TOKEN": true,
-		"OPENAI_BASE_URL": true, "OPENAI_API_KEY": true,
+		"FACTORY_SEAT_ENV_FD": true,
+		"OPENAI_BASE_URL":     true, "OPENAI_API_KEY": true,
 		"FACTORY_MAX_TURNS": true, "FACTORY_TASK_PROMPT": true,
 		harness.EnvSpendURL: true, harness.EnvSpendPrice: true,
 	}
