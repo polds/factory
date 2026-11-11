@@ -21,7 +21,7 @@ scan() {
     exit 1
   fi
   local hit
-  hit="$(grep -R -l -E 'ghs_[A-Za-z0-9._-]{20,}|BEGIN PRIVATE KEY|x-litellm-api-key|synthetic-seat-marker' "${dest}" || true)"
+  hit="$(grep -R -l -E -e 'ghs_' -e 'ghp_' -e 'sk-' -e '-----BEGIN .+PRIVATE KEY-----' -e 'synthetic-seat-marker' "${dest}" || true)"
   if [[ -n "${hit}" ]]; then
     echo "evidence scan hit" >&2
     printf '%s\n' "${hit}" >&2

@@ -41,6 +41,7 @@ type draftGit struct {
 	home   string
 	token  string
 	remote string
+	header string
 }
 
 func openDraftGit(ctx context.Context, dir string) (draftGit, func(), error) {
@@ -148,11 +149,15 @@ func (g draftGit) environ() []string {
 		"GIT_NO_LAZY_FETCH=1",
 		"GCM_INTERACTIVE=never",
 	}
-	if g.token != "" {
-		header, err := GitHTTPAuthHeader(g.token)
+	header := g.header
+	if header == "" && g.token != "" {
+		built, err := GitHTTPAuthHeader(g.token)
 		if err != nil {
-			header = "Authorization: Basic invalid"
+			built = "Authorization: Basic invalid"
 		}
+		header = built
+	}
+	if header != "" {
 		env = append(env,
 			"GIT_CONFIG_COUNT=1",
 			"GIT_CONFIG_KEY_0=http.extraheader",
@@ -160,6 +165,40 @@ func (g draftGit) environ() []string {
 		)
 	}
 	return env
+}
+
+// GitExecHeader runs git with the same hooks-off, private-home runner the
+// publisher uses. header is the full Authorization value, passed only
+// through GIT_CONFIG_* http.extraHeader. dir may be empty for ls-remote.
+func GitExecHeader(ctx context.Context, dir, header, remote string, args ...string) (string, error) {
+	work := dir
+	if work == "" {
+		var err error
+		work, err = os.MkdirTemp("", "factory-git-")
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = os.RemoveAll(work) }()
+	}
+	g, cleanup, err := openDraftGit(ctx, work)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	g.header = header
+	g.remote = remote
+	stdout, stderr, code, err := g.exec(args...)
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		text := strings.TrimSpace(stderr)
+		if len(text) > 180 {
+			text = text[:180]
+		}
+		return "", fmt.Errorf("git %s: %s", args[0], text)
+	}
+	return stdout, nil
 }
 
 func (g draftGit) withToken(token, remote string) draftGit {

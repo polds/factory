@@ -154,8 +154,8 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		}
 		fix = finishRoot(t, env, fix, false)
 		armPublisher(t, env, key, fake)
-		if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err != nil {
-			t.Fatal(err)
+		if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err == nil {
+			t.Fatal("paused root published without an error")
 		}
 		if fake.count("POST", "/northstar-ai-labs/dreaming.git/git-receive-pack") != 0 || fake.count("POST", "/repos/northstar-ai-labs/dreaming/pulls") != 0 {
 			t.Fatal("pause before push still wrote")
@@ -173,8 +173,8 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		}
 		fix = finishRoot(t, env, fix, false)
 		armPublisher(t, env, key, fake)
-		if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err != nil {
-			t.Fatal(err)
+		if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err == nil {
+			t.Fatal("cancelled root published without an error")
 		}
 		if fake.count("POST", "/repos/northstar-ai-labs/dreaming/pulls") != 0 {
 			t.Fatal("cancel before post still created a pull")
@@ -465,8 +465,8 @@ func stopDuringPrePostList(t *testing.T, env *env, tree definition.NativeTree, k
 	}
 	fix = finishRoot(t, env, fix, false)
 	armPublisher(t, env, key, fake)
-	if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err != nil {
-		t.Fatal(err)
+	if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err == nil {
+		t.Fatal("stopped root published without an error")
 	}
 	if fake.count("POST", "/repos/northstar-ai-labs/dreaming/pulls") != 0 {
 		t.Fatal("pre-post list gate still posted")

@@ -10,8 +10,130 @@ import (
 	"path/filepath"
 	"strings"
 
+	yaml "go.yaml.in/yaml/v3"
+
 	"github.com/polds/factory/internal/definition"
 )
+
+// SeatFile is the committed seat list. The driver reads it; the bytes of
+// the role files stay in the Dreaming checkout.
+type SeatFile struct {
+	ProofRoot       string   `yaml:"proof_root"`
+	SourceReportsTo string   `yaml:"source_reports_to"`
+	Implementer     string   `yaml:"implementer"`
+	Reviewer        string   `yaml:"reviewer"`
+	Roster          string   `yaml:"roster"`
+	Files           []string `yaml:"files"`
+	Seats           []string `yaml:"seats"`
+	Purpose         string   `yaml:"purpose"`
+	PublishRepo     string   `yaml:"publish_repo"`
+	Model           string   `yaml:"model"`
+}
+
+// LoadSeats reads spike/dreaming/definition/seats.yaml.
+func LoadSeats() (SeatFile, error) {
+	raw, err := os.ReadFile(filepath.Join(mustModuleRoot(), "spike", "dreaming", "definition", "seats.yaml"))
+	if err != nil {
+		return SeatFile{}, err
+	}
+	var doc SeatFile
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return SeatFile{}, err
+	}
+	if doc.Purpose == "" {
+		doc.Purpose = "work"
+	}
+	return doc, nil
+}
+
+// LoadGoal reads spike/dreaming/definition/goal-454.md.
+func LoadGoal() (string, error) {
+	raw, err := os.ReadFile(filepath.Join(mustModuleRoot(), "spike", "dreaming", "definition", "goal-454.md"))
+	if err != nil {
+		return "", err
+	}
+	text := strings.TrimSpace(string(raw))
+	if !strings.Contains(text, "factoryEvidencePass") || !strings.Contains(text, "FACTORY_EVIDENCE_MUTATION") {
+		return "", fmt.Errorf("goal template")
+	}
+	return text, nil
+}
+
+// LoadTree loads a committed role checkout. Blob ids are computed from the files.
+func LoadTree(dir string) (definition.NativeTree, string, map[string]string, error) {
+	pin, err := gitOut(dir, "rev-parse", "HEAD")
+	if err != nil {
+		return definition.NativeTree{}, "", nil, err
+	}
+	seats, err := LoadSeats()
+	if err != nil {
+		return definition.NativeTree{}, "", nil, err
+	}
+	rosterRel := seats.Roster
+	if rosterRel == "" {
+		rosterRel = "org/roster.yaml"
+	}
+	files := seats.Files
+	if len(files) == 0 {
+		files = RoleFileNames
+	}
+	slugs := seats.Seats
+	if len(slugs) == 0 {
+		slugs = SeatSlugs
+	}
+	blobs := map[string]string{}
+	bodies := map[string][]byte{}
+	read := func(rel string) ([]byte, error) {
+		body, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+		if err != nil {
+			return nil, err
+		}
+		bodies[rel] = body
+		blobs[rel] = gitBlobID(body)
+		return body, nil
+	}
+	if _, err := read(rosterRel); err != nil {
+		return definition.NativeTree{}, "", nil, err
+	}
+	pins := map[string]map[string]definition.PinnedFile{}
+	for _, slug := range slugs {
+		pins[slug] = map[string]definition.PinnedFile{}
+		for _, name := range files {
+			rel := "org/agents/" + slug + "/" + name
+			body, err := read(rel)
+			if err != nil {
+				return definition.NativeTree{}, "", nil, err
+			}
+			sum := sha256.Sum256(body)
+			pins[slug][name] = definition.PinnedFile{
+				SHA256: hex.EncodeToString(sum[:]), GitBlob: blobs[rel], Size: len(body),
+			}
+		}
+	}
+	roster := bodies[rosterRel]
+	sum := sha256.Sum256(roster)
+	root := seats.ProofRoot
+	if root == "" {
+		root = "nils-aaberg"
+	}
+	tree, err := definition.LoadPinnedRoles(definition.PinnedRoles{
+		Root: dir, SourceCommit: pin,
+		RosterSHA256: hex.EncodeToString(sum[:]), RosterGitBlob: blobs[rosterRel],
+		Slugs: slugs, ProofRoot: root, Files: pins,
+	})
+	if err != nil {
+		return definition.NativeTree{}, "", nil, err
+	}
+	return tree, pin, blobs, nil
+}
+
+func mustModuleRoot() string {
+	root, err := moduleRoot()
+	if err != nil {
+		return "."
+	}
+	return root
+}
 
 const syntheticRoster = `meta:
   org: synthetic
@@ -66,6 +188,14 @@ func BuildSynthetic(dir string) (definition.NativeTree, string, map[string]strin
 			bodies[rel] = body
 		}
 	}
+	evidence := filepath.Join(dir, "oracle")
+	if err := os.MkdirAll(evidence, 0o755); err != nil {
+		return definition.NativeTree{}, "", nil, err
+	}
+	sentinel := "package oracle\n\nimport \"testing\"\n\nfunc TestTenantIsolation(t *testing.T) {\n\tif tenant() != \"factoryEvidencePass\" {\n\t\tt.Fatal(\"tenant\")\n\t}\n}\n\nfunc tenant() string { return \"factoryEvidencePass\" }\n"
+	if err := os.WriteFile(filepath.Join(evidence, "tenant_test.go"), []byte(sentinel), 0o644); err != nil {
+		return definition.NativeTree{}, "", nil, err
+	}
 	if err := git(dir, "init", "-b", "main"); err != nil {
 		return definition.NativeTree{}, "", nil, err
 	}
@@ -75,7 +205,7 @@ func BuildSynthetic(dir string) (definition.NativeTree, string, map[string]strin
 	if err := git(dir, "config", "user.name", "dreaming"); err != nil {
 		return definition.NativeTree{}, "", nil, err
 	}
-	if err := git(dir, "add", "org"); err != nil {
+	if err := git(dir, "add", "org", "oracle"); err != nil {
 		return definition.NativeTree{}, "", nil, err
 	}
 	if err := git(dir, "commit", "-m", "synthetic seats"); err != nil {

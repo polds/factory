@@ -37,6 +37,9 @@ type ChainInput struct {
 	Ceiling  int64
 	// Mode selects the stop: good, tiny, allowance, cancel, no-sentinel, compile.
 	Mode string
+	// SkipCancel is the mutation of the cancel rehearsal: the same chain
+	// without CancelNativeSubtree. Publication and a second model call proceed.
+	SkipCancel bool
 }
 
 // ChainResult is what the rehearsal observed.
@@ -78,10 +81,13 @@ func RunChain(ctx context.Context, in ChainInput) (ChainResult, error) {
 	if err != nil || len(agents) == 0 {
 		return ChainResult{}, fmt.Errorf("agents: %w", err)
 	}
+	goal, goalErr := LoadGoal()
+	if goalErr != nil {
+		return ChainResult{}, goalErr
+	}
 	item, err := in.Store.CreateWorkItem(ctx, store.NewWorkItem{
 		FactoryID: factoryID, Source: store.SourceManual, Title: "DB-backed tenant-isolation tests",
-		Body:  "Put the tests in FACTORY_EVIDENCE_MUTATION. The first factoryEvidencePass sits inside the assertion.",
-		Stage: store.StagePlanning,
+		Body: goal, Stage: store.StagePlanning,
 	})
 	if err != nil {
 		return ChainResult{}, err
@@ -148,25 +154,6 @@ func RunChain(ctx context.Context, in ChainInput) (ChainResult, error) {
 	if _, err := in.Store.StartExecution(ctx, viktorAct.RunID, "dreaming-worker", hashToken(token)); err != nil {
 		return ChainResult{}, fmt.Errorf("start viktor: %w", err)
 	}
-	turns := 1
-	if in.Mode == "cancel" {
-		turns = 1
-	}
-	if code := runSeat(ctx, in, viktorAct.RunID, token, turns); in.Mode == "tiny" || in.Mode == "allowance" {
-		_ = code
-	}
-	if in.Mode == "cancel" {
-		if _, err := in.Server.CancelNativeSubtree(ctx, factoryUID, opened.RootTaskID, false); err != nil {
-			return ChainResult{}, err
-		}
-		_ = runSeat(ctx, in, viktorAct.RunID, token+"b", 1)
-		_, _ = in.Server.CompleteNative(ctx, factoryUID, opened.RootTaskID, false)
-		return ChainResult{JoinRefused: true}, nil
-	}
-	if in.Mode == "tiny" || in.Mode == "allowance" {
-		_, _ = in.Server.CompleteNative(ctx, factoryUID, opened.RootTaskID, false)
-		return ChainResult{JoinRefused: true}, nil
-	}
 	body := tenantTest(in.Mode != "no-sentinel")
 	bundle, sha, err := gitBundle(body)
 	if err != nil {
@@ -210,11 +197,34 @@ func RunChain(ctx context.Context, in ChainInput) (ChainResult, error) {
 	if _, err := in.Store.FinishExecution(ctx, rootExec.ID, store.Terminal{State: store.ExecCompleted}); err != nil {
 		return ChainResult{}, err
 	}
+	// Evidence is in place before the model call so a 402 or a denied
+	// reserve still reaches the publisher instead of failing the bundle post.
+	_ = runSeat(ctx, in, viktorAct.RunID, token, 1)
+	if in.Mode == "cancel" {
+		if !in.SkipCancel {
+			if _, err := in.Server.CancelNativeSubtree(ctx, factoryUID, opened.RootTaskID, false); err != nil {
+				return ChainResult{}, err
+			}
+		}
+		_ = runSeat(ctx, in, viktorAct.RunID, token, 1)
+	}
 	_, completeErr := in.Server.CompleteNative(ctx, factoryUID, opened.RootTaskID, false)
+	published := completeErr == nil && draftOpened(ctx, in.DSN, inv.Row.ID)
 	return ChainResult{
-		X: sha, Published: completeErr == nil, JoinRefused: true,
+		X: sha, Published: published, JoinRefused: true,
 		Spent: spentCents(ctx, in.DSN, inv.Row.ID),
 	}, nil
+}
+
+func draftOpened(ctx context.Context, dsn, invocationID string) bool {
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	var state string
+	err = conn.QueryRow(ctx, `SELECT state FROM draft_publications WHERE invocation_id = $1`, invocationID).Scan(&state)
+	return err == nil && state == string(store.DraftOpened)
 }
 
 func spentCents(ctx context.Context, dsn, invocationID string) int64 {

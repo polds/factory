@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -53,6 +55,14 @@ func rehearse(t *testing.T, mode string) {
 	}
 	var calls int
 	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"`+ModelID+`"}]}`)
+			return
+		}
+		if r.URL.Path == "/model/info" {
+			_, _ = io.WriteString(w, modelInfoBody())
+			return
+		}
 		calls++
 		if mode == "allowance" {
 			w.WriteHeader(http.StatusPaymentRequired)
@@ -99,22 +109,7 @@ func rehearse(t *testing.T, mode string) {
 		if git.pulls() != 1 || !git.draft() {
 			t.Fatalf("pulls %d draft %v", git.pulls(), git.draft())
 		}
-		refs, err := LsRemote(ctx, git.srv.URL+"/northstar-ai-labs/dreaming.git", mustHeader(t), RefPrefix)
-		if err != nil || len(refs) != 1 {
-			t.Fatalf("refs %v %v", refs, err)
-		}
-		world := secureWorld(string(readWorkflow(t)), tree, tree.SourceCommit, dir, map[string]string{})
-		world.RemoteRefs = refs
-		world.PullHeads = []string{RefPrefix + "second"}
-		world.AuthFormOK = true
-		world.LsRemoteOK = true
-		world.PullsStatus = 200
-		if row, _ := Evaluate(world).Row(checkPrior); row.Pass {
-			t.Fatal("second dispatch was not stopped by P14")
-		}
-		if calls != before+1 {
-			t.Fatalf("second dispatch called the model (%d)", calls-before)
-		}
+		secondDispatch(t, ctx, dir, tree.SourceCommit, git, key, model.URL, &calls, before+1)
 	default:
 		if git.pulls() != 0 {
 			t.Fatalf("published %d", git.pulls())
@@ -123,34 +118,12 @@ func rehearse(t *testing.T, mode string) {
 	if mode == "tiny" && calls != before {
 		t.Fatalf("tiny ceiling sent %d calls", calls-before)
 	}
-	if mode == "allowance" && calls-before != 1 {
-		t.Fatalf("402 calls %d", calls-before)
+	if mode == "allowance" && (calls-before != 1 || result.Published) {
+		t.Fatalf("402 calls %d published %v", calls-before, result.Published)
 	}
-	if mode == "cancel" && calls-before != 1 {
-		t.Fatalf("cancel calls %d", calls-before)
+	if mode == "cancel" && (calls-before != 1 || result.Published || git.pulls() != 0) {
+		t.Fatalf("cancel calls %d published %v pulls %d", calls-before, result.Published, git.pulls())
 	}
-}
-
-func mustHeader(t *testing.T) string {
-	t.Helper()
-	header, err := AuthHeader(chainToken)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return header
-}
-
-func readWorkflow(t *testing.T) []byte {
-	t.Helper()
-	root, err := moduleRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "dreaming-live.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return raw
 }
 
 type chainBoot struct {
@@ -300,11 +273,16 @@ func mustFile(t *testing.T, path, body string) {
 const chainToken = "ghs_CHAIN_REHEARSAL_TOKEN_NOT_A_SECRET"
 
 type chainGitHub struct {
-	srv     *httptest.Server
-	project string
-	mu      sync.Mutex
-	opened  int
-	isDraft bool
+	srv           *httptest.Server
+	project       string
+	mu            sync.Mutex
+	opened        int
+	isDraft       bool
+	headRef       string
+	headSHA       string
+	mismatch      bool
+	perms         map[string]string
+	responsePerms map[string]string
 }
 
 func newChainGitHub(t *testing.T) *chainGitHub {
@@ -345,23 +323,35 @@ func (f *chainGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewReader(buf))
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/repos/northstar-ai-labs/dreaming/installation":
-		_, _ = io.WriteString(w, `{"id":7}`)
+		_, _ = io.WriteString(w, `{"id":7,"app_slug":"m6-live","repository_selection":"selected","permissions":{"contents":"write","pull_requests":"write","metadata":"read"}}`)
 	case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/access_tokens"):
+		var asked struct {
+			Permissions map[string]string `json:"permissions"`
+		}
+		_ = json.Unmarshal(buf, &asked)
+		f.mu.Lock()
+		f.perms = asked.Permissions
+		granted := asked.Permissions
+		if f.responsePerms != nil {
+			granted = f.responsePerms
+		}
+		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"token":"`+chainToken+`","expires_at":"`+time.Now().Add(time.Hour).UTC().Format(time.RFC3339)+`"}`)
+		perms, _ := json.Marshal(granted)
+		_, _ = fmt.Fprintf(w, `{"token":%q,"expires_at":%q,"permissions":%s,"repositories":[{"name":"dreaming"}]}`, chainToken, time.Now().Add(time.Hour).UTC().Format(time.RFC3339), perms)
 	case r.Method == http.MethodGet && r.URL.Path == "/repos/northstar-ai-labs/dreaming/pulls":
 		if r.URL.Query().Get("state") != "all" {
 			http.Error(w, "query", http.StatusBadRequest)
 			return
 		}
 		f.mu.Lock()
-		n := f.opened
+		ref, sha, n := f.headRef, f.headSHA, f.opened
 		f.mu.Unlock()
 		if n == 0 {
 			_, _ = io.WriteString(w, `[]`)
 			return
 		}
-		_, _ = io.WriteString(w, `[{"number":9,"html_url":"https://github.com/northstar-ai-labs/dreaming/pull/9","draft":true,"state":"open","head":{"ref":"factory/dreaming-454-rehearsal","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]`)
+		_, _ = fmt.Fprintf(w, `[{"number":9,"html_url":"https://github.com/northstar-ai-labs/dreaming/pull/9","draft":true,"state":"open","head":{"ref":%q,"sha":%q}}]`, ref, sha)
 	case r.Method == http.MethodPost && r.URL.Path == "/repos/northstar-ai-labs/dreaming/pulls":
 		var body struct {
 			Head  string `json:"head"`
@@ -372,11 +362,27 @@ func (f *chainGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.opened++
 		f.isDraft = body.Draft
+		f.headRef = body.Head
+		f.headSHA = sha
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"number":9,"html_url":"https://github.com/northstar-ai-labs/dreaming/pull/9","draft":true,"state":"open","head":{"ref":%q,"sha":%q}}`, body.Head, sha)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/northstar-ai-labs/dreaming/pulls/"):
-		_, _ = io.WriteString(w, `{"number":9,"html_url":"https://github.com/northstar-ai-labs/dreaming/pull/9","draft":true,"state":"open","head":{"ref":"factory/dreaming-454-rehearsal","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`)
+		f.mu.Lock()
+		ref, sha, bad := f.headRef, f.headSHA, f.mismatch
+		f.mu.Unlock()
+		if bad {
+			sha = strings.Repeat("c", 40)
+		}
+		_, _ = fmt.Fprintf(w, `{"number":9,"html_url":"https://github.com/northstar-ai-labs/dreaming/pull/9","draft":true,"state":"open","head":{"ref":%q,"sha":%q}}`, ref, sha)
+	case r.Method == http.MethodGet && r.URL.Path == "/repos/northstar-ai-labs/dreaming/issues/454":
+		_, _ = io.WriteString(w, `{"number":454,"state":"open","title":"DB-backed tenant isolation"}`)
+	case r.Method == http.MethodGet && r.URL.Path == "/repos/northstar-ai-labs/dreaming":
+		_, _ = io.WriteString(w, `{"default_branch":"main"}`)
+	case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/commits/"):
+		_, _ = io.WriteString(w, `{"sha":"ok"}`)
+	case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
+		_, _ = io.WriteString(w, `{"status":"ahead"}`)
 	case strings.Contains(r.URL.Path, "/northstar-ai-labs/dreaming.git/"):
 		if !chainGitAuth(r) {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -461,5 +467,188 @@ func gitCmd(t *testing.T, dir string, args ...string) {
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %s", args[0], out)
+	}
+}
+
+func TestCancelStopsCallsAndPublication(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" || os.Getenv("FACTORY_TEST_S3_ENDPOINT") == "" {
+		t.Fatal("FACTORY_TEST_DATABASE_URL and FACTORY_TEST_S3_ENDPOINT are required")
+	}
+	rehearse(t, "cancel")
+}
+
+func TestCancelRemovedPublishes(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" || os.Getenv("FACTORY_TEST_S3_ENDPOINT") == "" {
+		t.Fatal("FACTORY_TEST_DATABASE_URL and FACTORY_TEST_S3_ENDPOINT are required")
+	}
+	rehearseSkip(t)
+}
+
+func TestOpenDraftMismatchIsFailed(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" || os.Getenv("FACTORY_TEST_S3_ENDPOINT") == "" {
+		t.Fatal("FACTORY_TEST_DATABASE_URL and FACTORY_TEST_S3_ENDPOINT are required")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	tree, _, _, err := BuildSynthetic(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	price, _ := json.Marshal(workedPrice())
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-litellm-response-cost", "0.01")
+		_, _ = io.WriteString(w, `{"model":"`+ModelID+`","choices":[{"message":{"role":"assistant","content":"done"}}]}`)
+	}))
+	t.Cleanup(model.Close)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := newChainGitHub(t)
+	git.mismatch = true
+	boot := bootChain(t, string(price), model.URL, git.srv.URL, key)
+	result, err := RunChain(ctx, ChainInput{
+		Server: boot.srv, Store: boot.st, DSN: boot.dsn, BaseURL: boot.base, ModelURL: model.URL,
+		Price: string(price), Tree: tree, RoleDir: dir, Ceiling: CeilingCents, Mode: "good",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Published {
+		t.Fatal("mismatched pull was published")
+	}
+	var state string
+	if err := pgxQuery(t, boot.dsn, `SELECT state FROM draft_publications LIMIT 1`, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "failed" {
+		t.Fatalf("row %s", state)
+	}
+}
+
+func pgxQuery(t *testing.T, dsn, query string, dest *string) error {
+	t.Helper()
+	conn, err := pgx.Connect(context.Background(), dsn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	return conn.QueryRow(context.Background(), query).Scan(dest)
+}
+
+func rehearseSkip(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	tree, _, _, err := BuildSynthetic(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	price, _ := json.Marshal(workedPrice())
+	var calls int
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("x-litellm-response-cost", "0.01")
+		_, _ = io.WriteString(w, `{"model":"`+ModelID+`","choices":[{"message":{"role":"assistant","content":"done"}}]}`)
+	}))
+	t.Cleanup(model.Close)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := newChainGitHub(t)
+	boot := bootChain(t, string(price), model.URL, git.srv.URL, key)
+	result, err := RunChain(ctx, ChainInput{
+		Server: boot.srv, Store: boot.st, DSN: boot.dsn, BaseURL: boot.base, ModelURL: model.URL,
+		Price: string(price), Tree: tree, RoleDir: dir, Ceiling: CeilingCents, Mode: "cancel", SkipCancel: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls < 2 || !result.Published || git.pulls() != 1 {
+		t.Fatalf("mutation did not publish: calls %d published %v pulls %d", calls, result.Published, git.pulls())
+	}
+}
+
+func modelInfoBody() string {
+	return `{
+	  "data": [{
+	    "model_name": "` + ModelID + `",
+	    "litellm_params": {"fallbacks": ["fallback"]},
+	    "model_info": {
+	      "input_cost_per_token": 0.000003,
+	      "output_cost_per_token": 0.000015,
+	      "cache_creation_input_token_cost": 0.00000375
+	    }
+	  }, {
+	    "model_name": "fallback",
+	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}
+	  }]
+	}`
+}
+
+func secondDispatch(t *testing.T, ctx context.Context, role, pin string, git *chainGitHub, key *rsa.PrivateKey, model string, calls *int, want int) {
+	t.Helper()
+	repo := t.TempDir()
+	gitCmd(t, repo, "init", "-b", "main")
+	gitCmd(t, repo, "config", "user.email", "dreaming@example.com")
+	gitCmd(t, repo, "config", "user.name", "dreaming")
+	var shas []string
+	for i := 0; i < 3; i++ {
+		if err := os.WriteFile(filepath.Join(repo, "f"), []byte(fmt.Sprintf("c%d\n", i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, repo, "add", "f")
+		gitCmd(t, repo, "commit", "-m", fmt.Sprintf("c%d", i))
+		out, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		shas = append(shas, strings.TrimSpace(string(out)))
+	}
+	_, _, blobs, err := LoadTree(role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawBlobs, _ := json.Marshal(blobs)
+	job := t.TempDir()
+	jobPath := filepath.Join(job, "job.json")
+	if err := os.WriteFile(jobPath, []byte(`{"tests":{"TestProducedHeadReviewerPipeline":"pass","TestDraftPublishRequiresReviewerPass":"pass","TestRunSpendHardStop":"pass","TestHarnessSecretsNotInProc":"pass"},"allowlist":"pass","reexec":true,"hits":0}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	t.Setenv("FACTORY_GITHUB_API_BASE", git.srv.URL)
+	t.Setenv("M6_GITHUB_APP_ID", "4242")
+	t.Setenv("M6_GITHUB_APP_PRIVATE_KEY", pemText)
+	t.Setenv("M1_OPENAI_BASE_URL", model)
+	t.Setenv("M1_OPENAI_API_KEY", "sk-offline-rehearsal")
+	t.Setenv("FACTORY_ROLE_SOURCE", role)
+	t.Setenv("ROLE_BLOBS", string(rawBlobs))
+	t.Setenv("DREAMING_PIN", pin)
+	t.Setenv("CONFIRM", ConfirmValue)
+	t.Setenv("FACTORY_SHA", shas[2])
+	t.Setenv("FACTORY_GIT_DIR", repo)
+	t.Setenv("FACTORY_REQUIRED_SHAS", strings.Join(shas, ","))
+	t.Setenv("PREFLIGHT_JOB_FILE", jobPath)
+	t.Setenv("FACTORY_SECRET_NAMES", "M1_OPENAI_BASE_URL,M1_OPENAI_API_KEY,M6_GITHUB_APP_ID,M6_GITHUB_APP_PRIVATE_KEY")
+	t.Cleanup(func() { _ = os.Remove("preflight.json") })
+	prev := runLiveChain
+	runLiveChain = func(context.Context) error {
+		*calls++
+		return nil
+	}
+	t.Cleanup(func() { runLiveChain = prev })
+	if err := RunChecked(ctx, "live"); err == nil {
+		t.Fatal("second live dispatch passed preflight")
+	}
+	if *calls != want {
+		t.Fatalf("second dispatch model calls changed: %d want %d", *calls, want)
+	}
+	t.Setenv("FACTORY_SKIP_P14", "1")
+	if err := RunChecked(ctx, "live"); err != nil {
+		t.Fatal(err)
+	}
+	if *calls != want+1 {
+		t.Fatalf("bypassing P14 did not run the chain: calls %d", *calls)
 	}
 }

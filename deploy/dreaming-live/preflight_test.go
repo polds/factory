@@ -32,6 +32,36 @@ func TestWorstCaseExample(t *testing.T) {
 	}
 }
 
+func TestModelInfoFallbacks(t *testing.T) {
+	// litellm_params.fallbacks is the list on the model. router_settings.fallbacks
+	// is the alternate shape, [{model: [fallback]}]. Rates are USD/token in model_info.
+	direct := []byte(modelInfoBody())
+	price, ok := priceFromModelInfo(direct)
+	if !ok {
+		t.Fatal("litellm_params.fallbacks")
+	}
+	cents, priced := price.WorstCaseCents()
+	if !priced || cents != 163 {
+		t.Fatalf("W=%d", cents)
+	}
+	router := []byte(`{
+	  "router_settings": {"fallbacks": [{"` + ModelID + `": ["fallback"]}]},
+	  "data": [{
+	    "model_name": "` + ModelID + `",
+	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015, "cache_creation_input_token_cost": 0.00000375}
+	  }, {
+	    "model_name": "fallback",
+	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}
+	  }]
+	}`)
+	if _, ok := priceFromModelInfo(router); !ok {
+		t.Fatal("router_settings.fallbacks")
+	}
+	if _, ok := priceFromModelInfo([]byte(`{"data":[{"model_name":"` + ModelID + `","model_info":{"input_cost_per_token":1,"output_cost_per_token":1}}]}`)); ok {
+		t.Fatal("missing fallback list was accepted")
+	}
+}
+
 func TestDetailRedactsNeedles(t *testing.T) {
 	root, err := moduleRoot()
 	if err != nil {

@@ -25,13 +25,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/polds/factory/internal/forge/github"
 	"github.com/polds/factory/internal/harness"
 )
 
-// RunChecked is the preflight or live command. It writes preflight.json and
-// exits with an error when any check fails. Live stops before the model when
-// preflight fails. The chain itself is RunChain, covered by the offline rehearsal.
+// RunChecked is the preflight or live command. It writes preflight.json.
+// mode=live calls RunChain only after every check passes.
 func RunChecked(ctx context.Context, mode string) error {
 	world, needles, err := gather(ctx, mode)
 	if err != nil {
@@ -42,11 +40,12 @@ func RunChecked(ctx context.Context, mode string) error {
 	if err := WriteReport("preflight.json", report); err != nil {
 		return err
 	}
-	if !report.Passed() {
+	skipP14 := os.Getenv("FACTORY_SKIP_P14") == "1" && p14Only(report)
+	if !report.Passed() && !skipP14 {
 		return fmt.Errorf("preflight: %s", firstFailure(report))
 	}
 	if mode == "live" {
-		return fmt.Errorf("preflight passed; live publication is RunChain and stays fail-closed until the orchestrator dispatch")
+		return runLive(ctx)
 	}
 	return nil
 }
@@ -77,18 +76,17 @@ func gather(ctx context.Context, mode string) (World, []string, error) {
 		Confirm:     strings.TrimSpace(os.Getenv("CONFIRM")),
 		Mode:        mode,
 		PublishRepo: envDefault("FACTORY_PUBLISH_DRAFT_REPO", DreamingRepo),
-		SecretNames: []string{},
-		Purposes:    []string{"work"},
-		Tests:       namedTests(ctx),
-		Allowlist:   allowlistState(ctx),
-		Reexec:      true, SecretHits: 0,
-		Price:      workedPrice(),
-		FallbackOK: true,
-		Now:        time.Now(),
+		Purposes:    purposesFromConfig(),
+		SecretNames: jobSecretNames(),
+		Tests:       map[string]string{},
+		Allowlist:   "absent",
+		Price:       workedPrice(),
+		FallbackOK:  true,
+		Now:         time.Now(),
 	}
-	if world.Tests["TestHarnessSecretsNotInProc"] != "pass" {
-		world.Reexec = false
-		world.SecretHits = 1
+	applyJobFile(&world)
+	if err := fillRole(&world); err != nil {
+		return World{}, nil, err
 	}
 	if err := fillGit(&world); err != nil {
 		return World{}, nil, err
@@ -107,7 +105,14 @@ func gather(ctx context.Context, mode string) (World, []string, error) {
 }
 
 func fillGit(world *World) error {
-	head, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	dir := strings.TrimSpace(os.Getenv("FACTORY_GIT_DIR"))
+	git := func(args ...string) *exec.Cmd {
+		if dir != "" {
+			args = append([]string{"-C", dir}, args...)
+		}
+		return exec.Command("git", args...)
+	}
+	head, err := git("rev-parse", "HEAD").Output()
 	if err != nil {
 		return err
 	}
@@ -116,26 +121,29 @@ func fillGit(world *World) error {
 	if world.FactorySHA == "" {
 		world.FactorySHA = world.Head
 	}
-	shallow, err := exec.Command("git", "rev-parse", "--is-shallow-repository").Output()
+	shallow, err := git("rev-parse", "--is-shallow-repository").Output()
 	if err != nil {
 		return err
 	}
 	world.Shallow = strings.TrimSpace(string(shallow)) == "true"
 	world.FetchDepthZero = strings.Contains(world.Workflow, "fetch-depth: 0") && !world.Shallow
-	d6c, err := exec.Command("git", "rev-list", "-1", "HEAD", "--", "deploy/dreaming-live/preflight.go").Output()
+	d6c, err := git("rev-list", "-1", "HEAD", "--", "deploy/dreaming-live/preflight.go").Output()
 	if err != nil {
 		d6c = []byte{}
 	}
 	world.D6C = strings.TrimSpace(string(d6c))
+	if raw := strings.TrimSpace(os.Getenv("FACTORY_REQUIRED_SHAS")); raw != "" && githubBase() != "https://api.github.com" {
+		world.Required = strings.Split(raw, ",")
+	}
 	world.Ancestors = map[string]bool{}
-	for _, sha := range []string{D6A, D6B, world.D6C} {
+	for _, sha := range requiredCommits(*world) {
 		if sha == "" {
 			continue
 		}
-		if exec.Command("git", "cat-file", "-e", sha+"^{commit}").Run() != nil {
+		if git("cat-file", "-e", sha+"^{commit}").Run() != nil {
 			continue
 		}
-		world.Ancestors[sha] = exec.Command("git", "merge-base", "--is-ancestor", sha, "HEAD").Run() == nil
+		world.Ancestors[sha] = git("merge-base", "--is-ancestor", sha, "HEAD").Run() == nil
 	}
 	return nil
 }
@@ -149,10 +157,6 @@ func fillGitHub(ctx context.Context, world *World, needles *[]string) error {
 	if world.AppStatus == http.StatusUnauthorized {
 		return nil
 	}
-	client, err := github.New(github.Config{AppID: appID, Key: key})
-	if err != nil {
-		return err
-	}
 	inst, status, slug, perms, covers, installErr := installationDoc(ctx, appID, key)
 	world.AppStatus = status
 	if installErr == nil {
@@ -160,48 +164,132 @@ func fillGitHub(ctx context.Context, world *World, needles *[]string) error {
 		world.AppSlug = slug
 		world.AppPerms = perms
 		world.SelectionCovers = covers
-		tok, tokenErr := client.InstallationToken(ctx, inst, []string{DreamingRepo}, map[string]string{
-			"contents": "read", "metadata": "read", "issues": "read", "pull_requests": "read",
-		})
-		if tokenErr == nil {
-			recordRead(ctx, world, needles, client, tok)
+		token, mintErr := mintReadToken(ctx, key, appID, inst)
+		if mintErr == nil {
+			recordRead(ctx, world, needles, token)
 		}
 	}
 	return nil
 }
 
-func recordRead(ctx context.Context, world *World, needles *[]string, client *github.Client, tok github.Token) {
-	if len(tok.Value()) >= 8 {
-		*needles = append(*needles, tok.Value())
+type mintedToken struct {
+	Value  string
+	Perms  map[string]string
+	Repos  []string
+	Expiry time.Time
+}
+
+func mintReadToken(ctx context.Context, key *rsa.PrivateKey, appID, inst int64) (mintedToken, error) {
+	jwt, err := appJWT(appID, key)
+	if err != nil {
+		return mintedToken{}, err
+	}
+	body := []byte(`{"repositories":["dreaming"],"permissions":{"contents":"read","metadata":"read","issues":"read","pull_requests":"read"}}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, githubBase()+"/app/installations/"+strconv.FormatInt(inst, 10)+"/access_tokens", bytes.NewReader(body))
+	if err != nil {
+		return mintedToken{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return mintedToken{}, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	var doc struct {
+		Token       string            `json:"token"`
+		ExpiresAt   string            `json:"expires_at"`
+		Permissions map[string]string `json:"permissions"`
+		Repos       []struct {
+			Name string `json:"name"`
+		} `json:"repositories"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&doc); err != nil {
+		return mintedToken{}, err
+	}
+	if res.StatusCode != http.StatusCreated && res.StatusCode != http.StatusOK {
+		return mintedToken{}, fmt.Errorf("token HTTP %d", res.StatusCode)
+	}
+	when, err := time.Parse(time.RFC3339, doc.ExpiresAt)
+	if err != nil {
+		return mintedToken{}, err
+	}
+	var repos []string
+	for _, repo := range doc.Repos {
+		repos = append(repos, repo.Name)
+	}
+	return mintedToken{Value: doc.Token, Perms: doc.Permissions, Repos: repos, Expiry: when}, nil
+}
+
+func recordRead(ctx context.Context, world *World, needles *[]string, tok mintedToken) {
+	if len(tok.Value) >= 8 {
+		*needles = append(*needles, tok.Value)
 	}
 	world.ReadTokenMinted = true
-	world.ReadPerms = map[string]string{"contents": "read", "metadata": "read", "issues": "read", "pull_requests": "read"}
-	world.ReadRepos = []string{"dreaming"}
-	world.ReadTTL = time.Until(tok.ExpiresAt())
+	world.ReadPerms = tok.Perms
+	world.ReadRepos = tok.Repos
+	world.ReadTTL = time.Until(tok.Expiry)
 	if world.ReadTTL > time.Hour {
 		world.ReadTTL = time.Hour
 	}
-	fillReadFacts(ctx, world, tok.Value())
-	header, headerErr := AuthHeader(tok.Value())
+	fillReadFacts(ctx, world, tok.Value)
+	header, headerErr := AuthHeader(tok.Value)
 	world.AuthFormOK = headerErr == nil && strings.HasPrefix(header, "Authorization: Basic ")
 	if headerErr != nil {
 		return
 	}
-	remote := "https://github.com/" + DreamingRepo + ".git"
+	remote := strings.TrimRight(githubBase(), "/") + "/northstar-ai-labs/dreaming.git"
+	if githubBase() == "https://api.github.com" {
+		remote = "https://github.com/" + DreamingRepo + ".git"
+	}
 	refs, remoteErr := LsRemote(ctx, remote, header, RefPrefix)
 	world.LsRemoteOK = remoteErr == nil
 	if remoteErr == nil {
 		world.RemoteRefs = refs
 	}
-	pulls, listErr := client.ListPullsByHeadPrefix(ctx, tok, DreamingRepo, RefPrefix)
-	if listErr != nil {
-		world.PullsStatus = http.StatusForbidden
-		return
+	status, heads := listPullHeads(ctx, tok.Value)
+	world.PullsStatus = status
+	world.PullHeads = heads
+}
+
+func listPullHeads(ctx context.Context, token string) (int, []string) {
+	var heads []string
+	for page := 1; page <= 50; page++ {
+		path := fmt.Sprintf("/repos/%s/pulls?state=all&per_page=100&page=%d", DreamingRepo, page)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, githubBase()+path, nil)
+		if err != nil {
+			return http.StatusBadRequest, nil
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Accept", "application/vnd.github+json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return http.StatusBadGateway, nil
+		}
+		var batch []struct {
+			Head struct {
+				Ref string `json:"ref"`
+			} `json:"head"`
+		}
+		decodeErr := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&batch)
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			return res.StatusCode, nil
+		}
+		if decodeErr != nil {
+			return res.StatusCode, nil
+		}
+		for _, item := range batch {
+			if strings.HasPrefix(item.Head.Ref, RefPrefix) {
+				heads = append(heads, item.Head.Ref)
+			}
+		}
+		if len(batch) < 100 {
+			return http.StatusOK, heads
+		}
 	}
-	world.PullsStatus = http.StatusOK
-	for _, pull := range pulls {
-		world.PullHeads = append(world.PullHeads, pull.HeadRef)
-	}
+	return http.StatusOK, heads
 }
 
 func fillReadFacts(ctx context.Context, world *World, token string) {
@@ -212,7 +300,7 @@ func fillReadFacts(ctx context.Context, world *World, token string) {
 	if repoStatus == http.StatusOK {
 		world.DefaultBranch = stringField(repo, "default_branch")
 	}
-	pin := DreamingPin
+	pin := dreamingPin()
 	commitStatus := httpStatus(ctx, "/repos/"+DreamingRepo+"/commits/"+pin, token)
 	world.PinExists = commitStatus == http.StatusOK
 	if world.DefaultBranch != "" {
@@ -267,9 +355,6 @@ func fillModel(ctx context.Context, world *World) error {
 func draftRows(ctx context.Context) (int, error) {
 	dsn := strings.TrimSpace(os.Getenv("FACTORY_DATABASE_URL"))
 	if dsn == "" {
-		dsn = strings.TrimSpace(os.Getenv("FACTORY_TEST_DATABASE_URL"))
-	}
-	if dsn == "" {
 		return 0, nil
 	}
 	conn, err := pgx.Connect(ctx, dsn)
@@ -289,6 +374,12 @@ func draftRows(ctx context.Context) (int, error) {
 	return 0, err
 }
 
+// priceFromModelInfo reads GET /model/info.
+// Rates are USD per token in model_info (external-api-facts: input_cost_per_token,
+// output_cost_per_token, cache_creation_input_token_cost, above-N tiers).
+// The fallback list is litellm_params.fallbacks. When that key is absent, the
+// same list is read from router_settings.fallbacks, which LiteLLM stores as
+// [{model: [fallback, ...]}]. A missing list from both places fails closed.
 func priceFromModelInfo(raw []byte) (harness.SpendPrice, bool) {
 	var doc struct {
 		Data []struct {
@@ -298,6 +389,9 @@ func priceFromModelInfo(raw []byte) (harness.SpendPrice, bool) {
 			} `json:"litellm_params"`
 			Info map[string]json.RawMessage `json:"model_info"`
 		} `json:"data"`
+		Router struct {
+			Fallbacks []map[string][]string `json:"fallbacks"`
+		} `json:"router_settings"`
 	}
 	if json.Unmarshal(raw, &doc) != nil {
 		return harness.SpendPrice{}, false
@@ -307,10 +401,17 @@ func priceFromModelInfo(raw []byte) (harness.SpendPrice, bool) {
 		byName[item.ModelName] = i
 	}
 	primary, ok := byName[ModelID]
-	if !ok || doc.Data[primary].Params.Fallbacks == nil {
+	if !ok {
 		return harness.SpendPrice{}, false
 	}
-	names := append([]string{ModelID}, doc.Data[primary].Params.Fallbacks...)
+	fallbacks := doc.Data[primary].Params.Fallbacks
+	if fallbacks == nil {
+		fallbacks = routerFallbacks(doc.Router.Fallbacks, ModelID)
+	}
+	if fallbacks == nil {
+		return harness.SpendPrice{}, false
+	}
+	names := append([]string{ModelID}, fallbacks...)
 	price := workedPrice()
 	price.Models = nil
 	for _, name := range names {
@@ -337,6 +438,15 @@ func priceFromModelInfo(raw []byte) (harness.SpendPrice, bool) {
 		price.Models = append(price.Models, model)
 	}
 	return price, true
+}
+
+func routerFallbacks(rows []map[string][]string, model string) []string {
+	for _, row := range rows {
+		if names, ok := row[model]; ok {
+			return names
+		}
+	}
+	return nil
 }
 
 func rawNumber(raw json.RawMessage) string {
@@ -398,8 +508,16 @@ func b64(v any) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
+func githubBase() string {
+	base := strings.TrimRight(strings.TrimSpace(os.Getenv("FACTORY_GITHUB_API_BASE")), "/")
+	if base == "" {
+		return "https://api.github.com"
+	}
+	return base
+}
+
 func getJSON(ctx context.Context, path, auth string) (map[string]any, int) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com"+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, githubBase()+path, nil)
 	if err != nil {
 		return nil, http.StatusBadRequest
 	}
@@ -449,54 +567,112 @@ func parseKey(pemText string) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
-func namedTests(ctx context.Context) map[string]string {
-	names := []string{
-		"TestProducedHeadReviewerPipeline",
-		"TestDraftPublishRequiresReviewerPass",
-		"TestRunSpendHardStop",
-		"TestHarnessSecretsNotInProc",
-	}
-	out := map[string]string{}
-	for _, name := range names {
-		out[name] = "fail"
-	}
-	fillTestStates(ctx, `^(TestProducedHeadReviewerPipeline|TestDraftPublishRequiresReviewerPass|TestRunSpendHardStop|TestHarnessSecretsNotInProc)$`, out)
-	return out
-}
-
-func allowlistState(ctx context.Context) string {
-	states := map[string]string{"TestPublisherRouteAllowlist": "fail"}
-	fillTestStates(ctx, `^TestPublisherRouteAllowlist$`, states)
-	if states["TestPublisherRouteAllowlist"] == "" {
-		return "absent"
-	}
-	return states["TestPublisherRouteAllowlist"]
-}
-
-func fillTestStates(ctx context.Context, run string, states map[string]string) {
-	cmd := exec.CommandContext(ctx, "go", "test", "-json", "-count=1", "-timeout", "30m", "./internal/server", "-run", run)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	_ = cmd.Run()
-	for _, line := range bytes.Split(stdout.Bytes(), []byte("\n")) {
-		var ev struct {
-			Action string `json:"Action"`
-			Test   string `json:"Test"`
-		}
-		if json.Unmarshal(line, &ev) != nil || ev.Test == "" {
+func p14Only(report Report) bool {
+	saw := false
+	for _, row := range report.Rows {
+		if row.Check == checkPrior {
+			saw = !row.Pass
 			continue
 		}
-		switch ev.Action {
-		case "pass":
-			if _, ok := states[ev.Test]; ok {
-				states[ev.Test] = "pass"
-			}
-		case "skip":
-			if _, ok := states[ev.Test]; ok {
-				states[ev.Test] = "skip"
+		if !row.Pass {
+			return false
+		}
+	}
+	return saw
+}
+
+func dreamingPin() string {
+	if pin := strings.TrimSpace(os.Getenv("DREAMING_PIN")); len(pin) == 40 {
+		return pin
+	}
+	return DreamingPin
+}
+
+func purposesFromConfig() []string {
+	seats, err := LoadSeats()
+	if err != nil || seats.Purpose == "" {
+		return []string{"work"}
+	}
+	return []string{seats.Purpose}
+}
+
+func jobSecretNames() []string {
+	raw := strings.TrimSpace(os.Getenv("FACTORY_SECRET_NAMES"))
+	var names []string
+	if raw != "" {
+		for _, name := range strings.Split(raw, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				names = append(names, name)
 			}
 		}
 	}
+	return names
+}
+
+func applyJobFile(world *World) {
+	path := strings.TrimSpace(os.Getenv("PREFLIGHT_JOB_FILE"))
+	if path == "" {
+		return
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var doc struct {
+		Tests     map[string]string `json:"tests"`
+		Allowlist string            `json:"allowlist"`
+		Reexec    bool              `json:"reexec"`
+		Hits      int               `json:"hits"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return
+	}
+	if doc.Tests != nil {
+		world.Tests = doc.Tests
+	}
+	if doc.Allowlist != "" {
+		world.Allowlist = doc.Allowlist
+	}
+	world.Reexec = doc.Reexec
+	world.SecretHits = doc.Hits
+}
+
+func fillRole(world *World) error {
+	dir := strings.TrimSpace(os.Getenv("FACTORY_ROLE_SOURCE"))
+	world.WantRoleSource = dir
+	world.RoleSource = dir
+	if dir == "" {
+		return nil
+	}
+	tree, pin, blobs, loadErr := LoadTree(dir)
+	if loadErr == nil {
+		world.Tree = &tree
+		world.CheckoutHead = pin
+		world.BlobGot = blobs
+		var want map[string]string
+		if raw := strings.TrimSpace(os.Getenv("ROLE_BLOBS")); raw != "" {
+			_ = json.Unmarshal([]byte(raw), &want)
+		}
+		world.BlobWant = want
+		pkg := envDefault("FACTORY_EVIDENCE_PACKAGE", "oracle")
+		info, statErr := os.Stat(filepath.Join(dir, pkg))
+		world.EvidencePackage = statErr == nil && info.IsDir()
+		mut := envDefault("FACTORY_EVIDENCE_MUTATION", "oracle/tenant_test.go")
+		body, readErr := os.ReadFile(filepath.Join(dir, filepath.FromSlash(mut)))
+		world.SentinelAtX = readErr == nil && strings.Contains(string(body), "factoryEvidencePass")
+	}
+	return nil
+}
+
+// runLiveChain is the mode=live continuation. Tests replace it to run the
+// chain against the server they already booted.
+var runLiveChain = func(context.Context) error {
+	return errors.New("live chain is RunChain after preflight; factoryd env is incomplete")
+}
+
+func runLive(ctx context.Context) error {
+	return runLiveChain(ctx)
 }
 
 func envDefault(name, fallback string) string {

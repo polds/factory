@@ -137,9 +137,35 @@ func failureCases(base World) []failureCase {
 	model.ModelStatus = http.StatusNotFound
 	wrongConfirm := cloneWorld(base)
 	wrongConfirm.Confirm = "m10-live"
+	otherSHA := cloneWorld(base)
+	otherSHA.Head = strings.Repeat("ab", 20)
+	fourth := cloneWorld(base)
+	extra := *base.Tree
+	extra.Personas = append([]definition.NativePersona{}, base.Tree.Personas...)
+	extra.AllowAncestorShortcut = true
+	for i := range extra.Personas {
+		if extra.Personas[i].Name == "viktor-halas" {
+			extra.Personas[i].SpawnableBy = append(append([]string{}, extra.Personas[i].SpawnableBy...), "nils-aaberg")
+		}
+	}
+	fourth.Tree = &extra
+	zeroW := cloneWorld(base)
+	zeroW.Price = harness.SpendPrice{
+		PromptByteCap: 0, MaxTokens: 1,
+		Models: []harness.ModelRate{{Name: "zero", InputCostPerToken: "0", OutputCostPerToken: "0"}},
+	}
+	absent := cloneWorld(base)
+	absent.Allowlist = "absent"
+	closedPR := cloneWorld(base)
+	closedPR.PullHeads = []string{RefPrefix + "closed"}
 	return []failureCase{
 		{name: "empty secret", check: checkSecrets, world: secret},
 		{name: "extra headers", check: checkSecrets, world: headers},
+		{name: "response permissions", check: checkRead, world: func() World {
+			w := cloneWorld(base)
+			w.ReadPerms = map[string]string{"contents": "read", "metadata": "read"}
+			return w
+		}()},
 		{name: "closed issue", check: checkRead, world: closed},
 		{name: "unknown pin", check: checkRead, world: unknownPin},
 		{name: "blob id", check: checkRoles, world: blob},
@@ -162,6 +188,11 @@ func failureCases(base World) []failureCase {
 		{name: "missing cleanup", check: checkKill, world: cleanup},
 		{name: "model missing", check: checkModel, world: model},
 		{name: "wrong confirm", check: checkGuards, world: wrongConfirm},
+		{name: "other sha", check: checkPin, world: otherSHA},
+		{name: "fourth edge", check: checkTree, world: fourth},
+		{name: "W is 0", check: checkBudget, world: zeroW},
+		{name: "allowlist absent", check: checkGuards, world: absent},
+		{name: "closed matching pr", check: checkPrior, world: closedPR},
 	}
 }
 

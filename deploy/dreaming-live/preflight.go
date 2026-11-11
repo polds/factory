@@ -87,6 +87,7 @@ type World struct {
 	Shallow        bool
 	Ancestors      map[string]bool
 	D6C            string
+	Required       []string
 	FetchDepthZero bool
 
 	AppStatus       int
@@ -192,7 +193,7 @@ func checkP2(w World) Row {
 	if w.Head == "" || w.Head != w.FactorySHA {
 		return Row{Check: checkPin, Detail: "HEAD is not factory_sha"}
 	}
-	for _, sha := range []string{D6A, D6B, w.D6C} {
+	for _, sha := range requiredCommits(w) {
 		if sha == "" {
 			return Row{Check: checkPin, Detail: "ancestry unknown"}
 		}
@@ -305,9 +306,12 @@ func checkP8(w World) Row {
 	if !w.FallbackOK {
 		return Row{Check: checkBudget, Detail: "fallback list missing"}
 	}
+	if !ratesPresent(w.Price) {
+		return Row{Check: checkBudget, Detail: "a model has no rate"}
+	}
 	cents, ok := w.Price.WorstCaseCents()
 	if !ok || cents == 0 {
-		return Row{Check: checkBudget, Detail: "W is 0 or a model has no rate"}
+		return Row{Check: checkBudget, Detail: "W=0"}
 	}
 	if cents > WMaxCents {
 		return Row{Check: checkBudget, Detail: fmt.Sprintf("W=%d exceeds 250", cents)}
@@ -457,15 +461,16 @@ func frozenTree(tree *definition.NativeTree) (string, bool) {
 	if byName["beatriz-salgado"].ReportsTo != "nils-aaberg" || byName["viktor-halas"].ReportsTo != "beatriz-salgado" || byName["oskar-lindgren"].ReportsTo != "nils-aaberg" {
 		return "seat reports_to", false
 	}
-	checked, err := definition.ValidateNativeTree(*tree)
-	if err != nil || checked.Depth["viktor-halas"] != 2 || checked.Depth["oskar-lindgren"] != 1 {
-		return "implementer or reviewer", false
-	}
 	names := []string{"nils-aaberg", "beatriz-salgado", "viktor-halas", "oskar-lindgren"}
+	ancestors := map[string][]string{
+		"beatriz-salgado": {"nils-aaberg"},
+		"viktor-halas":    {"beatriz-salgado", "nils-aaberg"},
+		"oskar-lindgren":  {"nils-aaberg"},
+	}
 	var edges []string
 	for _, delegator := range names {
 		for _, target := range names {
-			if definition.AllowDelegate(byName[target], delegator, nil, false) == nil {
+			if definition.AllowDelegate(byName[target], delegator, ancestors[target], tree.AllowAncestorShortcut) == nil {
 				edges = append(edges, delegator+"->"+target)
 			}
 		}
@@ -480,7 +485,18 @@ func frozenTree(tree *definition.NativeTree) (string, bool) {
 			return "edge " + edges[i], false
 		}
 	}
+	checked, err := definition.ValidateNativeTree(*tree)
+	if err != nil || checked.Depth["viktor-halas"] != 2 || checked.Depth["oskar-lindgren"] != 1 {
+		return "implementer or reviewer", false
+	}
 	return "frozen root empty source tobias-lindqvist edges 3", true
+}
+
+func requiredCommits(w World) []string {
+	if len(w.Required) > 0 {
+		return w.Required
+	}
+	return []string{D6A, D6B, w.D6C}
 }
 
 func workflowForbidden(text string) bool {
@@ -514,6 +530,18 @@ func scrubDetail(detail string, needles []string) string {
 		detail = strings.ReplaceAll(detail, needle, "[redacted]")
 	}
 	return detail
+}
+
+func ratesPresent(price harness.SpendPrice) bool {
+	if len(price.Models) == 0 {
+		return false
+	}
+	for _, model := range price.Models {
+		if strings.TrimSpace(model.InputCostPerToken) == "" || strings.TrimSpace(model.OutputCostPerToken) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func ratePeaks(price harness.SpendPrice) (inRate, outRate, inModel, outModel string) {

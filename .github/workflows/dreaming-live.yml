@@ -107,14 +107,20 @@ jobs:
           if [[ "${missing}" -ne 0 ]]; then
             exit 1
           fi
-      - name: Write the GitHub App private key
-        env:
-          M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
+      - name: P13 re-exec probe in the harness the task image runs
+        run: ./spike/dreaming/p13.sh "${RUNNER_TEMP}/p13-probe.json"
+      - name: Record named test results for preflight
         run: |
           set -euo pipefail
-          key="${RUNNER_TEMP}/m6-github-app.pem"
-          printf '%s\n' "${M6_GITHUB_APP_PRIVATE_KEY}" > "${key}"
-          chmod 600 "${key}"
+          go test -json -count=1 -timeout 30m ./internal/server \
+            -run '^(TestProducedHeadReviewerPipeline|TestDraftPublishRequiresReviewerPass)$' \
+            > "${RUNNER_TEMP}/named-a.jsonl"
+          go test -json -count=1 -timeout 30m ./internal/server \
+            -run '^(TestRunSpendHardStop|TestHarnessSecretsNotInProc|TestPublisherRouteAllowlist)$' \
+            >> "${RUNNER_TEMP}/named-a.jsonl"
+          cp "${RUNNER_TEMP}/named-a.jsonl" "${RUNNER_TEMP}/named-tests.jsonl"
+          ./spike/dreaming/jobfile.sh "${RUNNER_TEMP}/named-tests.jsonl" \
+            "${RUNNER_TEMP}/p13-probe.json" "${RUNNER_TEMP}/preflight-job.json"
       - name: Run the dreaming driver
         env:
           MODE: ${{ inputs.mode }}
@@ -125,17 +131,20 @@ jobs:
           M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
           M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
           M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
-          FACTORY_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/m6-github-app.pem
           FACTORY_DATABASE_URL: postgres://postgres:t@127.0.0.1:5432/factory?sslmode=disable
           FACTORY_PUBLISH_DRAFT_REPO: northstar-ai-labs/dreaming
           FACTORY_ROLE_SOURCE: ${{ runner.temp }}/dreaming-src
+          FACTORY_SECRET_NAMES: M1_OPENAI_BASE_URL,M1_OPENAI_API_KEY,M6_GITHUB_APP_ID,M6_GITHUB_APP_PRIVATE_KEY
+          PREFLIGHT_JOB_FILE: ${{ runner.temp }}/preflight-job.json
+          DREAMING_PIN: a18fbb6b0e29442872f09e704be996208d0e6e8d
         run: exec ./spike/dreaming/run.sh
       - name: Clean up after cancel
         if: cancelled()
         run: |
           set -euo pipefail
           echo "cancelled cleanup"
-      - name: Collect evidence
+      - name: Scan evidence
+        id: scan
         if: always()
         run: |
           set -euo pipefail
@@ -147,10 +156,28 @@ jobs:
           if [[ -d spike/dreaming/.work/receipts ]]; then
             cp -a spike/dreaming/.work/receipts/. "${dest}/"
           fi
-          ./spike/dreaming/run.sh scan "${dest}"
+          if ./spike/dreaming/run.sh scan "${dest}"; then
+            echo "ok=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "ok=false" >> "${GITHUB_OUTPUT}"
+          only="${RUNNER_TEMP}/preflight-only"
+          rm -rf "${only}"
+          mkdir -p "${only}"
+          if [[ -f preflight.json ]]; then
+            cp preflight.json "${only}/preflight.json"
+            ./spike/dreaming/run.sh scan "${only}"
+          fi
+          exit 1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
+        if: steps.scan.outputs.ok == 'true'
         with:
           name: dreaming-live-evidence
           path: spike/dreaming/.work/evidence
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.scan.outputs.ok != 'true'
+        with:
+          name: dreaming-live-evidence
+          path: ${{ runner.temp }}/preflight-only
           if-no-files-found: ignore
