@@ -644,7 +644,7 @@ func killSeatUser() error {
 
 func setEnv(env []string, key, value string) []string {
 	prefix := key + "="
-	out := make([]string, 0, len(env)+1)
+	out := make([]string, 0, len(env))
 	for _, kv := range env {
 		if !strings.HasPrefix(kv, prefix) {
 			out = append(out, kv)
