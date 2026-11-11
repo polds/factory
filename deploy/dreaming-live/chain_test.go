@@ -730,7 +730,7 @@ func TestGatherPassesAndRunsChain(t *testing.T) {
 		w.Header().Set("x-litellm-response-cost", "0.01")
 		w.Header().Set("Content-Type", "application/json")
 		if calls == 1 {
-			command := "set -e\nneedle='zz-driver-app-key-sentinel'\nhits=0\nif tr '\\0' '\\n' < /proc/self/environ | grep -F -q -- \"$needle\"; then hits=1; fi\nparent=$(awk '/^PPid:/ { print $2 }' /proc/$$/status)\nif [ -r \"/proc/$parent/environ\" ] && tr '\\0' '\\n' < \"/proc/$parent/environ\" | grep -F -q -- \"$needle\"; then hits=1; fi\nif [ \"$hits\" != 0 ]; then echo driver-secret-visible; exit 1; fi\ncat > oracle/tenant_test.go << 'EOF'\npackage oracle\n\nimport \"testing\"\n\nfunc TestTenantIsolation(t *testing.T) {\n\tif tenant() != \"factoryEvidencePass\" {\n\t\tt.Fatal(\"tenant\")\n\t}\n}\n\nfunc tenant() string { return \"factoryEvidencePass\" }\nEOF\ngit add oracle/tenant_test.go\ngit -c user.email=dreaming@example.com -c user.name=dreaming -c commit.gpgsign=false commit -m tenant\n"
+			command := "set -e\nsetsid sleep 60 zz-setsid-survivor >/dev/null 2>&1 &\ncat > tenantpkg/tenant_test.go << 'EOF'\npackage oracle\n\nimport \"testing\"\n\nfunc TestTenantIsolation(t *testing.T) {\n\tif tenant() != \"factoryEvidencePass\" {\n\t\tt.Fatal(\"tenant\")\n\t}\n}\n\nfunc tenant() string { return \"factoryEvidencePass\" }\nEOF\ngit add -A\ngit -c user.email=dreaming@example.com -c user.name=dreaming -c commit.gpgsign=false commit -m tenant\n"
 			args, _ := json.Marshal(map[string]string{"command": command})
 			_, _ = fmt.Fprintf(w, `{"model":"%s","choices":[{"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":%s}}]}}]}`, ModelID, strconv.Quote(string(args)))
 			return
@@ -811,8 +811,20 @@ func TestGatherPassesAndRunsChain(t *testing.T) {
 	t.Setenv("FACTORY_GIT_DIR", repo)
 	t.Setenv("FACTORY_REQUIRED_SHAS", strings.Join(shas, ","))
 	t.Setenv("PREFLIGHT_JOB_FILE", jobPath)
+	if err := os.Rename(filepath.Join(dir, "oracle"), filepath.Join(dir, "tenantpkg")); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "package tenantpkg")
+	pinOut, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin = strings.TrimSpace(string(pinOut))
+	t.Setenv("DREAMING_PIN", pin)
+	t.Setenv("FACTORY_EVIDENCE_PACKAGE", "tenantpkg")
+	t.Setenv("FACTORY_EVIDENCE_MUTATION", "tenantpkg/tenant_test.go")
 	t.Setenv("FACTORY_SECRET_NAMES", "M1_OPENAI_BASE_URL,M1_OPENAI_API_KEY,M6_GITHUB_APP_ID,M6_GITHUB_APP_PRIVATE_KEY")
-	t.Setenv("ZZ_DRIVER_SECRET", "zz-driver-app-key-sentinel")
 	t.Cleanup(func() { _ = os.Remove("preflight.json") })
 	rehearsed := false
 	prevNote := noteRehearsal
@@ -848,6 +860,9 @@ func TestGatherPassesAndRunsChain(t *testing.T) {
 	}
 	if ran == 0 {
 		t.Fatal("reviewer evidence was stored without a test execution")
+	}
+	if exec.Command("pgrep", "-f", "zz-setsid-survivor").Run() == nil {
+		t.Fatal("setsid sleep survived the seat")
 	}
 }
 

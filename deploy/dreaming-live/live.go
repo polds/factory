@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -67,6 +68,15 @@ func gitHead(dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// loadedModelKey is the inference key read from FACTORY_MODEL_KEY_FD.
+// It is not put back into the process environment.
+var loadedModelKey string
+
+// SetModelKey records the inference key after it was read from a pipe.
+func SetModelKey(key string) {
+	loadedModelKey = strings.TrimSpace(key)
+}
+
 // bootAndRunChain is the mode=live path after a passing preflight.
 func bootAndRunChain(ctx context.Context) error {
 	dsn := strings.TrimSpace(os.Getenv("FACTORY_DATABASE_URL"))
@@ -78,16 +88,25 @@ func bootAndRunChain(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	appID, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("M6_GITHUB_APP_ID")), 10, 64)
-	if err != nil || appID <= 0 {
-		return errors.New("M6_GITHUB_APP_ID")
-	}
-	key, err := parseKey(os.Getenv("M6_GITHUB_APP_PRIVATE_KEY"))
-	if err != nil {
-		return err
+	chainOnly := strings.TrimSpace(os.Getenv("FACTORY_CHAIN_OUT")) != ""
+	var appID int64
+	var key *rsa.PrivateKey
+	if !chainOnly {
+		var err error
+		appID, err = strconv.ParseInt(strings.TrimSpace(os.Getenv("M6_GITHUB_APP_ID")), 10, 64)
+		if err != nil || appID <= 0 {
+			return errors.New("M6_GITHUB_APP_ID")
+		}
+		key, err = parseKey(os.Getenv("M6_GITHUB_APP_PRIVATE_KEY"))
+		if err != nil {
+			return err
+		}
 	}
 	modelURL := strings.TrimRight(strings.TrimSpace(os.Getenv("M1_OPENAI_BASE_URL")), "/")
-	modelKey := strings.TrimSpace(os.Getenv("M1_OPENAI_API_KEY"))
+	modelKey := strings.TrimSpace(loadedModelKey)
+	if modelKey == "" {
+		modelKey = strings.TrimSpace(os.Getenv("M1_OPENAI_API_KEY"))
+	}
 	if modelURL == "" || modelKey == "" {
 		return errors.New("M1 inference env")
 	}
@@ -165,7 +184,7 @@ func bootAndRunChain(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !result.Published {
+	if strings.TrimSpace(os.Getenv("FACTORY_CHAIN_OUT")) == "" && !result.Published {
 		return errors.New("live chain did not publish")
 	}
 	return nil
@@ -210,6 +229,13 @@ func RunLive(ctx context.Context, in ChainInput) (ChainResult, error) {
 	if err := evidenceRan(ctx, in.DSN, oskarRun); err != nil {
 		return ChainResult{}, err
 	}
+	chainOnly := strings.TrimSpace(os.Getenv("FACTORY_CHAIN_OUT")) != ""
+	if chainOnly {
+		if err := writeChainArtifact(ctx, os.Getenv("FACTORY_CHAIN_OUT"), work, sha, pin, in.DSN, oskarRun, seat.invID); err != nil {
+			return ChainResult{}, err
+		}
+		_ = os.Unsetenv("FACTORY_PUBLISH_DRAFT_REPO")
+	}
 	_ = oskarExec
 	rootExec, err := in.Store.StartExecution(ctx, seat.rootRun, "dreaming-worker", hashToken("root-"+seat.token))
 	if err != nil {
@@ -220,6 +246,9 @@ func RunLive(ctx context.Context, in ChainInput) (ChainResult, error) {
 	}
 	_, completeErr := in.Server.CompleteNative(ctx, seat.factoryUID, seat.rootTask, false)
 	published := completeErr == nil && draftOpened(ctx, in.DSN, seat.invID)
+	if chainOnly {
+		return ChainResult{X: sha, Published: false, JoinRefused: true, Spent: spentCents(ctx, in.DSN, seat.invID)}, nil
+	}
 	if !published {
 		return ChainResult{}, errors.New("live chain did not publish")
 	}
@@ -421,17 +450,19 @@ func factoryHarnessBin() (string, error) {
 	return harnessBinPath, harnessBinErr
 }
 
-// execHarness runs cmd/factory-harness. That process calls PrepareProcess,
-// which re-execs with seat secrets on a pipe and marks itself non-dumpable.
-// The environment is the seat list only. The driver environ is not copied.
+// execHarness runs cmd/factory-harness inside a fresh PID namespace.
+// PrepareProcess re-execs that process with seat secrets on a pipe.
+// The namespace init dies with the seat, which kills setsid survivors.
+// cmd.Env is an allowlist, never a raw os.Environ pass-through.
 func execHarness(ctx context.Context, args, env []string, workspace string) (int, string, error) {
 	bin, err := factoryHarnessBin()
 	if err != nil {
 		return 0, "", err
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
+	argv := append([]string{"--user", "--map-root-user", "--pid", "--fork", "--kill-child", "--", bin}, args...)
+	cmd := exec.CommandContext(ctx, "unshare", argv...)
 	cmd.Dir = workspace
-	cmd.Env = env
+	cmd.Env = filterSeatEnv(os.Environ(), env)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err = cmd.Run()
@@ -443,6 +474,33 @@ func execHarness(ctx context.Context, args, env []string, workspace string) (int
 		return exit.ExitCode(), stderr.String(), nil
 	}
 	return 0, stderr.String(), err
+}
+
+// filterSeatEnv keeps allowlisted keys from src and then applies extra.
+// A driver sentinel in src is dropped. extra is the seat list built by the driver.
+func filterSeatEnv(src, extra []string) []string {
+	allow := map[string]bool{
+		"PATH": true, "HOME": true, "TMPDIR": true, "LANG": true, "LC_ALL": true,
+		"USER": true, "LOGNAME": true, "TERM": true,
+		"GOTOOLCHAIN": true, "GOCACHE": true, "GOPATH": true, "GOROOT": true, "GOMODCACHE": true,
+		"FACTORY_RUNTIME_DIR": true, "FACTORY_EVENTS_URL": true, "FACTORY_RUN_TOKEN": true,
+		"OPENAI_BASE_URL": true, "OPENAI_API_KEY": true,
+		"FACTORY_MAX_TURNS": true, "FACTORY_TASK_PROMPT": true,
+		harness.EnvSpendURL: true, harness.EnvSpendPrice: true,
+	}
+	// extra is filtered too, so os.Environ() cannot be appended raw.
+	var out []string
+	keep := func(list []string) {
+		for _, kv := range list {
+			key, _, ok := strings.Cut(kv, "=")
+			if ok && allow[key] {
+				out = append(out, kv)
+			}
+		}
+	}
+	keep(src)
+	keep(extra)
+	return out
 }
 
 func harnessEnv(base, runID, token string, extra ...string) []string {

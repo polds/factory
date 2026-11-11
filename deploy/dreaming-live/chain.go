@@ -232,12 +232,23 @@ func openViktor(ctx context.Context, in ChainInput) (openedSeat, error) {
 	if err := setTaskStatus(ctx, in.DSN, viktor.ChildID, store.NativeRunning); err != nil {
 		return openedSeat{}, err
 	}
-	if _, err := in.Store.Lease(ctx, "default", time.Minute, 8); err != nil {
-		return openedSeat{}, err
-	}
 	token := "tok-" + strings.ReplaceAll(key, ":", "")
-	if _, err := in.Store.StartExecution(ctx, viktorAct.RunID, "dreaming-worker", hashToken(token)); err != nil {
-		return openedSeat{}, fmt.Errorf("start viktor: %w", err)
+	var startErr error
+	for try := 0; try < 8; try++ {
+		if _, startErr = in.Store.Lease(ctx, "default", time.Minute, 8); startErr != nil {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		if _, startErr = in.Store.StartExecution(ctx, viktorAct.RunID, "dreaming-worker", hashToken(token)); startErr == nil {
+			break
+		}
+		if !strings.Contains(startErr.Error(), "queued") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if startErr != nil {
+		return openedSeat{}, fmt.Errorf("start viktor: %w", startErr)
 	}
 	return openedSeat{
 		factoryUID: factoryUID, invID: inv.Row.ID, key: key, token: token,

@@ -8,9 +8,9 @@ cd "${root}"
 
 mode="${1:-}"
 case "${mode}" in
-  offline | preflight | live) ;;
+  offline | preflight | live | chain | publish) ;;
   *)
-    echo "usage: spike/dreaming/preflight.sh offline|preflight|live" >&2
+    echo "usage: spike/dreaming/preflight.sh offline|preflight|live|chain|publish" >&2
     exit 2
     ;;
 esac
@@ -18,4 +18,4 @@ esac
 bin="$(mktemp)"
 trap 'rm -f "${bin}"' EXIT
 go build -o "${bin}" ./deploy/dreaming-live/cmd/dreamingpreflight
-"${bin}" "${mode}"
+exec "${bin}" "${mode}"

@@ -31,6 +31,9 @@ import (
 // RunChecked is the preflight or live command. It writes preflight.json.
 // mode=live calls RunLive only after every check passes.
 func RunChecked(ctx context.Context, mode string) error {
+	if mode == "chain" {
+		return bootAndRunChain(ctx)
+	}
 	world, needles, err := gather(ctx, mode)
 	if err != nil {
 		return err
