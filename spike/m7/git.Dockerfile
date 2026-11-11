@@ -5,4 +5,4 @@
 # The task image itself stays unchanged.
 FROM factory-m1-task:dev
 
-RUN apk add --no-cache git-daemon=2.54.0-r0
+RUN apk add --no-cache git-daemon=2.54.1-r0
