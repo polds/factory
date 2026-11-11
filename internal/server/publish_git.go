@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,22 @@ import (
 	"strings"
 	"time"
 )
+
+// GitBearerRejected is the body GitHub's smart HTTP returns when a push
+// sends Authorization: Bearer. Git operations authenticate with Basic
+// username x-access-token.
+const GitBearerRejected = "Invalid username or token. Password authentication is not supported for Git operations."
+
+// GitHTTPAuthHeader is the git smart-HTTP Authorization value for an
+// installation token. The caller puts it in GIT_CONFIG_* http.extraHeader
+// and never in argv. Bearer is not accepted by github.com for receive-pack.
+func GitHTTPAuthHeader(token string) (string, error) {
+	if token == "" || strings.ContainsAny(token, "\x00\r\n") {
+		return "", errors.New("git auth token")
+	}
+	raw := "x-access-token:" + token
+	return "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(raw)), nil
+}
 
 // draftGit is the checkout gate's git runner. harness.gitRunner is
 // unexported and internal/harness is outside this change, so the publisher
@@ -24,6 +41,7 @@ type draftGit struct {
 	home   string
 	token  string
 	remote string
+	header string
 }
 
 func openDraftGit(ctx context.Context, dir string) (draftGit, func(), error) {
@@ -93,8 +111,8 @@ func (g draftGit) exec(args ...string) (string, string, int, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	outText := scrubPublishText(stdout.String(), g.token)
-	errText := scrubPublishText(stderr.String(), g.token)
+	outText := scrubGitHeader(scrubPublishText(stdout.String(), g.token), g.token)
+	errText := scrubGitHeader(scrubPublishText(stderr.String(), g.token), g.token)
 	if ctx.Err() != nil {
 		return outText, errText, -1, errors.New("git timed out")
 	}
@@ -105,7 +123,18 @@ func (g draftGit) exec(args ...string) (string, string, int, error) {
 	if errors.As(err, &exit) {
 		return outText, errText, exit.ExitCode(), nil
 	}
-	return outText, errText, -1, errors.New(scrubPublishText(err.Error(), g.token))
+	return outText, errText, -1, errors.New(scrubGitHeader(scrubPublishText(err.Error(), g.token), g.token))
+}
+
+func scrubGitHeader(text, token string) string {
+	if token != "" {
+		if header, err := GitHTTPAuthHeader(token); err == nil {
+			text = strings.ReplaceAll(text, header, "Authorization: github-installation-token")
+			enc := strings.TrimPrefix(header, "Authorization: Basic ")
+			text = strings.ReplaceAll(text, enc, "github-installation-token")
+		}
+	}
+	return strings.ReplaceAll(text, "Authorization: Basic ", "Authorization: ")
 }
 
 func (g draftGit) environ() []string {
@@ -120,14 +149,56 @@ func (g draftGit) environ() []string {
 		"GIT_NO_LAZY_FETCH=1",
 		"GCM_INTERACTIVE=never",
 	}
-	if g.token != "" {
+	header := g.header
+	if header == "" && g.token != "" {
+		built, err := GitHTTPAuthHeader(g.token)
+		if err != nil {
+			built = "Authorization: Basic invalid"
+		}
+		header = built
+	}
+	if header != "" {
 		env = append(env,
 			"GIT_CONFIG_COUNT=1",
 			"GIT_CONFIG_KEY_0=http.extraheader",
-			"GIT_CONFIG_VALUE_0=Authorization: Bearer "+g.token,
+			"GIT_CONFIG_VALUE_0="+header,
 		)
 	}
 	return env
+}
+
+// GitExecHeader runs git with the same hooks-off, private-home runner the
+// publisher uses. header is the full Authorization value, passed only
+// through GIT_CONFIG_* http.extraHeader. dir may be empty for ls-remote.
+func GitExecHeader(ctx context.Context, dir, header, remote string, args ...string) (string, error) {
+	work := dir
+	if work == "" {
+		var err error
+		work, err = os.MkdirTemp("", "factory-git-")
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = os.RemoveAll(work) }()
+	}
+	g, cleanup, err := openDraftGit(ctx, work)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	g.header = header
+	g.remote = remote
+	stdout, stderr, code, err := g.exec(args...)
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		text := strings.TrimSpace(stderr)
+		if len(text) > 180 {
+			text = text[:180]
+		}
+		return "", fmt.Errorf("git %s: %s", args[0], text)
+	}
+	return stdout, nil
 }
 
 func (g draftGit) withToken(token, remote string) draftGit {

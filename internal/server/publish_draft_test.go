@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,8 +117,8 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		if _, ok := fix.mem.objs[fix.objectKey]; ok {
 			t.Fatal("bundle remained after open")
 		}
-		if strings.Contains(logBuf.String(), publishToken) || strings.Contains(wrap.text(t), "LEAK") || strings.Contains(wrap.text(t), "BAD_KEY") || strings.Contains(wrap.text(t), "--force") {
-			t.Fatal("token, parent git config, or force push")
+		if strings.Contains(logBuf.String(), publishToken) || strings.Contains(wrap.text(t), "LEAK") || strings.Contains(wrap.text(t), "BAD_KEY") || strings.Contains(wrap.text(t), "BEARER") || strings.Contains(wrap.text(t), "--force") {
+			t.Fatal("token, bearer auth, parent git config, or force push")
 		}
 		if !strings.Contains(wrap.text(t), "KEY_OK") || !strings.Contains(wrap.text(t), "VALUE_OK") || !strings.Contains(wrap.text(t), "core.hooksPath=") {
 			t.Fatal("git env config or hooks path missing")
@@ -153,8 +154,8 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		}
 		fix = finishRoot(t, env, fix, false)
 		armPublisher(t, env, key, fake)
-		if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err != nil {
-			t.Fatal(err)
+		if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err == nil {
+			t.Fatal("paused root published without an error")
 		}
 		if fake.count("POST", "/northstar-ai-labs/dreaming.git/git-receive-pack") != 0 || fake.count("POST", "/repos/northstar-ai-labs/dreaming/pulls") != 0 {
 			t.Fatal("pause before push still wrote")
@@ -172,8 +173,8 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		}
 		fix = finishRoot(t, env, fix, false)
 		armPublisher(t, env, key, fake)
-		if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err != nil {
-			t.Fatal(err)
+		if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err == nil {
+			t.Fatal("cancelled root published without an error")
 		}
 		if fake.count("POST", "/repos/northstar-ai-labs/dreaming/pulls") != 0 {
 			t.Fatal("cancel before post still created a pull")
@@ -464,8 +465,8 @@ func stopDuringPrePostList(t *testing.T, env *env, tree definition.NativeTree, k
 	}
 	fix = finishRoot(t, env, fix, false)
 	armPublisher(t, env, key, fake)
-	if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err != nil {
-		t.Fatal(err)
+	if _, err := env.srv.CompleteNative(context.Background(), "pipe", fix.rootID, false); err == nil {
+		t.Fatal("stopped root published without an error")
 	}
 	if fake.count("POST", "/repos/northstar-ai-labs/dreaming/pulls") != 0 {
 		t.Fatal("pre-post list gate still posted")
@@ -661,8 +662,9 @@ func gitArgLog(t *testing.T) argLog {
 		"*" + publishToken + "*) echo LEAK >> " + shellQuote(logPath) + "; exit 97 ;;\n" +
 		"esac\n" +
 		"if [ \"$GIT_CONFIG_KEY_0\" = \"http.extraheader\" ]; then echo KEY_OK >> " + shellQuote(logPath) + "; fi\n" +
+		"if [ \"$GIT_CONFIG_VALUE_0\" = " + shellQuote("Authorization: Basic "+basicGitToken()) + " ]; then echo VALUE_OK >> " + shellQuote(logPath) + "; fi\n" +
 		"case \"$GIT_CONFIG_VALUE_0\" in\n" +
-		"*'Bearer " + publishToken + "'*) echo VALUE_OK >> " + shellQuote(logPath) + " ;;\n" +
+		"*'Bearer '*) echo BEARER >> " + shellQuote(logPath) + " ;;\n" +
 		"esac\n" +
 		"if [ -n \"$GIT_CONFIG_KEY_0\" ] && [ \"$GIT_CONFIG_KEY_0\" != \"http.extraheader\" ]; then echo BAD_KEY >> " + shellQuote(logPath) + "; fi\n" +
 		"export PATH=" + shellQuote(real) + "\n" +
@@ -857,6 +859,10 @@ func (f *publishGitHub) headRef(r *http.Request) string {
 }
 
 func (f *publishGitHub) gitHTTP(w http.ResponseWriter, r *http.Request) {
+	if !gitSmartAuthorized(r) {
+		rejectGitAuth(w)
+		return
+	}
 	backend := filepath.Join("/usr/lib/git-core", "git-http-backend")
 	cmd := exec.Command(backend)
 	cmd.Env = []string{
@@ -967,4 +973,82 @@ func (f *publishGitHub) sawReady(t *testing.T) bool {
 		}
 	}
 	return false
+}
+
+func basicGitToken() string {
+	return base64.StdEncoding.EncodeToString([]byte("x-access-token:" + publishToken))
+}
+
+func gitSmartAuthorized(r *http.Request) bool {
+	user, pass, ok := basicCredentials(r.Header.Get("Authorization"))
+	return ok && user == "x-access-token" && pass == publishToken
+}
+
+func basicCredentials(header string) (string, string, bool) {
+	const prefix = "Basic "
+	if !strings.HasPrefix(header, prefix) {
+		return "", "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(strings.TrimPrefix(header, prefix)))
+	if err != nil {
+		return "", "", false
+	}
+	user, pass, ok := strings.Cut(string(raw), ":")
+	return user, pass, ok && user != "" && pass != ""
+}
+
+func rejectGitAuth(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
+	w.WriteHeader(http.StatusUnauthorized)
+	_, _ = io.WriteString(w, GitBearerRejected+"\n")
+}
+
+func TestPublishGitRejectsBearer(t *testing.T) {
+	fake := newPublishGitHub(t, strings.Repeat("ab", 20), "")
+	bearer, err := http.NewRequest(http.MethodGet, fake.srv.URL+"/northstar-ai-labs/dreaming.git/info/refs?service=git-upload-pack", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bearer.Header.Set("Authorization", "Bearer "+publishToken)
+	res, err := http.DefaultClient.Do(bearer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized || !strings.Contains(string(body), GitBearerRejected) {
+		t.Fatalf("bearer status %d body %q", res.StatusCode, body)
+	}
+	basic, err := http.NewRequest(http.MethodGet, fake.srv.URL+"/northstar-ai-labs/dreaming.git/info/refs?service=git-upload-pack", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	basic.Header.Set("Authorization", "Basic "+basicGitToken())
+	okRes, err := http.DefaultClient.Do(basic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, okRes.Body)
+	_ = okRes.Body.Close()
+	if okRes.StatusCode != http.StatusOK {
+		t.Fatalf("basic status %d", okRes.StatusCode)
+	}
+}
+
+func TestGitHTTPAuthHeader(t *testing.T) {
+	got, err := GitHTTPAuthHeader(publishToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Authorization: Basic " + basicGitToken()
+	if got != want {
+		t.Fatalf("header %s", got)
+	}
+	if strings.Contains(got, "Bearer") || strings.Contains(got, publishToken) {
+		t.Fatal("header kept bearer or the raw token")
+	}
+	if _, err := GitHTTPAuthHeader("bad\ntoken"); err == nil {
+		t.Fatal("newline token was accepted")
+	}
 }

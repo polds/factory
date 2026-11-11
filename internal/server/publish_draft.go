@@ -75,15 +75,17 @@ type reviewPass struct {
 	counted int64
 }
 
-func (s *Server) finishDraftPublication(ctx context.Context, factoryUID, taskID string, failed bool) {
+func (s *Server) finishDraftPublication(ctx context.Context, factoryUID, taskID string, failed bool) error {
 	if failed {
 		s.releaseProducedIfTerminal(ctx, factoryUID, taskID)
-		return
+		return nil
 	}
-	if err := s.publishDraft(ctx, factoryUID, taskID); err != nil && s.log != nil {
+	err := s.publishDraft(ctx, factoryUID, taskID)
+	if err != nil && s.log != nil {
 		s.log.Info("draft publication", "err", scrubPublishText(err.Error(), ""))
 	}
 	s.releaseProducedIfTerminal(ctx, factoryUID, taskID)
+	return err
 }
 
 func (s *Server) publishDraft(ctx context.Context, factoryUID, taskID string) error {

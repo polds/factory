@@ -215,7 +215,9 @@ func (s *Server) CompleteNative(ctx context.Context, factoryUID, taskID string, 
 	if act.StageOwner {
 		s.advanceAfterTerminal(ctx, act.RunID)
 	}
-	s.finishDraftPublication(ctx, factoryUID, taskID, failed)
+	if err := s.finishDraftPublication(ctx, factoryUID, taskID, failed); err != nil {
+		return wireActivation(act), err
+	}
 	return wireActivation(act), nil
 }
 

@@ -116,6 +116,11 @@ func (s *Server) handleSpendReserve(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, store.ErrBudgetExceeded) {
 			s.observeReserve(body.Cents, http.StatusConflict)
+			// A denied reserve must stop publication. Pause the root so the
+			// publisher's re-read refuses the draft.
+			if _, pauseErr := s.CancelNativeSubtree(r.Context(), seat.FactoryID, seat.RootID, true); pauseErr != nil {
+				s.logSpend("pause", pauseErr)
+			}
 			writeSpend(w, http.StatusConflict, map[string]any{"error": "budget_denied", "w": wCents})
 			return
 		}

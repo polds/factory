@@ -1,0 +1,374 @@
+# Manual Dreaming #454 live run.
+#
+# workflow_dispatch only. This workflow is not part of required CI.
+# Do not dispatch it from an agent. One dispatch is the orchestrator's,
+# after preflight passes on the merged Factory SHA.
+#
+# permissions is contents:read. No job receives a token that can push.
+# The chain job's pin-fetch step mints a dreaming-only contents:read token,
+# fetches the pin, and revokes that token before any seat. Later chain steps
+# have no App key. RUNNER_TEMP is mode 0700 and owned by the runner user, so
+# the seat uid cannot read the file-command files stored there.
+# The publish job holds the App key, fetches the pin through its credential
+# helper, and runs no seat. There is no job-level permissions block.
+name: dreaming-live
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: preflight or live
+        required: true
+        type: choice
+        options:
+          - preflight
+          - live
+      confirm:
+        description: Type dreaming-live-454 to pass the guard
+        required: true
+        type: string
+      factory_sha:
+        description: Factory commit to check out
+        required: true
+        type: string
+      role_blobs:
+        description: JSON object of 17 git blob ids
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dreaming-live
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  preflight:
+    name: dreaming preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: t
+          POSTGRES_DB: factory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d factory"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      minio:
+        image: >-
+          bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+        env:
+          MINIO_ROOT_USER: factoryadmin
+          MINIO_ROOT_PASSWORD: factorysecret
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -fsS http://127.0.0.1:9000/minio/health/ready"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+          --health-start-period 10s
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.factory_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Guard
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if [[ "${CONFIRM}" != "dreaming-live-454" ]]; then
+            echo "guard refused" >&2
+            exit 1
+          fi
+          case "${MODE}" in
+            preflight|live) ;;
+            *)
+              echo "guard refused" >&2
+              exit 1
+              ;;
+          esac
+      - name: Check required secrets
+        env:
+          M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
+          M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in M1_OPENAI_BASE_URL M1_OPENAI_API_KEY M6_GITHUB_APP_ID M6_GITHUB_APP_PRIVATE_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              printf 'missing secret %s\n' "${name}"
+              missing=1
+            fi
+          done
+          if [[ "${missing}" -ne 0 ]]; then
+            exit 1
+          fi
+      - name: Run preflight
+        env:
+          MODE: preflight
+          CONFIRM: ${{ inputs.confirm }}
+          FACTORY_SHA: ${{ inputs.factory_sha }}
+          ROLE_BLOBS: ${{ inputs.role_blobs }}
+          M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
+          M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
+          FACTORY_PUBLISH_DRAFT_REPO: northstar-ai-labs/dreaming
+          FACTORY_ROLE_SOURCE: ${{ runner.temp }}/dreaming-src
+          FACTORY_SECRET_NAMES: M1_OPENAI_BASE_URL,M1_OPENAI_API_KEY,M6_GITHUB_APP_ID,M6_GITHUB_APP_PRIVATE_KEY
+          FACTORY_EVIDENCE_PACKAGE: oracle
+          FACTORY_EVIDENCE_MUTATION: oracle/tenant_test.go
+          DREAMING_PIN: a18fbb6b0e29442872f09e704be996208d0e6e8d
+        run: exec ./spike/dreaming/run.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.mode == 'live'
+        with:
+          name: dreaming-preflight
+          path: preflight.json
+          if-no-files-found: error
+
+  chain:
+    name: dreaming chain
+    needs: preflight
+    if: inputs.mode == 'live'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: t
+          POSTGRES_DB: factory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d factory"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      minio:
+        image: >-
+          bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+        env:
+          MINIO_ROOT_USER: factoryadmin
+          MINIO_ROOT_PASSWORD: factorysecret
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -fsS http://127.0.0.1:9000/minio/health/ready"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+          --health-start-period 10s
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.factory_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Create the unprivileged seat user
+        run: |
+          set -euo pipefail
+          if ! id seat >/dev/null 2>&1; then
+            sudo useradd --system --create-home --shell /usr/sbin/nologin --user-group seat
+          fi
+          groups="$(id -nG seat)"
+          if grep -Eq '(^| )(sudo|docker|wheel|root|adm)( |$)' <<<"${groups}"; then
+            echo "seat has a privileged group: ${groups}" >&2
+            exit 1
+          fi
+      - name: Fetch the pin and revoke the read token
+        env:
+          M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
+          M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
+          DREAMING_PIN: a18fbb6b0e29442872f09e704be996208d0e6e8d
+          FACTORY_ROLE_SOURCE: ${{ runner.temp }}/dreaming-src
+          FACTORY_GITHUB_API_BASE: https://api.github.com
+        run: |
+          set -euo pipefail
+          go run ./deploy/dreaming-live/cmd/dreamingpreflight fetch-pin
+          chmod 0700 "${RUNNER_TEMP}"
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dreaming-preflight
+          path: ${{ runner.temp }}/preflight-in
+      - name: Place the preflight report
+        run: cp "${RUNNER_TEMP}/preflight-in/preflight.json" preflight.json
+      - name: P13 re-exec probe in the harness the task image runs
+        run: ./spike/dreaming/p13.sh "${RUNNER_TEMP}/p13-probe.json"
+      - name: Record named test results for preflight
+        env:
+          FACTORY_TEST_DATABASE_URL: postgres://postgres:t@127.0.0.1:5432/factory?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test -json -count=1 -timeout 30m ./internal/server \
+            -run '^(TestProducedHeadReviewerPipeline|TestDraftPublishRequiresReviewerPass)$' \
+            > "${RUNNER_TEMP}/named-a.jsonl"
+          go test -json -count=1 -timeout 30m ./internal/server \
+            -run '^(TestRunSpendHardStop|TestHarnessSecretsNotInProc|TestPublisherRouteAllowlist)$' \
+            >> "${RUNNER_TEMP}/named-a.jsonl"
+          cp "${RUNNER_TEMP}/named-a.jsonl" "${RUNNER_TEMP}/named-tests.jsonl"
+          ./spike/dreaming/jobfile.sh "${RUNNER_TEMP}/named-tests.jsonl" \
+            "${RUNNER_TEMP}/p13-probe.json" "${RUNNER_TEMP}/preflight-job.json"
+      - name: Create the local evidence bucket
+        run: |
+          set -euo pipefail
+          mc_image='bitnamilegacy/minio-client:2025.7.21-debian-12-r3'
+          mc_image+='@sha256:73bd39f7899a0cef12b8dd5df13aa93a3ed1aaa44236542442e9ac76819ac158'
+          docker run --rm --network host \
+            -e HOME=/tmp \
+            -e MINIO_ROOT_USER=factoryadmin \
+            -e MINIO_ROOT_PASSWORD=factorysecret \
+            "$mc_image" \
+            /bin/bash -ec '
+              set -euo pipefail
+              mkdir -p /tmp/mc
+              mc --config-dir /tmp/mc alias set local http://127.0.0.1:9000 \
+                "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+              mc --config-dir /tmp/mc mb --ignore-existing local/factory
+              mc --config-dir /tmp/mc anonymous set none local/factory
+            '
+      - name: Write the model key file
+        env:
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "${M1_OPENAI_API_KEY}" > "${RUNNER_TEMP}/model-key"
+          printf '%s' "${M1_OPENAI_BASE_URL}" > "${RUNNER_TEMP}/model-url"
+      - name: Run the chain
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          FACTORY_SHA: ${{ inputs.factory_sha }}
+          ROLE_BLOBS: ${{ inputs.role_blobs }}
+          FACTORY_MODEL_KEY_FILE: ${{ runner.temp }}/model-key
+          FACTORY_DATABASE_URL: postgres://postgres:t@127.0.0.1:5432/factory?sslmode=disable
+          FACTORY_ROLE_SOURCE: ${{ runner.temp }}/dreaming-src
+          FACTORY_CHAIN_OUT: ${{ runner.temp }}/chain-out
+          FACTORY_S3_ENDPOINT: http://127.0.0.1:9000
+          FACTORY_S3_BUCKET: factory
+          FACTORY_S3_ACCESS_KEY: factoryadmin
+          FACTORY_S3_SECRET_KEY: factorysecret
+          FACTORY_S3_REGION: us-east-1
+          FACTORY_EVIDENCE_PACKAGE: oracle
+          FACTORY_EVIDENCE_MUTATION: oracle/tenant_test.go
+          PREFLIGHT_JOB_FILE: ${{ runner.temp }}/preflight-job.json
+          DREAMING_PIN: a18fbb6b0e29442872f09e704be996208d0e6e8d
+        run: |
+          set -euo pipefail
+          M1_OPENAI_BASE_URL="$(cat "${RUNNER_TEMP}/model-url")"
+          export M1_OPENAI_BASE_URL
+          rm -f "${RUNNER_TEMP}/model-url"
+          exec ./spike/dreaming/chain.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dreaming-chain-out
+          path: ${{ runner.temp }}/chain-out
+          if-no-files-found: error
+      - name: Clean up after cancel
+        if: cancelled()
+        run: |
+          set -euo pipefail
+          echo "cancelled cleanup"
+      - name: Scan evidence
+        id: scan
+        if: always()
+        run: |
+          set -euo pipefail
+          dest="spike/dreaming/.work/evidence"
+          mkdir -p "${dest}"
+          if [[ -f preflight.json ]]; then
+            cp preflight.json "${dest}/preflight.json"
+          fi
+          if [[ -d spike/dreaming/.work/receipts ]]; then
+            cp -a spike/dreaming/.work/receipts/. "${dest}/"
+          fi
+          if ./spike/dreaming/run.sh scan "${dest}"; then
+            echo "ok=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "ok=false" >> "${GITHUB_OUTPUT}"
+          echo "receipt=false" >> "${GITHUB_OUTPUT}"
+          only="${RUNNER_TEMP}/preflight-only"
+          rm -rf "${only}"
+          mkdir -p "${only}"
+          if [[ -f preflight.json ]]; then
+            cp preflight.json "${only}/preflight.json"
+            if ./spike/dreaming/run.sh scan "${only}"; then
+              echo "receipt=true" >> "${GITHUB_OUTPUT}"
+            else
+              rm -rf "${only}"
+              echo "receipt=false" >> "${GITHUB_OUTPUT}"
+            fi
+          fi
+          exit 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.scan.outputs.ok == 'true'
+        with:
+          name: dreaming-live-evidence
+          path: spike/dreaming/.work/evidence
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.scan.outputs.receipt == 'true'
+        with:
+          name: dreaming-live-evidence
+          path: ${{ runner.temp }}/preflight-only
+          if-no-files-found: ignore
+
+  publish:
+    name: dreaming publish
+    needs: chain
+    if: inputs.mode == 'live'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.factory_sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dreaming-chain-out
+          path: ${{ runner.temp }}/chain-out
+      - name: Publish the draft
+        env:
+          M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
+          M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
+          FACTORY_CHAIN_OUT: ${{ runner.temp }}/chain-out
+          FACTORY_GITHUB_API_BASE: https://api.github.com
+          FACTORY_EVIDENCE_PACKAGE: oracle
+          FACTORY_EVIDENCE_MUTATION: oracle/tenant_test.go
+          DREAMING_PIN: a18fbb6b0e29442872f09e704be996208d0e6e8d
+        run: go run ./deploy/dreaming-live/cmd/dreamingpreflight publish
