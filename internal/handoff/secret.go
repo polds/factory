@@ -212,7 +212,7 @@ func secretParts(v string) []string {
 		return []string{v}
 	}
 	lines := strings.FieldsFunc(v, func(r rune) bool { return r == '\n' || r == '\r' })
-	out := make([]string, 0, len(lines)+1)
+	out := make([]string, 0, len(lines))
 	out = append(out, v)
 	for _, line := range lines {
 		if line != v {
