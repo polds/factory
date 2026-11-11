@@ -1,6 +1,7 @@
 package dreaminglive
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,8 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDriverKernelAncestors(t *testing.T) {
@@ -24,6 +27,26 @@ func TestDriverKernelAncestors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// These directories live directly under /tmp. A t.TempDir parent is mode
+	// 0700, so the seat uid could not traverse it to attempt the writes.
+	outDir, err := os.MkdirTemp("", "chain-out-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(outDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outDir) })
+	markDir, err := os.MkdirTemp("", "seat-mark-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(markDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(markDir) })
+	walkPath := filepath.Join(markDir, "walk")
+	sweepLog := filepath.Join(t.TempDir(), "sweep")
 	var chats int
 	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, "chat") {
@@ -40,9 +63,30 @@ func TestDriverKernelAncestors(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		command := strings.Join([]string{
 			"set -e",
-			"setsid sleep 60 zz-kernel-setsid >/dev/null 2>&1 &",
-			"pid=$(readlink /proc/self || true)",
+			"if sudo -n true; then echo sudo-ok; exit 1; fi",
+			"if docker run --rm alpine true; then echo docker-ok; exit 1; fi",
+			"if echo x > " + shellQuote(filepath.Join(outDir, "pwned")) + "; then echo wrote-ok; exit 1; fi",
+			"echo probed > " + shellQuote(filepath.Join(markDir, "probed")),
+			"setsid bash -c 'echo $$ > " + filepath.Join(markDir, "survivor") + "; exec -a zz-kseat sleep 300' >/dev/null 2>&1 &",
+			"for i in 1 2 3 4 5 6 7 8 9 10; do",
+			"  if [ -s " + shellQuote(filepath.Join(markDir, "survivor")) + " ]; then break; fi",
+			"  sleep 0.05",
+			"done",
+			"if [ ! -s " + shellQuote(filepath.Join(markDir, "survivor")) + " ]; then echo survivor-missing; exit 1; fi",
+			"spid=$(cat " + shellQuote(filepath.Join(markDir, "survivor")) + ")",
+			"ok=0",
+			"for i in 1 2 3 4 5 6 7 8 9 10; do",
+			"  if tr '\\0' ' ' < /proc/$spid/cmdline 2>/dev/null | grep -q zz-kseat; then ok=1; break; fi",
+			"  sleep 0.05",
+			"done",
+			"if [ \"$ok\" -ne 1 ]; then echo survivor-not-alive; exit 1; fi",
+			"pid=$$",
+			": > " + shellQuote(walkPath),
+			"reached=0",
 			"while [ -n \"$pid\" ] && [ \"$pid\" -gt 1 ]; do",
+			"  comm=$(cat /proc/$pid/comm 2>/dev/null || echo missing)",
+			"  printf '%s %s\\n' \"$pid\" \"$comm\" >> " + shellQuote(walkPath),
+			"  if [ \"$comm\" = zzdriver ]; then reached=1; fi",
 			"  if [ -r \"/proc/$pid/environ\" ] && tr '\\0' '\\n' < \"/proc/$pid/environ\" | grep -F -q -e zz-driver-app-key-sentinel -e zz-m6-initial-sentinel -e zz-m1-initial-sentinel; then",
 			"    echo driver-secret-visible",
 			"    exit 1",
@@ -51,6 +95,7 @@ func TestDriverKernelAncestors(t *testing.T) {
 			"  if [ -z \"$next\" ] || [ \"$next\" = \"$pid\" ]; then break; fi",
 			"  pid=$next",
 			"done",
+			"if [ \"$reached\" -ne 1 ]; then echo walk-missed-driver; exit 1; fi",
 			"cat > oracle/tenant_test.go << 'EOF'",
 			"package oracle",
 			"import \"testing\"",
@@ -70,7 +115,7 @@ func TestDriverKernelAncestors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(t.TempDir(), "dreamingpreflight")
+	bin := filepath.Join(t.TempDir(), "zzdriver")
 	build := exec.Command("go", "build", "-o", bin, "./deploy/dreaming-live/cmd/dreamingpreflight")
 	build.Dir = root
 	if out, err := build.CombinedOutput(); err != nil {
@@ -86,7 +131,6 @@ func TestDriverKernelAncestors(t *testing.T) {
 	if _, err := keyFile.Seek(0, 0); err != nil {
 		t.Fatal(err)
 	}
-	outDir := t.TempDir()
 	home, err := os.MkdirTemp("", "kernel-home-")
 	if err != nil {
 		t.Fatal(err)
@@ -106,6 +150,7 @@ func TestDriverKernelAncestors(t *testing.T) {
 		"FACTORY_S3_REGION=us-east-1",
 		"M1_OPENAI_BASE_URL=" + model.URL,
 		"FACTORY_CHAIN_OUT=" + outDir,
+		"FACTORY_SWEEP_LOG=" + sweepLog,
 		"FACTORY_EVIDENCE_PACKAGE=oracle",
 		"FACTORY_EVIDENCE_MUTATION=oracle/tenant_test.go",
 		"DREAMING_PIN=" + pin,
@@ -118,16 +163,96 @@ func TestDriverKernelAncestors(t *testing.T) {
 	cmd := exec.CommandContext(ctx, bin, "chain")
 	cmd.Env = env
 	cmd.ExtraFiles = []*os.File{keyFile}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("driver: %v\n%s", err, out)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
 	}
-	if exec.Command("pgrep", "-f", "zz-kernel-setsid").Run() == nil {
-		t.Fatal("setsid sleep survived the driver")
+	t.Cleanup(func() {
+		_ = exec.Command("sudo", "-n", "pkill", "-KILL", "-u", "seat").Run()
+		if cmd.Process != nil && cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	sawDriver := false
+	deadline := time.Now().Add(4 * time.Minute)
+	for time.Now().Before(deadline) {
+		status, statErr := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
+		if statErr != nil || strings.Contains(string(status), "State:\tZ") {
+			break
+		}
+		if walkReached(walkPath, cmd.Process.Pid) {
+			envRaw, readErr := os.ReadFile(fmt.Sprintf("/proc/%d/environ", cmd.Process.Pid))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			text := string(envRaw)
+			for _, needle := range []string{"zz-driver-app-key-sentinel", "zz-m6-initial-sentinel", "zz-m1-initial-sentinel"} {
+				if strings.Contains(text, needle) {
+					t.Fatalf("driver environ still has %s", needle)
+				}
+			}
+			sawDriver = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err := cmd.Wait(); err != nil {
+		walk, _ := os.ReadFile(walkPath)
+		t.Fatalf("driver: %v\n%s\nWALK:\n%s", err, output.String(), walk)
+	}
+	if !sawDriver {
+		walk, _ := os.ReadFile(walkPath)
+		t.Fatalf("ancestor walk did not reach the driver\n%s", walk)
+	}
+	if _, err := os.Stat(filepath.Join(markDir, "probed")); err != nil {
+		t.Fatal("seat did not run the sudo/docker/chain-out probe")
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "pwned")); err == nil {
+		t.Fatal("seat wrote chain-out")
+	}
+	info, err := os.Stat(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("chain-out mode %o", info.Mode().Perm())
+	}
+	survivor, err := os.ReadFile(filepath.Join(markDir, "survivor"))
+	if err != nil || strings.TrimSpace(string(survivor)) == "" {
+		t.Fatalf("setsid survivor never started: %v %q", err, survivor)
+	}
+	if seatLabelAlive("zz-kseat") {
+		t.Fatal("setsid sleep survived the seat")
+	}
+	swept, err := os.ReadFile(sweepLog)
+	if err != nil || !strings.Contains(string(swept), strings.TrimSpace(string(survivor))) {
+		t.Fatalf("sweep did not kill %s: %v %q", survivor, err, swept)
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "manifest.json")); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func walkReached(path string, pid int) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	want := strconv.Itoa(pid)
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == want && fields[1] == "zzdriver" {
+			return true
+		}
+	}
+	return false
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 func strconvQuote(s string) string {

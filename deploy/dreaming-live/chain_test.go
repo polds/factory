@@ -716,6 +716,15 @@ func TestGatherPassesAndRunsChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	markDir, err := os.MkdirTemp("", "seat-mark-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(markDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(markDir) })
+	sweepLog := filepath.Join(t.TempDir(), "sweep")
 	var calls int
 	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
@@ -730,7 +739,8 @@ func TestGatherPassesAndRunsChain(t *testing.T) {
 		w.Header().Set("x-litellm-response-cost", "0.01")
 		w.Header().Set("Content-Type", "application/json")
 		if calls == 1 {
-			command := "set -e\nsetsid sleep 60 zz-setsid-survivor >/dev/null 2>&1 &\ncat > tenantpkg/tenant_test.go << 'EOF'\npackage oracle\n\nimport \"testing\"\n\nfunc TestTenantIsolation(t *testing.T) {\n\tif tenant() != \"factoryEvidencePass\" {\n\t\tt.Fatal(\"tenant\")\n\t}\n}\n\nfunc tenant() string { return \"factoryEvidencePass\" }\nEOF\ngit add -A\ngit -c user.email=dreaming@example.com -c user.name=dreaming -c commit.gpgsign=false commit -m tenant\n"
+			survivor := filepath.Join(markDir, "survivor")
+			command := "set -e\nsetsid bash -c 'echo $$ > " + survivor + "; exec -a zz-gseat sleep 300' >/dev/null 2>&1 &\nfor i in 1 2 3 4 5 6 7 8 9 10; do\n  if [ -s " + survivor + " ]; then break; fi\n  sleep 0.05\ndone\nif [ ! -s " + survivor + " ]; then echo survivor-missing; exit 1; fi\nspid=$(cat " + survivor + ")\nok=0\nfor i in 1 2 3 4 5 6 7 8 9 10; do\n  if tr '\\0' ' ' < /proc/$spid/cmdline 2>/dev/null | grep -q zz-gseat; then ok=1; break; fi\n  sleep 0.05\ndone\nif [ \"$ok\" -ne 1 ]; then echo survivor-not-alive; exit 1; fi\ncat > tenantpkg/tenant_test.go << 'EOF'\npackage oracle\n\nimport \"testing\"\n\nfunc TestTenantIsolation(t *testing.T) {\n\tif tenant() != \"factoryEvidencePass\" {\n\t\tt.Fatal(\"tenant\")\n\t}\n}\n\nfunc tenant() string { return \"factoryEvidencePass\" }\nEOF\ngit add -A\ngit -c user.email=dreaming@example.com -c user.name=dreaming -c commit.gpgsign=false commit -m tenant\n"
 			args, _ := json.Marshal(map[string]string{"command": command})
 			_, _ = fmt.Fprintf(w, `{"model":"%s","choices":[{"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":%s}}]}}]}`, ModelID, strconv.Quote(string(args)))
 			return
@@ -825,6 +835,7 @@ func TestGatherPassesAndRunsChain(t *testing.T) {
 	t.Setenv("FACTORY_EVIDENCE_PACKAGE", "tenantpkg")
 	t.Setenv("FACTORY_EVIDENCE_MUTATION", "tenantpkg/tenant_test.go")
 	t.Setenv("FACTORY_SECRET_NAMES", "M1_OPENAI_BASE_URL,M1_OPENAI_API_KEY,M6_GITHUB_APP_ID,M6_GITHUB_APP_PRIVATE_KEY")
+	t.Setenv("FACTORY_SWEEP_LOG", sweepLog)
 	t.Cleanup(func() { _ = os.Remove("preflight.json") })
 	rehearsed := false
 	prevNote := noteRehearsal
@@ -861,8 +872,16 @@ func TestGatherPassesAndRunsChain(t *testing.T) {
 	if ran == 0 {
 		t.Fatal("reviewer evidence was stored without a test execution")
 	}
-	if exec.Command("pgrep", "-f", "zz-setsid-survivor").Run() == nil {
+	survivor, err := os.ReadFile(filepath.Join(markDir, "survivor"))
+	if err != nil || strings.TrimSpace(string(survivor)) == "" {
+		t.Fatalf("setsid survivor never started: %v %q", err, survivor)
+	}
+	if seatLabelAlive("zz-gseat") {
 		t.Fatal("setsid sleep survived the seat")
+	}
+	swept, err := os.ReadFile(sweepLog)
+	if err != nil || !strings.Contains(string(swept), strings.TrimSpace(string(survivor))) {
+		t.Fatalf("sweep did not kill %s: %v %q", survivor, err, swept)
 	}
 }
 

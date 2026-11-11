@@ -197,6 +197,9 @@ func RunLive(ctx context.Context, in ChainInput) (ChainResult, error) {
 	if rehearsalMode(in.Mode) {
 		return ChainResult{}, errors.New("live refused the rehearsal chain")
 	}
+	if err := prepareChainOut(); err != nil {
+		return ChainResult{}, err
+	}
 	seat, err := openViktor(ctx, in)
 	if err != nil {
 		return ChainResult{}, err
@@ -238,6 +241,14 @@ func RunLive(ctx context.Context, in ChainInput) (ChainResult, error) {
 	}
 	_ = oskarExec
 	rootExec, err := in.Store.StartExecution(ctx, seat.rootRun, "dreaming-worker", hashToken("root-"+seat.token))
+	for try := 0; err != nil && strings.Contains(err.Error(), "queued") && try < 8; try++ {
+		time.Sleep(20 * time.Millisecond)
+		if _, leaseErr := in.Store.Lease(ctx, "default", time.Minute, 8); leaseErr != nil {
+			err = leaseErr
+			continue
+		}
+		rootExec, err = in.Store.StartExecution(ctx, seat.rootRun, "dreaming-worker", hashToken("root-"+seat.token))
+	}
 	if err != nil {
 		return ChainResult{}, err
 	}
@@ -316,6 +327,10 @@ func runViktorHarness(ctx context.Context, in ChainInput, seat openedSeat, work 
 	if err := os.WriteFile(filepath.Join(rt, "task.json"), raw, 0o600); err != nil {
 		return "", err
 	}
+	defer func() { _ = ownAs(driverOwner(), work, home, rt) }()
+	if err := handToSeat(work, home, rt); err != nil {
+		return "", err
+	}
 	code, stderr, err := execHarness(ctx, []string{"--task-id", seat.viktorRun, "--model", ModelID},
 		harnessEnv(in.BaseURL, seat.viktorRun, seat.token,
 			"HOME="+home,
@@ -382,6 +397,10 @@ func runOskarHarness(ctx context.Context, in ChainInput, runID, token, work stri
 		return err
 	}
 	defer func() { _ = os.RemoveAll(home) }()
+	defer func() { _ = ownAs(driverOwner(), work, home, rt) }()
+	if err := handToSeat(work, home, rt); err != nil {
+		return err
+	}
 	code, stderr, err := execHarness(ctx, []string{"--task-id", runID},
 		harnessEnv(in.BaseURL, runID, token,
 			"HOME="+home,
@@ -445,17 +464,28 @@ func factoryHarnessBin() (string, error) {
 			harnessBinErr = fmt.Errorf("build factory-harness: %s", strings.TrimSpace(string(out)))
 			return
 		}
+		if err := os.Chmod(dir, 0o755); err != nil {
+			harnessBinErr = err
+			return
+		}
+		if err := os.Chmod(path, 0o755); err != nil {
+			harnessBinErr = err
+			return
+		}
 		harnessBinPath = path
 	})
 	return harnessBinPath, harnessBinErr
 }
 
-// execHarness runs cmd/factory-harness under a subreaper.
-// PrepareProcess re-execs the harness with seat secrets on a pipe.
-// The subreaper's own environment is allowlisted. When the harness exits,
-// the subreaper SIGKILLs every process that was reparented to it, including
-// a setsid child. User namespaces are not required.
+// execHarness runs cmd/factory-harness as the unprivileged seat uid.
+// Seat secrets are a 0400 file the seat reads and deletes, not the
+// supervisor's environment. The subreaper SIGKILLs every process reparented
+// to it. After it returns, every remaining process owned by the seat uid
+// is killed. The driver keeps chain-out mode 0700.
 func execHarness(ctx context.Context, args, env []string, workspace string) (int, string, error) {
+	if err := ensureSeatUser(); err != nil {
+		return 0, "", err
+	}
 	bin, err := factoryHarnessBin()
 	if err != nil {
 		return 0, "", err
@@ -472,40 +502,179 @@ func execHarness(ctx context.Context, args, env []string, workspace string) (int
 		return 0, "", err
 	}
 	defer func() { _ = os.Remove(script.Name()) }()
-	if err := os.Chmod(script.Name(), 0o700); err != nil {
+	if err := os.Chmod(script.Name(), 0o755); err != nil {
 		return 0, "", err
 	}
 	payload, err := json.Marshal(filterSeatEnv(os.Environ(), env))
 	if err != nil {
 		return 0, "", err
 	}
-	reader, writer, err := os.Pipe()
+	envFile, err := os.CreateTemp("", "seat-env-")
 	if err != nil {
 		return 0, "", err
 	}
-	if _, err := writer.Write(payload); err != nil {
-		_ = reader.Close()
-		_ = writer.Close()
+	if _, err := envFile.Write(payload); err != nil {
+		_ = envFile.Close()
 		return 0, "", err
 	}
-	_ = writer.Close()
-	argv := append([]string{script.Name(), bin}, args...)
-	cmd := exec.CommandContext(ctx, "python3", argv...)
+	if err := envFile.Close(); err != nil {
+		return 0, "", err
+	}
+	if err := os.Chmod(envFile.Name(), 0o400); err != nil {
+		return 0, "", err
+	}
+	if err := ownAs("seat:seat", envFile.Name()); err != nil {
+		return 0, "", err
+	}
+	defer func() { _ = exec.Command("sudo", "-n", "rm", "-f", envFile.Name()).Run() }()
+	extra := []string{"FACTORY_SEAT_ENV_FILE=" + envFile.Name()}
+	if log := strings.TrimSpace(os.Getenv("FACTORY_SWEEP_LOG")); log != "" {
+		extra = append(extra, "FACTORY_SWEEP_LOG="+log)
+	}
+	argv := append([]string{"-n", "-u", "seat",
+		"--preserve-env=PATH,HOME,TMPDIR,LANG,LC_ALL,GOTOOLCHAIN,GOCACHE,GOPATH,GOROOT,GOMODCACHE,FACTORY_SEAT_ENV_FILE,FACTORY_SWEEP_LOG",
+		"python3", script.Name(), bin}, args...)
+	cmd := exec.CommandContext(ctx, "sudo", argv...)
 	cmd.Dir = workspace
-	cmd.ExtraFiles = []*os.File{reader}
-	cmd.Env = filterSeatEnv(os.Environ(), []string{"FACTORY_SEAT_ENV_FD=3"})
+	// HOME has to be a directory the seat uid can use. The driver's home is not.
+	cmd.Env = setEnv(filterSeatEnv(os.Environ(), extra), "HOME", workspace)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err = cmd.Run()
-	_ = reader.Close()
+	text := stderr.String()
+	recordSweep(text)
+	if killErr := killSeatUser(); killErr != nil {
+		_ = ownAs(driverOwner(), workspace)
+		return 0, text, killErr
+	}
+	// Git refuses a repository owned by the seat uid. Hand it back before
+	// the driver reads the commit the seat just wrote.
+	if ownErr := ownAs(driverOwner(), workspace); ownErr != nil {
+		return 0, text, ownErr
+	}
 	if err == nil {
-		return 0, stderr.String(), nil
+		return 0, text, nil
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
-		return exit.ExitCode(), stderr.String(), nil
+		return exit.ExitCode(), text, nil
 	}
-	return 0, stderr.String(), err
+	return 0, text, err
+}
+
+func prepareChainOut() error {
+	dir := strings.TrimSpace(os.Getenv("FACTORY_CHAIN_OUT"))
+	if dir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o700)
+}
+
+func ensureSeatUser() error {
+	if exec.Command("id", "seat").Run() != nil {
+		cmd := exec.Command("sudo", "-n", "useradd", "--system", "--create-home", "--shell", "/usr/sbin/nologin", "--user-group", "seat")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("useradd seat: %s", strings.TrimSpace(string(out)))
+		}
+	}
+	out, err := exec.Command("id", "-nG", "seat").Output()
+	if err != nil {
+		return err
+	}
+	for _, group := range strings.Fields(string(out)) {
+		switch group {
+		case "sudo", "docker", "wheel", "root", "adm":
+			return fmt.Errorf("seat is in group %s", group)
+		}
+	}
+	return nil
+}
+
+func handToSeat(paths ...string) error {
+	if err := ensureSeatUser(); err != nil {
+		return err
+	}
+	for _, p := range paths {
+		if err := os.Chmod(p, 0o755); err != nil {
+			return err
+		}
+	}
+	return ownAs("seat:seat", paths...)
+}
+
+func ownAs(spec string, paths ...string) error {
+	if spec == "" || len(paths) == 0 {
+		return nil
+	}
+	args := append([]string{"-n", "chown", "-R", spec}, paths...)
+	cmd := exec.Command("sudo", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("chown %s: %s", spec, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func driverOwner() string {
+	return strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid())
+}
+
+// killSeatUser SIGKILLs every process owned by the seat uid, including one
+// that escaped the subreaper. It fails closed while any remain.
+func killSeatUser() error {
+	var last string
+	for range 20 {
+		_ = exec.Command("sudo", "-n", "pkill", "-KILL", "-u", "seat").Run()
+		out, err := exec.Command("pgrep", "-u", "seat").CombinedOutput()
+		last = strings.TrimSpace(string(out))
+		if err != nil && last == "" {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if last == "" {
+		return nil
+	}
+	return fmt.Errorf("seat processes remain: %s", last)
+}
+
+func setEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, prefix) {
+			out = append(out, kv)
+		}
+	}
+	return append(out, prefix+value)
+}
+
+func recordSweep(stderr string) {
+	log := strings.TrimSpace(os.Getenv("FACTORY_SWEEP_LOG"))
+	if log == "" {
+		return
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(stderr, "\n") {
+		pid, ok := strings.CutPrefix(strings.TrimSpace(line), "seat-swept:")
+		if !ok || pid == "" {
+			continue
+		}
+		b.WriteString(pid + "\n")
+	}
+	if b.Len() == 0 {
+		return
+	}
+	f, err := os.OpenFile(log, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = f.WriteString(b.String())
+	_ = f.Close()
 }
 
 const seatReaper = `import json, os, signal, subprocess, sys, time
@@ -513,8 +682,12 @@ import ctypes
 libc = ctypes.CDLL(None, use_errno=True)
 if libc.prctl(36, 1) != 0:
     sys.exit(1)
-fd = int(os.environ["FACTORY_SEAT_ENV_FD"])
-raw = os.fdopen(fd).read()
+path = os.environ["FACTORY_SEAT_ENV_FILE"]
+raw = open(path).read()
+try:
+    os.remove(path)
+except OSError:
+    pass
 items = json.loads(raw)
 env = {}
 for item in items:
@@ -552,6 +725,7 @@ def reap():
 
 proc = subprocess.Popen(sys.argv[1:], env=env)
 code = proc.wait()
+time.sleep(0.05)
 me = os.getpid()
 for _ in range(10):
     kids = living_children(me)
@@ -564,6 +738,9 @@ for _ in range(10):
             os.kill(kid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        else:
+            sys.stderr.write("seat-swept:%d\n" % kid)
+            sys.stderr.flush()
     reap()
     time.sleep(0.05)
 left = [str(pid) for pid in living_children(me)]
@@ -579,10 +756,12 @@ func filterSeatEnv(src, extra []string) []string {
 	allow := map[string]bool{
 		"PATH": true, "HOME": true, "TMPDIR": true, "LANG": true, "LC_ALL": true,
 		"USER": true, "LOGNAME": true, "TERM": true,
-		"GOTOOLCHAIN": true, "GOCACHE": true, "GOPATH": true, "GOROOT": true, "GOMODCACHE": true,
+		// The seat uses HOME for its build cache. The driver's GOCACHE is not
+		// writable by the seat uid, and inheriting it makes go test fail.
+		"GOTOOLCHAIN":         true,
 		"FACTORY_RUNTIME_DIR": true, "FACTORY_EVENTS_URL": true, "FACTORY_RUN_TOKEN": true,
-		"FACTORY_SEAT_ENV_FD": true,
-		"OPENAI_BASE_URL":     true, "OPENAI_API_KEY": true,
+		"FACTORY_SEAT_ENV_FD": true, "FACTORY_SEAT_ENV_FILE": true, "FACTORY_SWEEP_LOG": true,
+		"OPENAI_BASE_URL": true, "OPENAI_API_KEY": true,
 		"FACTORY_MAX_TURNS": true, "FACTORY_TASK_PROMPT": true,
 		harness.EnvSpendURL: true, harness.EnvSpendPrice: true,
 	}

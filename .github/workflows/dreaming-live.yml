@@ -141,10 +141,8 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: inputs.mode == 'live'
         with:
-          name: dreaming-role-source
-          path: |
-            ${{ runner.temp }}/dreaming-src
-            preflight.json
+          name: dreaming-preflight
+          path: preflight.json
           if-no-files-found: error
 
   chain:
@@ -191,16 +189,33 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: dreaming-role-source
-          path: ${{ runner.temp }}/role-in
-      - name: Place the role source
+      - name: Create the unprivileged seat user
+        run: |
+          set -euo pipefail
+          if ! id seat >/dev/null 2>&1; then
+            sudo useradd --system --create-home --shell /usr/sbin/nologin --user-group seat
+          fi
+          groups="$(id -nG seat)"
+          if grep -Eq '(^| )(sudo|docker|wheel|root|adm)( |$)' <<<"${groups}"; then
+            echo "seat has a privileged group: ${groups}" >&2
+            exit 1
+          fi
+      - name: Fetch Dreaming at the pin
+        env:
+          DREAMING_PIN: a18fbb6b0e29442872f09e704be996208d0e6e8d
         run: |
           set -euo pipefail
           rm -rf "${RUNNER_TEMP}/dreaming-src"
-          mv "${RUNNER_TEMP}/role-in/dreaming-src" "${RUNNER_TEMP}/dreaming-src"
-          cp "${RUNNER_TEMP}/role-in/preflight.json" preflight.json
+          git init "${RUNNER_TEMP}/dreaming-src"
+          git -C "${RUNNER_TEMP}/dreaming-src" remote add origin https://github.com/northstar-ai-labs/dreaming.git
+          git -C "${RUNNER_TEMP}/dreaming-src" fetch --depth 1 origin "${DREAMING_PIN}"
+          git -C "${RUNNER_TEMP}/dreaming-src" checkout --detach FETCH_HEAD
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dreaming-preflight
+          path: ${{ runner.temp }}/preflight-in
+      - name: Place the preflight report
+        run: cp "${RUNNER_TEMP}/preflight-in/preflight.json" preflight.json
       - name: P13 re-exec probe in the harness the task image runs
         run: ./spike/dreaming/p13.sh "${RUNNER_TEMP}/p13-probe.json"
       - name: Record named test results for preflight
@@ -336,10 +351,23 @@ jobs:
         with:
           name: dreaming-chain-out
           path: ${{ runner.temp }}/chain-out
+      - name: Fetch the pin
+        env:
+          DREAMING_PIN: a18fbb6b0e29442872f09e704be996208d0e6e8d
+        run: |
+          set -euo pipefail
+          git init "${RUNNER_TEMP}/dreaming-pin"
+          git -C "${RUNNER_TEMP}/dreaming-pin" remote add origin https://github.com/northstar-ai-labs/dreaming.git
+          git -C "${RUNNER_TEMP}/dreaming-pin" fetch --depth 1 origin "${DREAMING_PIN}"
+          git -C "${RUNNER_TEMP}/dreaming-pin" checkout --detach FETCH_HEAD
       - name: Publish the draft
         env:
           M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
           M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
           FACTORY_CHAIN_OUT: ${{ runner.temp }}/chain-out
           FACTORY_GITHUB_API_BASE: https://api.github.com
+          FACTORY_PIN_DIR: ${{ runner.temp }}/dreaming-pin
+          FACTORY_EVIDENCE_PACKAGE: oracle
+          FACTORY_EVIDENCE_MUTATION: oracle/tenant_test.go
+          DREAMING_PIN: a18fbb6b0e29442872f09e704be996208d0e6e8d
         run: go run ./deploy/dreaming-live/cmd/dreamingpreflight publish

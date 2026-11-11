@@ -50,6 +50,7 @@ func driverAllowEnv(src []string) []string {
 		"LANG": true, "LC_ALL": true, "USER": true, "LOGNAME": true, "TERM": true, "SHELL": true,
 		"GOTOOLCHAIN": true, "GOCACHE": true, "GOPATH": true, "GOROOT": true, "GOMODCACHE": true,
 		"FACTORY_DRIVER_CLEAN": true, "FACTORY_MODEL_KEY_FD": true, "FACTORY_CHAIN_OUT": true,
+		"FACTORY_SWEEP_LOG":    true,
 		"FACTORY_DATABASE_URL": true, "FACTORY_ROLE_SOURCE": true, "FACTORY_SHA": true,
 		"FACTORY_GIT_DIR": true, "FACTORY_REQUIRED_SHAS": true, "FACTORY_SECRET_NAMES": true,
 		"FACTORY_PUBLISH_DRAFT_REPO": true, "FACTORY_GITHUB_API_BASE": true,

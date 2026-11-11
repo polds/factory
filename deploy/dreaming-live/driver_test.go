@@ -1,8 +1,6 @@
 package dreaminglive
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,29 +72,53 @@ func TestWorkflowSplitsSecretsFromSeats(t *testing.T) {
 	if !strings.Contains(publish, "publish") {
 		t.Fatal("publish job does not publish")
 	}
+	if !strings.Contains(chain, "useradd") || !strings.Contains(chain, "seat") {
+		t.Fatal("chain job does not create the seat user")
+	}
 }
 
-func TestValidateChainArtifactRejectsBadParent(t *testing.T) {
-	dir := t.TempDir()
-	body := []byte("bundle-bytes")
-	if err := os.WriteFile(filepath.Join(dir, "head.bundle"), body, 0o644); err != nil {
+func TestWorkflowDoesNotUploadPinCheckout(t *testing.T) {
+	root, err := moduleRoot()
+	if err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256Hex(body)
-	manifest := `{
-	  "pin": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-	  "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-	  "parent": "cccccccccccccccccccccccccccccccccccccccc",
-	  "bundleSHA256": "` + sum + `",
-	  "evidenceRun": true,
-	  "spendCents": 1,
-	  "ceilingCents": 2500
-	}`
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0o644); err != nil {
+	raw, err := os.ReadFile(filepath.Join(root, ".github/workflows/dreaming-live.yml"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ValidateChainArtifact(dir); err == nil || !strings.Contains(err.Error(), "parent") {
-		t.Fatalf("bad parent: %v", err)
+	text := string(raw)
+	blocks := uploadBlocks(text)
+	if len(blocks) == 0 {
+		t.Fatal("workflow has no upload-artifact step")
+	}
+	for _, block := range blocks {
+		for _, banned := range []string{"dreaming-src", "dreaming-pin", "dreaming-role-source", "role-source"} {
+			if strings.Contains(block, banned) {
+				t.Fatalf("upload-artifact covers the pin checkout (%s):\n%s", banned, block)
+			}
+		}
+	}
+	if strings.Contains(text, "dreaming-role-source") {
+		t.Fatal("role source is still an artifact name")
+	}
+}
+
+func uploadBlocks(text string) []string {
+	const marker = "actions/upload-artifact"
+	var blocks []string
+	rest := text
+	for {
+		i := strings.Index(rest, marker)
+		if i < 0 {
+			return blocks
+		}
+		rest = rest[i:]
+		next := strings.Index(rest[len(marker):], "\n      - ")
+		if next < 0 {
+			return append(blocks, rest)
+		}
+		blocks = append(blocks, rest[:len(marker)+next])
+		rest = rest[len(marker)+next:]
 	}
 }
 
@@ -114,9 +136,4 @@ func betweenJobs(text, start, end string) string {
 		return rest
 	}
 	return rest[:j]
-}
-
-func sha256Hex(body []byte) string {
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
 }
