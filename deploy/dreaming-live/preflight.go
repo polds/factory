@@ -117,7 +117,10 @@ type World struct {
 
 	Tests           map[string]string
 	EvidencePackage bool
-	SentinelAtX     bool
+	// DBWired is the pin's test harness, present before Viktor's file exists.
+	DBWired bool
+	// MutationOK means the goal names FACTORY_EVIDENCE_MUTATION and the path is relative.
+	MutationOK bool
 
 	Price      harness.SpendPrice
 	FallbackOK bool
@@ -296,10 +299,13 @@ func checkP7(w World) Row {
 	if !w.EvidencePackage {
 		return Row{Check: checkEvidence, Detail: "package missing at pin"}
 	}
-	if !w.SentinelAtX {
-		return Row{Check: checkEvidence, Detail: "sentinel absent at X"}
+	if !w.DBWired {
+		return Row{Check: checkEvidence, Detail: "db test wiring missing at pin"}
 	}
-	return Row{Check: checkEvidence, Pass: true, Detail: "named tests passed and the sentinel is at X"}
+	if !w.MutationOK {
+		return Row{Check: checkEvidence, Detail: "mutation path is not the goal path"}
+	}
+	return Row{Check: checkEvidence, Pass: true, Detail: "named tests passed; package and db wiring are at the pin"}
 }
 
 func checkP8(w World) Row {

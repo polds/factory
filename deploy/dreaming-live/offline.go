@@ -122,7 +122,7 @@ func failureCases(base World) []failureCase {
 	missingApp := cloneWorld(base)
 	missingApp.AppStatus = http.StatusNotFound
 	noSentinel := cloneWorld(base)
-	noSentinel.SentinelAtX = false
+	noSentinel.DBWired = false
 	noPackage := cloneWorld(base)
 	noPackage.EvidencePackage = false
 	ghToken := cloneWorld(base)
@@ -181,7 +181,7 @@ func failureCases(base World) []failureCase {
 		{name: "wrong auth form", check: checkPrior, world: bearer},
 		{name: "read-only app", check: checkApp, world: readOnly},
 		{name: "missing install", check: checkApp, world: missingApp},
-		{name: "sentinel absent", check: checkEvidence, world: noSentinel},
+		{name: "db wiring missing", check: checkEvidence, world: noSentinel},
 		{name: "package missing", check: checkEvidence, world: noPackage},
 		{name: "GH_TOKEN", check: checkPublish, world: ghToken},
 		{name: "purpose improvement", check: checkPublish, world: improve},
@@ -217,7 +217,7 @@ func secureWorld(workflow string, tree definition.NativeTree, pin, dir string, b
 		BlobGot: blobs, BlobWant: blobs,
 		Tree:            &tree,
 		Tests:           map[string]string{"TestProducedHeadReviewerPipeline": "pass", "TestDraftPublishRequiresReviewerPass": "pass", "TestRunSpendHardStop": "pass", "TestHarnessSecretsNotInProc": "pass"},
-		EvidencePackage: true, SentinelAtX: true,
+		EvidencePackage: true, DBWired: true, MutationOK: true,
 		Price:       workedPrice(),
 		FallbackOK:  true,
 		ModelStatus: 200, ModelListed: true,

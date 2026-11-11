@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -16,7 +18,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/artifacts"
+	"github.com/polds/factory/internal/coordination"
+	"github.com/polds/factory/internal/harness"
 	"github.com/polds/factory/internal/server"
 	"github.com/polds/factory/internal/store"
 )
@@ -146,16 +153,215 @@ func bootAndRunChain(ctx context.Context) error {
 		return err
 	}
 	defer st.Close()
-	result, err := RunChain(ctx, ChainInput{
+	result, err := RunLive(ctx, ChainInput{
 		Server: srv, Store: st, DSN: raw, BaseURL: "http://" + ln.Addr().String(),
 		APIKey: apiKey, ModelURL: modelURL, ModelKey: modelKey, Price: string(price),
-		Tree: tree, RoleDir: role, Ceiling: CeilingCents, Mode: "good",
+		Tree: tree, RoleDir: role, Ceiling: CeilingCents, Mode: "live",
 	})
 	if err != nil {
 		return err
 	}
 	if !result.Published {
 		return errors.New("live chain did not publish")
+	}
+	return nil
+}
+
+// RunLive is the mode=live chain. It refuses every rehearsal mode. Viktor's
+// harness commits on top of the pin checkout, and Oskar's harness runs go test.
+// Evidence rows come from that execution. Nothing is inserted by hand.
+func RunLive(ctx context.Context, in ChainInput) (ChainResult, error) {
+	if rehearsalMode(in.Mode) {
+		return ChainResult{}, errors.New("live refused the rehearsal chain")
+	}
+	seat, err := openViktor(ctx, in)
+	if err != nil {
+		return ChainResult{}, err
+	}
+	work, err := os.MkdirTemp("", "dreaming-live-work-")
+	if err != nil {
+		return ChainResult{}, err
+	}
+	defer func() { _ = os.RemoveAll(work) }()
+	pin := in.Tree.SourceCommit
+	if err := clonePin(in.RoleDir, work); err != nil {
+		return ChainResult{}, err
+	}
+	sha, err := runViktorHarness(ctx, in, seat, work)
+	if err != nil {
+		return ChainResult{}, err
+	}
+	parent, err := gitRev(work, "HEAD^")
+	if err != nil || parent != pin {
+		return ChainResult{}, fmt.Errorf("published commit parent %s is not the pin", parent)
+	}
+	oskarRun, oskarExec, err := delegateOskar(ctx, in, seat)
+	if err != nil {
+		return ChainResult{}, err
+	}
+	if err := runOskarHarness(ctx, in, oskarRun, "oskar-"+seat.token, work); err != nil {
+		return ChainResult{}, err
+	}
+	if err := evidenceRan(ctx, in.DSN, oskarRun); err != nil {
+		return ChainResult{}, err
+	}
+	_ = oskarExec
+	rootExec, err := in.Store.StartExecution(ctx, seat.rootRun, "dreaming-worker", hashToken("root-"+seat.token))
+	if err != nil {
+		return ChainResult{}, err
+	}
+	if _, err := in.Store.FinishExecution(ctx, rootExec.ID, store.Terminal{State: store.ExecCompleted}); err != nil {
+		return ChainResult{}, err
+	}
+	_, completeErr := in.Server.CompleteNative(ctx, seat.factoryUID, seat.rootTask, false)
+	published := completeErr == nil && draftOpened(ctx, in.DSN, seat.invID)
+	if !published {
+		return ChainResult{}, errors.New("live chain did not publish")
+	}
+	return ChainResult{X: sha, Published: true, JoinRefused: true, Spent: spentCents(ctx, in.DSN, seat.invID)}, nil
+}
+
+func rehearsalMode(mode string) bool {
+	switch mode {
+	case "good", "tiny", "allowance", "cancel", "no-sentinel", "compile":
+		return true
+	default:
+		return false
+	}
+}
+
+func clonePin(role, dest string) error {
+	cmd := exec.Command("git", "clone", "--local", role, dest)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("clone pin: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func gitRev(dir, rev string) (string, error) {
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--verify", rev)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func runViktorHarness(ctx context.Context, in ChainInput, seat openedSeat, work string) (string, error) {
+	rt, err := os.MkdirTemp("", "dreaming-live-rt-")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.RemoveAll(rt) }()
+	goal, err := LoadGoal()
+	if err != nil {
+		return "", err
+	}
+	raw, err := json.Marshal(harness.TaskFile{Prompt: goal, ModelID: ModelID})
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(rt, "task.json"), raw, 0o600); err != nil {
+		return "", err
+	}
+	code := harness.Run(ctx, harness.Options{
+		Args: []string{"--task-id", seat.viktorRun, "--model", ModelID},
+		Env: harnessEnv(in.BaseURL, seat.viktorRun, seat.token,
+			"OPENAI_BASE_URL="+in.ModelURL,
+			"OPENAI_API_KEY="+in.ModelKey,
+			harness.EnvSpendURL+"="+in.BaseURL+"/api/v1/agent/runs/"+seat.viktorRun+"/spend",
+			harness.EnvSpendPrice+"="+in.Price,
+			"FACTORY_MAX_TURNS=2",
+			"FACTORY_TASK_PROMPT="+goal,
+		),
+		Workspace:   work,
+		RuntimeDir:  rt,
+		Stderr:      io.Discard,
+		ChatTimeout: 15 * time.Second,
+	})
+	if code != 0 {
+		return "", fmt.Errorf("viktor harness exit %d", code)
+	}
+	return gitRev(work, "HEAD")
+}
+
+func delegateOskar(ctx context.Context, in ChainInput, seat openedSeat) (string, string, error) {
+	oskar, err := in.Server.DelegateNative(ctx, seat.factoryUID, seat.rootTask, api.NativeDelegateRequest{
+		Assignee: "oskar-lindgren", IdempotencyKey: seat.key + "-oskar", JoinPolicy: store.JoinFailParent,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("delegate oskar: %w", err)
+	}
+	act, err := coordination.ClaimActivation(ctx, in.Store, oskar.ChildID, store.ClaimInput{AgentID: seat.agentID})
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := in.Store.Lease(ctx, "default", time.Minute, 8); err != nil {
+		return "", "", err
+	}
+	exec, err := in.Store.StartExecution(ctx, act.RunID, "dreaming-worker", hashToken("oskar-"+seat.token))
+	if err != nil {
+		return "", "", err
+	}
+	return act.RunID, exec.ID, nil
+}
+
+func runOskarHarness(ctx context.Context, in ChainInput, runID, token, work string) error {
+	rt, err := os.MkdirTemp("", "dreaming-live-oskar-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(rt) }()
+	raw, err := json.Marshal(harness.TaskFile{
+		Prompt: "review", EvidencePackage: "./oracle", MutationPath: "oracle/tenant_test.go",
+	})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(rt, "task.json"), raw, 0o600); err != nil {
+		return err
+	}
+	code := harness.Run(ctx, harness.Options{
+		Args: []string{"--task-id", runID},
+		Env: harnessEnv(in.BaseURL, runID, token,
+			"GOTOOLCHAIN=local",
+		),
+		Workspace:  work,
+		RuntimeDir: rt,
+		Stderr:     io.Discard,
+	})
+	if code != 0 {
+		return fmt.Errorf("oskar harness exit %d", code)
+	}
+	return nil
+}
+
+func harnessEnv(base, runID, token string, extra ...string) []string {
+	env := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"GOTOOLCHAIN=local",
+		"FACTORY_EVENTS_URL=" + base + "/api/v1/agent/runs/" + runID + "/events:ingest",
+		"FACTORY_RUN_TOKEN=" + token,
+	}
+	return append(env, extra...)
+}
+
+func evidenceRan(ctx context.Context, dsn, runID string) error {
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	var n int
+	err = conn.QueryRow(ctx, `SELECT count(*) FROM run_events WHERE run_id = $1 AND type = $2 AND payload_json->>'text' LIKE '%"Action":"run"%'`, runID, harness.EventEvidenceTest).Scan(&n)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("reviewer evidence was stored without a test execution")
 	}
 	return nil
 }

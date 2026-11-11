@@ -164,8 +164,18 @@ var RoleFileNames = []string{"AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"}
 
 // BuildSynthetic writes a temp Dreaming-shaped tree with synthetic seat
 // text, commits it, and loads the frozen policy. File bodies are markers,
-// not role bytes.
+// not role bytes. The pin includes Viktor's sentinel file for the rehearsal.
 func BuildSynthetic(dir string) (definition.NativeTree, string, map[string]string, error) {
+	return buildCheckout(dir, true)
+}
+
+// BuildLivePin is the real-pin shape: the package and its database test
+// harness are committed, and Viktor's output file is not.
+func BuildLivePin(dir string) (definition.NativeTree, string, map[string]string, error) {
+	return buildCheckout(dir, false)
+}
+
+func buildCheckout(dir string, sentinel bool) (definition.NativeTree, string, map[string]string, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "org", "agents"), 0o755); err != nil {
 		return definition.NativeTree{}, "", nil, err
 	}
@@ -188,12 +198,7 @@ func BuildSynthetic(dir string) (definition.NativeTree, string, map[string]strin
 			bodies[rel] = body
 		}
 	}
-	evidence := filepath.Join(dir, "oracle")
-	if err := os.MkdirAll(evidence, 0o755); err != nil {
-		return definition.NativeTree{}, "", nil, err
-	}
-	sentinel := "package oracle\n\nimport \"testing\"\n\nfunc TestTenantIsolation(t *testing.T) {\n\tif tenant() != \"factoryEvidencePass\" {\n\t\tt.Fatal(\"tenant\")\n\t}\n}\n\nfunc tenant() string { return \"factoryEvidencePass\" }\n"
-	if err := os.WriteFile(filepath.Join(evidence, "tenant_test.go"), []byte(sentinel), 0o644); err != nil {
+	if err := writePinHarness(dir, sentinel); err != nil {
 		return definition.NativeTree{}, "", nil, err
 	}
 	if err := git(dir, "init", "-b", "main"); err != nil {
@@ -205,7 +210,7 @@ func BuildSynthetic(dir string) (definition.NativeTree, string, map[string]strin
 	if err := git(dir, "config", "user.name", "dreaming"); err != nil {
 		return definition.NativeTree{}, "", nil, err
 	}
-	if err := git(dir, "add", "org", "oracle"); err != nil {
+	if err := git(dir, "add", "org", "oracle", "go.mod"); err != nil {
 		return definition.NativeTree{}, "", nil, err
 	}
 	if err := git(dir, "commit", "-m", "synthetic seats"); err != nil {
@@ -247,6 +252,26 @@ func BuildSynthetic(dir string) (definition.NativeTree, string, map[string]strin
 		return definition.NativeTree{}, "", nil, err
 	}
 	return tree, pin, blobs, nil
+}
+
+func writePinHarness(dir string, sentinel bool) error {
+	evidence := filepath.Join(dir, "oracle")
+	if err := os.MkdirAll(evidence, 0o755); err != nil {
+		return err
+	}
+	wiring := "package oracle\n\nimport \"database/sql\"\n\n// Open is the pin's database test harness. Viktor's tenant test is not here yet.\nfunc Open(dsn string) (*sql.DB, error) {\n\treturn sql.Open(\"postgres\", dsn)\n}\n"
+	if err := os.WriteFile(filepath.Join(evidence, "db.go"), []byte(wiring), 0o644); err != nil {
+		return err
+	}
+	mod := "module example.com/dreaming\n\ngo 1.26.0\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0o644); err != nil {
+		return err
+	}
+	if !sentinel {
+		return nil
+	}
+	body := "package oracle\n\nimport \"testing\"\n\nfunc TestTenantIsolation(t *testing.T) {\n\tif tenant() != \"factoryEvidencePass\" {\n\t\tt.Fatal(\"tenant\")\n\t}\n}\n\nfunc tenant() string { return \"factoryEvidencePass\" }\n"
+	return os.WriteFile(filepath.Join(evidence, "tenant_test.go"), []byte(body), 0o644)
 }
 
 func gitBlobID(body []byte) string {

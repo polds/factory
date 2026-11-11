@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -310,6 +311,12 @@ func (f *chainGitHub) pulls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.opened
+}
+
+func (f *chainGitHub) head() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.headSHA
 }
 
 func (f *chainGitHub) draft() bool {
@@ -644,7 +651,9 @@ func secondDispatch(t *testing.T, ctx context.Context, role, pin string, git *ch
 	if *calls != want {
 		t.Fatalf("second dispatch model calls changed: %d want %d", *calls, want)
 	}
-	t.Setenv("FACTORY_SKIP_P14", "1")
+	prevHook := p14Hook
+	p14Hook = func(report Report) bool { return p14Only(report) }
+	t.Cleanup(func() { p14Hook = prevHook })
 	if err := RunChecked(ctx, "live"); err != nil {
 		t.Fatal(err)
 	}
@@ -703,7 +712,7 @@ func TestGatherPassesAndRunsChain(t *testing.T) {
 	}
 	ctx := context.Background()
 	dir := t.TempDir()
-	_, pin, blobs, err := BuildSynthetic(dir)
+	_, pin, blobs, err := BuildLivePin(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -720,6 +729,12 @@ func TestGatherPassesAndRunsChain(t *testing.T) {
 		calls++
 		w.Header().Set("x-litellm-response-cost", "0.01")
 		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			command := "set -e\ncat > oracle/tenant_test.go << 'EOF'\npackage oracle\n\nimport \"testing\"\n\nfunc TestTenantIsolation(t *testing.T) {\n\tif tenant() != \"factoryEvidencePass\" {\n\t\tt.Fatal(\"tenant\")\n\t}\n}\n\nfunc tenant() string { return \"factoryEvidencePass\" }\nEOF\ngit add oracle/tenant_test.go\ngit commit -m tenant\n"
+			args, _ := json.Marshal(map[string]string{"command": command})
+			_, _ = fmt.Fprintf(w, `{"model":"%s","choices":[{"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":%s}}]}}]}`, ModelID, strconv.Quote(string(args)))
+			return
+		}
 		_, _ = io.WriteString(w, `{"model":"`+ModelID+`","choices":[{"message":{"role":"assistant","content":"done"}}]}`)
 	}))
 	t.Cleanup(model.Close)
@@ -798,8 +813,15 @@ func TestGatherPassesAndRunsChain(t *testing.T) {
 	t.Setenv("PREFLIGHT_JOB_FILE", jobPath)
 	t.Setenv("FACTORY_SECRET_NAMES", "M1_OPENAI_BASE_URL,M1_OPENAI_API_KEY,M6_GITHUB_APP_ID,M6_GITHUB_APP_PRIVATE_KEY")
 	t.Cleanup(func() { _ = os.Remove("preflight.json") })
+	rehearsed := false
+	prevNote := noteRehearsal
+	noteRehearsal = func() { rehearsed = true }
+	t.Cleanup(func() { noteRehearsal = prevNote })
 	if err := RunChecked(ctx, "live"); err != nil {
 		t.Fatal(err)
+	}
+	if rehearsed {
+		t.Fatal("live selected the rehearsal chain")
 	}
 	raw, err := os.ReadFile("preflight.json")
 	if err != nil {
@@ -814,5 +836,51 @@ func TestGatherPassesAndRunsChain(t *testing.T) {
 	}
 	if calls < 1 || git.pulls() != 1 || !git.draft() {
 		t.Fatalf("chain calls %d pulls %d draft %v", calls, git.pulls(), git.draft())
+	}
+	parent := revParse(filepath.Join(git.project, "northstar-ai-labs", "dreaming.git"), git.head()+"^")
+	if parent != pin {
+		t.Fatalf("published parent %s pin %s", parent, pin)
+	}
+	var ran int
+	if err := admin.QueryRow(ctx, `SELECT count(*) FROM `+pgx.Identifier{schema}.Sanitize()+`.run_events WHERE type = 'evidence.test' AND payload_json->>'text' LIKE '%"Action":"run"%'`).Scan(&ran); err != nil {
+		t.Fatal(err)
+	}
+	if ran == 0 {
+		t.Fatal("reviewer evidence was stored without a test execution")
+	}
+}
+
+func TestP7PinFixture(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, _, err := BuildLivePin(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "oracle", "tenant_test.go")); !os.IsNotExist(err) {
+		t.Fatal("pin fixture already contains Viktor's file")
+	}
+	t.Setenv("FACTORY_ROLE_SOURCE", dir)
+	var world World
+	if err := fillRole(&world); err != nil {
+		t.Fatal(err)
+	}
+	world.Tests = map[string]string{
+		"TestProducedHeadReviewerPipeline": "pass", "TestDraftPublishRequiresReviewerPass": "pass",
+		"TestRunSpendHardStop": "pass", "TestHarnessSecretsNotInProc": "pass",
+	}
+	row := checkP7(world)
+	if !row.Pass {
+		t.Fatal(row.Detail)
+	}
+	if err := os.Remove(filepath.Join(dir, "oracle", "db.go")); err != nil {
+		t.Fatal(err)
+	}
+	var bare World
+	if err := fillRole(&bare); err != nil {
+		t.Fatal(err)
+	}
+	bare.Tests = world.Tests
+	miss := checkP7(bare)
+	if miss.Pass || miss.Detail != "db test wiring missing at pin" {
+		t.Fatalf("wiring %+v", miss)
 	}
 }

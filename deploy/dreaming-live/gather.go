@@ -29,7 +29,7 @@ import (
 )
 
 // RunChecked is the preflight or live command. It writes preflight.json.
-// mode=live calls RunChain only after every check passes.
+// mode=live calls RunLive only after every check passes.
 func RunChecked(ctx context.Context, mode string) error {
 	world, needles, err := gather(ctx, mode)
 	if err != nil {
@@ -40,8 +40,8 @@ func RunChecked(ctx context.Context, mode string) error {
 	if err := WriteReport("preflight.json", report); err != nil {
 		return err
 	}
-	skipP14 := os.Getenv("FACTORY_SKIP_P14") == "1" && p14Only(report)
-	if !report.Passed() && !skipP14 {
+	// p14Hook is nil in the live binary. Tests set it. There is no env bypass.
+	if !report.Passed() && !p14Allowed(report) {
 		return fmt.Errorf("preflight: %s", firstFailure(report))
 	}
 	if mode == "live" {
@@ -577,6 +577,39 @@ func parseKey(pemText string) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
+// p14Hook is assigned only by tests. The live command never sets it, and it
+// does not read an environment variable.
+var p14Hook func(Report) bool
+
+func p14Allowed(report Report) bool {
+	if p14Hook == nil {
+		return false
+	}
+	return p14Hook(report)
+}
+
+func packageWired(root, pkg string) bool {
+	dir := filepath.Join(root, filepath.FromSlash(pkg))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		text := string(body)
+		if strings.Contains(text, "database/sql") || strings.Contains(text, "github.com/jackc/pgx") || strings.Contains(text, "DREAMD_TEST_DSN") {
+			return true
+		}
+	}
+	return false
+}
+
 func p14Only(report Report) bool {
 	saw := false
 	for _, row := range report.Rows {
@@ -666,11 +699,13 @@ func fillRole(world *World) error {
 		}
 		world.BlobWant = want
 		pkg := envDefault("FACTORY_EVIDENCE_PACKAGE", "oracle")
-		info, statErr := os.Stat(filepath.Join(dir, pkg))
+		pkg = strings.TrimPrefix(pkg, "./")
+		info, statErr := os.Stat(filepath.Join(dir, filepath.FromSlash(pkg)))
 		world.EvidencePackage = statErr == nil && info.IsDir()
+		world.DBWired = packageWired(dir, pkg)
 		mut := envDefault("FACTORY_EVIDENCE_MUTATION", "oracle/tenant_test.go")
-		body, readErr := os.ReadFile(filepath.Join(dir, filepath.FromSlash(mut)))
-		world.SentinelAtX = readErr == nil && strings.Contains(string(body), "factoryEvidencePass")
+		goal, _ := LoadGoal()
+		world.MutationOK = harness.EvidenceMutationPath(mut) == nil && mut != "" && strings.Contains(goal, "FACTORY_EVIDENCE_MUTATION")
 	}
 	return nil
 }

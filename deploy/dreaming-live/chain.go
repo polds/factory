@@ -52,132 +52,51 @@ type ChainResult struct {
 	Spent       int64
 }
 
-// RunChain drives Nils → Beatriz → Viktor → Oskar through the production
-// server methods and, on the good path, the draft publisher.
+// noteRehearsal runs at the start of the rehearsal chain. Live must not call
+// RunChain. Tests replace this to prove mode=live did not select it.
+var noteRehearsal = func() {}
+
+type openedSeat struct {
+	factoryUID string
+	invID      string
+	key        string
+	token      string
+	viktorRun  string
+	rootTask   string
+	rootRun    string
+	agentID    string
+}
+
+// RunChain drives the offline rehearsal: an isolated bundle and evidence
+// text supplied by the test. mode=live does not call it.
 func RunChain(ctx context.Context, in ChainInput) (ChainResult, error) {
-	if in.Ceiling <= 0 {
-		in.Ceiling = CeilingCents
-	}
-	if err := os.Setenv("FACTORY_ROLE_SOURCE", in.RoleDir); err != nil {
-		return ChainResult{}, err
-	}
-	if err := os.Setenv("FACTORY_PUBLISH_DRAFT_REPO", DreamingRepo); err != nil {
-		return ChainResult{}, err
-	}
-	if err := os.Setenv(harness.EnvEvidenceMutation, "oracle/tenant_test.go"); err != nil {
-		return ChainResult{}, err
-	}
-	if err := os.Setenv(harness.EnvEvidencePackage, "oracle"); err != nil {
-		return ChainResult{}, err
-	}
-	fac, err := in.Server.ListFactories(ctx)
-	if err != nil || len(fac) == 0 {
-		return ChainResult{}, fmt.Errorf("factories: %w", err)
-	}
-	factoryUID := fac[0].Name
-	if factoryUID == "" {
-		factoryUID = fac[0].ID
-	}
-	factoryID := fac[0].ID
-	agents, err := in.Store.ListAgents(ctx, factoryID)
-	if err != nil || len(agents) == 0 {
-		return ChainResult{}, fmt.Errorf("agents: %w", err)
-	}
-	goal, goalErr := LoadGoal()
-	if goalErr != nil {
-		return ChainResult{}, goalErr
-	}
-	item, err := in.Store.CreateWorkItem(ctx, store.NewWorkItem{
-		FactoryID: factoryID, Source: store.SourceManual, Title: "DB-backed tenant-isolation tests",
-		Body: goal, Stage: store.StagePlanning,
-	})
+	noteRehearsal()
+	seat, err := openViktor(ctx, in)
 	if err != nil {
 		return ChainResult{}, err
-	}
-	key := "d6c-" + item.ID
-	inv, err := in.Store.InsertInvocation(ctx, store.InsertInvocationParams{
-		FactoryID: factoryID, ProfileName: "scan", SourceOccurrenceKey: key,
-		CanonicalDigest: "digest-" + key, DefinitionDigest: "def", State: "accepted",
-		Intent: "new", Priority: "interactive", WorkItemID: item.ID, NeutralStage: true,
-		TargetRepository: DreamingRepo,
-		PrincipalJSON:    json.RawMessage(`{"kind":"api-key","actor":"api-key"}`),
-	})
-	if err != nil || !inv.Created {
-		return ChainResult{}, fmt.Errorf("invocation: %w", err)
-	}
-	if err := pinInvocation(ctx, in.DSN, inv.Row.ID, in.Tree.SourceCommit); err != nil {
-		return ChainResult{}, err
-	}
-	tree := in.Tree
-	req := apiTree(tree, agents[0].ID, item.ID, in.Ceiling)
-	opened, err := in.Server.OpenNativeTree(ctx, factoryUID, inv.Row.ID, req)
-	if err != nil {
-		return ChainResult{}, fmt.Errorf("open tree: %w", err)
-	}
-	if err := authorizeInvocation(ctx, in, factoryUID, inv.Row.ID); err != nil {
-		return ChainResult{}, err
-	}
-	rootAct, err := coordination.ClaimActivation(ctx, in.Store, opened.RootTaskID, store.ClaimInput{AgentID: agents[0].ID})
-	if err != nil {
-		return ChainResult{}, fmt.Errorf("claim root: %w", err)
-	}
-	beatriz, err := in.Server.DelegateNative(ctx, factoryUID, opened.RootTaskID, api.NativeDelegateRequest{
-		Assignee: "beatriz-salgado", IdempotencyKey: key + "-beatriz", JoinPolicy: store.JoinFailParent,
-	})
-	if err != nil {
-		return ChainResult{}, fmt.Errorf("delegate beatriz: %w", err)
-	}
-	if _, err := coordination.ClaimActivation(ctx, in.Store, beatriz.ChildID, store.ClaimInput{AgentID: agents[0].ID}); err != nil {
-		return ChainResult{}, err
-	}
-	viktor, err := in.Server.DelegateNative(ctx, factoryUID, beatriz.ChildID, api.NativeDelegateRequest{
-		Assignee: "viktor-halas", IdempotencyKey: key + "-viktor", JoinPolicy: store.JoinFailParent,
-	})
-	if err != nil {
-		return ChainResult{}, fmt.Errorf("delegate viktor: %w", err)
-	}
-	viktorAct, err := coordination.ClaimActivation(ctx, in.Store, viktor.ChildID, store.ClaimInput{AgentID: agents[0].ID})
-	if err != nil {
-		return ChainResult{}, err
-	}
-	if err := setTaskStatus(ctx, in.DSN, viktor.ChildID, store.NativeCompleted); err != nil {
-		return ChainResult{}, err
-	}
-	if _, err := in.Server.JoinNative(ctx, factoryUID, beatriz.ChildID); err == nil {
-		return ChainResult{}, fmt.Errorf("beatriz join succeeded without X")
-	}
-	if err := setTaskStatus(ctx, in.DSN, viktor.ChildID, store.NativeRunning); err != nil {
-		return ChainResult{}, err
-	}
-	if _, err := in.Store.Lease(ctx, "default", time.Minute, 8); err != nil {
-		return ChainResult{}, err
-	}
-	token := "tok-" + strings.ReplaceAll(key, ":", "")
-	if _, err := in.Store.StartExecution(ctx, viktorAct.RunID, "dreaming-worker", hashToken(token)); err != nil {
-		return ChainResult{}, fmt.Errorf("start viktor: %w", err)
 	}
 	body := tenantTest(in.Mode != "no-sentinel")
 	bundle, sha, err := gitBundle(body)
 	if err != nil {
 		return ChainResult{}, err
 	}
-	if err := postBundle(in.BaseURL, viktorAct.RunID, token, sha, bundle); err != nil {
+	if err := postBundle(in.BaseURL, seat.viktorRun, seat.token, sha, bundle); err != nil {
 		return ChainResult{}, err
 	}
-	oskar, err := in.Server.DelegateNative(ctx, factoryUID, opened.RootTaskID, api.NativeDelegateRequest{
-		Assignee: "oskar-lindgren", IdempotencyKey: key + "-oskar", JoinPolicy: store.JoinFailParent,
+	oskar, err := in.Server.DelegateNative(ctx, seat.factoryUID, seat.rootTask, api.NativeDelegateRequest{
+		Assignee: "oskar-lindgren", IdempotencyKey: seat.key + "-oskar", JoinPolicy: store.JoinFailParent,
 	})
 	if err != nil {
 		return ChainResult{}, fmt.Errorf("delegate oskar: %w", err)
 	}
-	oskarAct, err := coordination.ClaimActivation(ctx, in.Store, oskar.ChildID, store.ClaimInput{AgentID: agents[0].ID})
+	oskarAct, err := coordination.ClaimActivation(ctx, in.Store, oskar.ChildID, store.ClaimInput{AgentID: seat.agentID})
 	if err != nil {
 		return ChainResult{}, err
 	}
 	if _, err := in.Store.Lease(ctx, "default", time.Minute, 8); err != nil {
 		return ChainResult{}, err
 	}
-	oskarExec, err := in.Store.StartExecution(ctx, oskarAct.RunID, "dreaming-worker", hashToken("oskar-"+token))
+	oskarExec, err := in.Store.StartExecution(ctx, oskarAct.RunID, "dreaming-worker", hashToken("oskar-"+seat.token))
 	if err != nil {
 		return ChainResult{}, err
 	}
@@ -192,7 +111,7 @@ func RunChain(ctx context.Context, in ChainInput) (ChainResult, error) {
 	if _, err := in.Store.Lease(ctx, "default", time.Minute, 8); err != nil {
 		return ChainResult{}, err
 	}
-	rootExec, err := in.Store.StartExecution(ctx, rootAct.RunID, "dreaming-worker", hashToken("root-"+token))
+	rootExec, err := in.Store.StartExecution(ctx, seat.rootRun, "dreaming-worker", hashToken("root-"+seat.token))
 	if err != nil {
 		return ChainResult{}, fmt.Errorf("start root: %w", err)
 	}
@@ -201,20 +120,129 @@ func RunChain(ctx context.Context, in ChainInput) (ChainResult, error) {
 	}
 	// Evidence is in place before the model call so a 402 or a denied
 	// reserve still reaches the publisher instead of failing the bundle post.
-	_ = runSeat(ctx, in, viktorAct.RunID, token, 1)
+	_ = runSeat(ctx, in, seat.viktorRun, seat.token, 1)
 	if in.Mode == "cancel" {
 		if !in.SkipCancel {
-			if _, err := in.Server.CancelNativeSubtree(ctx, factoryUID, opened.RootTaskID, false); err != nil {
+			if _, err := in.Server.CancelNativeSubtree(ctx, seat.factoryUID, seat.rootTask, false); err != nil {
 				return ChainResult{}, err
 			}
 		}
-		_ = runSeat(ctx, in, viktorAct.RunID, token, 1)
+		_ = runSeat(ctx, in, seat.viktorRun, seat.token, 1)
 	}
-	_, completeErr := in.Server.CompleteNative(ctx, factoryUID, opened.RootTaskID, false)
-	published := completeErr == nil && draftOpened(ctx, in.DSN, inv.Row.ID)
+	_, completeErr := in.Server.CompleteNative(ctx, seat.factoryUID, seat.rootTask, false)
+	published := completeErr == nil && draftOpened(ctx, in.DSN, seat.invID)
 	return ChainResult{
 		X: sha, Published: published, JoinRefused: true,
-		Spent: spentCents(ctx, in.DSN, inv.Row.ID),
+		Spent: spentCents(ctx, in.DSN, seat.invID),
+	}, nil
+}
+
+func openViktor(ctx context.Context, in ChainInput) (openedSeat, error) {
+	if in.Ceiling <= 0 {
+		in.Ceiling = CeilingCents
+	}
+	if err := os.Setenv("FACTORY_ROLE_SOURCE", in.RoleDir); err != nil {
+		return openedSeat{}, err
+	}
+	if err := os.Setenv("FACTORY_PUBLISH_DRAFT_REPO", DreamingRepo); err != nil {
+		return openedSeat{}, err
+	}
+	if err := os.Setenv(harness.EnvEvidenceMutation, "oracle/tenant_test.go"); err != nil {
+		return openedSeat{}, err
+	}
+	if err := os.Setenv(harness.EnvEvidencePackage, "oracle"); err != nil {
+		return openedSeat{}, err
+	}
+	fac, err := in.Server.ListFactories(ctx)
+	if err != nil || len(fac) == 0 {
+		return openedSeat{}, fmt.Errorf("factories: %w", err)
+	}
+	factoryUID := fac[0].Name
+	if factoryUID == "" {
+		factoryUID = fac[0].ID
+	}
+	factoryID := fac[0].ID
+	agents, err := in.Store.ListAgents(ctx, factoryID)
+	if err != nil || len(agents) == 0 {
+		return openedSeat{}, fmt.Errorf("agents: %w", err)
+	}
+	goal, goalErr := LoadGoal()
+	if goalErr != nil {
+		return openedSeat{}, goalErr
+	}
+	item, err := in.Store.CreateWorkItem(ctx, store.NewWorkItem{
+		FactoryID: factoryID, Source: store.SourceManual, Title: "DB-backed tenant-isolation tests",
+		Body: goal, Stage: store.StagePlanning,
+	})
+	if err != nil {
+		return openedSeat{}, err
+	}
+	key := "d6c-" + item.ID
+	inv, err := in.Store.InsertInvocation(ctx, store.InsertInvocationParams{
+		FactoryID: factoryID, ProfileName: "scan", SourceOccurrenceKey: key,
+		CanonicalDigest: "digest-" + key, DefinitionDigest: "def", State: "accepted",
+		Intent: "new", Priority: "interactive", WorkItemID: item.ID, NeutralStage: true,
+		TargetRepository: DreamingRepo,
+		PrincipalJSON:    json.RawMessage(`{"kind":"api-key","actor":"api-key"}`),
+	})
+	if err != nil || !inv.Created {
+		return openedSeat{}, fmt.Errorf("invocation: %w", err)
+	}
+	if err := pinInvocation(ctx, in.DSN, inv.Row.ID, in.Tree.SourceCommit); err != nil {
+		return openedSeat{}, err
+	}
+	tree := in.Tree
+	req := apiTree(tree, agents[0].ID, item.ID, in.Ceiling)
+	opened, err := in.Server.OpenNativeTree(ctx, factoryUID, inv.Row.ID, req)
+	if err != nil {
+		return openedSeat{}, fmt.Errorf("open tree: %w", err)
+	}
+	if err := authorizeInvocation(ctx, in, factoryUID, inv.Row.ID); err != nil {
+		return openedSeat{}, err
+	}
+	rootAct, err := coordination.ClaimActivation(ctx, in.Store, opened.RootTaskID, store.ClaimInput{AgentID: agents[0].ID})
+	if err != nil {
+		return openedSeat{}, fmt.Errorf("claim root: %w", err)
+	}
+	beatriz, err := in.Server.DelegateNative(ctx, factoryUID, opened.RootTaskID, api.NativeDelegateRequest{
+		Assignee: "beatriz-salgado", IdempotencyKey: key + "-beatriz", JoinPolicy: store.JoinFailParent,
+	})
+	if err != nil {
+		return openedSeat{}, fmt.Errorf("delegate beatriz: %w", err)
+	}
+	if _, err := coordination.ClaimActivation(ctx, in.Store, beatriz.ChildID, store.ClaimInput{AgentID: agents[0].ID}); err != nil {
+		return openedSeat{}, err
+	}
+	viktor, err := in.Server.DelegateNative(ctx, factoryUID, beatriz.ChildID, api.NativeDelegateRequest{
+		Assignee: "viktor-halas", IdempotencyKey: key + "-viktor", JoinPolicy: store.JoinFailParent,
+	})
+	if err != nil {
+		return openedSeat{}, fmt.Errorf("delegate viktor: %w", err)
+	}
+	viktorAct, err := coordination.ClaimActivation(ctx, in.Store, viktor.ChildID, store.ClaimInput{AgentID: agents[0].ID})
+	if err != nil {
+		return openedSeat{}, err
+	}
+	if err := setTaskStatus(ctx, in.DSN, viktor.ChildID, store.NativeCompleted); err != nil {
+		return openedSeat{}, err
+	}
+	if _, err := in.Server.JoinNative(ctx, factoryUID, beatriz.ChildID); err == nil {
+		return openedSeat{}, fmt.Errorf("beatriz join succeeded without X")
+	}
+	if err := setTaskStatus(ctx, in.DSN, viktor.ChildID, store.NativeRunning); err != nil {
+		return openedSeat{}, err
+	}
+	if _, err := in.Store.Lease(ctx, "default", time.Minute, 8); err != nil {
+		return openedSeat{}, err
+	}
+	token := "tok-" + strings.ReplaceAll(key, ":", "")
+	if _, err := in.Store.StartExecution(ctx, viktorAct.RunID, "dreaming-worker", hashToken(token)); err != nil {
+		return openedSeat{}, fmt.Errorf("start viktor: %w", err)
+	}
+	return openedSeat{
+		factoryUID: factoryUID, invID: inv.Row.ID, key: key, token: token,
+		viktorRun: viktorAct.RunID, rootTask: opened.RootTaskID, rootRun: rootAct.RunID,
+		agentID: agents[0].ID,
 	}, nil
 }
 
