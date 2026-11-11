@@ -521,10 +521,7 @@ for item in items:
     key, sep, val = item.partition("=")
     if sep:
         env[key] = val
-proc = subprocess.Popen(sys.argv[1:], env=env)
-code = proc.wait()
-me = os.getpid()
-for _ in range(10):
+def living_children(me):
     kids = []
     for name in os.listdir("/proc"):
         if not name.isdigit():
@@ -533,28 +530,43 @@ for _ in range(10):
             st = open("/proc/" + name + "/status").read()
         except OSError:
             continue
+        state = ""
+        ppid = None
         for line in st.splitlines():
-            if line.startswith("PPid:") and int(line.split()[1]) == me:
-                kids.append(int(name))
+            if line.startswith("State:"):
+                state = line.split()[1]
+            elif line.startswith("PPid:"):
+                ppid = int(line.split()[1])
+        if ppid == me and state != "Z":
+            kids.append(int(name))
+    return kids
+
+def reap():
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid == 0:
+            return
+
+proc = subprocess.Popen(sys.argv[1:], env=env)
+code = proc.wait()
+me = os.getpid()
+for _ in range(10):
+    kids = living_children(me)
     if not kids:
-        break
+        reap()
+        if not living_children(me):
+            break
     for kid in kids:
         try:
             os.kill(kid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+    reap()
     time.sleep(0.05)
-left = []
-for name in os.listdir("/proc"):
-    if not name.isdigit():
-        continue
-    try:
-        st = open("/proc/" + name + "/status").read()
-    except OSError:
-        continue
-    for line in st.splitlines():
-        if line.startswith("PPid:") and int(line.split()[1]) == me:
-            left.append(name)
+left = [str(pid) for pid in living_children(me)]
 if left:
     sys.stderr.write("seat descendants survived: " + " ".join(left) + "\n")
     sys.exit(1)
