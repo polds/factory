@@ -472,7 +472,7 @@ The offline proof is:
 MODE=offline ./spike/dreaming/run_test.sh
 ```
 
-That command fails each of P1–P14 on its own case and passes the secure case. With `FACTORY_TEST_DATABASE_URL` and `FACTORY_TEST_S3_ENDPOINT` set, it also rehearses the chain against a fake model and a fake GitHub: one draft pull request, a tiny ceiling, HTTP 402, cancel, a missing sentinel, a compile-only red transcript, and a second dispatch stopped before another model call. The live dispatch and `mode=preflight` against github.com are not run here.
+That command fails each of P1–P14 on its own case and passes the secure case. With `FACTORY_TEST_DATABASE_URL` and `FACTORY_TEST_S3_ENDPOINT` set, it also rehearses the chain against a fake model and a fake GitHub: one draft pull request, a tiny ceiling, HTTP 402, cancel, a missing sentinel, a compile-only red transcript, and a second dispatch stopped before another model call. `mode=live` checks Dreaming out at the pin with the P4 read token and calls the chain only after every preflight row passes. The live dispatch and `mode=preflight` against github.com are not run here.
 
 ## Open questions to resolve with measurement
 

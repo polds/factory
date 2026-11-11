@@ -31,6 +31,8 @@ type ChainInput struct {
 	BaseURL  string
 	APIKey   string
 	ModelURL string
+	// ModelKey is the inference credential. Empty keeps the rehearsal key.
+	ModelKey string
 	Price    string
 	Tree     definition.NativeTree
 	RoleDir  string
@@ -324,11 +326,15 @@ func runSeat(ctx context.Context, in ChainInput, runID, token string, turns int)
 		return 1
 	}
 	defer func() { _ = os.RemoveAll(rt) }()
+	modelKey := in.ModelKey
+	if modelKey == "" {
+		modelKey = "sk-offline-rehearsal"
+	}
 	return harness.Run(ctx, harness.Options{
 		Args: []string{"--task-id", runID, "--model", ModelID},
 		Env: []string{
 			"OPENAI_BASE_URL=" + in.ModelURL,
-			"OPENAI_API_KEY=sk-offline-rehearsal",
+			"OPENAI_API_KEY=" + modelKey,
 			"FACTORY_RUN_TOKEN=" + token,
 			harness.EnvSpendURL + "=" + in.BaseURL + "/api/v1/agent/runs/" + runID + "/spend",
 			harness.EnvSpendPrice + "=" + in.Price,

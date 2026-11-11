@@ -85,13 +85,14 @@ func gather(ctx context.Context, mode string) (World, []string, error) {
 		Now:         time.Now(),
 	}
 	applyJobFile(&world)
-	if err := fillRole(&world); err != nil {
-		return World{}, nil, err
-	}
 	if err := fillGit(&world); err != nil {
 		return World{}, nil, err
 	}
 	if err := fillGitHub(ctx, &world, &needles); err != nil {
+		return World{}, nil, err
+	}
+	// The P4 token checkout lands before P5 reads the tree.
+	if err := fillRole(&world); err != nil {
 		return World{}, nil, err
 	}
 	if err := fillModel(ctx, &world); err != nil {
@@ -239,10 +240,12 @@ func recordRead(ctx context.Context, world *World, needles *[]string, tok minted
 	if headerErr != nil {
 		return
 	}
-	remote := strings.TrimRight(githubBase(), "/") + "/northstar-ai-labs/dreaming.git"
-	if githubBase() == "https://api.github.com" {
-		remote = "https://github.com/" + DreamingRepo + ".git"
-	}
+	remote := dreamingGitRemote()
+	// A directory already at the pin is left alone. Otherwise this is the
+	// workflow checkout into FACTORY_ROLE_SOURCE (RUNNER_TEMP/dreaming-src).
+	// The token stays in http.extraheader. The directory is not uploaded.
+	// A failed checkout leaves the directory off the pin. P5 then fails closed.
+	_ = checkoutDreaming(ctx, header, remote, strings.TrimSpace(os.Getenv("FACTORY_ROLE_SOURCE")), dreamingPin())
 	refs, remoteErr := LsRemote(ctx, remote, header, RefPrefix)
 	world.LsRemoteOK = remoteErr == nil
 	if remoteErr == nil {
@@ -508,6 +511,13 @@ func b64(v any) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
+func dreamingGitRemote() string {
+	if githubBase() == "https://api.github.com" {
+		return "https://github.com/" + DreamingRepo + ".git"
+	}
+	return strings.TrimRight(githubBase(), "/") + "/northstar-ai-labs/dreaming.git"
+}
+
 func githubBase() string {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("FACTORY_GITHUB_API_BASE")), "/")
 	if base == "" {
@@ -665,11 +675,9 @@ func fillRole(world *World) error {
 	return nil
 }
 
-// runLiveChain is the mode=live continuation. Tests replace it to run the
-// chain against the server they already booted.
-var runLiveChain = func(context.Context) error {
-	return errors.New("live chain is RunChain after preflight; factoryd env is incomplete")
-}
+// runLiveChain is the mode=live continuation. Tests replace it when they
+// only need to observe that a passing preflight reaches the chain.
+var runLiveChain = bootAndRunChain
 
 func runLive(ctx context.Context) error {
 	return runLiveChain(ctx)

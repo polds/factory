@@ -62,6 +62,20 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      minio:
+        image: >-
+          bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+        env:
+          MINIO_ROOT_USER: factoryadmin
+          MINIO_ROOT_PASSWORD: factorysecret
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -fsS http://127.0.0.1:9000/minio/health/ready"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+          --health-start-period 10s
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -121,6 +135,24 @@ jobs:
           cp "${RUNNER_TEMP}/named-a.jsonl" "${RUNNER_TEMP}/named-tests.jsonl"
           ./spike/dreaming/jobfile.sh "${RUNNER_TEMP}/named-tests.jsonl" \
             "${RUNNER_TEMP}/p13-probe.json" "${RUNNER_TEMP}/preflight-job.json"
+      - name: Create the local evidence bucket
+        run: |
+          set -euo pipefail
+          mc_image='bitnamilegacy/minio-client:2025.7.21-debian-12-r3'
+          mc_image+='@sha256:73bd39f7899a0cef12b8dd5df13aa93a3ed1aaa44236542442e9ac76819ac158'
+          docker run --rm --network host \
+            -e HOME=/tmp \
+            -e MINIO_ROOT_USER=factoryadmin \
+            -e MINIO_ROOT_PASSWORD=factorysecret \
+            "$mc_image" \
+            /bin/bash -ec '
+              set -euo pipefail
+              mkdir -p /tmp/mc
+              mc --config-dir /tmp/mc alias set local http://127.0.0.1:9000 \
+                "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+              mc --config-dir /tmp/mc mb --ignore-existing local/factory
+              mc --config-dir /tmp/mc anonymous set none local/factory
+            '
       - name: Run the dreaming driver
         env:
           MODE: ${{ inputs.mode }}
@@ -133,7 +165,15 @@ jobs:
           M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
           FACTORY_DATABASE_URL: postgres://postgres:t@127.0.0.1:5432/factory?sslmode=disable
           FACTORY_PUBLISH_DRAFT_REPO: northstar-ai-labs/dreaming
+          # Checked out at DREAMING_PIN with the P4 read token inside the
+          # driver. http.extraheader only; credential.helper stays empty.
+          # This path is under RUNNER_TEMP and is not uploaded.
           FACTORY_ROLE_SOURCE: ${{ runner.temp }}/dreaming-src
+          FACTORY_S3_ENDPOINT: http://127.0.0.1:9000
+          FACTORY_S3_BUCKET: factory
+          FACTORY_S3_ACCESS_KEY: factoryadmin
+          FACTORY_S3_SECRET_KEY: factorysecret
+          FACTORY_S3_REGION: us-east-1
           FACTORY_SECRET_NAMES: M1_OPENAI_BASE_URL,M1_OPENAI_API_KEY,M6_GITHUB_APP_ID,M6_GITHUB_APP_PRIVATE_KEY
           PREFLIGHT_JOB_FILE: ${{ runner.temp }}/preflight-job.json
           DREAMING_PIN: a18fbb6b0e29442872f09e704be996208d0e6e8d

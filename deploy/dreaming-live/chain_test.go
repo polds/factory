@@ -652,3 +652,167 @@ func secondDispatch(t *testing.T, ctx context.Context, role, pin string, git *ch
 		t.Fatalf("bypassing P14 did not run the chain: calls %d", *calls)
 	}
 }
+
+func TestCheckoutAtPin(t *testing.T) {
+	ctx := context.Background()
+	src := t.TempDir()
+	gitCmd(t, src, "init", "-b", "main")
+	gitCmd(t, src, "config", "user.email", "dreaming@example.com")
+	gitCmd(t, src, "config", "user.name", "dreaming")
+	if err := os.WriteFile(filepath.Join(src, "role.txt"), []byte("seat\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, src, "add", "role.txt")
+	gitCmd(t, src, "commit", "-m", "pin")
+	out, err := exec.Command("git", "-C", src, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := strings.TrimSpace(string(out))
+	parent := t.TempDir()
+	bare := filepath.Join(parent, "dreaming.git")
+	gitCmd(t, parent, "clone", "--bare", src, bare)
+	dest := filepath.Join(t.TempDir(), "dreaming-src")
+	header, err := AuthHeader("ghs_CHECKOUT_TEST_TOKEN_NOT_A_SECRET")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := "file://" + bare
+	if err := checkoutDreaming(ctx, header, remote, dest, pin); err != nil {
+		t.Fatal(err)
+	}
+	head, err := gitHead(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head != pin {
+		t.Fatalf("HEAD %s pin %s", head, pin)
+	}
+	body, err := os.ReadFile(filepath.Join(dest, "role.txt"))
+	if err != nil || string(body) != "seat\n" {
+		t.Fatalf("checkout body %q %v", body, err)
+	}
+	if err := checkoutDreaming(ctx, header, remote, dest, pin); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGatherPassesAndRunsChain(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" || os.Getenv("FACTORY_TEST_S3_ENDPOINT") == "" {
+		t.Fatal("FACTORY_TEST_DATABASE_URL and FACTORY_TEST_S3_ENDPOINT are required")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	_, pin, blobs, err := BuildSynthetic(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"`+ModelID+`"}]}`)
+			return
+		}
+		if r.URL.Path == "/model/info" {
+			_, _ = io.WriteString(w, modelInfoBody())
+			return
+		}
+		calls++
+		w.Header().Set("x-litellm-response-cost", "0.01")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"`+ModelID+`","choices":[{"message":{"role":"assistant","content":"done"}}]}`)
+	}))
+	t.Cleanup(model.Close)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := newChainGitHub(t)
+	base := os.Getenv("FACTORY_TEST_DATABASE_URL")
+	var entropy [8]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		t.Fatal(err)
+	}
+	schema := "d6c_live_" + hex.EncodeToString(entropy[:])
+	admin, err := pgx.Connect(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		_ = admin.Close(ctx)
+		t.Fatal(err)
+	}
+	dsn, err := withSearch(base, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
+		_ = admin.Close(context.Background())
+	})
+	repo := t.TempDir()
+	gitCmd(t, repo, "init", "-b", "main")
+	gitCmd(t, repo, "config", "user.email", "dreaming@example.com")
+	gitCmd(t, repo, "config", "user.name", "dreaming")
+	var shas []string
+	for i := 0; i < 3; i++ {
+		if err := os.WriteFile(filepath.Join(repo, "f"), []byte(fmt.Sprintf("c%d\n", i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, repo, "add", "f")
+		gitCmd(t, repo, "commit", "-m", fmt.Sprintf("c%d", i))
+		out, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		shas = append(shas, strings.TrimSpace(string(out)))
+	}
+	rawBlobs, err := json.Marshal(blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobPath := filepath.Join(t.TempDir(), "job.json")
+	jobBody := `{"tests":{"TestProducedHeadReviewerPipeline":"pass","TestDraftPublishRequiresReviewerPass":"pass","TestRunSpendHardStop":"pass","TestHarnessSecretsNotInProc":"pass"},"allowlist":"pass","reexec":true,"hits":0}`
+	if err := os.WriteFile(jobPath, []byte(jobBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	t.Setenv("FACTORY_DATABASE_URL", dsn)
+	t.Setenv("FACTORY_S3_ENDPOINT", os.Getenv("FACTORY_TEST_S3_ENDPOINT"))
+	t.Setenv("FACTORY_S3_ACCESS_KEY", envOr(t, "FACTORY_TEST_S3_KEY", "factoryadmin"))
+	t.Setenv("FACTORY_S3_SECRET_KEY", envOr(t, "FACTORY_TEST_S3_SECRET", "factorysecret"))
+	t.Setenv("FACTORY_S3_BUCKET", "factory")
+	t.Setenv("FACTORY_S3_REGION", "us-east-1")
+	t.Setenv("FACTORY_GITHUB_API_BASE", git.srv.URL)
+	t.Setenv("M6_GITHUB_APP_ID", "4242")
+	t.Setenv("M6_GITHUB_APP_PRIVATE_KEY", pemText)
+	t.Setenv("M1_OPENAI_BASE_URL", model.URL)
+	t.Setenv("M1_OPENAI_API_KEY", "sk-offline-rehearsal")
+	t.Setenv("FACTORY_ROLE_SOURCE", dir)
+	t.Setenv("ROLE_BLOBS", string(rawBlobs))
+	t.Setenv("DREAMING_PIN", pin)
+	t.Setenv("CONFIRM", ConfirmValue)
+	t.Setenv("FACTORY_SHA", shas[2])
+	t.Setenv("FACTORY_GIT_DIR", repo)
+	t.Setenv("FACTORY_REQUIRED_SHAS", strings.Join(shas, ","))
+	t.Setenv("PREFLIGHT_JOB_FILE", jobPath)
+	t.Setenv("FACTORY_SECRET_NAMES", "M1_OPENAI_BASE_URL,M1_OPENAI_API_KEY,M6_GITHUB_APP_ID,M6_GITHUB_APP_PRIVATE_KEY")
+	t.Cleanup(func() { _ = os.Remove("preflight.json") })
+	if err := RunChecked(ctx, "live"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile("preflight.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report Report
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.Passed() {
+		t.Fatalf("preflight %+v", report.Rows)
+	}
+	if calls < 1 || git.pulls() != 1 || !git.draft() {
+		t.Fatalf("chain calls %d pulls %d draft %v", calls, git.pulls(), git.draft())
+	}
+}
