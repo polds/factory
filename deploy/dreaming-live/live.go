@@ -241,8 +241,8 @@ func RunLive(ctx context.Context, in ChainInput) (ChainResult, error) {
 	}
 	_ = oskarExec
 	rootExec, err := in.Store.StartExecution(ctx, seat.rootRun, "dreaming-worker", hashToken("root-"+seat.token))
-	for try := 0; err != nil && strings.Contains(err.Error(), "queued") && try < 8; try++ {
-		time.Sleep(20 * time.Millisecond)
+	for try := 0; err != nil && strings.Contains(err.Error(), "queued") && try < 40; try++ {
+		time.Sleep(50 * time.Millisecond)
 		if _, leaseErr := in.Store.Lease(ctx, "default", time.Minute, 8); leaseErr != nil {
 			err = leaseErr
 			continue

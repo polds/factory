@@ -214,15 +214,38 @@ func PublishFromDir(ctx context.Context, dir string) error {
 	if err != nil {
 		return err
 	}
-	return pushDraft(ctx, dir, manifest, tok.Value)
+	helper, err := writeCredentialHelper(tok.Value)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(helper) }()
+	pinDir, err := os.MkdirTemp("", "dreaming-pin-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(pinDir) }()
+	// The publish token can read. The pin fetch uses the same helper as the push.
+	if err := fetchPinWithHelper(ctx, pinDir, dreamingPin(), helper); err != nil {
+		return err
+	}
+	return pushDraft(ctx, dir, manifest, tok.Value, helper)
 }
 
 func mintWriteToken(ctx context.Context, key *rsa.PrivateKey, appID, inst int64) (mintedToken, error) {
+	body := []byte(`{"repositories":["dreaming"],"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}`)
+	return mintInstallationToken(ctx, key, appID, inst, body)
+}
+
+func mintPinReadToken(ctx context.Context, key *rsa.PrivateKey, appID, inst int64) (mintedToken, error) {
+	body := []byte(`{"repositories":["dreaming"],"permissions":{"contents":"read"}}`)
+	return mintInstallationToken(ctx, key, appID, inst, body)
+}
+
+func mintInstallationToken(ctx context.Context, key *rsa.PrivateKey, appID, inst int64, body []byte) (mintedToken, error) {
 	jwt, err := appJWT(appID, key)
 	if err != nil {
 		return mintedToken{}, err
 	}
-	body := []byte(`{"repositories":["dreaming"],"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}`)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, githubBase()+"/app/installations/"+strconv.FormatInt(inst, 10)+"/access_tokens", bytes.NewReader(body))
 	if err != nil {
 		return mintedToken{}, err
@@ -270,12 +293,7 @@ func writeCredentialHelper(token string) (string, error) {
 	return helperPath, nil
 }
 
-func pushDraft(ctx context.Context, dir string, manifest ChainManifest, token string) error {
-	helperPath, err := writeCredentialHelper(token)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(helperPath) }()
+func pushDraft(ctx context.Context, dir string, manifest ChainManifest, token, helperPath string) error {
 	work, err := os.MkdirTemp("", "dreaming-publish-")
 	if err != nil {
 		return err
@@ -307,7 +325,7 @@ func pushDraft(ctx context.Context, dir string, manifest ChainManifest, token st
 		remote = strings.TrimRight(githubBase(), "/") + "/northstar-ai-labs/dreaming.git"
 	}
 	ref := "refs/heads/" + RefPrefix + "artifact"
-	if err := git("-c", "credential.helper=!"+helperPath, "push", remote, manifest.Head+":"+ref); err != nil {
+	if err := git(credentialGitArgs(helperPath, "push", remote, manifest.Head+":"+ref)...); err != nil {
 		return err
 	}
 	payload, _ := json.Marshal(map[string]any{

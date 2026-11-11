@@ -21,7 +21,7 @@ func main() {
 		os.Exit(1)
 	}
 	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: dreamingpreflight offline|preflight|live|chain|publish")
+		fmt.Fprintln(os.Stderr, "usage: dreamingpreflight offline|preflight|live|chain|publish|fetch-pin")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -46,8 +46,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(1)
 		}
+	case "fetch-pin":
+		if err := dreaminglive.FetchPin(context.Background()); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: dreamingpreflight offline|preflight|live|chain|publish")
+		fmt.Fprintln(os.Stderr, "usage: dreamingpreflight offline|preflight|live|chain|publish|fetch-pin")
 		os.Exit(2)
 	}
 }

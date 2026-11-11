@@ -22,8 +22,9 @@ func reexecCleanDriver() error {
 	if os.Getenv("FACTORY_DRIVER_CLEAN") == "1" {
 		return nil
 	}
-	// Preflight and publish hold the App key and start no seat.
-	// Only the chain process re-execs onto a clean kernel environment.
+	// Preflight, publish, and fetch-pin hold the App key and start no seat.
+	// Only the chain and live processes re-exec onto a clean kernel environment.
+	// fetch-pin revokes its read token before it returns.
 	if len(os.Args) != 2 || (os.Args[1] != "chain" && os.Args[1] != "live") {
 		return nil
 	}

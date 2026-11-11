@@ -58,8 +58,32 @@ func TestWorkflowSplitsSecretsFromSeats(t *testing.T) {
 	if chain == "" || publish == "" {
 		t.Fatal("chain or publish job missing")
 	}
-	if strings.Contains(chain, "M6_GITHUB_APP_PRIVATE_KEY") || strings.Contains(chain, "M6_GITHUB_APP_ID") {
-		t.Fatal("chain job references the app")
+	fetch := stepNamed(chain, "Fetch the pin and revoke the read token")
+	if fetch == "" {
+		t.Fatal("pin fetch step missing")
+	}
+	if !strings.Contains(fetch, "M6_GITHUB_APP_PRIVATE_KEY") || !strings.Contains(fetch, "M6_GITHUB_APP_ID") {
+		t.Fatal("pin fetch step does not mint with the app")
+	}
+	if !strings.Contains(fetch, "revoke") || !strings.Contains(fetch, "fetch-pin") {
+		t.Fatal("pin fetch step does not revoke the read token")
+	}
+	if strings.Contains(fetch, "GITHUB_ENV") || strings.Contains(fetch, "GITHUB_OUTPUT") {
+		t.Fatal("pin fetch writes the token")
+	}
+	if !strings.Contains(fetch, `chmod 0700`) || !strings.Contains(fetch, "RUNNER_TEMP") {
+		t.Fatal("pin fetch does not lock the runner temp")
+	}
+	rest := strings.Replace(chain, fetch, "", 1)
+	if strings.Contains(rest, "M6_GITHUB_APP_PRIVATE_KEY") || strings.Contains(rest, "M6_GITHUB_APP_ID") {
+		t.Fatal("a seat or driver step references the app")
+	}
+	driver := stepNamed(chain, "Run the chain")
+	harness := stepNamed(chain, "P13 re-exec probe in the harness the task image runs")
+	for _, step := range []string{driver, harness} {
+		if strings.Contains(step, "M6_") || strings.Contains(step, "secrets.") || strings.Contains(step, "GITHUB_ENV") || strings.Contains(step, "GITHUB_OUTPUT") || strings.Contains(step, "PRIVATE_KEY") {
+			t.Fatal("driver or harness step references a secret")
+		}
 	}
 	for _, banned := range []string{"factory-harness", "chain.sh", "run.sh", "dreamingpreflight publish"} {
 		if strings.Contains(publish, banned) && banned != "dreamingpreflight publish" {
@@ -75,6 +99,68 @@ func TestWorkflowSplitsSecretsFromSeats(t *testing.T) {
 	if !strings.Contains(chain, "useradd") || !strings.Contains(chain, "seat") {
 		t.Fatal("chain job does not create the seat user")
 	}
+}
+
+func TestFetchCommandsCarryCredentials(t *testing.T) {
+	root, err := moduleRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, ".github/workflows/dreaming-live.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	chain := betweenJobs(text, "\n  chain:\n", "\n  publish:\n")
+	publish := betweenJobs(text, "\n  publish:\n", "\n")
+	fetch := stepNamed(chain, "Fetch the pin and revoke the read token")
+	if !strings.Contains(fetch, "M6_GITHUB_APP_PRIVATE_KEY") || !strings.Contains(fetch, "fetch-pin") {
+		t.Fatal("chain fetch does not carry the app credential")
+	}
+	if strings.Contains(fetch, "git fetch") && !strings.Contains(fetch, "credential.helper") {
+		t.Fatal("chain fetch dropped its credential")
+	}
+	if strings.Contains(publish, "git fetch") && !strings.Contains(publish, "credential.helper") {
+		t.Fatal("publish fetch dropped its credential")
+	}
+	if !strings.Contains(publish, "dreamingpreflight publish") {
+		t.Fatal("publish job does not run the publisher")
+	}
+	src, err := os.ReadFile(filepath.Join(root, "deploy/dreaming-live/fetch_pin.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "credential.helper=!") {
+		t.Fatal("fetch helper was dropped")
+	}
+	pub, err := os.ReadFile(filepath.Join(root, "deploy/dreaming-live/artifact.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := betweenJobs(string(pub), "func PublishFromDir", "\nfunc ")
+	if !strings.Contains(body, "fetchPinWithHelper") {
+		t.Fatal("publish does not fetch the pin through the helper")
+	}
+}
+
+func stepNamed(job, name string) string {
+	marker := "name: " + name + "\n"
+	i := strings.Index(job, marker)
+	if i < 0 {
+		return ""
+	}
+	start := strings.LastIndex(job[:i], "\n      - ")
+	if start < 0 {
+		start = 0
+	} else {
+		start++
+	}
+	rest := job[start:]
+	next := strings.Index(rest[1:], "\n      - ")
+	if next < 0 {
+		return rest
+	}
+	return rest[:next+1]
 }
 
 func TestWorkflowDoesNotUploadPinCheckout(t *testing.T) {

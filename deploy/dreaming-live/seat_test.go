@@ -1,7 +1,9 @@
 package dreaminglive
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +33,27 @@ func TestKillSeatUser(t *testing.T) {
 	}
 	if seatLabelAlive("zz-seatkill") {
 		t.Fatal("seat process survived pkill")
+	}
+}
+
+func TestSeatCannotReadLockedTemp(t *testing.T) {
+	if err := ensureSeatUser(); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp("", "runner-temp-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.WriteFile(filepath.Join(dir, "secret"), []byte("ghs_not_for_the_seat"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sudo", "-n", "-u", "seat", "--", "cat", filepath.Join(dir, "secret"))
+	if err := cmd.Run(); err == nil {
+		t.Fatal("seat read the runner temp")
 	}
 }
 
