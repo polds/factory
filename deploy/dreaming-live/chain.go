@@ -147,10 +147,10 @@ func openViktor(ctx context.Context, in ChainInput) (openedSeat, error) {
 	if err := os.Setenv("FACTORY_PUBLISH_DRAFT_REPO", DreamingRepo); err != nil {
 		return openedSeat{}, err
 	}
-	if err := os.Setenv(harness.EnvEvidenceMutation, "oracle/tenant_test.go"); err != nil {
+	if err := os.Setenv(harness.EnvEvidenceMutation, configuredMutation()); err != nil {
 		return openedSeat{}, err
 	}
-	if err := os.Setenv(harness.EnvEvidencePackage, "oracle"); err != nil {
+	if err := os.Setenv(harness.EnvEvidencePackage, configuredPackage()); err != nil {
 		return openedSeat{}, err
 	}
 	fac, err := in.Server.ListFactories(ctx)

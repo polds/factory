@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -154,6 +154,9 @@ func bootAndRunChain(ctx context.Context) error {
 		return err
 	}
 	defer st.Close()
+	// The server keeps the App key in memory for publication after the seats
+	// finish. It must not stay in an environment a model tool can read.
+	scrubDriverSecrets()
 	result, err := RunLive(ctx, ChainInput{
 		Server: srv, Store: st, DSN: raw, BaseURL: "http://" + ln.Addr().String(),
 		APIKey: apiKey, ModelURL: modelURL, ModelKey: modelKey, Price: string(price),
@@ -273,7 +276,7 @@ func runViktorHarness(ctx context.Context, in ChainInput, seat openedSeat, work 
 		return "", err
 	}
 	defer func() { _ = os.RemoveAll(home) }()
-	goal, err := LoadGoal()
+	goal, err := viktorGoal()
 	if err != nil {
 		return "", err
 	}
@@ -284,25 +287,22 @@ func runViktorHarness(ctx context.Context, in ChainInput, seat openedSeat, work 
 	if err := os.WriteFile(filepath.Join(rt, "task.json"), raw, 0o600); err != nil {
 		return "", err
 	}
-	var stderr bytes.Buffer
-	code := harness.Run(ctx, harness.Options{
-		Args: []string{"--task-id", seat.viktorRun, "--model", ModelID},
-		Env: harnessEnv(in.BaseURL, seat.viktorRun, seat.token,
+	code, stderr, err := execHarness(ctx, []string{"--task-id", seat.viktorRun, "--model", ModelID},
+		harnessEnv(in.BaseURL, seat.viktorRun, seat.token,
 			"HOME="+home,
+			"FACTORY_RUNTIME_DIR="+rt,
 			"OPENAI_BASE_URL="+in.ModelURL,
 			"OPENAI_API_KEY="+in.ModelKey,
 			harness.EnvSpendURL+"="+in.BaseURL+"/api/v1/agent/runs/"+seat.viktorRun+"/spend",
 			harness.EnvSpendPrice+"="+in.Price,
 			"FACTORY_MAX_TURNS=2",
 			"FACTORY_TASK_PROMPT="+goal,
-		),
-		Workspace:   work,
-		RuntimeDir:  rt,
-		Stderr:      &stderr,
-		ChatTimeout: 15 * time.Second,
-	})
+		), work)
+	if err != nil {
+		return "", err
+	}
 	if code != 0 {
-		msg := strings.TrimSpace(stderr.String())
+		msg := strings.TrimSpace(stderr)
 		if len(msg) > 400 {
 			msg = msg[len(msg)-400:]
 		}
@@ -338,8 +338,9 @@ func runOskarHarness(ctx context.Context, in ChainInput, runID, token, work stri
 		return err
 	}
 	defer func() { _ = os.RemoveAll(rt) }()
+	pkg := "./" + configuredPackage()
 	raw, err := json.Marshal(harness.TaskFile{
-		Prompt: "review", EvidencePackage: "./oracle", MutationPath: "oracle/tenant_test.go",
+		Prompt: "review", EvidencePackage: pkg, MutationPath: configuredMutation(),
 	})
 	if err != nil {
 		return err
@@ -352,19 +353,96 @@ func runOskarHarness(ctx context.Context, in ChainInput, runID, token, work stri
 		return err
 	}
 	defer func() { _ = os.RemoveAll(home) }()
-	code := harness.Run(ctx, harness.Options{
-		Args: []string{"--task-id", runID},
-		Env: harnessEnv(in.BaseURL, runID, token,
+	code, stderr, err := execHarness(ctx, []string{"--task-id", runID},
+		harnessEnv(in.BaseURL, runID, token,
 			"HOME="+home,
-		),
-		Workspace:  work,
-		RuntimeDir: rt,
-		Stderr:     io.Discard,
-	})
+			"FACTORY_RUNTIME_DIR="+rt,
+		), work)
+	if err != nil {
+		return err
+	}
 	if code != 0 {
-		return fmt.Errorf("oskar harness exit %d", code)
+		msg := strings.TrimSpace(stderr)
+		if len(msg) > 400 {
+			msg = msg[len(msg)-400:]
+		}
+		return fmt.Errorf("oskar harness exit %d: %s", code, msg)
 	}
 	return nil
+}
+
+func viktorGoal() (string, error) {
+	goal, err := LoadGoal()
+	if err != nil {
+		return "", err
+	}
+	return goal + "\n\nThe test file path is " + configuredMutation() + ".\nThe package directory is " + configuredPackage() + ".\n", nil
+}
+
+func scrubDriverSecrets() {
+	for _, name := range []string{
+		"M6_GITHUB_APP_PRIVATE_KEY",
+		"M1_OPENAI_API_KEY",
+		"OPENAI_API_KEY",
+		"FACTORY_GITHUB_APP_PRIVATE_KEY",
+	} {
+		_ = os.Unsetenv(name)
+	}
+}
+
+var (
+	harnessBinOnce sync.Once
+	harnessBinPath string
+	harnessBinErr  error
+)
+
+func factoryHarnessBin() (string, error) {
+	harnessBinOnce.Do(func() {
+		root, err := moduleRoot()
+		if err != nil {
+			harnessBinErr = err
+			return
+		}
+		dir, err := os.MkdirTemp("", "factory-harness-bin-")
+		if err != nil {
+			harnessBinErr = err
+			return
+		}
+		path := filepath.Join(dir, "factory-harness")
+		cmd := exec.Command("go", "build", "-o", path, "./cmd/factory-harness")
+		cmd.Dir = root
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			harnessBinErr = fmt.Errorf("build factory-harness: %s", strings.TrimSpace(string(out)))
+			return
+		}
+		harnessBinPath = path
+	})
+	return harnessBinPath, harnessBinErr
+}
+
+// execHarness runs cmd/factory-harness. That process calls PrepareProcess,
+// which re-execs with seat secrets on a pipe and marks itself non-dumpable.
+// The environment is the seat list only. The driver environ is not copied.
+func execHarness(ctx context.Context, args, env []string, workspace string) (int, string, error) {
+	bin, err := factoryHarnessBin()
+	if err != nil {
+		return 0, "", err
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = workspace
+	cmd.Env = env
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	if err == nil {
+		return 0, stderr.String(), nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode(), stderr.String(), nil
+	}
+	return 0, stderr.String(), err
 }
 
 func harnessEnv(base, runID, token string, extra ...string) []string {

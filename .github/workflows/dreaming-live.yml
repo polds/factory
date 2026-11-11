@@ -203,12 +203,18 @@ jobs:
             exit 0
           fi
           echo "ok=false" >> "${GITHUB_OUTPUT}"
+          echo "receipt=false" >> "${GITHUB_OUTPUT}"
           only="${RUNNER_TEMP}/preflight-only"
           rm -rf "${only}"
           mkdir -p "${only}"
           if [[ -f preflight.json ]]; then
             cp preflight.json "${only}/preflight.json"
-            ./spike/dreaming/run.sh scan "${only}"
+            if ./spike/dreaming/run.sh scan "${only}"; then
+              echo "receipt=true" >> "${GITHUB_OUTPUT}"
+            else
+              rm -rf "${only}"
+              echo "receipt=false" >> "${GITHUB_OUTPUT}"
+            fi
           fi
           exit 1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -218,7 +224,7 @@ jobs:
           path: spike/dreaming/.work/evidence
           if-no-files-found: ignore
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always() && steps.scan.outputs.ok != 'true'
+        if: always() && steps.scan.outputs.receipt == 'true'
         with:
           name: dreaming-live-evidence
           path: ${{ runner.temp }}/preflight-only

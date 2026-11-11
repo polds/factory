@@ -698,12 +698,11 @@ func fillRole(world *World) error {
 			_ = json.Unmarshal([]byte(raw), &want)
 		}
 		world.BlobWant = want
-		pkg := envDefault("FACTORY_EVIDENCE_PACKAGE", "oracle")
-		pkg = strings.TrimPrefix(pkg, "./")
+		pkg := configuredPackage()
 		info, statErr := os.Stat(filepath.Join(dir, filepath.FromSlash(pkg)))
 		world.EvidencePackage = statErr == nil && info.IsDir()
 		world.DBWired = packageWired(dir, pkg)
-		mut := envDefault("FACTORY_EVIDENCE_MUTATION", "oracle/tenant_test.go")
+		mut := configuredMutation()
 		goal, _ := LoadGoal()
 		world.MutationOK = harness.EvidenceMutationPath(mut) == nil && mut != "" && strings.Contains(goal, "FACTORY_EVIDENCE_MUTATION")
 	}
@@ -716,6 +715,14 @@ var runLiveChain = bootAndRunChain
 
 func runLive(ctx context.Context) error {
 	return runLiveChain(ctx)
+}
+
+func configuredPackage() string {
+	return strings.TrimPrefix(envDefault("FACTORY_EVIDENCE_PACKAGE", "oracle"), "./")
+}
+
+func configuredMutation() string {
+	return envDefault("FACTORY_EVIDENCE_MUTATION", configuredPackage()+"/tenant_test.go")
 }
 
 func envDefault(name, fallback string) string {
