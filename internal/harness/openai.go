@@ -88,12 +88,14 @@ type toolCall struct {
 }
 
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Tools    []any         `json:"tools"`
+	Model     string        `json:"model"`
+	Messages  []chatMessage `json:"messages"`
+	Tools     []any         `json:"tools"`
+	MaxTokens int           `json:"max_tokens,omitempty"`
 }
 
 type chatResponse struct {
+	Model   string `json:"model,omitempty"`
 	Choices []struct {
 		Message chatMessage `json:"message"`
 	} `json:"choices"`
@@ -104,6 +106,8 @@ type chatResponse struct {
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+	// HeaderCost is x-litellm-response-cost in USD. Empty means the header was absent.
+	HeaderCost string `json:"-"`
 }
 
 // providerError carries an HTTP status. Status 0 means the server was not reached.
@@ -133,6 +137,8 @@ func classifyProvider(err error, accepted, turn int) (code int, status, summary 
 		return ExitModelUnavailable, "model_unavailable", summary
 	}
 	switch pe.Status {
+	case 402:
+		return ExitConfigInvalid, "backend_allowance_exhausted", summary
 	case 401, 403, 404:
 		return ExitConfigInvalid, "config_invalid", summary
 	case 400:
@@ -217,7 +223,14 @@ func fnTool(name, desc string, params map[string]any) map[string]any {
 	}
 }
 
-func completeChat(ctx context.Context, baseURL, apiKey string, extra []inference.Header, req chatRequest) (chatResponse, error) {
+const defaultChatTimeout = 60 * time.Second
+
+const litellmCostHeader = "x-litellm-response-cost"
+
+func completeChat(ctx context.Context, baseURL, apiKey string, extra []inference.Header, req chatRequest, timeout time.Duration) (chatResponse, error) {
+	if timeout <= 0 {
+		timeout = defaultChatTimeout
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return chatResponse{}, err
@@ -225,18 +238,18 @@ func completeChat(ctx context.Context, baseURL, apiKey string, extra []inference
 	url := strings.TrimRight(baseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return chatResponse{}, &providerError{Message: inference.Redact(err.Error(), extra)}
+		return chatResponse{}, &providerError{Message: redactProvider(err.Error(), apiKey, extra)}
 	}
 	inference.Apply(httpReq.Header, apiKey, extra)
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: timeout}
 	res, err := client.Do(httpReq)
 	if err != nil {
-		return chatResponse{}, &providerError{Message: inference.Redact(err.Error(), extra)}
+		return chatResponse{}, &providerError{Message: redactProvider(err.Error(), apiKey, extra)}
 	}
 	defer func() { _ = res.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return chatResponse{}, &providerError{Status: res.StatusCode, Message: inference.Redact(err.Error(), extra)}
+		return chatResponse{}, &providerError{Status: res.StatusCode, Message: redactProvider(err.Error(), apiKey, extra)}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		msg := strings.TrimSpace(string(raw))
@@ -244,7 +257,7 @@ func completeChat(ctx context.Context, baseURL, apiKey string, extra []inference
 		if json.Unmarshal(raw, &parsed) == nil && parsed.Error != nil && parsed.Error.Message != "" {
 			msg = parsed.Error.Message
 		}
-		return chatResponse{}, &providerError{Status: res.StatusCode, Message: inference.Redact(msg, extra)}
+		return chatResponse{}, &providerError{Status: res.StatusCode, Message: redactProvider(msg, apiKey, extra)}
 	}
 	var parsed chatResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
@@ -253,5 +266,16 @@ func completeChat(ctx context.Context, baseURL, apiKey string, extra []inference
 	if len(parsed.Choices) == 0 {
 		return chatResponse{}, &providerError{Status: res.StatusCode, Message: "response had no choices"}
 	}
+	if cost := strings.TrimSpace(res.Header.Get(litellmCostHeader)); cost != "" {
+		parsed.HeaderCost = cost
+	}
 	return parsed, nil
+}
+
+func redactProvider(msg, apiKey string, extra []inference.Header) string {
+	msg = inference.Redact(msg, extra)
+	if apiKey != "" {
+		msg = Redact(msg, []string{apiKey})
+	}
+	return msg
 }

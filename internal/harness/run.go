@@ -32,6 +32,8 @@ type Options struct {
 	RuntimeDir string
 	Stderr     io.Writer
 	Now        func() time.Time
+	// ChatTimeout is the model HTTP client timeout. Zero uses 60 seconds.
+	ChatTimeout time.Duration
 }
 
 // Run executes one harness invocation and returns a contract exit code.
@@ -171,6 +173,12 @@ func Run(ctx context.Context, opt Options) int {
 		return finish(ExitConfigInvalid, "config_invalid", err.Error())
 	}
 	secrets = append(secrets, inference.Values(extra)...)
+	if apiKey != "" {
+		secrets = append(secrets, apiKey)
+	}
+	if spendURL := lookupEnv(opt.Env, EnvSpendURL); spendURL != "" {
+		secrets = append(secrets, spendURL)
+	}
 
 	turns, err := maxTurnsFrom(opt.Env)
 	if err != nil {
@@ -204,18 +212,20 @@ func Run(ctx context.Context, opt Options) int {
 		idle = 0
 	}
 	conv := conversation{
-		log:       log,
-		box:       box,
-		baseURL:   baseURL,
-		apiKey:    apiKey,
-		extra:     extra,
-		model:     model,
-		secrets:   secrets,
-		maxTurns:  turns,
-		runtime:   opt.RuntimeDir,
-		hub:       hub,
-		idle:      idle,
-		skillText: lookupEnv(opt.Env, "FACTORY_SKILL_TEXT"),
+		log:         log,
+		box:         box,
+		baseURL:     baseURL,
+		apiKey:      apiKey,
+		extra:       extra,
+		model:       model,
+		secrets:     secrets,
+		maxTurns:    turns,
+		runtime:     opt.RuntimeDir,
+		hub:         hub,
+		idle:        idle,
+		skillText:   lookupEnv(opt.Env, "FACTORY_SKILL_TEXT"),
+		spend:       newSpendSession(opt.Env),
+		chatTimeout: opt.ChatTimeout,
 	}
 
 	summary := "skipped initial turn"
@@ -419,6 +429,11 @@ type conversation struct {
 	// accepted is how many model calls in this process returned HTTP 2xx.
 	// A later 400 is a bad request body, not a bad model id or key.
 	accepted int
+	// spend is set when FACTORY_SPEND_URL is present. An empty URL leaves
+	// model calls unreserved, which is the pre-spend contract.
+	spend spendSession
+	// chatTimeout is the model client timeout. Zero uses the 60s default.
+	chatTimeout time.Duration
 }
 
 func (c *conversation) run(ctx context.Context, prompt string) (int, string, string) {
@@ -478,11 +493,51 @@ func (c *conversation) oneTurn(ctx context.Context, turn int, messages []chatMes
 			defer turnCommitHook()
 		}
 	}
-	resp, err := completeChat(turnCtx, c.baseURL, c.apiKey, c.extra, chatRequest{
+	req := chatRequest{
 		Model:    c.model,
 		Messages: messages,
 		Tools:    toolSchema,
-	})
+	}
+	var hold *spendHold
+	if c.spend.enabled() {
+		if c.spend.stopped {
+			return messages, false, ExitModelUnavailable, "missing_usage", "spend stop"
+		}
+		n, err := promptSize(messages, toolSchema)
+		if err != nil {
+			return messages, false, ExitEnvironment, "environment_setup_failed", "prompt size"
+		}
+		if !c.spend.priced || c.spend.w <= 0 {
+			return messages, false, ExitConfigInvalid, "unpriced", "spend price is incomplete"
+		}
+		if int64(n) > c.spend.byteCap {
+			return messages, false, ExitConfigInvalid, "prompt_over_cap", "prompt exceeds the byte cap"
+		}
+		callID, err := newSpendCallID(turn)
+		if err != nil {
+			return messages, false, ExitEnvironment, "environment_setup_failed", "spend call id"
+		}
+		reserved, denied, err := c.spend.reserve(turnCtx, callID)
+		if err != nil || denied {
+			return messages, false, ExitConfigInvalid, "budget_denied", "spend reserve denied"
+		}
+		hold = &reserved
+		req.MaxTokens = c.spend.maxTokens
+	}
+	resp, err := completeChat(turnCtx, c.baseURL, c.apiKey, c.extra, req, c.chatTimeout)
+	var (
+		costCents   int
+		modelServed string
+		usageStatus string
+	)
+	if hold != nil {
+		stop, code, status, summary, cost, served, usageState := c.accountSpend(ctx, hold, resp, err)
+		costCents, modelServed, usageStatus = cost, served, usageState
+		if stop {
+			c.emitUsage(turn, resp, costCents, modelServed, usageStatus)
+			return messages, false, code, status, summary
+		}
+	}
 	if c.turnInterrupted(ctx, turnCtx) {
 		return c.finishInterrupt(ctx, turn, gen, messages)
 	}
@@ -492,15 +547,7 @@ func (c *conversation) oneTurn(ctx context.Context, turn int, messages []chatMes
 	}
 	c.accepted++
 	msg := resp.Choices[0].Message
-	if resp.Usage != nil {
-		_ = c.log.Emit(Event{
-			Type:         "usage",
-			Turn:         turn,
-			ModelID:      c.model,
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
-		})
-	}
+	c.emitUsage(turn, resp, costCents, modelServed, usageStatus)
 	if text := strings.TrimSpace(msg.Content); text != "" && len(msg.ToolCalls) == 0 {
 		if c.turnInterrupted(ctx, turnCtx) {
 			return c.finishInterrupt(ctx, turn, gen, messages)
@@ -598,6 +645,56 @@ func (c *conversation) oneTurn(ctx context.Context, turn int, messages []chatMes
 		}
 	}
 	return messages, true, 0, "", ""
+}
+
+func (c *conversation) accountSpend(parent context.Context, hold *spendHold, resp chatResponse, callErr error) (bool, int, string, string, int, string, string) {
+	settleCtx := context.WithoutCancel(parent)
+	served := resp.Model
+	var pe *providerError
+	if callErr != nil && errors.As(callErr, &pe) && pe.Status == 402 {
+		c.spend.stopped = true
+		_, _ = c.spend.settle(settleCtx, *hold, c.spend.w, false, true)
+		return true, ExitConfigInvalid, "backend_allowance_exhausted", "backend allowance exhausted", int(c.spend.w), served, "backend_allowance_exhausted"
+	}
+	if callErr != nil || strings.TrimSpace(resp.HeaderCost) == "" {
+		c.spend.stopped = true
+		_, _ = c.spend.settle(settleCtx, *hold, c.spend.w, true, false)
+		return true, ExitModelUnavailable, "missing_usage", "model response had no cost", int(c.spend.w), served, "missing_usage"
+	}
+	cents, err := centsFromUSD(resp.HeaderCost)
+	if err != nil {
+		c.spend.stopped = true
+		_, _ = c.spend.settle(settleCtx, *hold, c.spend.w, true, false)
+		return true, ExitModelUnavailable, "missing_usage", "model response had no cost", int(c.spend.w), served, "missing_usage"
+	}
+	out, err := c.spend.settle(settleCtx, *hold, cents, false, false)
+	if err != nil || out.Quarantined > 0 || out.Paused {
+		c.spend.stopped = true
+		if out.Quarantined > 0 || out.Paused {
+			return true, ExitModelUnavailable, "budget_paused", "settled cost exceeded the reservation", int(cents), served, ""
+		}
+		return true, ExitModelUnavailable, "missing_usage", "spend settle failed", int(cents), served, "missing_usage"
+	}
+	return false, 0, "", "", int(cents), served, ""
+}
+
+func (c *conversation) emitUsage(turn int, resp chatResponse, cost int, served, status string) {
+	if resp.Usage == nil && cost == 0 && served == "" && status == "" {
+		return
+	}
+	ev := Event{
+		Type:        "usage",
+		Turn:        turn,
+		ModelID:     c.model,
+		ModelServed: served,
+		CostCents:   cost,
+		Status:      status,
+	}
+	if resp.Usage != nil {
+		ev.InputTokens = resp.Usage.PromptTokens
+		ev.OutputTokens = resp.Usage.CompletionTokens
+	}
+	_ = c.log.Emit(ev)
 }
 
 func (c conversation) turnInterrupted(parent, turn context.Context) bool {
@@ -738,6 +835,6 @@ func warnf(w io.Writer, format string, args ...any) {
 func toolEnvDeny(extra []string) []string {
 	out := make([]string, 0, len(extra)+2)
 	out = append(out, extra...)
-	out = append(out, "FACTORY_RUN_TOKEN", "FACTORY_EVENTS_URL")
+	out = append(out, "FACTORY_RUN_TOKEN", "FACTORY_EVENTS_URL", EnvSpendURL)
 	return out
 }

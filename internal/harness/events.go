@@ -48,6 +48,7 @@ type Event struct {
 	InputTokens   int    `json:"input_tokens,omitempty"`
 	OutputTokens  int    `json:"output_tokens,omitempty"`
 	CostCents     int    `json:"cost_cents,omitempty"`
+	ModelServed   string `json:"model_served,omitempty"`
 	Gate          string `json:"gate,omitempty"`
 	Status        string `json:"status,omitempty"`
 	Summary       string `json:"summary,omitempty"`
