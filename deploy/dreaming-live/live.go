@@ -1,9 +1,9 @@
 package dreaminglive
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
-	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
