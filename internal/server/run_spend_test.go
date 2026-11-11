@@ -784,6 +784,23 @@ func runSecretScan(t *testing.T, bin string, noReexec bool, env *env, runID, tok
 	var spendURL string
 	var price string
 	var mu sync.Mutex
+	if env == nil {
+		spend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.HasSuffix(r.URL.Path, ":reserve") {
+				_, _ = io.WriteString(w, `{"reservation_id":"nres_fake","cents":163,"w":163}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"counted_cents":1,"quarantined_cents":0}`)
+		}))
+		t.Cleanup(spend.Close)
+		spendURL = spend.URL + "/api/v1/agent/runs/local/spend"
+		price = mustPrice(t, workedPrice())
+		runID = "local"
+	} else {
+		spendURL = env.base + "/api/v1/agent/runs/" + runID + "/spend"
+		price = env.srv.cfg.SpendPrice
+	}
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		calls++
@@ -809,23 +826,6 @@ func runSecretScan(t *testing.T, bin string, noReexec bool, env *env, runID, tok
 		_, _ = io.WriteString(w, `{"model":"served","choices":[{"message":{"role":"assistant","content":"done"}}]}`)
 	}))
 	t.Cleanup(gw.Close)
-	if env == nil {
-		spend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			if strings.HasSuffix(r.URL.Path, ":reserve") {
-				_, _ = io.WriteString(w, `{"reservation_id":"nres_fake","cents":163,"w":163}`)
-				return
-			}
-			_, _ = io.WriteString(w, `{"counted_cents":1,"quarantined_cents":0}`)
-		}))
-		t.Cleanup(spend.Close)
-		spendURL = spend.URL + "/api/v1/agent/runs/local/spend"
-		price = mustPrice(t, workedPrice())
-		runID = "local"
-	} else {
-		spendURL = env.base + "/api/v1/agent/runs/" + runID + "/spend"
-		price = env.srv.cfg.SpendPrice
-	}
 	ws := t.TempDir()
 	rt := t.TempDir()
 	cmdEnv := append(os.Environ(),

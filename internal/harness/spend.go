@@ -259,7 +259,10 @@ func (s spendSession) reserve(ctx context.Context, callID string) (spendHold, bo
 		ReservationID string `json:"reservation_id"`
 		Cents         int64  `json:"cents"`
 	}
-	if err := json.Unmarshal(raw, &parsed); err != nil || parsed.ReservationID == "" || parsed.Cents <= 0 {
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return spendHold{}, false, err
+	}
+	if parsed.ReservationID == "" || parsed.Cents <= 0 {
 		return spendHold{}, true, nil
 	}
 	return spendHold{id: parsed.ReservationID, callID: callID, cents: parsed.Cents}, false, nil
