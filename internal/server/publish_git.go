@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,22 @@ import (
 	"strings"
 	"time"
 )
+
+// GitBearerRejected is the body GitHub's smart HTTP returns when a push
+// sends Authorization: Bearer. Git operations authenticate with Basic
+// username x-access-token.
+const GitBearerRejected = "Invalid username or token. Password authentication is not supported for Git operations."
+
+// GitHTTPAuthHeader is the git smart-HTTP Authorization value for an
+// installation token. The caller puts it in GIT_CONFIG_* http.extraHeader
+// and never in argv. Bearer is not accepted by github.com for receive-pack.
+func GitHTTPAuthHeader(token string) (string, error) {
+	if token == "" || strings.ContainsAny(token, "\x00\r\n") {
+		return "", errors.New("git auth token")
+	}
+	raw := "x-access-token:" + token
+	return "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(raw)), nil
+}
 
 // draftGit is the checkout gate's git runner. harness.gitRunner is
 // unexported and internal/harness is outside this change, so the publisher
@@ -93,8 +110,8 @@ func (g draftGit) exec(args ...string) (string, string, int, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	outText := scrubPublishText(stdout.String(), g.token)
-	errText := scrubPublishText(stderr.String(), g.token)
+	outText := scrubGitHeader(scrubPublishText(stdout.String(), g.token), g.token)
+	errText := scrubGitHeader(scrubPublishText(stderr.String(), g.token), g.token)
 	if ctx.Err() != nil {
 		return outText, errText, -1, errors.New("git timed out")
 	}
@@ -105,7 +122,18 @@ func (g draftGit) exec(args ...string) (string, string, int, error) {
 	if errors.As(err, &exit) {
 		return outText, errText, exit.ExitCode(), nil
 	}
-	return outText, errText, -1, errors.New(scrubPublishText(err.Error(), g.token))
+	return outText, errText, -1, errors.New(scrubGitHeader(scrubPublishText(err.Error(), g.token), g.token))
+}
+
+func scrubGitHeader(text, token string) string {
+	if token != "" {
+		if header, err := GitHTTPAuthHeader(token); err == nil {
+			text = strings.ReplaceAll(text, header, "Authorization: github-installation-token")
+			enc := strings.TrimPrefix(header, "Authorization: Basic ")
+			text = strings.ReplaceAll(text, enc, "github-installation-token")
+		}
+	}
+	return strings.ReplaceAll(text, "Authorization: Basic ", "Authorization: ")
 }
 
 func (g draftGit) environ() []string {
@@ -121,10 +149,14 @@ func (g draftGit) environ() []string {
 		"GCM_INTERACTIVE=never",
 	}
 	if g.token != "" {
+		header, err := GitHTTPAuthHeader(g.token)
+		if err != nil {
+			header = "Authorization: Basic invalid"
+		}
 		env = append(env,
 			"GIT_CONFIG_COUNT=1",
 			"GIT_CONFIG_KEY_0=http.extraheader",
-			"GIT_CONFIG_VALUE_0=Authorization: Bearer "+g.token,
+			"GIT_CONFIG_VALUE_0="+header,
 		)
 	}
 	return env

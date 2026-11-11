@@ -1,0 +1,156 @@
+# Manual Dreaming #454 live run.
+#
+# workflow_dispatch only. This workflow is not part of required CI.
+# Do not dispatch it from an agent. One dispatch is the orchestrator's,
+# after preflight passes on the merged Factory SHA.
+#
+# permissions is contents:read. The job does not receive a GitHub token
+# that can push. Publication uses the M6/M7 live-run App, minted inside
+# the driver. There is no job-level permissions block.
+name: dreaming-live
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: preflight or live
+        required: true
+        type: choice
+        options:
+          - preflight
+          - live
+      confirm:
+        description: Type dreaming-live-454 to pass the guard
+        required: true
+        type: string
+      factory_sha:
+        description: Factory commit to check out
+        required: true
+        type: string
+      role_blobs:
+        description: JSON object of 17 git blob ids
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dreaming-live
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  live:
+    name: dreaming live
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: t
+          POSTGRES_DB: factory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d factory"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.factory_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Guard
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if [[ "${CONFIRM}" != "dreaming-live-454" ]]; then
+            echo "guard refused" >&2
+            exit 1
+          fi
+          case "${MODE}" in
+            preflight|live) ;;
+            *)
+              echo "guard refused" >&2
+              exit 1
+              ;;
+          esac
+      - name: Check required secrets
+        env:
+          M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
+          M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in M1_OPENAI_BASE_URL M1_OPENAI_API_KEY M6_GITHUB_APP_ID M6_GITHUB_APP_PRIVATE_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              printf 'missing secret %s\n' "${name}"
+              missing=1
+            fi
+          done
+          if [[ "${missing}" -ne 0 ]]; then
+            exit 1
+          fi
+      - name: Write the GitHub App private key
+        env:
+          M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          key="${RUNNER_TEMP}/m6-github-app.pem"
+          printf '%s\n' "${M6_GITHUB_APP_PRIVATE_KEY}" > "${key}"
+          chmod 600 "${key}"
+      - name: Run the dreaming driver
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+          FACTORY_SHA: ${{ inputs.factory_sha }}
+          ROLE_BLOBS: ${{ inputs.role_blobs }}
+          M1_OPENAI_BASE_URL: ${{ secrets.M1_OPENAI_BASE_URL }}
+          M1_OPENAI_API_KEY: ${{ secrets.M1_OPENAI_API_KEY }}
+          M6_GITHUB_APP_ID: ${{ secrets.M6_GITHUB_APP_ID }}
+          M6_GITHUB_APP_PRIVATE_KEY: ${{ secrets.M6_GITHUB_APP_PRIVATE_KEY }}
+          FACTORY_GITHUB_APP_PRIVATE_KEY_FILE: ${{ runner.temp }}/m6-github-app.pem
+          FACTORY_DATABASE_URL: postgres://postgres:t@127.0.0.1:5432/factory?sslmode=disable
+          FACTORY_PUBLISH_DRAFT_REPO: northstar-ai-labs/dreaming
+          FACTORY_ROLE_SOURCE: ${{ runner.temp }}/dreaming-src
+        run: exec ./spike/dreaming/run.sh
+      - name: Clean up after cancel
+        if: cancelled()
+        run: |
+          set -euo pipefail
+          echo "cancelled cleanup"
+      - name: Collect evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          dest="spike/dreaming/.work/evidence"
+          mkdir -p "${dest}"
+          if [[ -f preflight.json ]]; then
+            cp preflight.json "${dest}/preflight.json"
+          fi
+          if [[ -d spike/dreaming/.work/receipts ]]; then
+            cp -a spike/dreaming/.work/receipts/. "${dest}/"
+          fi
+          ./spike/dreaming/run.sh scan "${dest}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: dreaming-live-evidence
+          path: spike/dreaming/.work/evidence
+          if-no-files-found: ignore

@@ -1,0 +1,19 @@
+# Seat paths only. Role file bytes stay in the Dreaming checkout.
+proof_root: nils-aaberg
+source_reports_to: tobias-lindqvist
+implementer: viktor-halas
+reviewer: oskar-lindgren
+roster: org/roster.yaml
+files:
+  - AGENTS.md
+  - HEARTBEAT.md
+  - SOUL.md
+  - TOOLS.md
+seats:
+  - nils-aaberg
+  - beatriz-salgado
+  - viktor-halas
+  - oskar-lindgren
+purpose: work
+publish_repo: northstar-ai-labs/dreaming
+model: nous/claude-sonnet-5.5
