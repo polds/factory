@@ -85,6 +85,19 @@ func TestGoToolchainMatchFixtures(t *testing.T) {
 			wantCode:   0,
 		},
 		{
+			name:       "newer-patch",
+			gomod:      withToolchain,
+			dockerfile: "FROM golang:1.26.12\n",
+			wantCode:   0,
+		},
+		{
+			name:       "floating-minor",
+			gomod:      withToolchain,
+			dockerfile: "FROM golang:1.26 AS build\n",
+			wantCode:   1,
+			wantSubstr: "is older than 1.26.11",
+		},
+		{
 			name:       "digest-pinned-match",
 			gomod:      withToolchain,
 			dockerfile: "FROM golang:1.26.11-alpine@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS build\n",
@@ -124,6 +137,13 @@ func TestGoToolchainMatchFixtures(t *testing.T) {
 			dockerfile: "FROM busybox:1.36\nFROM golang:1.25.0 AS build\n",
 			wantCode:   1,
 			wantSubstr: "is older than 1.26.11",
+		},
+		{
+			name:       "later-stage-older",
+			gomod:      withToolchain,
+			dockerfile: "FROM golang:1.26.11 AS build\nFROM golang:1.26.10 AS old\n",
+			wantCode:   1,
+			wantSubstr: "golang:1.26.10 (1.26.10) is older than 1.26.11",
 		},
 		{
 			name:       "no-golang-stage",
