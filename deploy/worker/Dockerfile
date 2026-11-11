@@ -9,14 +9,14 @@
 # Build from the repo root:
 #
 #   docker build -t factory-upstream-worker:dev deploy/worker
-FROM golang:1.26-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS build
+FROM golang:1.26.11-alpine@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS build
 
 # git is required to clone the pinned revision and to stamp vcs metadata.
 RUN apk add --no-cache git=2.54.1-r0
 
 WORKDIR /src
 
-# Keep the existing image revision (go 1.26.6). Upstream main requires go 1.27.3.
+# Stay on Go 1.26.11. Upstream main requires go 1.27.3.
 ARG WORKER_REF=63dbb8ae8ccb3941392691f5c628e3365d8e248e
 # Full clone, then the pinned commit, then a clean-tree check. go build
 # records vcs.revision / vcs.modified from this checkout. The binary is
