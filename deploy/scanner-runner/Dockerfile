@@ -1,6 +1,6 @@
 # Public scanner runner. The build context is the repository root.
 # It copies the stub plugin only. It does not clone or download a private scanner.
-FROM golang:1.26.10 AS build
+FROM golang:1.26.11 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY deploy/scanner-runner/stub ./deploy/scanner-runner/stub
