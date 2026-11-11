@@ -842,6 +842,10 @@ func runSecretScan(t *testing.T, bin string, noReexec bool, env *env, runID, tok
 	)
 	if noReexec {
 		cmdEnv = append(cmdEnv, harness.EnvNoReexec+"=1")
+	} else {
+		// Let the tool read the harness environ and assert the secret bytes
+		// are gone. Production leaves the process non-dumpable.
+		cmdEnv = append(cmdEnv, harness.EnvKeepDumpable+"=1")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -866,7 +870,7 @@ func scanCommand(needle, key, extra string) string {
 	// pipe or consume bytes that process still needs.
 	return `hits=0
 self=$$
-parent=$(awk '/^PPid:/ { print $2 }' /proc/self/status)
+parent=$(awk '/^PPid:/ { print $2 }' "/proc/$self/status")
 pids="$self $parent"
 if [ -r "/proc/$parent/task/$parent/children" ]; then
   pids="$pids $(cat "/proc/$parent/task/$parent/children")"
@@ -880,7 +884,7 @@ scan_pid() {
   case $pid in
     ''|*[!0-9]*) return ;;
   esac
-  if [ -r "/proc/$pid/environ" ] && grep -a -F -q -- "$n" "/proc/$pid/environ"; then
+  if [ -r "/proc/$pid/environ" ] && tr '\0' '\n' < "/proc/$pid/environ" | grep -F -q -- "$n"; then
     hits=$((hits + 1))
   fi
   if [ "$pid" = "$self" ] && env | grep -a -F -q -- "$n"; then

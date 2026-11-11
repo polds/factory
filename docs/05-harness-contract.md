@@ -364,6 +364,8 @@ environment, so `/proc/<pid>/environ` does not hold them. Remaining
 descriptors are marked close-on-exec before the first tool. On Linux the
 process sets itself non-dumpable. `FACTORY_HARNESS_NO_REEXEC=1` skips the
 re-exec; that is the failure switch for the seat-isolation check.
+`FACTORY_HARNESS_KEEP_DUMPABLE=1` leaves the process dumpable so a test can
+read the environment block. Production leaves it unset.
 
 When `FACTORY_SPEND_URL` is set, the harness reserves a server-computed
 worst case before every model request, sends `max_tokens` from

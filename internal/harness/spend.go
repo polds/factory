@@ -24,6 +24,9 @@ const (
 	// EnvNoReexec skips the secret re-exec. The seat-isolation check uses it
 	// as the failure case.
 	EnvNoReexec = "FACTORY_HARNESS_NO_REEXEC"
+	// EnvKeepDumpable leaves the process dumpable after the re-exec so a
+	// test can read /proc/<pid>/environ. Production leaves this unset.
+	EnvKeepDumpable = "FACTORY_HARNESS_KEEP_DUMPABLE"
 	// EnvSecretsFD is the inherited pipe the re-exec'd process reads once.
 	EnvSecretsFD = "FACTORY_SECRETS_FD"
 

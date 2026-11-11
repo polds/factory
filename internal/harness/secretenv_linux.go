@@ -37,6 +37,9 @@ func markRemainingCloexec() error {
 }
 
 func setNonDumpable() error {
+	if os.Getenv(EnvKeepDumpable) == "1" {
+		return nil
+	}
 	_, _, errno := syscall.RawSyscall6(syscall.SYS_PRCTL, prSetDumpable, 0, 0, 0, 0, 0)
 	if errno != 0 {
 		return errors.New("harness: dumpable")
