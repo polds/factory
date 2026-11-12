@@ -403,7 +403,10 @@ intake still use the automation engine path.
 
 Secret providers beyond the default; egress policy templates; per-run-VM backend via
 one-shot Direct; gVisor/Kata RuntimeClass support; audit export; computer use with Xvfb and
-screenshot artifacts; MCP endpoint; macOS Direct pool; multi-tenancy.
+screenshot artifacts; MCP endpoint; macOS Direct pool.
+
+Multi-tenancy and the shared store for more than one `factoryd` replica moved to TF.
+Those two are what a two-factory install needs. The rest of this list stays here.
 
 ---
 
@@ -446,7 +449,7 @@ Native mode freezes `reportsTo` and `spawnableBy` on the invocation. Delegate, p
 
 ## M10-A — Offline scanner acceptance
 
-Synthetic native acceptance only. A green offline run is not scanner acceptance, and the actual backend is not determinable. `paidProbeAllowed` stays false. INV-GATEWAY, INV-SECURITY-GATE, and INV-ATTESTATION stay GAP until M10-G.
+Offline only. Not the next milestone. A green offline run is synthetic native acceptance. It is not scanner acceptance, and the actual backend is not determinable. `paidProbeAllowed` stays false. INV-GATEWAY, INV-SECURITY-GATE, and INV-ATTESTATION stay GAP. M10-G is frozen, so those rows are not waiting on a scheduled gate.
 
 ```bash
 MODE=offline ./spike/m10/run.sh
@@ -462,9 +465,75 @@ The driver prints `m10 offline PASS`. The same definition covers two schedule sl
 | `paidProbeAllowed` | false | none |
 | `m10-live` dispatch | not dispatched | none |
 
+## M10-G — Frozen
+
+Formally frozen. Not next. Not scheduled. No live Docker or cluster attestation is part of this sequence. `paidProbeAllowed` stays false. Do not dispatch `m10-live.yml`. The offline record is M10-A.
+
+## TA — Target-agnostic core
+
+Design: [16](16-target-agnostic-core.md). One self-hosted `factoryd` serves many factories. Each factory is a registered definition with its own repos, role-source paths, hierarchy limits, publish target, evidence paths, secret grants, and snapshotted spend rates. Dreaming is one example factory. The conformance suite also runs a second synthetic factory so isolation is part of the proof.
+
+Five PRs, in order: schema, role source and hierarchy, publish/evidence/price plus factory-scoped secrets and API keys, the denylist CI guard, then the conformance suite. Offline tests stay green on every PR. The last PR deletes `deploy/dreaming-live` and `spike/dreaming`, points the manual live workflow at two definition files, and replaces Helm `workers[].proof` with `securityProfile: locked`. That workflow stays `workflow_dispatch` only. TA does not dispatch it. The inference gateway URL stays a deployment singleton.
+
+Out of scope for TA: live gateway rate fetch ([#217](https://github.com/polds/factory/issues/217) fills the per-factory price document), per-factory inference gateways, a GitHub App key per factory, dotted-line grants, ancestor shortcut, merge or ready publish, the console, and TF (chart images, the multi-replica store, and the authorized live run).
+
+## TF — Two-factory deployment
+
+Design detail: [16](16-target-agnostic-core.md). TF starts after TA-5. Its exit is one published chart, real images, a fresh-cluster `helm install`, two factories on two different repos in that deployment, each opening one draft pull request, and live proof that neither factory can read or spend the other.
+
+The first authorized live run is TF-1, not a TA PR. TA-5 only changes the workflow so its inputs are definition files. TF-1 is the first dispatch.
+
+### TF-1 — First authorized live run
+
+The former D6 live run. One `factoryd`. Two definition files, passed in by the workflow. No hardcoded Dreaming repo, ref, pin, or persona path. Each definition sets `budget.ceilingCents: 2500`. Each run request sets `ceilingCents: 2500`. A request above the definition fails before queue. The harness and the workflow must not embed that cap. Both publishes stay drafts. The publisher still has no merge, ready, label, or review call.
+
+Paths: `.github/workflows/conformance-live.yml`, and two definition files passed as inputs. `examples/widget-factory/` is the offline fixture. It is not the live second factory. Peter supplies the live second definition at dispatch: a real repo with the GitHub App installed, role files at a pinned commit, and an issue key. The workflow reads that repo from the file.
+
+Acceptance: one dispatch runs both definitions; each opens one draft pull request; a factory-scoped key for one factory gets an empty 404 on the other's run; the deployment admin key is not that check; a charge on one factory leaves the other's `factory_budgets` spent and reserved cents unchanged; counted spend on each factory stays at or under 2500 cents; both pull requests are still drafts at the end. `scripts/check-target-agnostic.sh`, scanning `.github/workflows/` and `deploy/helm/` as well as `internal/` and `cmd/`, exits 0.
+
+Verify: the orchestrator dispatches `workflow_dispatch` after preflight is green on the merged SHA. An agent does not dispatch it.
+
+### TF-2 — Shared definition store
+
+The multi-replica leftover from M8, plus the per-factory git source. API-backed definitions are per pod today (`docs/10-kubernetes-and-helm.md:392-395`). Through TA the process has one git URL. TF needs both replicas of one install to serve both factories, each with its own source.
+
+Paths: the definition apply and read path in `internal/server/` and `internal/store/`, the operator replica guard in the Helm chart, `docs/10-kubernetes-and-helm.md`.
+
+Acceptance: two `factoryd` replicas, one database. Apply on one replica is visible on the other. Killing either replica leaves both factories serving. Chart-only mode may keep its default of 2 replicas. Operator mode may set `controlPlane.replicas` above 1. Each git-backed factory has its own poller. A new commit on factory A's remote reloads A and leaves factory B's applied digest unchanged.
+
+Verify: an integration test applies a definition on replica A and reads it from replica B, then the reverse. A second case advances only A's git remote and checks B's digest.
+
+### TF-3 — Publish chart images
+
+The chart still defaults to `ghcr.io/acme` (`deploy/helm/factory/values.yaml:5`). This task publishes real images and removes that placeholder from the chart the operator installs.
+
+Paths: `deploy/helm/factory/values.yaml`, the image build workflow, `deploy/helm/factory/tests/golden/**`.
+
+Acceptance: `helm template` of the published chart contains no `ghcr.io/acme`. Tags are pinned. An empty tag or `latest` still fails the render. Schema examples in other docs may keep an `acme` image name. Those are not the chart.
+
+Verify: render the chart and search the output for `ghcr.io/acme`.
+
+### TF-4 — Fresh-cluster install
+
+Paths: a `spike/tf/` driver or the chart's install notes, two definition files, two target repos.
+
+Acceptance: a new cluster, `helm install` of the published chart, two factories registered, each listing a different repo, each opening one draft pull request on its own repo. Neither pull request is merged.
+
+Verify: the driver prints the two draft URLs and exits non-zero if either response is not a draft.
+
+### TF-5 — Live isolation on the install
+
+The multi-tenancy leftover from M8, proved on the TF-4 cluster rather than on the Actions workflow.
+
+Acceptance: from that deployment, a factory-scoped key for A cannot read B's runs, role bytes, or secret values, and cannot charge B's ceiling. `FACTORY_API_KEY` is the operator admin and is not this actor. Both caps are the definition value 2500 cents. The run request cannot raise them. Draft only, same as TF-1.
+
+Verify: the install driver runs the cross-read and cross-spend checks after both draft pull requests exist, and prints `tf live PASS`.
+
+TF-1 can proceed beside TF-2 and TF-3. TF-4 waits on TF-2 and TF-3. TF-5 is the last check of TF-4. TF does not unfreeze M10-G.
+
 ## D6 — Live-run preflight and draft publication
 
-D6a stops a role-files run at a server-computed worst-case cost. D6b opens one draft pull request on northstar-ai-labs/dreaming after the reviewer's exact commit passes. D6c is the preflight, the driver, and the manual workflow. The workflow is `workflow_dispatch` only. It is not dispatched from an agent.
+D6a stops a role-files run at a server-computed worst-case cost. D6b opens one draft pull request on northstar-ai-labs/dreaming after the reviewer's exact commit passes. D6c is the preflight, the driver, and the manual workflow. The workflow is `workflow_dispatch` only. It is not dispatched from an agent. TA-5 re-points this preflight and that workflow at two definition files. Until that PR, the commands below stay the Dreaming path. The first authorized live run is TF-1, not the end of TA: two definitions on one `factoryd`, live isolation, a 2500 cent cap from each definition and each run request, draft pull requests only.
 
 The offline proof is:
 
