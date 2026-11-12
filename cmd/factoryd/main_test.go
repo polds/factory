@@ -64,6 +64,7 @@ func TestTaskServerURLDefault(t *testing.T) {
 		}
 	}, []string{
 		"FACTORY_SECRET_GH_TOKEN=planted-secret-value",
+		"FACTORY_SECRET_fac_pipe__GH_TOKEN=scoped-secret-value",
 		"FACTORY_SECRET_MOUNT_DIR=/var/run/factory/secrets",
 		"FACTORY_SECRET_ALLOWLIST=SCAN_GITHUB_TOKEN",
 	})
@@ -73,14 +74,17 @@ func TestTaskServerURLDefault(t *testing.T) {
 	if cfg.server.TaskServerURL != server.DefaultTaskServerURL {
 		t.Fatal(cfg.server.TaskServerURL)
 	}
-	if cfg.server.Secrets["GH_TOKEN"] != "planted-secret-value" {
-		t.Fatal("secret name was not taken from FACTORY_SECRET_")
+	if _, ok := cfg.server.Secrets["GH_TOKEN"]; ok {
+		t.Fatal("unprefixed FACTORY_SECRET_GH_TOKEN resolved")
+	}
+	if cfg.server.FactorySecrets["fac_pipe"]["GH_TOKEN"] != "scoped-secret-value" {
+		t.Fatal("scoped secret was not parsed")
 	}
 	if _, ok := cfg.server.Secrets["MOUNT_DIR"]; ok {
 		t.Fatal("MOUNT_DIR must not enter Secrets")
 	}
-	if _, ok := cfg.server.Secrets["ALLOWLIST"]; ok {
-		t.Fatal("ALLOWLIST must not enter Secrets")
+	if _, ok := cfg.server.FactorySecrets["MOUNT_DIR"]; ok || cfg.server.FactorySecrets["fac_pipe"]["ALLOWLIST"] != "" {
+		t.Fatal("ALLOWLIST must stay configuration")
 	}
 	if !cfg.server.S3.PathStyle || cfg.server.S3.Region != "us-east-1" || cfg.addr != ":8080" {
 		t.Fatalf("s3 path %v region %s addr %s", cfg.server.S3.PathStyle, cfg.server.S3.Region, cfg.addr)

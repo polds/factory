@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -26,9 +27,14 @@ type processConfig struct {
 }
 
 func configFromEnv(getenv func(string) string, environ []string) (processConfig, error) {
-	secrets := secretsFrom(environ)
-	hidden := make([]string, 0, len(secrets)+8)
-	for _, value := range secrets {
+	scoped, bootstrap := scopedSecretsFrom(environ)
+	hidden := make([]string, 0, 8)
+	for _, grants := range scoped {
+		for _, value := range grants {
+			hidden = append(hidden, value)
+		}
+	}
+	for _, value := range bootstrap {
 		hidden = append(hidden, value)
 	}
 	hide := func(value string) {
@@ -99,7 +105,7 @@ func configFromEnv(getenv func(string) string, environ []string) (processConfig,
 		return processConfig{}, err
 	}
 	secretMount := server.ParseSecretMountSettings(getenv)
-	resolver, err := secretMount.BuildResolver(secrets)
+	resolver, err := secretMount.BuildResolver(map[string]string{})
 	if err != nil {
 		return processConfig{}, err
 	}
@@ -115,7 +121,10 @@ func configFromEnv(getenv func(string) string, environ []string) (processConfig,
 			InferenceBaseURL:      strings.TrimSpace(getenv("FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL")),
 			InferenceAPIKey:       getenv("FACTORY_INFERENCE_OPENAI_API_KEY"),
 			InferenceExtraHeaders: extraHeaders,
-			Secrets:               secrets,
+			Secrets:               map[string]string{},
+			DefaultRates:          strings.TrimSpace(getenv("FACTORY_DEFAULT_INFERENCE_RATES")),
+			FactorySecrets:        scoped,
+			BootstrapSecrets:      bootstrap,
 			WorkerPool:            strings.TrimSpace(getenv("FACTORY_WORKER_POOL")),
 			WorkerPlatform:        strings.TrimSpace(getenv("FACTORY_WORKER_PLATFORM")),
 			WorkerMaxConcurrent:   atoiPositive(getenv("FACTORY_WORKER_MAX_CONCURRENT")),
@@ -210,28 +219,45 @@ func s3Region(getenv func(string) string) string {
 	return "us-east-1"
 }
 
-func secretsFrom(environ []string) map[string]string {
+func scopedSecretsFrom(environ []string) (map[string]map[string]string, map[string]string) {
 	const prefix = "FACTORY_SECRET_"
-	out := map[string]string{}
+	const boot = "FACTORY_BOOTSTRAP_SECRET_"
+	nameOK := regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+	idOK := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,80}$`)
+	scoped := map[string]map[string]string{}
+	bootstrap := map[string]string{}
 	for _, kv := range environ {
 		key, val, ok := strings.Cut(kv, "=")
-		if !ok || !strings.HasPrefix(key, prefix) {
+		if !ok {
 			continue
 		}
-		name := strings.TrimPrefix(key, prefix)
-		if name == "" {
+		if strings.HasPrefix(key, boot) {
+			name := strings.TrimPrefix(key, boot)
+			if nameOK.MatchString(name) && !strings.Contains(name, "__") {
+				bootstrap[name] = val
+			}
 			continue
 		}
-		// Mount path and allowlist are configuration, not secret material.
-		// They share the FACTORY_SECRET_ prefix with real values and must
-		// not land in Config.Secrets (task env and redaction needles).
-		switch name {
-		case "MOUNT_DIR", "ALLOWLIST":
+		if !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		out[name] = val
+		rest := strings.TrimPrefix(key, prefix)
+		// Mount path and allowlist are configuration. They are skipped
+		// before the factory id and the name are split.
+		switch rest {
+		case "", "MOUNT_DIR", "ALLOWLIST":
+			continue
+		}
+		factoryID, name, found := strings.Cut(rest, "__")
+		if !found || strings.Contains(name, "__") || !idOK.MatchString(factoryID) || !nameOK.MatchString(name) {
+			continue
+		}
+		if scoped[factoryID] == nil {
+			scoped[factoryID] = map[string]string{}
+		}
+		scoped[factoryID][name] = val
 	}
-	return out
+	return scoped, bootstrap
 }
 
 func parseBoolDefault(raw string, fallback bool) bool {
