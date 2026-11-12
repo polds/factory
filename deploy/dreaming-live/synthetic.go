@@ -135,10 +135,7 @@ func mustModuleRoot() string {
 	return root
 }
 
-const syntheticRoster = `meta:
-  org: synthetic
-  note: roster-only-marker
-agents:
+const syntheticRoster = `agents:
   - slug: tobias-lindqvist
     role: ceo
   - slug: nils-aaberg

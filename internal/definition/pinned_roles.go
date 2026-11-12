@@ -1,6 +1,7 @@
 package definition
 
 import (
+	"context"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	yaml "go.yaml.in/yaml/v3"
 )
@@ -24,11 +26,37 @@ const (
 	NativeGoalBodyCap = 65536
 )
 
-// Pinned role files, in prompt and digest order.
+// pinnedRoleFiles is the historical seat list. A declaration replaces it.
 var pinnedRoleFiles = []string{"AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"}
 
-var pinnedSourceRoles = map[string]struct{}{
-	"ceo": {}, "cto": {}, "manager": {}, "general": {}, "worker": {},
+// RoleLayout is the role-file declaration applied to one load or attest.
+// A zero layout is not a declaration. Callers that omit it keep the
+// historical org layout so an already-built bundle still loads.
+type RoleLayout struct {
+	RosterPath       string
+	PathTemplate     string
+	Files            []string
+	MaxDepth         int
+	AbsoluteMaxDepth int
+	Root             string
+	Implementer      string
+	Reviewer         string
+}
+
+// Declared reports whether the layout names a roster or a seat template.
+func (l RoleLayout) Declared() bool {
+	return l.RosterPath != "" || l.PathTemplate != "" || len(l.Files) > 0
+}
+
+// HistoricalRoleLayout is the layout used when a caller does not pass one.
+func HistoricalRoleLayout() RoleLayout {
+	return RoleLayout{
+		RosterPath:       rosterRel,
+		PathTemplate:     "org/agents/{slug}/{file}",
+		Files:            append([]string{}, pinnedRoleFiles...),
+		MaxDepth:         NativeProofMaxDepth,
+		AbsoluteMaxDepth: NativeAbsoluteMaxDepth,
+	}
 }
 
 // ErrPinnedRoles means the pinned snapshot was not loaded.
@@ -50,6 +78,8 @@ type PinnedRoles struct {
 	RosterGitBlob string
 	Slugs         []string
 	ProofRoot     string
+	// Layout is the declaration. Zero keeps HistoricalRoleLayout.
+	Layout RoleLayout
 	// Files is keyed by slug, then by file name.
 	Files map[string]map[string]PinnedFile
 }
@@ -63,23 +93,43 @@ type rosterAgent struct {
 
 // LoadPinnedRoles reads one explicit selection and returns the native tree
 // that OpenNativeTree freezes. It does not open a policy or a queue row.
-// Synthetic is the existing roster gate. It does not mean the source
-// organization executed, and file text is not a grant, a schedule, or a model.
+// File text is not a grant, a schedule, or a model. The declared root is
+// the one seat whose frozen reportsTo is empty. Depth does not classify it.
 func LoadPinnedRoles(in PinnedRoles) (NativeTree, error) {
 	if err := checkPinnedRoot(in.Root); err != nil {
 		return NativeTree{}, err
 	}
+	NoteRoleCheckout(in.Root)
 	if in.SourceCommit == "" || in.RosterSHA256 == "" || in.RosterGitBlob == "" {
 		return NativeTree{}, fmt.Errorf("%w: source pin", ErrPinnedRoles)
+	}
+	explicit := in.Layout.Declared()
+	layout := in.Layout
+	if !explicit {
+		layout = HistoricalRoleLayout()
+	} else {
+		if layout.MaxDepth < 1 {
+			layout.MaxDepth = DefaultNativeMaxDepth
+		}
+		if layout.AbsoluteMaxDepth < 1 {
+			layout.AbsoluteMaxDepth = DefaultNativeAbsoluteMaxDepth
+		}
+	}
+	if msg := seatFilesOK(layout.Files); msg != "" || !pathTemplateOK(layout.PathTemplate) || !stableRelPath(layout.RosterPath) {
+		return NativeTree{}, fmt.Errorf("%w: layout", ErrPinnedRoles)
+	}
+	rootSlug := layout.Root
+	if rootSlug == "" {
+		rootSlug = in.ProofRoot
 	}
 	selected, err := selectedSlugs(in.Slugs)
 	if err != nil {
 		return NativeTree{}, err
 	}
-	if _, ok := selected[in.ProofRoot]; !ok {
-		return NativeTree{}, fmt.Errorf("%w: proof root", ErrPinnedRoles)
+	if _, ok := selected[rootSlug]; !ok {
+		return NativeTree{}, fmt.Errorf("%w: root", ErrPinnedRoles)
 	}
-	rosterBody, err := readPinned(in.Root, rosterRel, pinnedRosterCap)
+	rosterBody, err := readPinned(in.Root, layout.RosterPath, pinnedRosterCap)
 	if err != nil {
 		return NativeTree{}, err
 	}
@@ -96,16 +146,20 @@ func LoadPinnedRoles(in PinnedRoles) (NativeTree, error) {
 			return NativeTree{}, fmt.Errorf("%w: unknown slug %s", ErrPinnedRoles, slug)
 		}
 	}
-	if err := projectSelection(in, selected, agents); err != nil {
+	if err := projectSelection(rootSlug, in.Slugs, selected, agents); err != nil {
 		return NativeTree{}, err
 	}
 	personas := make([]NativePersona, 0, len(in.Slugs))
 	for _, slug := range in.Slugs {
-		persona, err := loadPersona(in, agents[slug])
+		persona, err := loadPersona(in, layout, rootSlug, agents[slug])
 		if err != nil {
 			return NativeTree{}, err
 		}
 		personas = append(personas, persona)
+	}
+	impl, rev := layout.Implementer, layout.Reviewer
+	if !explicit {
+		impl, rev = "", ""
 	}
 	tree := NativeTree{
 		NativeHierarchy:       true,
@@ -113,13 +167,18 @@ func LoadPinnedRoles(in PinnedRoles) (NativeTree, error) {
 		AtumRoster:            false,
 		AllowAncestorShortcut: false,
 		Delegation:            "direct_manager",
-		MaxDepth:              NativeProofMaxDepth,
-		AbsoluteMaxDepth:      NativeAbsoluteMaxDepth,
+		MaxDepth:              layout.MaxDepth,
+		AbsoluteMaxDepth:      layout.AbsoluteMaxDepth,
 		Personas:              personas,
 		SourceCommit:          in.SourceCommit,
 		RosterSHA256:          in.RosterSHA256,
 		RosterGitBlob:         in.RosterGitBlob,
 		BundleMode:            BundleModeRoleFiles,
+		Implementer:           impl,
+		Reviewer:              rev,
+		RosterPath:            layout.RosterPath,
+		PathTemplate:          layout.PathTemplate,
+		SeatFiles:             append([]string{}, layout.Files...),
 	}
 	if _, err := ValidateNativeTree(tree); err != nil {
 		return NativeTree{}, err
@@ -149,14 +208,15 @@ func NativeSeatPrompt(personas []NativePersona, assignee string) (string, error)
 			break
 		}
 	}
-	if seat == nil || len(seat.Files) != len(pinnedRoleFiles) {
+	names, ok := seatFileNames(personas)
+	if seat == nil || !ok || len(seat.Files) != len(names) {
 		return "", fmt.Errorf("%w: seat files", ErrPinnedRoles)
 	}
 	var b strings.Builder
 	b.WriteString("# Seat\n")
 	b.WriteString(assignee)
 	b.WriteByte('\n')
-	for i, name := range pinnedRoleFiles {
+	for i, name := range names {
 		file := seat.Files[i]
 		if file.Name != name {
 			return "", fmt.Errorf("%w: seat file order", ErrPinnedRoles)
@@ -233,26 +293,51 @@ func effectiveBundleMode(tree NativeTree) (string, error) {
 }
 
 func seatFilesComplete(personas []NativePersona) (complete, anyFiles bool) {
-	complete = true
+	names, ok := seatFileNames(personas)
+	if !ok {
+		return false, true
+	}
+	if names == nil {
+		return false, false
+	}
+	if len(names) < 1 || len(names) > maxSeatFiles {
+		return false, true
+	}
 	for _, persona := range personas {
 		if len(persona.Files) == 0 {
-			complete = false
-			continue
-		}
-		anyFiles = true
-		if len(persona.Files) != len(pinnedRoleFiles) {
 			return false, true
 		}
-		for i, name := range pinnedRoleFiles {
-			if persona.Files[i].Name != name {
-				return false, true
+	}
+	return true, true
+}
+
+func seatFileNames(personas []NativePersona) ([]string, bool) {
+	var names []string
+	for _, persona := range personas {
+		if len(persona.Files) == 0 {
+			continue
+		}
+		got := make([]string, len(persona.Files))
+		for i, file := range persona.Files {
+			if !singleSegment(file.Name) {
+				return nil, false
+			}
+			got[i] = file.Name
+		}
+		if names == nil {
+			names = got
+			continue
+		}
+		if len(names) != len(got) {
+			return nil, false
+		}
+		for i := range names {
+			if names[i] != got[i] {
+				return nil, false
 			}
 		}
 	}
-	if !anyFiles {
-		complete = false
-	}
-	return complete, anyFiles
+	return names, true
 }
 
 func validateNativeGoal(goal NativeGoal) error {
@@ -343,46 +428,37 @@ func validSlug(slug string) bool {
 	return filepath.Clean(slug) == slug
 }
 
-func projectSelection(in PinnedRoles, selected map[string]struct{}, agents map[string]rosterAgent) error {
-	var outside string
-	outsideCount := 0
-	for _, slug := range in.Slugs {
+func projectSelection(root string, slugs []string, selected map[string]struct{}, agents map[string]rosterAgent) error {
+	for _, slug := range slugs {
 		agent := agents[slug]
 		if agent.DottedTo != "" {
 			return fmt.Errorf("%w: dotted edge %s", ErrPinnedRoles, slug)
 		}
-		if _, inSet := selected[agent.ReportsTo]; !inSet {
-			outside = slug
-			outsideCount++
-		}
-	}
-	if outsideCount != 1 || outside != in.ProofRoot {
-		return fmt.Errorf("%w: proof root is not the outside manager", ErrPinnedRoles)
-	}
-	for _, slug := range in.Slugs {
-		if slug == in.ProofRoot {
+		if slug == root {
 			continue
 		}
-		parent := agents[agents[slug].ReportsTo]
-		if parent.Role == "general" || parent.Role == "worker" {
-			return fmt.Errorf("%w: projected parent %s", ErrPinnedRoles, agents[slug].ReportsTo)
+		if _, inSet := selected[agent.ReportsTo]; !inSet {
+			return fmt.Errorf("%w: manager outside selection %s", ErrPinnedRoles, slug)
 		}
 	}
 	return nil
 }
 
-func loadPersona(in PinnedRoles, agent rosterAgent) (NativePersona, error) {
+func loadPersona(in PinnedRoles, layout RoleLayout, root string, agent rosterAgent) (NativePersona, error) {
 	pins := in.Files[agent.Slug]
-	if len(pins) != len(pinnedRoleFiles) {
+	if len(pins) != len(layout.Files) {
 		return NativePersona{}, fmt.Errorf("%w: file pins %s", ErrPinnedRoles, agent.Slug)
 	}
-	files := make([]RoleFile, 0, len(pinnedRoleFiles))
-	for _, name := range pinnedRoleFiles {
+	files := make([]RoleFile, 0, len(layout.Files))
+	for _, name := range layout.Files {
 		pin, ok := pins[name]
 		if !ok {
 			return NativePersona{}, fmt.Errorf("%w: missing %s/%s", ErrPinnedRoles, agent.Slug, name)
 		}
-		rel := "org/agents/" + agent.Slug + "/" + name
+		rel, ok := ExpandRolePath(layout, agent.Slug, name)
+		if !ok {
+			return NativePersona{}, fmt.Errorf("%w: path %s/%s", ErrPinnedRoles, agent.Slug, name)
+		}
 		body, err := readPinned(in.Root, rel, pinnedRoleFileCap)
 		if err != nil {
 			return NativePersona{}, err
@@ -398,7 +474,7 @@ func loadPersona(in PinnedRoles, agent rosterAgent) (NativePersona, error) {
 		SourceReportsTo: agent.ReportsTo,
 		Files:           files,
 	}
-	if agent.Slug == in.ProofRoot {
+	if agent.Slug == root {
 		return persona, nil
 	}
 	persona.ReportsTo = agent.ReportsTo
@@ -407,76 +483,175 @@ func loadPersona(in PinnedRoles, agent rosterAgent) (NativePersona, error) {
 }
 
 func parseRoster(body []byte) (map[string]rosterAgent, error) {
-	if err := requireRosterShape(body); err != nil {
+	agents, err := decodeRoster(body)
+	if err != nil {
 		return nil, err
 	}
-	var doc struct {
-		Agents []rosterAgent `yaml:"agents"`
-	}
-	if err := yaml.Unmarshal(body, &doc); err != nil {
-		return nil, fmt.Errorf("%w: roster: %w", ErrPinnedRoles, err)
-	}
-	if len(doc.Agents) == 0 {
+	if len(agents) == 0 {
 		return nil, fmt.Errorf("%w: roster agents", ErrPinnedRoles)
 	}
-	agents := make(map[string]rosterAgent, len(doc.Agents))
-	for _, agent := range doc.Agents {
+	bySlug := make(map[string]rosterAgent, len(agents))
+	for _, agent := range agents {
 		if !validSlug(agent.Slug) {
 			return nil, fmt.Errorf("%w: roster slug", ErrPinnedRoles)
 		}
-		if _, ok := agents[agent.Slug]; ok {
+		if _, ok := bySlug[agent.Slug]; ok {
 			return nil, fmt.Errorf("%w: duplicate roster slug %s", ErrPinnedRoles, agent.Slug)
 		}
-		if _, ok := pinnedSourceRoles[agent.Role]; !ok {
+		if !roleNameOK(agent.Role) {
 			return nil, fmt.Errorf("%w: role %s", ErrPinnedRoles, agent.Slug)
 		}
-		agents[agent.Slug] = agent
+		bySlug[agent.Slug] = agent
 	}
-	for _, agent := range agents {
+	for _, agent := range bySlug {
 		if agent.ReportsTo != "" {
-			if _, ok := agents[agent.ReportsTo]; !ok {
+			if _, ok := bySlug[agent.ReportsTo]; !ok {
 				return nil, fmt.Errorf("%w: unknown manager %s", ErrPinnedRoles, agent.Slug)
 			}
 		}
 		if agent.DottedTo != "" {
-			if _, ok := agents[agent.DottedTo]; !ok {
+			if _, ok := bySlug[agent.DottedTo]; !ok {
 				return nil, fmt.Errorf("%w: unknown dotted %s", ErrPinnedRoles, agent.Slug)
 			}
 		}
 	}
-	if err := rosterCycles(agents); err != nil {
+	if err := rosterCycles(bySlug); err != nil {
 		return nil, err
 	}
-	return agents, nil
+	return bySlug, nil
 }
 
-func requireRosterShape(body []byte) error {
+func decodeRoster(body []byte) ([]rosterAgent, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(body, &doc); err != nil {
-		return fmt.Errorf("%w: roster: %w", ErrPinnedRoles, err)
+		return nil, fmt.Errorf("%w: roster: %w", ErrPinnedRoles, err)
 	}
 	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
-		return fmt.Errorf("%w: roster shape", ErrPinnedRoles)
+		return nil, fmt.Errorf("%w: roster shape", ErrPinnedRoles)
 	}
-	var hasMeta, hasAgents bool
+	var agents *yaml.Node
 	mapping := doc.Content[0]
 	for i := 0; i+1 < len(mapping.Content); i += 2 {
 		key := mapping.Content[i]
 		val := mapping.Content[i+1]
-		if key.Kind != yaml.ScalarNode {
-			continue
+		if key.Kind != yaml.ScalarNode || key.Value != "agents" {
+			return nil, fmt.Errorf("%w: roster shape", ErrPinnedRoles)
 		}
-		switch key.Value {
-		case "meta":
-			hasMeta = val.Kind == yaml.MappingNode && val.Tag != "!!null"
-		case "agents":
-			hasAgents = val.Kind == yaml.SequenceNode
+		if agents != nil || val.Kind != yaml.SequenceNode {
+			return nil, fmt.Errorf("%w: roster shape", ErrPinnedRoles)
+		}
+		agents = val
+	}
+	if agents == nil {
+		return nil, fmt.Errorf("%w: roster shape", ErrPinnedRoles)
+	}
+	out := make([]rosterAgent, 0, len(agents.Content))
+	for _, item := range agents.Content {
+		if item.Kind != yaml.MappingNode {
+			return nil, fmt.Errorf("%w: roster shape", ErrPinnedRoles)
+		}
+		var agent rosterAgent
+		for i := 0; i+1 < len(item.Content); i += 2 {
+			key := item.Content[i]
+			val := item.Content[i+1]
+			if key.Kind != yaml.ScalarNode || val.Kind != yaml.ScalarNode {
+				return nil, fmt.Errorf("%w: roster shape", ErrPinnedRoles)
+			}
+			switch key.Value {
+			case "slug":
+				agent.Slug = val.Value
+			case "role":
+				agent.Role = val.Value
+			case "reports_to":
+				agent.ReportsTo = val.Value
+			case "dotted_to":
+				agent.DottedTo = val.Value
+			default:
+				return nil, fmt.Errorf("%w: roster shape", ErrPinnedRoles)
+			}
+		}
+		out = append(out, agent)
+	}
+	return out, nil
+}
+
+func roleNameOK(role string) bool {
+	if role == "" || len(role) > 64 {
+		return false
+	}
+	for i, c := range role {
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case i > 0 && (c == '_' || c == '-'):
+		default:
+			return false
 		}
 	}
-	if !hasMeta || !hasAgents {
-		return fmt.Errorf("%w: roster shape", ErrPinnedRoles)
+	return true
+}
+
+func singleSegment(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, `/\`) && !strings.Contains(name, "\x00")
+}
+
+// ExpandRolePath substitutes the declaration. An empty file selects the roster path.
+func ExpandRolePath(layout RoleLayout, slug, file string) (string, bool) {
+	if !layout.Declared() {
+		return "", false
 	}
-	return nil
+	if file == "" {
+		if !stableRelPath(layout.RosterPath) {
+			return "", false
+		}
+		return layout.RosterPath, true
+	}
+	if !singleSegment(slug) || !singleSegment(file) || strings.Count(layout.PathTemplate, "{slug}") != 1 || strings.Count(layout.PathTemplate, "{file}") != 1 {
+		return "", false
+	}
+	rel := strings.ReplaceAll(strings.ReplaceAll(layout.PathTemplate, "{slug}", slug), "{file}", file)
+	if !stableRelPath(rel) {
+		return "", false
+	}
+	for _, name := range layout.Files {
+		if name == file {
+			return rel, true
+		}
+	}
+	return rel, false
+}
+
+var (
+	notedMu   sync.Mutex
+	notedDirs []string
+)
+
+// NoteRoleCheckout remembers a local checkout. Attest can find a commit there
+// when the per-factory cache has no entry. The compare still does not fetch.
+func NoteRoleCheckout(dir string) {
+	if dir == "" {
+		return
+	}
+	notedMu.Lock()
+	defer notedMu.Unlock()
+	for _, have := range notedDirs {
+		if have == dir {
+			return
+		}
+	}
+	notedDirs = append(notedDirs, dir)
+}
+
+// RoleCheckoutFor returns a noted checkout that contains the object.
+func RoleCheckoutFor(ctx context.Context, commit string) (string, bool) {
+	notedMu.Lock()
+	dirs := append([]string{}, notedDirs...)
+	notedMu.Unlock()
+	for _, dir := range dirs {
+		if _, ok := GitObjectKind(ctx, dir, commit); ok {
+			return dir, true
+		}
+	}
+	return "", false
 }
 
 func rosterCycles(agents map[string]rosterAgent) error {

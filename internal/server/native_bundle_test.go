@@ -502,9 +502,7 @@ func rewriteBundle(t *testing.T) (string, map[string]map[string][]byte) {
 	t.Helper()
 	root := t.TempDir()
 	pins := map[string]map[string][]byte{}
-	roster := []byte(`meta:
-  org: synthetic
-  note: roster-only-marker
+	roster := []byte(`# roster-only-marker
 agents:
   - slug: ida
     role: ceo
@@ -514,7 +512,6 @@ agents:
   - slug: nils-aaberg
     role: manager
     reports_to: quinn
-    interval_s: 14400
   - slug: beatriz-salgado
     role: manager
     reports_to: nils-aaberg

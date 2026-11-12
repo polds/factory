@@ -69,7 +69,18 @@ type NativePolicy struct {
 	// BundleMode is the personas envelope mode. Empty is a legacy array policy.
 	// role_files is inferred for a complete stored bundle that predates the field.
 	BundleMode string
-	CreatedAt  time.Time
+	// Synthetic is the digest flag. SyntheticStored is false on a row that
+	// predates the envelope field; reload then supplies true.
+	Synthetic       bool
+	SyntheticStored bool
+	// Implementer and Reviewer are declared slugs stored beside the digest.
+	Implementer string
+	Reviewer    string
+	// RosterPath and PathTemplate are the declaration layout, outside treeDigest.
+	RosterPath   string
+	PathTemplate string
+	SeatFiles    []string
+	CreatedAt    time.Time
 }
 
 // OpenTreeInput freezes the roster and inserts the root task. It does not claim a run.

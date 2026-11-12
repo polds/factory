@@ -10,10 +10,15 @@ import (
 )
 
 const (
-	// NativeProofMaxDepth is the depth the synthetic tree must reach and must not pass.
+	// NativeProofMaxDepth is the historical bundle depth. Validation no longer
+	// requires a tree to equal it. A declaration that omits maxDepth uses
+	// DefaultNativeMaxDepth.
 	NativeProofMaxDepth = 2
-	// NativeAbsoluteMaxDepth is the deepest task chain native mode will run.
+	// NativeAbsoluteMaxDepth is the deepest task chain native mode will run,
+	// and the highest absoluteMaxDepth a definition or request may set.
 	NativeAbsoluteMaxDepth = 8
+	// NativePersonaCap is the most personas one tree may freeze.
+	NativePersonaCap = 256
 )
 
 var (
@@ -69,6 +74,15 @@ type NativeTree struct {
 	// BundleMode is role_files when the roster is an explicit seat bundle.
 	// Empty is the legacy witness. omitempty keeps that digest stable.
 	BundleMode string
+	// Implementer and Reviewer are declared slugs. They are not part of
+	// treeDigest. Empty means publish uses the ready refusal.
+	Implementer string
+	Reviewer    string
+	// RosterPath, PathTemplate, and SeatFiles are the declaration layout.
+	// They are stored on the policy outside treeDigest.
+	RosterPath   string
+	PathTemplate string
+	SeatFiles    []string
 }
 
 // NativeTreeResult is the frozen roster. Digest does not change when the definition reloads.
@@ -87,17 +101,20 @@ func ValidateNativeTree(in NativeTree) (NativeTreeResult, error) {
 		}
 		return NativeTreeResult{}, nil
 	}
-	if in.AtumRoster || !in.Synthetic {
-		return NativeTreeResult{}, fmt.Errorf("%w: synthetic roster required", ErrNativeTree)
-	}
 	if in.AllowAncestorShortcut {
 		return NativeTreeResult{}, fmt.Errorf("%w: ancestor shortcut", ErrNativeTree)
 	}
 	if in.Delegation != "direct_manager" {
 		return NativeTreeResult{}, fmt.Errorf("%w: delegation", ErrNativeTree)
 	}
-	if in.MaxDepth != NativeProofMaxDepth || in.AbsoluteMaxDepth != NativeAbsoluteMaxDepth {
-		return NativeTreeResult{}, fmt.Errorf("%w: proof depth", ErrNativeTree)
+	if in.AbsoluteMaxDepth < 1 || in.AbsoluteMaxDepth > NativeAbsoluteMaxDepth {
+		return NativeTreeResult{}, fmt.Errorf("%w: absoluteMaxDepth", ErrNativeTree)
+	}
+	if in.MaxDepth < 1 || in.MaxDepth > in.AbsoluteMaxDepth {
+		return NativeTreeResult{}, fmt.Errorf("%w: maxDepth", ErrNativeTree)
+	}
+	if len(in.Personas) > NativePersonaCap {
+		return NativeTreeResult{}, fmt.Errorf("%w: persona cap", ErrNativeTree)
 	}
 	byName, root, err := indexPersonas(in.Personas)
 	if err != nil {
@@ -113,8 +130,8 @@ func ValidateNativeTree(in NativeTree) (NativeTreeResult, error) {
 			deepest = d
 		}
 	}
-	if deepest < NativeProofMaxDepth {
-		return NativeTreeResult{}, fmt.Errorf("%w: depth proof", ErrNativeTree)
+	if deepest > in.MaxDepth || deepest > in.AbsoluteMaxDepth {
+		return NativeTreeResult{}, fmt.Errorf("%w: depth", ErrNativeTree)
 	}
 	digest, err := treeDigest(in)
 	if err != nil {

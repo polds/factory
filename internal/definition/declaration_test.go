@@ -194,6 +194,16 @@ budget:
 			want: "seats.pathTemplate must contain {slug} once",
 		},
 		{
+			name: "null budget",
+			yaml: "schemaVersion: v1alpha1\nname: t\nbudget: null\n",
+			want: "budget.ceilingCents must be a positive integer",
+		},
+		{
+			name: "blank budget",
+			yaml: "schemaVersion: v1alpha1\nname: t\nbudget:\n",
+			want: "budget.ceilingCents must be a positive integer",
+		},
+		{
 			name: "empty budget",
 			yaml: `schemaVersion: v1alpha1
 name: t
@@ -249,8 +259,8 @@ func TestValidateNativeTreeBehaviorUnchanged(t *testing.T) {
 	}
 	wider := proofTree()
 	wider.MaxDepth = 8
-	if _, err := ValidateNativeTree(wider); err == nil {
-		t.Fatal("maxDepth 8 accepted")
+	if _, err := ValidateNativeTree(wider); err != nil {
+		t.Fatal(err)
 	}
 	deeper := proofTree()
 	deeper.AbsoluteMaxDepth = 9
@@ -259,8 +269,8 @@ func TestValidateNativeTreeBehaviorUnchanged(t *testing.T) {
 	}
 	plain := proofTree()
 	plain.Synthetic = false
-	if _, err := ValidateNativeTree(plain); err == nil {
-		t.Fatal("non-synthetic accepted")
+	if _, err := ValidateNativeTree(plain); err != nil {
+		t.Fatal(err)
 	}
 }
 

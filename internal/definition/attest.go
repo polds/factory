@@ -15,9 +15,12 @@ import (
 )
 
 // AttestRoleSource checks that commit in gitDir is a local commit whose
-// tree contains the roster and each seat file, byte for byte. It does not
-// fetch and does not write those bytes anywhere.
-func AttestRoleSource(ctx context.Context, gitDir, commit string, tree NativeTree) error {
+// tree contains the roster and each seat file, byte for byte. Paths come
+// from layout. It does not fetch and does not write those bytes anywhere.
+func AttestRoleSource(ctx context.Context, gitDir, commit string, tree NativeTree, layout RoleLayout) error {
+	if !layout.Declared() {
+		layout = HistoricalRoleLayout()
+	}
 	if !commitHex(commit) {
 		return fmt.Errorf("attest: %s: not a commit", commit)
 	}
@@ -30,21 +33,28 @@ func AttestRoleSource(ctx context.Context, gitDir, commit string, tree NativeTre
 	if err != nil || kind != "commit" {
 		return fmt.Errorf("attest: %s: not a commit", commit)
 	}
-	roster, err := g.blob(commit, "org/roster.yaml")
+	rosterPath, ok := ExpandRolePath(layout, "", "")
+	if !ok {
+		return fmt.Errorf("attest: %s: absent object", layout.RosterPath)
+	}
+	roster, err := g.blob(commit, rosterPath)
 	if err != nil {
-		return fmt.Errorf("attest: org/roster.yaml: absent object")
+		return fmt.Errorf("attest: %s: absent object", rosterPath)
 	}
 	sum := sha256.Sum256(roster)
 	if tree.RosterSHA256 != "" && hex.EncodeToString(sum[:]) != tree.RosterSHA256 {
-		return fmt.Errorf("attest: org/roster.yaml: byte mismatch")
+		return fmt.Errorf("attest: %s: byte mismatch", rosterPath)
 	}
 	if tree.RosterGitBlob != "" && gitBlobID(roster) != tree.RosterGitBlob {
-		return fmt.Errorf("attest: org/roster.yaml: byte mismatch")
+		return fmt.Errorf("attest: %s: byte mismatch", rosterPath)
 	}
 	for _, persona := range tree.Personas {
 		for _, file := range persona.Files {
-			rel := "org/agents/" + persona.Name + "/" + file.Name
-			if !rolePath(rel) {
+			rel, ok := ExpandRolePath(layout, persona.Name, file.Name)
+			if !ok {
+				if rel == "" {
+					rel = persona.Name + "/" + file.Name
+				}
 				return fmt.Errorf("attest: %s: absent object", rel)
 			}
 			body, err := g.blob(commit, rel)
@@ -57,6 +67,24 @@ func AttestRoleSource(ctx context.Context, gitDir, commit string, tree NativeTre
 		}
 	}
 	return nil
+}
+
+// GitObjectKind reports the local object type. A missing object is false.
+// The lookup does not fetch.
+func GitObjectKind(ctx context.Context, gitDir, commit string) (string, bool) {
+	if !commitHex(commit) {
+		return "", false
+	}
+	g, cleanup, err := openAttestGit(ctx, gitDir)
+	if err != nil {
+		return "", false
+	}
+	defer cleanup()
+	kind, err := g.kind(commit)
+	if err != nil || kind == "" || kind == "missing" {
+		return "", false
+	}
+	return kind, true
 }
 
 type attestGit struct {
@@ -87,36 +115,6 @@ func openAttestGit(ctx context.Context, dir string) (attestGit, func(), error) {
 	}, nil
 }
 
-func rolePath(rel string) bool {
-	if rel == "org/roster.yaml" {
-		return true
-	}
-	rest, ok := strings.CutPrefix(rel, "org/agents/")
-	if !ok {
-		return false
-	}
-	slug, name, ok := strings.Cut(rest, "/")
-	if !ok || strings.Contains(slug, "/") {
-		return false
-	}
-	switch name {
-	case "AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md":
-	default:
-		return false
-	}
-	if slug == "" || len(slug) > 128 {
-		return false
-	}
-	for _, c := range slug {
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_', c == '.':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
 func (g attestGit) kind(commit string) (string, error) {
 	if !commitHex(commit) {
 		return "", fmt.Errorf("git")
@@ -133,7 +131,7 @@ func (g attestGit) kind(commit string) (string, error) {
 }
 
 func (g attestGit) blob(commit, rel string) ([]byte, error) {
-	if !commitHex(commit) || !rolePath(rel) {
+	if !commitHex(commit) || !stableRelPath(rel) {
 		return nil, fmt.Errorf("absent")
 	}
 	out, code, err := g.batch(commit + ":" + rel)

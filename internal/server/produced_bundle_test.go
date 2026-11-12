@@ -92,8 +92,8 @@ func TestProducedHeadReviewerPipeline(t *testing.T) {
 	absent.SourceCommit = strings.Repeat("b", 40)
 	absentInv := nativeInvocation(t, env, fac.ID, "", "native:d5:absent")
 	prepareBundleGoal(t, env, fac.ID, absentInv, "")
-	t.Setenv("FACTORY_ROLE_SOURCE", "")
-	if _, err := env.srv.OpenNativeTree(ctx, "pipe", absentInv, apiTree(absent, agentID, "")); err == nil || !strings.Contains(err.Error(), "FACTORY_ROLE_SOURCE") || !strings.Contains(err.Error(), "absent object") {
+	t.Setenv("FACTORY_ROLE_SOURCE", filepath.Join(t.TempDir(), "wrong-role-source"))
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", absentInv, apiTree(absent, agentID, "")); err == nil || !strings.Contains(err.Error(), "absent object") || strings.Contains(err.Error(), "FACTORY_ROLE_SOURCE") {
 		t.Fatal(err)
 	}
 	t.Setenv("FACTORY_ROLE_SOURCE", rootDir)
@@ -541,6 +541,98 @@ func (m *memObjects) Delete(_ context.Context, key string) error {
 	m.deletes++
 	delete(m.objs, key)
 	return nil
+}
+
+func TestOpenRejectsDepthAboveDefinition(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writeBundleDefinition(t, "")
+	}})
+	ctx := context.Background()
+	fac, agentID, _, invocationID := nativeLeaseFixture(t, env, "pipe", "native:ta2:depth", store.StagePlanning)
+	snap := env.srv.snapshot()
+	snap.tree.Factory.Native = &definition.NativeDeclaration{
+		Limits: definition.NativeLimits{MaxDepth: 3, AbsoluteMaxDepth: 8},
+	}
+	policies := countQuery(t, env, `SELECT count(*) FROM native_policies`)
+	req := apiTree(serverProofTree(), agentID, "")
+	req.MaxDepth = 4
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", invocationID, req); err == nil || !strings.Contains(err.Error(), "maxDepth") {
+		t.Fatal(err)
+	}
+	req.MaxDepth = 2
+	req.AbsoluteMaxDepth = 9
+	fresh := nativeInvocation(t, env, fac.ID, "", "native:ta2:abs")
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", fresh, req); err == nil || !strings.Contains(err.Error(), "absoluteMaxDepth") {
+		t.Fatal(err)
+	}
+	snap.tree.Factory.Native.Limits.AbsoluteMaxDepth = 4
+	req.AbsoluteMaxDepth = 8
+	req.MaxDepth = 2
+	again := nativeInvocation(t, env, fac.ID, "", "native:ta2:above-def")
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", again, req); err == nil || !strings.Contains(err.Error(), "absoluteMaxDepth") {
+		t.Fatal(err)
+	}
+	if countQuery(t, env, `SELECT count(*) FROM native_policies`) != policies {
+		t.Fatal("rejected depth inserted a policy")
+	}
+	snap.tree.Factory.Native.Limits.AbsoluteMaxDepth = 8
+	req.AbsoluteMaxDepth = 8
+	req.MaxDepth = 2
+	okInv := nativeInvocation(t, env, fac.ID, "", "native:ta2:lower")
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", okInv, req); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRoleCacheIgnoresEnv(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writeBundleDefinition(t, "")
+	}})
+	ctx := context.Background()
+	fac, agentID, itemID, invocationID := nativeLeaseFixture(t, env, "pipe", "native:ta2:cache", store.StagePlanning)
+	prepareBundleGoal(t, env, fac.ID, invocationID, itemID)
+	rootDir, _, pins := loadBundle(t)
+	commitRoleSource(t, rootDir)
+	tree := loadBundleTree(t, rootDir, pins)
+	tree.SourceCommit = strings.TrimSpace(gitServer(t, rootDir, "rev-parse", "HEAD"))
+	env.srv.PutRoleCache(fac.ID, tree.SourceCommit, rootDir)
+	wrong := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wrong, "not-the-cache"), []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FACTORY_ROLE_SOURCE", wrong)
+	snap := env.srv.snapshot()
+	snap.tree.Factory.RoleSource = &definition.RoleSource{
+		Roster: definition.RosterSource{Path: "org/roster.yaml"},
+		Seats: definition.SeatFiles{
+			PathTemplate: "org/agents/{slug}/{file}",
+			Files:        []string{"AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"},
+		},
+	}
+	snap.tree.Factory.Native = &definition.NativeDeclaration{
+		Limits:      definition.NativeLimits{MaxDepth: 8, AbsoluteMaxDepth: 8},
+		Root:        "nils-aaberg",
+		Implementer: "viktor-halas",
+		Reviewer:    "oskar-lindgren",
+		Seats:       []string{"nils-aaberg", "beatriz-salgado", "viktor-halas", "oskar-lindgren"},
+	}
+	opened, err := env.srv.OpenNativeTree(ctx, "pipe", invocationID, apiTree(tree, agentID, itemID))
+	if err != nil || opened.RootTaskID == "" {
+		t.Fatal(err)
+	}
+	policy, err := env.srv.store.GetNativePolicy(ctx, invocationID)
+	if err != nil || policy.Implementer != "viktor-halas" || policy.Reviewer != "oskar-lindgren" || !policy.SyntheticStored || !policy.Synthetic {
+		t.Fatalf("policy %+v %v", policy, err)
+	}
+	if policy.PathTemplate != "org/agents/{slug}/{file}" {
+		t.Fatalf("template %s", policy.PathTemplate)
+	}
 }
 
 func (m *memObjects) keys() []string {

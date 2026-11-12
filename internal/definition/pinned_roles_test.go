@@ -309,7 +309,7 @@ func TestLoadPinnedRolesRejectsPathsAndRoster(t *testing.T) {
 		rejectRoster(t, fix, rosterYAML+"  - slug: nils-aaberg\n    role: manager\n    reports_to: quinn\n")
 	})
 	t.Run("unknown role", func(t *testing.T) {
-		rejectRoster(t, fix, strings.Replace(rosterYAML, "role: worker\n    reports_to: nils-aaberg\n    dotted_to: beatriz-salgado\n", "role: intern\n    reports_to: nils-aaberg\n", 1))
+		rejectRoster(t, fix, strings.Replace(rosterYAML, "role: worker\n    reports_to: nils-aaberg\n    dotted_to: beatriz-salgado\n", "role: \"bad role\"\n    reports_to: nils-aaberg\n", 1))
 	})
 	t.Run("unknown manager", func(t *testing.T) {
 		rejectRoster(t, fix, strings.Replace(rosterYAML, "reports_to: quinn\n", "reports_to: nobody\n", 1))
@@ -323,13 +323,13 @@ func TestLoadPinnedRolesRejectsPathsAndRoster(t *testing.T) {
 	t.Run("general parent", func(t *testing.T) {
 		root := writePinnedRoot(t, rosterYAML+"  - slug: pip\n    role: general\n    reports_to: oskar-lindgren\n", append(append([]string{}, fourSlugs...), "pip"))
 		pins := readPins(t, root, append(append([]string{}, fourSlugs...), "pip"))
-		_, err := LoadPinnedRoles(PinnedRoles{
+		tree, err := LoadPinnedRoles(PinnedRoles{
 			Root: root, SourceCommit: "source-commit", RosterSHA256: hashFile(t, filepath.Join(root, "org", "roster.yaml")),
 			RosterGitBlob: gitBlobID(mustRead(t, filepath.Join(root, "org", "roster.yaml"))),
 			Slugs:         append(append([]string{}, fourSlugs...), "pip"), ProofRoot: "nils-aaberg", Files: pins,
 		})
-		if err == nil || !strings.Contains(err.Error(), "projected parent") {
-			t.Fatalf("general parent %v", err)
+		if err != nil || persona(tree, "pip").ReportsTo != "oskar-lindgren" || persona(tree, "pip").Role != "general" {
+			t.Fatalf("general parent %+v %v", persona(tree, "pip"), err)
 		}
 	})
 	t.Run("roster shape", func(t *testing.T) {
@@ -366,7 +366,7 @@ func TestNativeSeatPromptShape(t *testing.T) {
 	}
 	swapped := append([]RoleFile{}, files...)
 	swapped[0], swapped[1] = swapped[1], swapped[0]
-	if _, err := NativeSeatPrompt([]NativePersona{{Name: "nils", Files: swapped}}, "nils"); err == nil {
+	if _, err := NativeSeatPrompt([]NativePersona{{Name: "nils", Files: files}, {Name: "child", Files: swapped}}, "child"); err == nil {
 		t.Fatal("order")
 	}
 }
@@ -417,9 +417,7 @@ func TestLoadPinnedRolesReferenceSnapshot(t *testing.T) {
 	}
 }
 
-const rosterYAML = `meta:
-  org: synthetic
-  note: roster-only-marker
+const rosterYAML = `# roster-only-marker
 agents:
   - slug: ida
     role: ceo
@@ -429,9 +427,6 @@ agents:
   - slug: nils-aaberg
     role: manager
     reports_to: quinn
-    interval_s: 14400
-    model:
-      id: ignored-model
   - slug: beatriz-salgado
     role: manager
     reports_to: nils-aaberg

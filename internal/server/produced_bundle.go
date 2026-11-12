@@ -409,28 +409,67 @@ func (s *Server) classifySeat(ctx context.Context, run store.Run) (seatClass, er
 }
 
 func seatNames(policy store.NativePolicy) (implementer, reviewer string, ok bool) {
-	checked, err := definition.ValidateNativeTree(definition.NativeTree{
-		NativeHierarchy:       true,
-		Synthetic:             true,
-		Delegation:            policy.Delegation,
-		MaxDepth:              policy.MaxDepth,
-		AbsoluteMaxDepth:      policy.AbsoluteMaxDepth,
-		AllowAncestorShortcut: policy.AllowAncestorShortcut,
-		Personas:              policy.Personas,
-		SourceCommit:          policy.SourceCommit,
-		BundleMode:            policy.BundleMode,
-	})
+	if policy.Implementer == "" || policy.Reviewer == "" {
+		return "", "", false
+	}
+	seen := map[string]struct{}{}
+	for _, persona := range policy.Personas {
+		seen[persona.Name] = struct{}{}
+	}
+	if _, ok := seen[policy.Implementer]; !ok {
+		return "", "", false
+	}
+	if _, ok := seen[policy.Reviewer]; !ok {
+		return "", "", false
+	}
+	return policy.Implementer, policy.Reviewer, true
+}
+
+// bindDeclaration copies declared slugs onto the tree that will be frozen.
+// A definition with no native block keeps the previous depth pair so a
+// bundle opened before native.root existed still publishes. A native block
+// with an empty slug does not fall back to depth.
+func (s *Server) bindDeclaration(tree definition.NativeTree) definition.NativeTree {
+	if layout := s.roleLayout(); layout.Declared() {
+		tree.RosterPath = layout.RosterPath
+		tree.PathTemplate = layout.PathTemplate
+		tree.SeatFiles = append([]string{}, layout.Files...)
+	}
+	native := s.nativeDeclaration()
+	if native != nil {
+		tree.Implementer = native.Implementer
+		tree.Reviewer = native.Reviewer
+		return tree
+	}
+	if tree.Implementer != "" && tree.Reviewer != "" {
+		return tree
+	}
+	impl, rev, ok := inferLegacySeats(tree)
+	if !ok {
+		return tree
+	}
+	if tree.Implementer == "" {
+		tree.Implementer = impl
+	}
+	if tree.Reviewer == "" {
+		tree.Reviewer = rev
+	}
+	return tree
+}
+
+func inferLegacySeats(tree definition.NativeTree) (implementer, reviewer string, ok bool) {
+	checked, err := definition.ValidateNativeTree(tree)
 	if err != nil {
 		return "", "", false
 	}
 	children := map[string]int{}
-	for _, persona := range policy.Personas {
+	for _, persona := range tree.Personas {
 		if persona.ReportsTo != "" {
 			children[persona.ReportsTo]++
 		}
 	}
 	var impls, leaves []string
-	for _, persona := range policy.Personas {
+	for _, persona := range tree.Personas {
 		switch checked.Depth[persona.Name] {
 		case 2:
 			impls = append(impls, persona.Name)
@@ -446,10 +485,66 @@ func seatNames(policy store.NativePolicy) (implementer, reviewer string, ok bool
 	return impls[0], leaves[0], true
 }
 
+func (s *Server) nativeDeclaration() *definition.NativeDeclaration {
+	snap := s.snapshot()
+	if snap.tree == nil {
+		return nil
+	}
+	return snap.tree.Factory.Native
+}
+
+func (s *Server) roleLayout() definition.RoleLayout {
+	snap := s.snapshot()
+	if snap.tree == nil || snap.tree.Factory.RoleSource == nil {
+		return definition.RoleLayout{}
+	}
+	src := snap.tree.Factory.RoleSource
+	layout := definition.RoleLayout{
+		RosterPath:   src.Roster.Path,
+		PathTemplate: src.Seats.PathTemplate,
+		Files:        append([]string{}, src.Seats.Files...),
+	}
+	if snap.tree.Factory.Native != nil {
+		n := snap.tree.Factory.Native
+		layout.MaxDepth = n.Limits.MaxDepth
+		layout.AbsoluteMaxDepth = n.Limits.AbsoluteMaxDepth
+		layout.Root = n.Root
+		layout.Implementer = n.Implementer
+		layout.Reviewer = n.Reviewer
+	}
+	return layout
+}
+
+func (s *Server) declaredDepth() (maxDepth, absolute int) {
+	maxDepth = definition.DefaultNativeMaxDepth
+	absolute = definition.DefaultNativeAbsoluteMaxDepth
+	if n := s.nativeDeclaration(); n != nil {
+		if n.Limits.MaxDepth > 0 {
+			maxDepth = n.Limits.MaxDepth
+		}
+		if n.Limits.AbsoluteMaxDepth > 0 {
+			absolute = n.Limits.AbsoluteMaxDepth
+		}
+	}
+	return maxDepth, absolute
+}
+
+func (s *Server) checkOpenDepth(tree definition.NativeTree) error {
+	maxDepth, absolute := s.declaredDepth()
+	if tree.AbsoluteMaxDepth > definition.NativeAbsoluteMaxDepth || tree.AbsoluteMaxDepth > absolute {
+		return fmt.Errorf("%w: absoluteMaxDepth", definition.ErrNativeTree)
+	}
+	if tree.MaxDepth > maxDepth {
+		return fmt.Errorf("%w: maxDepth", definition.ErrNativeTree)
+	}
+	return nil
+}
+
 // attestIfCommit rejects a role_files open whose sourceCommit is not 40 hex
 // before the policy insert. A frozen policy is returned as-is. A legacy tree
-// with no pins and no seat files is not a git lookup.
-func (s *Server) attestIfCommit(ctx context.Context, invocationID string, tree definition.NativeTree) error {
+// with no pins and no seat files is not a git lookup. The checkout is the
+// per-factory cache, then a checkout noted while the bundle was loaded.
+func (s *Server) attestIfCommit(ctx context.Context, factoryID, invocationID string, tree definition.NativeTree) error {
 	if invocationID != "" && s.store != nil {
 		_, err := s.store.GetNativePolicy(ctx, invocationID)
 		if err == nil {
@@ -459,17 +554,50 @@ func (s *Server) attestIfCommit(ctx context.Context, invocationID string, tree d
 			return err
 		}
 	}
+	if err := s.checkOpenDepth(tree); err != nil {
+		return err
+	}
 	if !roleFilesNeedsAttest(tree) {
 		return nil
 	}
 	if !commitHex40(tree.SourceCommit) {
 		return errors.New("attest: sourceCommit: not a commit")
 	}
-	dir := strings.TrimSpace(os.Getenv("FACTORY_ROLE_SOURCE"))
-	if dir == "" {
-		return errors.New("attest: FACTORY_ROLE_SOURCE: absent object")
+	layout := s.roleLayout()
+	if !layout.Declared() {
+		layout = definition.HistoricalRoleLayout()
 	}
-	return definition.AttestRoleSource(ctx, dir, tree.SourceCommit, tree)
+	dir := roleCacheDir(factoryID, tree.SourceCommit)
+	if dir == "" {
+		noted, ok := definition.RoleCheckoutFor(ctx, tree.SourceCommit)
+		if !ok {
+			return errors.New("attest: absent object")
+		}
+		dir = noted
+	}
+	return definition.AttestRoleSource(ctx, dir, tree.SourceCommit, tree, layout)
+}
+
+var (
+	roleCacheMu sync.Mutex
+	roleCache   = map[string]string{}
+)
+
+// PutRoleCache records the local checkout for one factory and source commit.
+// The attest compare reads that directory and does not fetch.
+func (s *Server) PutRoleCache(factoryID, commit, dir string) {
+	if factoryID == "" || dir == "" || !commitHex40(commit) {
+		return
+	}
+	roleCacheMu.Lock()
+	roleCache[factoryID+"\x00"+strings.ToLower(commit)] = dir
+	roleCacheMu.Unlock()
+}
+
+func roleCacheDir(factoryID, commit string) string {
+	roleCacheMu.Lock()
+	defer roleCacheMu.Unlock()
+	return roleCache[factoryID+"\x00"+strings.ToLower(commit)]
 }
 
 func roleFilesNeedsAttest(tree definition.NativeTree) bool {
