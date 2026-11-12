@@ -82,10 +82,7 @@ func reserveTx(ctx context.Context, tx pgx.Tx, in ReserveInput) (Reservation, er
 		return Reservation{}, &BudgetDenied{Bound: bound}
 	}
 	for _, account := range accounts {
-		if account.Paused || account.Missing {
-			return Reservation{}, ErrBudgetExceeded
-		}
-		if account.Spent+account.Reserved+in.Cents > account.Ceiling {
+		if account.Paused || account.Missing || account.Spent+account.Reserved+in.Cents > account.Ceiling {
 			return Reservation{}, ErrBudgetExceeded
 		}
 	}
@@ -209,10 +206,7 @@ func settleTx(ctx context.Context, tx pgx.Tx, in SettleInput) (Settlement, error
 				return Settlement{}, err
 			}
 		}
-		if err := adjustFactoryBudgetsTx(ctx, tx, invocationID, 0, in.Cents, true); err != nil {
-			return Settlement{}, err
-		}
-		return Settlement{CallID: in.CallID, AttemptID: in.AttemptID, CountedCents: in.Cents}, nil
+		return settleCounted(ctx, tx, invocationID, in)
 	}
 	counted := in.Cents
 	quarantined := int64(0)
@@ -251,12 +245,9 @@ func settleTx(ctx context.Context, tx pgx.Tx, in SettleInput) (Settlement, error
 			}
 		}
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE budget_charges SET quarantined_cents = $3 WHERE call_id = $1 AND attempt_id = $2`,
-		in.CallID, in.AttemptID, quarantined); err != nil {
-		return Settlement{}, err
-	}
-	if err := adjustFactoryBudgetsTx(ctx, tx, invocationID, -reserved, counted, false); err != nil {
+	if err := finishSettle(
+		ctx, tx, invocationID, in, reserved, counted, quarantined,
+	); err != nil {
 		return Settlement{}, err
 	}
 	nextState := "settled"
@@ -646,4 +637,20 @@ func scopeKind(id string) string {
 	default:
 		return ""
 	}
+}
+
+func settleCounted(ctx context.Context, tx pgx.Tx, invocationID string, in SettleInput) (Settlement, error) {
+	if err := adjustFactoryBudgetsTx(ctx, tx, invocationID, 0, in.Cents, true); err != nil {
+		return Settlement{}, err
+	}
+	return Settlement{CallID: in.CallID, AttemptID: in.AttemptID, CountedCents: in.Cents}, nil
+}
+
+func finishSettle(ctx context.Context, tx pgx.Tx, invocationID string, in SettleInput, reserved, counted, quarantined int64) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE budget_charges SET quarantined_cents = $3 WHERE call_id = $1 AND attempt_id = $2`,
+		in.CallID, in.AttemptID, quarantined); err != nil {
+		return err
+	}
+	return adjustFactoryBudgetsTx(ctx, tx, invocationID, -reserved, counted, false)
 }

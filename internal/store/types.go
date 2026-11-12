@@ -251,14 +251,14 @@ type Agent struct {
 	SpecJSON     json.RawMessage
 }
 
-// AppliedDefinition is a validated tree written in one transaction.
-// An agent whose Runner is absent from Runners fails the runners foreign key
-// and leaves the previous definition in place.
+// AppliedDefinition is one transaction. A missing runner fails the foreign key and leaves the previous definition.
+// FactoryID is used on insert when that id is not already a row.
 type AppliedDefinition struct {
 	SchemaVersion    string
 	Alias            string
 	DefinitionSource string
 	GitSHA           string
+	FactoryID        string
 	SpecJSON         json.RawMessage
 	Agents           []DefinedAgent
 	Runners          []DefinedRunner

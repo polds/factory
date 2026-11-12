@@ -185,6 +185,27 @@ func TestDropRetiredEvidenceLeavesOtherNames(t *testing.T) {
 	}
 }
 
+func TestApplyUsesPrefixedFactoryIDOnce(t *testing.T) {
+	h := newHarness(t, true)
+	ctx := context.Background()
+	def := validDefinition()
+	def.FactoryID = "fac_00000000000000000000000001"
+	if _, err := h.st.ApplyDefinition(ctx, "prefixed", def); err != nil {
+		t.Fatal(err)
+	}
+	fac, err := h.st.GetFactory(ctx, "prefixed")
+	if err != nil || fac.ID != def.FactoryID {
+		t.Fatalf("id %q err %v", fac.ID, err)
+	}
+	if _, err := h.st.ApplyDefinition(ctx, "other", def); err != nil {
+		t.Fatal(err)
+	}
+	other, err := h.st.GetFactory(ctx, "other")
+	if err != nil || other.ID == "" || other.ID == def.FactoryID {
+		t.Fatalf("second factory id %q err %v", other.ID, err)
+	}
+}
+
 func retiredPrefix() string {
 	return string([]byte{100, 114, 101, 97, 109, 100}) + "_"
 }

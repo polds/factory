@@ -217,10 +217,6 @@ func (s *Server) handleSpendSettle(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) serverW() (int64, bool) {
-	return priceW(s.spendPriceJSON())
-}
-
 func (s *Server) invocationPrice(ctx context.Context, invocationID string) string {
 	if s.store != nil && invocationID != "" {
 		frozen, err := s.store.FrozenRun(ctx, invocationID)

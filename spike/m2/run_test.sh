@@ -96,7 +96,7 @@ test_env_file_aliases_and_precedence() {
 # comment
 export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL=http://from-file.example/v1
 FACTORY_INFERENCE_OPENAI_API_KEY="file-key"
-FACTORY_SECRET_GH_TOKEN='file-token'
+FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN='file-token'
 M2_MODEL=file-model
 OPENAI_BASE_URL=
 GH_TOKEN=
@@ -105,7 +105,7 @@ EOF
   local out
   out="$(
     source_run
-    unset M2_MODEL OPENAI_API_KEY GH_TOKEN FACTORY_SECRET_GH_TOKEN \
+    unset M2_MODEL OPENAI_API_KEY GH_TOKEN FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN \
       FACTORY_INFERENCE_OPENAI_API_KEY FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL
     OPENAI_BASE_URL="http://from-shell.example/v1"
     export OPENAI_BASE_URL
@@ -447,15 +447,15 @@ test_offline_secrets_replaced_before_children() {
   out="$(
     source_run
     SECRETS=()
-    FACTORY_SECRET_GH_TOKEN='live-gh-token-7f3c9a'
+    FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN='live-gh-token-7f3c9a'
     FACTORY_INFERENCE_OPENAI_API_KEY='live-api-key-7f3c9a'
     FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL='http://127.0.0.1:8317/v1'
     GH_TOKEN='live-gh-token-7f3c9a'
     OPENAI_API_KEY='live-api-key-7f3c9a'
-    export FACTORY_SECRET_GH_TOKEN FACTORY_INFERENCE_OPENAI_API_KEY \
+    export FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN FACTORY_INFERENCE_OPENAI_API_KEY \
       FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL GH_TOKEN OPENAI_API_KEY
     apply_offline_secrets 172.17.0.1
-    [[ "$FACTORY_SECRET_GH_TOKEN" == "$OFFLINE_GH" ]] || {
+    [[ "$FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN" == "$OFFLINE_GH" ]] || {
       echo "github token was not replaced" >&2
       exit 1
     }
@@ -471,7 +471,7 @@ test_offline_secrets_replaced_before_children() {
       echo "shell aliases were not cleared" >&2
       exit 1
     }
-    child="$(bash -c 'printf %s "${FACTORY_SECRET_GH_TOKEN:-}"')"
+    child="$(bash -c 'printf %s "${FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN:-}"')"
     [[ "$child" == "$OFFLINE_GH" ]] || {
       echo "child did not see the dummy token" >&2
       exit 1

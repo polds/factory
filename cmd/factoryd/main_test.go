@@ -75,7 +75,10 @@ func TestTaskServerURLDefault(t *testing.T) {
 		t.Fatal(cfg.server.TaskServerURL)
 	}
 	if _, ok := cfg.server.Secrets["GH_TOKEN"]; ok {
-		t.Fatal("unprefixed FACTORY_SECRET_GH_TOKEN resolved")
+		t.Fatal("unprefixed FACTORY_SECRET_GH_TOKEN was accepted")
+	}
+	if _, ok := cfg.server.FactorySecrets["GH_TOKEN"]; ok {
+		t.Fatal("unprefixed name was parsed as a factory id")
 	}
 	if cfg.server.FactorySecrets["fac_pipe"]["GH_TOKEN"] != "scoped-secret-value" {
 		t.Fatal("scoped secret was not parsed")

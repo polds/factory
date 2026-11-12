@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 
 	"github.com/polds/factory/internal/store"
 )
@@ -16,7 +17,7 @@ func (s *Server) FactoryIDForKey(ctx context.Context, token string) (string, boo
 	sum := sha256.Sum256([]byte(token))
 	id, err := s.store.FactoryByKeyHash(ctx, sum[:])
 	if err != nil {
-		if err == store.ErrNotFound {
+		if errors.Is(err, store.ErrNotFound) {
 			return "", false, nil
 		}
 		return "", false, err

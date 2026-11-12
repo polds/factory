@@ -345,21 +345,14 @@ func (s *Server) mintGitHubToken(ctx context.Context, run store.Run, bound bound
 		return "", errors.New("server: github token: app is not configured")
 	}
 	repos := s.tokenRepos(ctx, run)
-	if len(repos) == 0 {
+	if len(repos) == 0 || s.reposAllowed(ctx, run.FactoryID, repos) != nil {
 		return "", errors.New("server: github token: no repository")
-	}
-	if err := s.reposAllowed(ctx, run.FactoryID, repos); err != nil {
-		return "", err
 	}
 	id, err := s.integ.githubApp.InstallationByRepo(ctx, repos[0])
 	if err != nil {
 		return "", fmt.Errorf("server: github token: %w", err)
 	}
-	perms := ghclient.DefaultPermissions
-	if s.roleFilesSeat(ctx, run) {
-		perms = ghclient.ReadPermissions
-	}
-	tok, err := s.installToken(ctx, id, repos, run, bound, perms)
+	tok, err := s.installToken(ctx, id, repos, run, bound, s.mintPerms(ctx, run, ghclient.DefaultPermissions))
 	if err != nil {
 		return "", fmt.Errorf("server: github token: %w", err)
 	}
@@ -367,6 +360,13 @@ func (s *Server) mintGitHubToken(ctx context.Context, run store.Run, bound bound
 		return "", errors.New("server: github token: empty installation token")
 	}
 	return tok.Value(), nil
+}
+
+func (s *Server) mintPerms(ctx context.Context, run store.Run, fallback func() map[string]string) func() map[string]string {
+	if s.roleFilesSeat(ctx, run) {
+		return ghclient.ReadPermissions
+	}
+	return fallback
 }
 
 func (s *Server) tokenRepos(ctx context.Context, run store.Run) []string {

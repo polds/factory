@@ -9,8 +9,9 @@ ALTER TABLE draft_publications ADD COLUMN IF NOT EXISTS factory_id text;
 UPDATE draft_publications AS d
 SET factory_id = i.factory_id
 FROM invocations AS i
-WHERE d.invocation_id = i.id
-  AND d.factory_id IS NULL;
+WHERE
+    d.invocation_id = i.id
+    AND d.factory_id IS NULL;
 
 ALTER TABLE draft_publications ALTER COLUMN factory_id SET NOT NULL;
 
@@ -40,10 +41,12 @@ CREATE TABLE IF NOT EXISTS factory_api_keys (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
-ALTER TABLE invocations ADD COLUMN IF NOT EXISTS frozen_json jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE invocations
+ADD COLUMN IF NOT EXISTS frozen_json jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 -- Ledger rows only. A name that does not match is left in place, including
 -- a current evidence database and any other role.
 DELETE FROM disposable_databases
-WHERE database_name ~ '^dreamd_[0-9a-f]{32}$'
-  AND role_name ~ '^dreamd_[0-9a-f]{32}$';
+WHERE
+    database_name ~ '^dreamd_[0-9a-f]{32}$'
+    AND role_name ~ '^dreamd_[0-9a-f]{32}$';

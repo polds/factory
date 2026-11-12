@@ -194,98 +194,84 @@ func TestScopedKeyIsolation(t *testing.T) {
 	srv := httptest.NewServer(NewHandler(backend, "admin-key", nil))
 	t.Cleanup(srv.Close)
 
-	admin := func(method, path, body string) *http.Response {
-		t.Helper()
-		return scopeDo(t, srv, "admin-key", method, path, body)
-	}
-	scoped := func(method, path, body string) *http.Response {
-		t.Helper()
-		return scopeDo(t, srv, "key-b", method, path, body)
-	}
-
-	res := scoped(http.MethodGet, "/api/v1/agent/runs/run_a", "")
-	assertEmptyStatus(t, res, http.StatusNotFound, "alpha-secret")
-	res = scoped(http.MethodGet, "/api/v1/factory/fac_a/tasks/task_a", "")
-	assertEmptyStatus(t, res, http.StatusNotFound, "alpha-task")
-	res = scoped(http.MethodPost, "/api/v1/approvals/apr_a:decide", `{"decision":"approve"}`)
-	assertEmptyStatus(t, res, http.StatusNotFound, "")
+	status, body := scopeDo(t, srv, "key-b", http.MethodGet, "/api/v1/agent/runs/run_a", "")
+	assertEmpty(t, status, body, http.StatusNotFound, "alpha-secret")
+	status, body = scopeDo(t, srv, "key-b", http.MethodGet, "/api/v1/factory/fac_a/tasks/task_a", "")
+	assertEmpty(t, status, body, http.StatusNotFound, "alpha-task")
+	status, body = scopeDo(t, srv, "key-b", http.MethodPost, "/api/v1/approvals/apr_a:decide", `{"decision":"approve"}`)
+	assertEmpty(t, status, body, http.StatusNotFound, "")
 	if backend.decides != 0 {
 		t.Fatal("decide ran")
 	}
-	res = scoped(http.MethodPost, "/api/v1/deliveries/del_a:replay", `{}`)
-	assertEmptyStatus(t, res, http.StatusNotFound, "")
+	status, body = scopeDo(t, srv, "key-b", http.MethodPost, "/api/v1/deliveries/del_a:replay", `{}`)
+	assertEmpty(t, status, body, http.StatusNotFound, "")
 	if backend.replays != 0 {
 		t.Fatal("replay ran")
 	}
-	res = scoped(http.MethodGet, "/api/v1/agent/schedules/sch_a", "")
-	assertEmptyStatus(t, res, http.StatusNotFound, "sch_a")
+	status, body = scopeDo(t, srv, "key-b", http.MethodGet, "/api/v1/agent/schedules/sch_a", "")
+	assertEmpty(t, status, body, http.StatusNotFound, "sch_a")
 
 	before := backend.startCalls
-	res = scoped(http.MethodPost, "/api/v1/agent/run", `{"factory":"fac_a","prompt":"go"}`)
-	assertStatus(t, res, http.StatusForbidden)
+	status, body = scopeDo(t, srv, "key-b", http.MethodPost, "/api/v1/agent/run", `{"factory":"fac_a","prompt":"go"}`)
+	assertCode(t, status, body, http.StatusForbidden)
 	if backend.startCalls != before {
 		t.Fatal("start ran for another factory")
 	}
 	before = backend.scheduleCreates
-	res = scoped(http.MethodPost, "/api/v1/agent/schedules", `{"factory_id":"fac_a","automation":"a","cron":"0 * * * *"}`)
-	assertStatus(t, res, http.StatusForbidden)
+	status, body = scopeDo(t, srv, "key-b", http.MethodPost, "/api/v1/agent/schedules", `{"factory_id":"fac_a","automation":"a","cron":"0 * * * *"}`)
+	assertCode(t, status, body, http.StatusForbidden)
 	if backend.scheduleCreates != before {
 		t.Fatal("schedule insert ran")
 	}
 	before = backend.applyCalls
-	res = scoped(http.MethodPost, "/api/v1/factory/fac_b/definition:apply", "")
-	assertStatus(t, res, http.StatusForbidden)
-	res = scoped(http.MethodPost, "/api/v1/factory/fac_a/definition:apply", "")
-	assertStatus(t, res, http.StatusForbidden)
+	status, body = scopeDo(t, srv, "key-b", http.MethodPost, "/api/v1/factory/fac_b/definition:apply", "")
+	assertCode(t, status, body, http.StatusForbidden)
+	status, body = scopeDo(t, srv, "key-b", http.MethodPost, "/api/v1/factory/fac_a/definition:apply", "")
+	assertCode(t, status, body, http.StatusForbidden)
 	if backend.applyCalls != before {
 		t.Fatal("apply ran")
 	}
 	before = backend.putCalls
-	res = scoped(http.MethodPut, "/api/v1/factory/fac_b/definition", `{"generation":1,"files":[{"path":"factory.yaml","content":"name: b"}]}`)
-	assertStatus(t, res, http.StatusForbidden)
+	status, body = scopeDo(t, srv, "key-b", http.MethodPut, "/api/v1/factory/fac_b/definition", `{"generation":1,"files":[{"path":"factory.yaml","content":"name: b"}]}`)
+	assertCode(t, status, body, http.StatusForbidden)
 	if backend.putCalls != before {
 		t.Fatal("put ran")
 	}
-	res = scoped(http.MethodPost, "/api/v1/factory/fac_b/definition:validate", `{}`)
-	assertStatus(t, res, http.StatusOK)
-	res = scoped(http.MethodPost, "/api/v1/factory/fac_a/definition:validate", `{}`)
-	assertStatus(t, res, http.StatusForbidden)
+	status, body = scopeDo(t, srv, "key-b", http.MethodPost, "/api/v1/factory/fac_b/definition:validate", `{}`)
+	assertCode(t, status, body, http.StatusOK)
+	status, body = scopeDo(t, srv, "key-b", http.MethodPost, "/api/v1/factory/fac_a/definition:validate", `{}`)
+	assertCode(t, status, body, http.StatusForbidden)
 
-	res = scoped(http.MethodGet, "/api/v1/agent/runs", "")
-	body := readAll(t, res)
-	if res.StatusCode != http.StatusOK || strings.Contains(body, "run_a") || !strings.Contains(body, "run_b") {
-		t.Fatalf("runs %d %s", res.StatusCode, body)
+	status, body = scopeDo(t, srv, "key-b", http.MethodGet, "/api/v1/agent/runs", "")
+	if status != http.StatusOK || strings.Contains(body, "run_a") || !strings.Contains(body, "run_b") {
+		t.Fatalf("runs %d %s", status, body)
 	}
-	res = scoped(http.MethodGet, "/api/v1/agent/runs?factory_id=fac_a", "")
-	assertStatus(t, res, http.StatusForbidden)
-	res = scoped(http.MethodGet, "/api/v1/agent/schedules", "")
-	body = readAll(t, res)
-	if res.StatusCode != http.StatusOK || strings.Contains(body, "sch_a") || !strings.Contains(body, "sch_b") {
-		t.Fatalf("schedules %d %s", res.StatusCode, body)
+	status, body = scopeDo(t, srv, "key-b", http.MethodGet, "/api/v1/agent/runs?factory_id=fac_a", "")
+	assertCode(t, status, body, http.StatusForbidden)
+	status, body = scopeDo(t, srv, "key-b", http.MethodGet, "/api/v1/agent/schedules", "")
+	if status != http.StatusOK || strings.Contains(body, "sch_a") || !strings.Contains(body, "sch_b") {
+		t.Fatalf("schedules %d %s", status, body)
 	}
-	res = scoped(http.MethodGet, "/api/v1/agent/schedules?factory=fac_a", "")
-	assertStatus(t, res, http.StatusForbidden)
-	res = scoped(http.MethodGet, "/api/v1/factory", "")
-	body = readAll(t, res)
-	if res.StatusCode != http.StatusOK || strings.Contains(body, "fac_a") || !strings.Contains(body, "fac_b") {
-		t.Fatalf("factories %d %s", res.StatusCode, body)
+	status, body = scopeDo(t, srv, "key-b", http.MethodGet, "/api/v1/agent/schedules?factory=fac_a", "")
+	assertCode(t, status, body, http.StatusForbidden)
+	status, body = scopeDo(t, srv, "key-b", http.MethodGet, "/api/v1/factory", "")
+	if status != http.StatusOK || strings.Contains(body, "fac_a") || !strings.Contains(body, "fac_b") {
+		t.Fatalf("factories %d %s", status, body)
 	}
-	res = scoped(http.MethodGet, "/api/v1/agent/run-by-external-reference?provider=github&ref=alpha", "")
-	assertEmptyStatus(t, res, http.StatusNotFound, "alpha-secret")
+	status, body = scopeDo(t, srv, "key-b", http.MethodGet, "/api/v1/agent/run-by-external-reference?provider=github&ref=alpha", "")
+	assertEmpty(t, status, body, http.StatusNotFound, "alpha-secret")
 
-	res = admin(http.MethodGet, "/api/v1/agent/runs", "")
-	body = readAll(t, res)
-	if res.StatusCode != http.StatusOK || !strings.Contains(body, "run_a") || !strings.Contains(body, "run_b") {
-		t.Fatalf("admin runs %d %s", res.StatusCode, body)
+	status, body = scopeDo(t, srv, "admin-key", http.MethodGet, "/api/v1/agent/runs", "")
+	if status != http.StatusOK || !strings.Contains(body, "run_a") || !strings.Contains(body, "run_b") {
+		t.Fatalf("admin runs %d %s", status, body)
 	}
-	res = admin(http.MethodGet, "/api/v1/factory", "")
-	body = readAll(t, res)
-	if !strings.Contains(body, "fac_a") || !strings.Contains(body, "fac_b") {
-		t.Fatalf("admin factories %s", body)
+	status, body = scopeDo(t, srv, "admin-key", http.MethodGet, "/api/v1/factory", "")
+	if status != http.StatusOK || !strings.Contains(body, "fac_a") || !strings.Contains(body, "fac_b") {
+		t.Fatalf("admin factories %d %s", status, body)
 	}
 }
 
-func scopeDo(t *testing.T, srv *httptest.Server, key, method, path, body string) *http.Response {
+func scopeDo(t *testing.T, srv *httptest.Server, key, method, path, body string) (int, string) {
 	t.Helper()
 	req, err := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
 	if err != nil {
@@ -299,33 +285,28 @@ func scopeDo(t *testing.T, srv *httptest.Server, key, method, path, body string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return res
-}
-
-func assertStatus(t *testing.T, res *http.Response, status int) {
-	t.Helper()
-	defer res.Body.Close()
-	if res.StatusCode != status {
-		raw, _ := io.ReadAll(res.Body)
-		t.Fatalf("status %d body %s", res.StatusCode, raw)
-	}
-}
-
-func assertEmptyStatus(t *testing.T, res *http.Response, status int, absent string) {
-	t.Helper()
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(res.Body)
-	if res.StatusCode != status || len(bytes.TrimSpace(raw)) != 0 || (absent != "" && strings.Contains(string(raw), absent)) {
-		t.Fatalf("status %d body %q", res.StatusCode, raw)
-	}
-}
-
-func readAll(t *testing.T, res *http.Response) string {
-	t.Helper()
-	defer res.Body.Close()
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	raw, err := io.ReadAll(res.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(raw)
+	return res.StatusCode, string(raw)
+}
+
+func assertCode(t *testing.T, status int, body string, want int) {
+	t.Helper()
+	if status != want {
+		t.Fatalf("status %d body %s", status, body)
+	}
+}
+
+func assertEmpty(t *testing.T, status int, body string, want int, absent string) {
+	t.Helper()
+	if status != want || len(bytes.TrimSpace([]byte(body))) != 0 || (absent != "" && strings.Contains(body, absent)) {
+		t.Fatalf("status %d body %q", status, body)
+	}
 }

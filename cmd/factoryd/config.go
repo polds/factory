@@ -243,7 +243,9 @@ func scopedSecretsFrom(environ []string) (map[string]map[string]string, map[stri
 		}
 		rest := strings.TrimPrefix(key, prefix)
 		// Mount path and allowlist are configuration. They are skipped
-		// before the factory id and the name are split.
+		// before the factory id and the name are split. An unprefixed
+		// FACTORY_SECRET_<NAME> is ignored: it would be readable by every
+		// factory.
 		switch rest {
 		case "", "MOUNT_DIR", "ALLOWLIST":
 			continue

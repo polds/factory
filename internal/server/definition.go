@@ -81,6 +81,7 @@ func (s *Server) applyTreeDir(ctx context.Context, tree *definition.Tree, dir st
 	if err != nil {
 		return "", err
 	}
+	applied.FactoryID = soleFactorySecretID(s.cfg.FactorySecrets)
 	id, err := s.store.ApplyDefinition(ctx, tree.Factory.Name, applied)
 	if err != nil {
 		return "", err
@@ -220,6 +221,20 @@ func (s *Server) bindBootstrapSecrets(factoryID string) {
 		}
 	}
 	s.cfg.FactorySecrets[factoryID] = grants
+}
+
+// soleFactorySecretID returns the factory id when the process has exactly
+// one FACTORY_SECRET_<factoryID>__NAME grant. Offline drivers set that grant
+// before the row exists, and the insert uses this id.
+func soleFactorySecretID(grants map[string]map[string]string) string {
+	if len(grants) != 1 {
+		return ""
+	}
+	var id string
+	for key := range grants {
+		id = strings.TrimSpace(key)
+	}
+	return id
 }
 
 func (s *Server) snapshot() loaded {

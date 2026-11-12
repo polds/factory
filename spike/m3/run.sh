@@ -15,7 +15,7 @@
 # executed). A non-empty shell variable wins. OPENAI_BASE_URL, GH_TOKEN,
 # M3_MODEL_TRIAGE, M3_MODEL_PLANNING, M3_MODEL_BUILDING,
 # M3_MODEL_REVIEWING, and optional OPENAI_API_KEY and M3_REPO are the
-# shell names. FACTORY_INFERENCE_* and FACTORY_SECRET_GH_TOKEN are the
+# shell names. FACTORY_INFERENCE_* and FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN are the
 # same inference and GitHub values. Nothing in this script prints those
 # values.
 #
@@ -87,7 +87,7 @@ on_err() {
 apply_live_env_aliases() {
   copy_if_empty OPENAI_BASE_URL FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL
   copy_if_empty OPENAI_API_KEY FACTORY_INFERENCE_OPENAI_API_KEY
-  copy_if_empty GH_TOKEN FACTORY_SECRET_GH_TOKEN
+  copy_if_empty GH_TOKEN FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN
 }
 
 compose() {
@@ -282,7 +282,7 @@ distinct_models() {
 
 apply_offline_secrets() {
   local gw="$1"
-  local live_gh="${FACTORY_SECRET_GH_TOKEN:-}"
+  local live_gh="${FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN:-}"
   local live_key="${FACTORY_INFERENCE_OPENAI_API_KEY:-}"
   local live_url="${FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL:-}"
   local live_shell_gh="${GH_TOKEN:-}"
@@ -291,7 +291,7 @@ apply_offline_secrets() {
   unset GH_TOKEN OPENAI_API_KEY OPENAI_BASE_URL
   export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$stub_url"
   export FACTORY_INFERENCE_OPENAI_API_KEY="$OFFLINE_DUMMY_KEY"
-  export FACTORY_SECRET_GH_TOKEN="$OFFLINE_GH"
+  export FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN="$OFFLINE_GH"
   redact_if_live "$live_gh" "$OFFLINE_GH"
   redact_if_live "$live_key" "$OFFLINE_DUMMY_KEY"
   redact_if_live "$live_url" "$stub_url"
@@ -589,7 +589,7 @@ M3_REPO="${M3_REPO:-polds/factory}"
 if [[ "$MODE" == live ]]; then
   command -v gh >/dev/null || die "gh not found (required for MODE=live)"
   [[ -n "${OPENAI_BASE_URL:-}" ]] || die "OPENAI_BASE_URL or FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL is required for MODE=live"
-  [[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN or FACTORY_SECRET_GH_TOKEN is required for MODE=live"
+  [[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN or FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN is required for MODE=live"
   [[ -n "${M3_MODEL_TRIAGE:-}" ]] || die "M3_MODEL_TRIAGE is required for MODE=live"
   [[ -n "${M3_MODEL_PLANNING:-}" ]] || die "M3_MODEL_PLANNING is required for MODE=live"
   [[ -n "${M3_MODEL_BUILDING:-}" ]] || die "M3_MODEL_BUILDING is required for MODE=live"
@@ -647,7 +647,7 @@ else
   DEF="$WORK/definition"
   export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$OPENAI_BASE_URL"
   export FACTORY_INFERENCE_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
-  export FACTORY_SECRET_GH_TOKEN="$GH_TOKEN"
+  export FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN="$GH_TOKEN"
   SECRETS+=("$GH_TOKEN")
   if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     SECRETS+=("$OPENAI_API_KEY")
