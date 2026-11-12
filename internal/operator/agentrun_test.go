@@ -387,9 +387,11 @@ func createRepoFactory(t *testing.T, ctx context.Context, ns, name string) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
 		Spec: factoryv1.FactorySpec{
 			Repositories: []factoryv1.FactoryRepositorySpec{{
-				CodeForge: "GITHUB",
-				Owner:     "polds",
-				Name:      "factory-m7-target",
+				RepositoryRef: factoryv1.RepositoryRef{
+					CodeForge: "GITHUB",
+					Owner:     "polds",
+					Name:      "factory-m7-target",
+				},
 			}},
 		},
 	}); err != nil {
