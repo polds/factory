@@ -4,6 +4,7 @@
 {{- include "factory.apiSecret" . }}
 {{- include "factory.dev" . }}
 {{- include "factory.controlplane" . }}
+{{- include "factory.factorySecrets" . }}
 {{- include "factory.workers" . }}
 {{- include "factory.scanSecurity" . }}
 {{- include "factory.migrations" . }}

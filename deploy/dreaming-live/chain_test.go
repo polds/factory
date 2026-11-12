@@ -250,6 +250,27 @@ native:
   seats: [nils-aaberg, beatriz-salgado, viktor-halas, oskar-lindgren]
 budget:
   ceilingCents: 2500
+evidence:
+  package: oracle
+  mutation: oracle/tenant_test.go
+publish:
+  enabled: true
+  repo: { codeForge: GITHUB, owner: northstar-ai-labs, name: dreaming }
+  issueKey: dreaming#454
+  refPrefix: factory/dreaming-454-
+  title: "Factory: DB-backed tenant-isolation tests (#454)"
+inference:
+  rates:
+    prompt_byte_cap: 400000
+    max_tokens: 8192
+    models:
+      - name: "nous/claude-sonnet-5.5"
+        input_cost_per_token: "0.000003"
+        output_cost_per_token: "0.000015"
+        cache_creation_input_token_cost: "0.00000375"
+      - name: fallback
+        input_cost_per_token: "0.000003"
+        output_cost_per_token: "0.000015"
 agentDefaults:
   model: auto
   runner: local
