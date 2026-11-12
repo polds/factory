@@ -100,7 +100,7 @@ Repo: {{.Repo}}
 Draft by Factory; human review required; Factory will not merge.
 ```
 
-`draft_publications` gains `factory_id`, matching the invocation's factory. Uniqueness on `(target_repo, issue_key)` stays global, so two factories that both list one repo cannot open two drafts for one issue key. A unique violation whose existing row has a different `factory_id` refuses before a token mint. The store read that distinguishes "same factory" from "other factory" filters `factory_id`. The response carries no pull number, URL, ref, SHA, or detail from the other row. Same-invocation replay still returns that invocation's own row (`internal/store/draft_publication.go:48-50`). The token repository list is that one repo.
+`draft_publications` gains `factory_id`, matching the invocation's factory. Uniqueness on `(target_repo, issue_key)` stays global, so two factories that both list one repo cannot open two drafts for one issue key. A unique violation already refuses with `reasonIssue` and does not read the other row (`internal/server/publish_draft.go:153-155`). That stays. Once the row carries `factory_id`, every lookup of an existing publication filters by the calling factory. The response still carries no pull number, URL, ref, SHA, or detail from another factory's row. Same-invocation replay still returns that invocation's own row (`internal/store/draft_publication.go:48-50`). The token repository list is that one repo.
 
 ### Role source
 
@@ -281,7 +281,9 @@ publish:
   refPrefix: factory/dreaming-454-
 ```
 
-The second fixture is `examples/widget-factory/`. One repo `example/widget`. Role paths `team/roster.yaml` and `team/roles/{slug}/ROLE.md`. Seats `lead`, `worker`, `reviewer`. Issue key `widget#1`. Ref prefix `factory/draft-`. `budget.ceilingCents` is a different integer from the Dreaming example. Its rate document is its own. The conformance process loads both factories.
+The second fixture is `examples/widget-factory/`. It is offline only. One repo `example/widget`. Role paths `team/roster.yaml` and `team/roles/{slug}/ROLE.md`. Seats `lead`, `worker`, `reviewer`. Issue key `widget#1`. Ref prefix `factory/draft-`. `budget.ceilingCents` is a different integer from the Dreaming example. Its rate document is its own. The conformance process loads both factories. `example/widget` is not a live target.
+
+TF-1's second definition is an input file, not this fixture. The operator supplies it at dispatch: a real repository where the GitHub App is installed, role files at a pinned commit, and an issue key. The workflow reads the repo, the ref, and the issue key from that file. Peter provides the file when he authorizes the run. It is not committed when it would contain private role bytes.
 
 ## Helm and config
 
@@ -333,7 +335,7 @@ The replacement workflow is `workflow_dispatch` only. Inputs are `mode` (`prefli
 
 ## CI guard
 
-`scripts/check-target-agnostic.sh` fails when a non-test file under `internal/` or `cmd/` contains a denylist token. The scan is case-insensitive and is a substring match. It skips `*_test.go` and `testdata/`. The token list is `scripts/target-denylist.txt`, one token per line, comments with `#`. Default tokens:
+`scripts/check-target-agnostic.sh` fails when a scanned file contains a denylist token. The scan is case-insensitive and is a substring match. It skips `*_test.go` and `testdata/`. TA-4 scans non-test `internal/` and `cmd/`. TA-5 adds `.github/workflows/` and `deploy/helm/` after `dreaming-live.yml` is deleted and the CI step no longer names `spike/dreaming` (`.github/workflows/ci.yml:275-276`). Scanning those trees in TA-4 fails on the Dreaming workflow that TA-5 removes. `dreamd` is a token. The token list is `scripts/target-denylist.txt`, one token per line, comments with `#`. Default tokens:
 
 ```text
 dreaming
@@ -348,7 +350,7 @@ dreamd
 
 `roster`, `proof`, `SOUL`, and `HEARTBEAT` are not tokens. After this migration they are either mechanism words or definition data. `factoryEvidencePass` is not a token. The script prints `path:line` and exits non-zero. A unit test runs it against a temp tree that contains `dreaming` and expects failure, and against a clean tree and expects success. The `required` CI job runs the script. `shfmt` and `shellcheck` already cover `*.sh` (`.github/workflows/ci.yml:251-264`).
 
-The guard does not scan `examples/`, `e2e/`, `deploy/`, `docs/`, or `internal/store/migrations/*.sql`. The migration exception exists so the one-shot `dreamd_` drop can name the old prefix. Every other non-test file under `internal/` and `cmd/` is scanned.
+TA-4 does not scan `examples/`, `e2e/`, `deploy/`, `docs/`, or `.github/workflows/`. Those trees still name Dreaming until TA-5. TA-5 adds `.github/workflows/` and `deploy/helm/` to the same script. `examples/` and `e2e/` stay unscanned because they are the target fixtures. `internal/store/migrations/*.sql` stays unscanned so the one-shot `dreamd_` drop can name the old prefix. Every other non-test file under `internal/` and `cmd/` is scanned.
 
 ## Migration
 
@@ -452,7 +454,8 @@ The same PR renames the Helm proof worker. Paths for that slice only: `deploy/he
 Acceptance:
 
 - `MODE=offline ./e2e/conformance/run_test.sh` prints `conformance offline PASS`, covers the old P1–P14 failure rows and the secure case, and runs the widget isolation checks.
-- The live workflow's inputs are two definition paths, `confirm`, `factory_sha`, and role blob ids. A checkout of the workflow file contains no denylist token and no hardcoded Dreaming repo, ref, or persona path. TA-5 does not dispatch it. The first dispatch is TF-1.
+- The live workflow's inputs are two definition paths, `confirm`, `factory_sha`, and role blob ids. TA-5 does not dispatch it. The first dispatch is TF-1. The second path is an operator-supplied definition. `examples/widget-factory/` is not that file.
+- With `.github/workflows/` and `deploy/helm/` added to the denylist roots, the script exits 0. That is the check that the new workflow and the chart contain no denylist token. It is not a separate manual reading.
 - `helm template` fails when `securityProfile: locked` is combined with `setupCommand` or `teardownCommand`, and a locked worker's rendered config has neither key. A worker with no profile still renders a configured command. `workers[].proof` is gone. `global.image.registry` is still `ghcr.io/acme`.
 - Example definitions contain paths and blob ids and do not contain role file bodies.
 - The denylist script still exits 0.

@@ -487,9 +487,9 @@ The first authorized live run is TF-1, not a TA PR. TA-5 only changes the workfl
 
 The former D6 live run. One `factoryd`. Two definition files, passed in by the workflow. No hardcoded Dreaming repo, ref, pin, or persona path. Each definition sets `budget.ceilingCents: 2500`. Each run request sets `ceilingCents: 2500`. A request above the definition fails before queue. The harness and the workflow must not embed that cap. Both publishes stay drafts. The publisher still has no merge, ready, label, or review call.
 
-Paths: `.github/workflows/conformance-live.yml`, `examples/dreaming-definition/**`, `examples/widget-factory/**`.
+Paths: `.github/workflows/conformance-live.yml`, and two definition files passed as inputs. `examples/widget-factory/` is the offline fixture. It is not the live second factory. Peter supplies the live second definition at dispatch: a real repo with the GitHub App installed, role files at a pinned commit, and an issue key. The workflow reads that repo from the file.
 
-Acceptance: one dispatch runs both definitions; each opens one draft pull request; a factory-scoped key for one factory gets an empty 404 on the other's run; the deployment admin key is not that check; a charge on one factory leaves the other's `factory_budgets` spent and reserved cents unchanged; counted spend on each factory stays at or under 2500 cents; both pull requests are still drafts at the end. The workflow file contains no denylist token.
+Acceptance: one dispatch runs both definitions; each opens one draft pull request; a factory-scoped key for one factory gets an empty 404 on the other's run; the deployment admin key is not that check; a charge on one factory leaves the other's `factory_budgets` spent and reserved cents unchanged; counted spend on each factory stays at or under 2500 cents; both pull requests are still drafts at the end. `scripts/check-target-agnostic.sh`, scanning `.github/workflows/` and `deploy/helm/` as well as `internal/` and `cmd/`, exits 0.
 
 Verify: the orchestrator dispatches `workflow_dispatch` after preflight is green on the merged SHA. An agent does not dispatch it.
 
