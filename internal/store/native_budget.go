@@ -89,6 +89,9 @@ func reserveTx(ctx context.Context, tx pgx.Tx, in ReserveInput) (Reservation, er
 			return Reservation{}, ErrBudgetExceeded
 		}
 	}
+	if err := adjustFactoryBudgetsTx(ctx, tx, in.InvocationID, in.Cents, 0, true); err != nil {
+		return Reservation{}, err
+	}
 	id, err := NewID(PrefixNativeReservation)
 	if err != nil {
 		return Reservation{}, err
@@ -206,6 +209,9 @@ func settleTx(ctx context.Context, tx pgx.Tx, in SettleInput) (Settlement, error
 				return Settlement{}, err
 			}
 		}
+		if err := adjustFactoryBudgetsTx(ctx, tx, invocationID, 0, in.Cents, true); err != nil {
+			return Settlement{}, err
+		}
 		return Settlement{CallID: in.CallID, AttemptID: in.AttemptID, CountedCents: in.Cents}, nil
 	}
 	counted := in.Cents
@@ -248,6 +254,9 @@ func settleTx(ctx context.Context, tx pgx.Tx, in SettleInput) (Settlement, error
 	if _, err := tx.Exec(ctx, `
 		UPDATE budget_charges SET quarantined_cents = $3 WHERE call_id = $1 AND attempt_id = $2`,
 		in.CallID, in.AttemptID, quarantined); err != nil {
+		return Settlement{}, err
+	}
+	if err := adjustFactoryBudgetsTx(ctx, tx, invocationID, -reserved, counted, false); err != nil {
 		return Settlement{}, err
 	}
 	nextState := "settled"

@@ -64,6 +64,11 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if applied {
 			continue
 		}
+		if name == "0020_factory_scope.sql" {
+			if err := dropRetiredEvidence(ctx, conn); err != nil {
+				return fmt.Errorf("store: retire evidence names: %w", err)
+			}
+		}
 		body, err := migrationFS.ReadFile("migrations/" + name)
 		if err != nil {
 			return fmt.Errorf("store: read %s: %w", name, err)

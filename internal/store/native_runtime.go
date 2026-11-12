@@ -136,10 +136,14 @@ func (s *Store) OpenNativeTree(ctx context.Context, in OpenTreeInput) (NativePol
 	}); err != nil {
 		return NativePolicy{}, NativeTask{}, err
 	}
+	stored, err := loadPolicyTx(ctx, tx, in.InvocationID)
+	if err != nil {
+		return NativePolicy{}, NativeTask{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return NativePolicy{}, NativeTask{}, err
 	}
-	return policy, task, nil
+	return stored, task, nil
 }
 
 // GetNativePolicy returns the frozen roster.
