@@ -105,6 +105,21 @@ func TestOpenSpendRatesFailBeforeRun(t *testing.T) {
 	    "model_info": {"input_cost_per_token": 0.000001}
 	  }]
 	}`
+	// The pricier deployment is first. Keeping only the last entry prices the cheap one.
+	duplicatePrimary := `{
+	  "data": [{
+	    "model_name": "metered-primary",
+	    "litellm_params": {"fallbacks": ["metered-fallback"]},
+	    "model_info": {"input_cost_per_token": 0.00003, "output_cost_per_token": 0.00015}
+	  }, {
+	    "model_name": "metered-primary",
+	    "litellm_params": {"fallbacks": ["metered-fallback"]},
+	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}
+	  }, {
+	    "model_name": "metered-fallback",
+	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}
+	  }]
+	}`
 	cases := []struct {
 		name   string
 		status int
@@ -114,6 +129,7 @@ func TestOpenSpendRatesFailBeforeRun(t *testing.T) {
 		{name: "malformed", status: http.StatusOK, body: `{"data":`},
 		{name: "missing fallback rate", status: http.StatusOK, body: missing},
 		{name: "W over cap", status: http.StatusOK, body: valid},
+		{name: "duplicate primary keeps pricier deployment", status: http.StatusOK, body: duplicatePrimary},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
