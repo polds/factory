@@ -327,6 +327,7 @@ func TestLoadPinnedRolesRejectsPathsAndRoster(t *testing.T) {
 			Root: root, SourceCommit: "source-commit", RosterSHA256: hashFile(t, filepath.Join(root, "org", "roster.yaml")),
 			RosterGitBlob: gitBlobID(mustRead(t, filepath.Join(root, "org", "roster.yaml"))),
 			Slugs:         append(append([]string{}, fourSlugs...), "pip"), ProofRoot: "nils-aaberg", Files: pins,
+			Layout: orgRoleLayout(),
 		})
 		if err != nil || persona(tree, "pip").ReportsTo != "oskar-lindgren" || persona(tree, "pip").Role != "general" {
 			t.Fatalf("general parent %+v %v", persona(tree, "pip"), err)
@@ -385,7 +386,7 @@ func TestLoadPinnedRolesReferenceSnapshot(t *testing.T) {
 	}
 	tree, err := LoadPinnedRoles(PinnedRoles{
 		Root: root, SourceCommit: referenceCommit, RosterSHA256: referenceRosterSHA, RosterGitBlob: referenceRosterBlob,
-		Slugs: fourSlugs, ProofRoot: "nils-aaberg", Files: files,
+		Slugs: fourSlugs, ProofRoot: "nils-aaberg", Files: files, Layout: orgRoleLayout(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -450,6 +451,18 @@ agents:
 
 var fourSlugs = []string{"nils-aaberg", "beatriz-salgado", "oskar-lindgren", "viktor-halas"}
 
+var pinnedRoleFiles = []string{"AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"}
+
+func orgRoleLayout() RoleLayout {
+	return RoleLayout{
+		RosterPath:       "org/roster.yaml",
+		PathTemplate:     "org/agents/{slug}/{file}",
+		Files:            append([]string{}, pinnedRoleFiles...),
+		MaxDepth:         NativeProofMaxDepth,
+		AbsoluteMaxDepth: NativeAbsoluteMaxDepth,
+	}
+}
+
 type pinnedFixture struct {
 	root       string
 	pins       map[string]map[string]PinnedFile
@@ -477,6 +490,7 @@ func (f pinnedFixture) request(slugs []string, proof string) PinnedRoles {
 	return PinnedRoles{
 		Root: f.root, SourceCommit: "source-commit", RosterSHA256: f.rosterSHA, RosterGitBlob: f.rosterBlob,
 		Slugs: append([]string{}, slugs...), ProofRoot: proof, Files: files,
+		Layout: orgRoleLayout(),
 	}
 }
 

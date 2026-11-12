@@ -19,7 +19,7 @@ import (
 // from layout. It does not fetch and does not write those bytes anywhere.
 func AttestRoleSource(ctx context.Context, gitDir, commit string, tree NativeTree, layout RoleLayout) error {
 	if !layout.Declared() {
-		layout = HistoricalRoleLayout()
+		return fmt.Errorf("attest: roleSource: absent object")
 	}
 	if !commitHex(commit) {
 		return fmt.Errorf("attest: %s: not a commit", commit)
@@ -67,24 +67,6 @@ func AttestRoleSource(ctx context.Context, gitDir, commit string, tree NativeTre
 		}
 	}
 	return nil
-}
-
-// GitObjectKind reports the local object type. A missing object is false.
-// The lookup does not fetch.
-func GitObjectKind(ctx context.Context, gitDir, commit string) (string, bool) {
-	if !commitHex(commit) {
-		return "", false
-	}
-	g, cleanup, err := openAttestGit(ctx, gitDir)
-	if err != nil {
-		return "", false
-	}
-	defer cleanup()
-	kind, err := g.kind(commit)
-	if err != nil || kind == "" || kind == "missing" {
-		return "", false
-	}
-	return kind, true
 }
 
 type attestGit struct {

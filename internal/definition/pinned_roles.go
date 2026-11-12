@@ -1,7 +1,6 @@
 package definition
 
 import (
-	"context"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	yaml "go.yaml.in/yaml/v3"
 )
@@ -18,7 +16,6 @@ import (
 const (
 	pinnedRoleFileCap = 65536
 	pinnedRosterCap   = 262144
-	rosterRel         = "org/roster.yaml"
 	// BundleModeRoleFiles is the explicit seat-bundle envelope mode.
 	BundleModeRoleFiles = "role_files"
 	// NativeGoalBodyCap is the maximum raw title and instruction body in a
@@ -26,12 +23,8 @@ const (
 	NativeGoalBodyCap = 65536
 )
 
-// pinnedRoleFiles is the historical seat list. A declaration replaces it.
-var pinnedRoleFiles = []string{"AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"}
-
 // RoleLayout is the role-file declaration applied to one load or attest.
-// A zero layout is not a declaration. Callers that omit it keep the
-// historical org layout so an already-built bundle still loads.
+// A zero layout is not a declaration. A role-files load without one is rejected.
 type RoleLayout struct {
 	RosterPath       string
 	PathTemplate     string
@@ -46,17 +39,6 @@ type RoleLayout struct {
 // Declared reports whether the layout names a roster or a seat template.
 func (l RoleLayout) Declared() bool {
 	return l.RosterPath != "" || l.PathTemplate != "" || len(l.Files) > 0
-}
-
-// HistoricalRoleLayout is the layout used when a caller does not pass one.
-func HistoricalRoleLayout() RoleLayout {
-	return RoleLayout{
-		RosterPath:       rosterRel,
-		PathTemplate:     "org/agents/{slug}/{file}",
-		Files:            append([]string{}, pinnedRoleFiles...),
-		MaxDepth:         NativeProofMaxDepth,
-		AbsoluteMaxDepth: NativeAbsoluteMaxDepth,
-	}
 }
 
 // ErrPinnedRoles means the pinned snapshot was not loaded.
@@ -78,7 +60,7 @@ type PinnedRoles struct {
 	RosterGitBlob string
 	Slugs         []string
 	ProofRoot     string
-	// Layout is the declaration. Zero keeps HistoricalRoleLayout.
+	// Layout is the declaration. A role-files load requires it.
 	Layout RoleLayout
 	// Files is keyed by slug, then by file name.
 	Files map[string]map[string]PinnedFile
@@ -99,21 +81,18 @@ func LoadPinnedRoles(in PinnedRoles) (NativeTree, error) {
 	if err := checkPinnedRoot(in.Root); err != nil {
 		return NativeTree{}, err
 	}
-	NoteRoleCheckout(in.Root)
 	if in.SourceCommit == "" || in.RosterSHA256 == "" || in.RosterGitBlob == "" {
 		return NativeTree{}, fmt.Errorf("%w: source pin", ErrPinnedRoles)
 	}
-	explicit := in.Layout.Declared()
+	if !in.Layout.Declared() {
+		return NativeTree{}, fmt.Errorf("%w: layout", ErrPinnedRoles)
+	}
 	layout := in.Layout
-	if !explicit {
-		layout = HistoricalRoleLayout()
-	} else {
-		if layout.MaxDepth < 1 {
-			layout.MaxDepth = DefaultNativeMaxDepth
-		}
-		if layout.AbsoluteMaxDepth < 1 {
-			layout.AbsoluteMaxDepth = DefaultNativeAbsoluteMaxDepth
-		}
+	if layout.MaxDepth < 1 {
+		layout.MaxDepth = DefaultNativeMaxDepth
+	}
+	if layout.AbsoluteMaxDepth < 1 {
+		layout.AbsoluteMaxDepth = DefaultNativeAbsoluteMaxDepth
 	}
 	if msg := seatFilesOK(layout.Files); msg != "" || !pathTemplateOK(layout.PathTemplate) || !stableRelPath(layout.RosterPath) {
 		return NativeTree{}, fmt.Errorf("%w: layout", ErrPinnedRoles)
@@ -157,10 +136,6 @@ func LoadPinnedRoles(in PinnedRoles) (NativeTree, error) {
 		}
 		personas = append(personas, persona)
 	}
-	impl, rev := layout.Implementer, layout.Reviewer
-	if !explicit {
-		impl, rev = "", ""
-	}
 	tree := NativeTree{
 		NativeHierarchy:       true,
 		Synthetic:             true,
@@ -174,8 +149,8 @@ func LoadPinnedRoles(in PinnedRoles) (NativeTree, error) {
 		RosterSHA256:          in.RosterSHA256,
 		RosterGitBlob:         in.RosterGitBlob,
 		BundleMode:            BundleModeRoleFiles,
-		Implementer:           impl,
-		Reviewer:              rev,
+		Implementer:           layout.Implementer,
+		Reviewer:              layout.Reviewer,
 		RosterPath:            layout.RosterPath,
 		PathTemplate:          layout.PathTemplate,
 		SeatFiles:             append([]string{}, layout.Files...),
@@ -618,40 +593,6 @@ func ExpandRolePath(layout RoleLayout, slug, file string) (string, bool) {
 		}
 	}
 	return rel, false
-}
-
-var (
-	notedMu   sync.Mutex
-	notedDirs []string
-)
-
-// NoteRoleCheckout remembers a local checkout. Attest can find a commit there
-// when the per-factory cache has no entry. The compare still does not fetch.
-func NoteRoleCheckout(dir string) {
-	if dir == "" {
-		return
-	}
-	notedMu.Lock()
-	defer notedMu.Unlock()
-	for _, have := range notedDirs {
-		if have == dir {
-			return
-		}
-	}
-	notedDirs = append(notedDirs, dir)
-}
-
-// RoleCheckoutFor returns a noted checkout that contains the object.
-func RoleCheckoutFor(ctx context.Context, commit string) (string, bool) {
-	notedMu.Lock()
-	dirs := append([]string{}, notedDirs...)
-	notedMu.Unlock()
-	for _, dir := range dirs {
-		if _, ok := GitObjectKind(ctx, dir, commit); ok {
-			return dir, true
-		}
-	}
-	return "", false
 }
 
 func rosterCycles(agents map[string]rosterAgent) error {

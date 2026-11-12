@@ -286,21 +286,10 @@ func (s *Store) DelegateNative(ctx context.Context, in DelegateInput) (DelegateR
 }
 
 func (p NativePolicy) tree() definition.NativeTree {
-	// Synthetic is reapplied because the column is not stored. ValidateNativeTree
-	// only accepts a synthetic roster, so a reloaded policy stays on that gate.
+	// A row opened before the flag was stored has SyntheticStored false.
+	// Its digest was computed with Synthetic true, so reload supplies that.
 	// Source commit and roster hashes come from the personas JSON envelope.
 	return policyTree(p)
-	// The stored flag, declared slugs, and role layout are copied with the personas.
-	// A legacy row has no stored flag and reloads with Synthetic true.
-	// The path template stays outside treeDigest.
-	// Seat names are slugs from the definition when native is set.
-	// Depth is not how a seat is classified once those slugs are stored.
-	// ReportsTo still grants no secrets.
-	// The digest JSON keys are unchanged.
-	// Bundle mode stays on the envelope.
-	// Roster hashes stay on the envelope.
-	// Source commit stays on the envelope.
-	// Reload uses the stored synthetic flag.
 }
 
 func personaByName(personas []definition.NativePersona, name string) (definition.NativePersona, bool) {
@@ -470,62 +459,6 @@ func marshalNativePersonas(tree definition.NativeTree) ([]byte, error) {
 func unmarshalNativePersonas(raw []byte) (personaEnvelope, error) {
 	return unmarshalPersonaBody(raw)
 }
-
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
-// The envelope stores synthetic, the declared slugs, and the path template.
 
 func rootTaskTx(ctx context.Context, tx pgx.Tx, invocationID string) (NativeTask, error) {
 	task, err := scanNativeTask(tx.QueryRow(ctx, `

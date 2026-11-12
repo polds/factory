@@ -48,6 +48,7 @@ func TestProducedHeadReviewerPipeline(t *testing.T) {
 	commit := strings.TrimSpace(gitServer(t, rootDir, "rev-parse", "HEAD"))
 	tree := loadBundleTree(t, rootDir, pins)
 	tree.SourceCommit = commit
+	env.srv.PutRoleCache(fac.ID, commit, rootDir)
 	t.Setenv("FACTORY_ROLE_SOURCE", rootDir)
 	if env.srv.cfg.Secrets == nil {
 		env.srv.cfg.Secrets = map[string]string{}
@@ -102,6 +103,7 @@ func TestProducedHeadReviewerPipeline(t *testing.T) {
 	blobTree.SourceCommit = blob
 	blobInv := nativeInvocation(t, env, fac.ID, "", "native:d5:blob")
 	prepareBundleGoal(t, env, fac.ID, blobInv, "")
+	env.srv.PutRoleCache(fac.ID, blob, rootDir)
 	if _, err := env.srv.OpenNativeTree(ctx, "pipe", blobInv, apiTree(blobTree, agentID, "")); err == nil || !strings.Contains(err.Error(), "not a commit") || strings.Contains(err.Error(), "SEAT:") {
 		t.Fatal(err)
 	}
@@ -347,7 +349,7 @@ func TestRoleFilesLabelIsNotACommit(t *testing.T) {
 	if countQuery(t, env, `SELECT count(*) FROM native_policies WHERE invocation_id = $1`, invocationID) != before {
 		t.Fatal("label inserted a policy")
 	}
-	pinRoleSource(t, rootDir, &tree)
+	pinRoleSource(t, env.srv, fac.ID, rootDir, &tree)
 	opened, err := env.srv.OpenNativeTree(ctx, "pipe", invocationID, apiTree(tree, agentID, itemID))
 	if err != nil || opened.RootTaskID == "" {
 		t.Fatal(err)
@@ -432,10 +434,11 @@ func postBundle(t *testing.T, env *env, runID, token, sha string, body []byte) i
 	return res.StatusCode
 }
 
-func pinRoleSource(t *testing.T, dir string, tree *definition.NativeTree) {
+func pinRoleSource(t *testing.T, srv *Server, factoryID, dir string, tree *definition.NativeTree) {
 	t.Helper()
 	commitRoleSource(t, dir)
 	tree.SourceCommit = strings.TrimSpace(gitServer(t, dir, "rev-parse", "HEAD"))
+	srv.PutRoleCache(factoryID, tree.SourceCommit, dir)
 	t.Setenv("FACTORY_ROLE_SOURCE", dir)
 }
 
@@ -632,6 +635,32 @@ func TestRoleCacheIgnoresEnv(t *testing.T) {
 	}
 	if policy.PathTemplate != "org/agents/{slug}/{file}" {
 		t.Fatalf("template %s", policy.PathTemplate)
+	}
+	roleCacheMu.Lock()
+	delete(roleCache, fac.ID+"\x00"+strings.ToLower(tree.SourceCommit))
+	roleCacheMu.Unlock()
+	miss := nativeInvocation(t, env, fac.ID, "", "native:ta2:cache-miss")
+	prepareBundleGoal(t, env, fac.ID, miss, "")
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", miss, apiTree(tree, agentID, "")); err == nil || !strings.Contains(err.Error(), "absent object") {
+		t.Fatalf("missing cache entry opened: %v", err)
+	}
+	env.srv.PutRoleCache(fac.ID, tree.SourceCommit, rootDir)
+	if _, err := env.raw.Exec(ctx, `
+		INSERT INTO factories (id, name, alias, schema_version, definition_source)
+		SELECT $1, $2, '', schema_version, definition_source FROM factories WHERE id = $3`,
+		"fac_other", "other", fac.ID); err != nil {
+		t.Fatal(err)
+	}
+	otherInv := nativeInvocation(t, env, "fac_other", "", "native:ta2:other-factory")
+	prepareBundleGoal(t, env, "fac_other", otherInv, "")
+	if _, err := env.srv.OpenNativeTree(ctx, "other", otherInv, apiTree(tree, agentID, "")); err == nil || !strings.Contains(err.Error(), "absent object") {
+		t.Fatalf("factory without a cache entry opened: %v", err)
+	}
+	snap.tree.Factory.RoleSource = nil
+	bare := nativeInvocation(t, env, fac.ID, "", "native:ta2:no-role-source")
+	prepareBundleGoal(t, env, fac.ID, bare, "")
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", bare, apiTree(tree, agentID, "")); err == nil || !strings.Contains(err.Error(), "roleSource") {
+		t.Fatalf("role-files open without roleSource: %v", err)
 	}
 }
 

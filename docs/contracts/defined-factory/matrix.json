@@ -641,8 +641,8 @@
       "fieldPath": "delegationEdgeId,parentRunId",
       "baseline": {
         "file": "internal/store/native_runtime.go",
-        "start": 568,
-        "end": 568,
+        "start": 501,
+        "end": 501,
         "anchor": "parent_run_id is the stage predecessor"
       },
       "decision": "parent_run_id remains the stage predecessor. A delegation edge is a different id.",

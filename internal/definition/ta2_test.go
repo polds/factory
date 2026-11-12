@@ -70,7 +70,7 @@ func TestTA2WidgetAndDreamingLayouts(t *testing.T) {
 	if err := AttestRoleSource(context.Background(), widget, commit, tree, layout); err != nil {
 		t.Fatal(err)
 	}
-	dreaming := HistoricalRoleLayout()
+	dreaming := orgRoleLayout()
 	err := AttestRoleSource(context.Background(), widget, commit, tree, dreaming)
 	if err == nil || !strings.Contains(err.Error(), "absent object") {
 		t.Fatalf("org/agents should fail closed: %v", err)
@@ -88,7 +88,8 @@ func TestTA2WidgetAndDreamingLayouts(t *testing.T) {
 	}
 	ta2GitCommit(t, dream, "org")
 	dcommit := strings.TrimSpace(ta2GitOut(t, dream, "rev-parse", "HEAD"))
-	dlayout := HistoricalRoleLayout()
+	dlayout := orgRoleLayout()
+	dlayout.Root = "lead"
 	dlayout.Root = "lead"
 	dtree := ta2Load(t, dream, dlayout, []string{"lead"}, map[string][]byte{"lead": body}, dcommit, rosterLead(t))
 	if err := AttestRoleSource(context.Background(), dream, dcommit, dtree, dlayout); err != nil {
@@ -115,7 +116,7 @@ func TestTA2RosterWithoutMetaAcceptsLeadRole(t *testing.T) {
 	}
 	tree, err := LoadPinnedRoles(PinnedRoles{
 		Root: root, SourceCommit: "source-commit", RosterSHA256: ta2Sum(roster), RosterGitBlob: gitBlobID(roster),
-		Slugs: []string{"lead"}, ProofRoot: "lead", Files: pins,
+		Slugs: []string{"lead"}, ProofRoot: "lead", Files: pins, Layout: orgRoleLayout(),
 	})
 	if err != nil || persona(tree, "lead").Role != "lead" || persona(tree, "lead").ReportsTo != "" {
 		t.Fatalf("%+v %v", tree, err)

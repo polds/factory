@@ -120,6 +120,7 @@ func LoadTree(dir string) (definition.NativeTree, string, map[string]string, err
 		Root: dir, SourceCommit: pin,
 		RosterSHA256: hex.EncodeToString(sum[:]), RosterGitBlob: blobs[rosterRel],
 		Slugs: slugs, ProofRoot: root, Files: pins,
+		Layout: dreamingSeatLayout(rosterRel, files, root, seats.Implementer, seats.Reviewer),
 	})
 	if err != nil {
 		return definition.NativeTree{}, "", nil, err
@@ -158,6 +159,18 @@ var SeatSlugs = []string{"nils-aaberg", "beatriz-salgado", "viktor-halas", "oska
 
 // RoleFileNames are the four pinned files for each seat.
 var RoleFileNames = []string{"AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"}
+
+func dreamingLayout(roster string, files []string, root string) definition.RoleLayout {
+	return dreamingSeatLayout(roster, files, root, "viktor-halas", "oskar-lindgren")
+}
+
+func dreamingSeatLayout(roster string, files []string, root, implementer, reviewer string) definition.RoleLayout {
+	return definition.RoleLayout{
+		RosterPath: roster, PathTemplate: "org/agents/{slug}/{file}",
+		Files: append([]string{}, files...), MaxDepth: 2, AbsoluteMaxDepth: 8,
+		Root: root, Implementer: implementer, Reviewer: reviewer,
+	}
+}
 
 // BuildSynthetic writes a temp Dreaming-shaped tree with synthetic seat
 // text, commits it, and loads the frozen policy. File bodies are markers,
@@ -244,6 +257,7 @@ func buildCheckout(dir string, sentinel bool) (definition.NativeTree, string, ma
 		Slugs:         append([]string{}, SeatSlugs...),
 		ProofRoot:     "nils-aaberg",
 		Files:         pins,
+		Layout:        dreamingLayout("org/roster.yaml", RoleFileNames, "nils-aaberg"),
 	})
 	if err != nil {
 		return definition.NativeTree{}, "", nil, err

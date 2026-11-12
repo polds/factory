@@ -475,6 +475,22 @@ func writeBundleDefinition(t *testing.T, requires string) string {
 	mustWrite(t, filepath.Join(root, "factory.yaml"), `
 schemaVersion: v1alpha1
 name: pipe
+repositories:
+  - { codeForge: GITHUB, owner: example, name: fixture }
+roleSource:
+  repo: { codeForge: GITHUB, owner: example, name: fixture }
+  roster: { path: org/roster.yaml }
+  seats:
+    pathTemplate: "org/agents/{slug}/{file}"
+    files: [AGENTS.md, HEARTBEAT.md, SOUL.md, TOOLS.md]
+native:
+  limits: { maxDepth: 8, absoluteMaxDepth: 8 }
+  root: nils-aaberg
+  implementer: viktor-halas
+  reviewer: oskar-lindgren
+  seats: [nils-aaberg, beatriz-salgado, viktor-halas, oskar-lindgren]
+budget:
+  ceilingCents: 2500
 agentDefaults:
   model: auto
   runner: local
@@ -575,6 +591,12 @@ func pinnedRequest(root string, pins map[string]map[string][]byte) definition.Pi
 	return definition.PinnedRoles{
 		Root: root, SourceCommit: "source-commit", RosterSHA256: hex.EncodeToString(sum[:]), RosterGitBlob: bundleGitBlob(body),
 		Slugs: slugs, ProofRoot: "nils-aaberg", Files: files,
+		Layout: definition.RoleLayout{
+			RosterPath: "org/roster.yaml", PathTemplate: "org/agents/{slug}/{file}",
+			Files:            []string{"AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"},
+			MaxDepth:         definition.NativeProofMaxDepth,
+			AbsoluteMaxDepth: definition.NativeAbsoluteMaxDepth,
+		},
 	}
 }
 

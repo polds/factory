@@ -33,7 +33,7 @@ func TestDraftPublishRequiresReviewerPass(t *testing.T) {
 	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
 		t.Skip("FACTORY_TEST_DATABASE_URL unset")
 	}
-	env, tree := bootPublication(t)
+	env, tree, roleDir := bootPublication(t)
 	ctx := context.Background()
 	cases := []struct {
 		name   string
@@ -60,7 +60,7 @@ func TestDraftPublishRequiresReviewerPass(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fix := preparePublication(t, env, tree, tc.name, tc.full, tc.mode)
+			fix := preparePublication(t, env, tree, roleDir, tc.name, tc.full, tc.mode)
 			if tc.mode == "repo" {
 				t.Setenv(publishEnvRepo, "other/repo")
 			} else {
@@ -92,12 +92,12 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
 		t.Skip("FACTORY_TEST_DATABASE_URL unset")
 	}
-	env, tree := bootPublication(t)
+	env, tree, roleDir := bootPublication(t)
 	key := publishAppKey(t)
 	logBuf := &bytes.Buffer{}
 	env.srv.log = slog.New(slog.NewTextHandler(logBuf, nil))
 	t.Run("success", func(t *testing.T) {
-		fix := preparePublication(t, env, tree, "success", true, "open")
+		fix := preparePublication(t, env, tree, roleDir, "success", true, "open")
 		fake := newPublishGitHub(t, fix.sha, "")
 		armPublisher(t, env, key, fake)
 		wrap := gitArgLog(t)
@@ -136,7 +136,7 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		if fake.count("POST", "/repos/northstar-ai-labs/dreaming/pulls") != posts || fake.count("POST", "/northstar-ai-labs/dreaming.git/git-receive-pack") != packs {
 			t.Fatal("replay pushed or opened again")
 		}
-		second := preparePublication(t, env, tree, "second", true, "repo")
+		second := preparePublication(t, env, tree, roleDir, "second", true, "repo")
 		err := env.srv.publishDraft(context.Background(), "pipe", second.rootID)
 		assertReason(t, err, reasonIssue)
 		if fake.count("POST", "/northstar-ai-labs/dreaming.git/git-receive-pack") != packs {
@@ -145,7 +145,7 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		assertNoToken(t, env, fix, logBuf.String())
 	})
 	t.Run("before push", func(t *testing.T) {
-		fix := preparePublication(t, env, tree, "before-push", true, "open")
+		fix := preparePublication(t, env, tree, roleDir, "before-push", true, "open")
 		fake := newPublishGitHub(t, fix.sha, "")
 		fake.onToken = func() {
 			if _, err := env.srv.CancelNativeSubtree(context.Background(), "pipe", fix.rootID, true); err != nil {
@@ -164,7 +164,7 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		assertDetail(t, env, fix.invocationID, "root paused")
 	})
 	t.Run("before post", func(t *testing.T) {
-		fix := preparePublication(t, env, tree, "before-post", true, "open")
+		fix := preparePublication(t, env, tree, roleDir, "before-post", true, "open")
 		fake := newPublishGitHub(t, fix.sha, "")
 		fake.onReceive = func() {
 			if _, err := env.srv.CancelNativeSubtree(context.Background(), "pipe", fix.rootID, false); err != nil {
@@ -185,19 +185,19 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		assertState(t, env, fix.invocationID, store.DraftFailed)
 	})
 	t.Run("pause during pre-post list", func(t *testing.T) {
-		stopDuringPrePostList(t, env, tree, key, "pause-list", true, false)
+		stopDuringPrePostList(t, env, tree, roleDir, key, "pause-list", true, false)
 	})
 	t.Run("cancel during pre-post list", func(t *testing.T) {
-		stopDuringPrePostList(t, env, tree, key, "cancel-list", false, false)
+		stopDuringPrePostList(t, env, tree, roleDir, key, "cancel-list", false, false)
 	})
 	t.Run("pause during adopt list", func(t *testing.T) {
-		stopDuringPrePostList(t, env, tree, key, "pause-adopt", true, true)
+		stopDuringPrePostList(t, env, tree, roleDir, key, "pause-adopt", true, true)
 	})
 	t.Run("cancel during adopt list", func(t *testing.T) {
-		stopDuringPrePostList(t, env, tree, key, "cancel-adopt", false, true)
+		stopDuringPrePostList(t, env, tree, roleDir, key, "cancel-adopt", false, true)
 	})
 	t.Run("existing ref", func(t *testing.T) {
-		fix := preparePublication(t, env, tree, "existing-ref", true, "good")
+		fix := preparePublication(t, env, tree, roleDir, "existing-ref", true, "good")
 		fake := newPublishGitHub(t, fix.sha, "ref")
 		armPublisher(t, env, key, fake)
 		err := env.srv.publishDraft(context.Background(), "pipe", fix.rootID)
@@ -208,7 +208,7 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		assertState(t, env, fix.invocationID, store.DraftFailed)
 	})
 	t.Run("existing pr", func(t *testing.T) {
-		fix := preparePublication(t, env, tree, "existing-pr", true, "good")
+		fix := preparePublication(t, env, tree, roleDir, "existing-pr", true, "good")
 		fake := newPublishGitHub(t, fix.sha, "pr")
 		armPublisher(t, env, key, fake)
 		err := env.srv.publishDraft(context.Background(), "pipe", fix.rootID)
@@ -219,7 +219,7 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		assertState(t, env, fix.invocationID, store.DraftFailed)
 	})
 	t.Run("pulls forbidden", func(t *testing.T) {
-		fix := preparePublication(t, env, tree, "forbidden", true, "good")
+		fix := preparePublication(t, env, tree, roleDir, "forbidden", true, "good")
 		fake := newPublishGitHub(t, fix.sha, "403")
 		armPublisher(t, env, key, fake)
 		err := env.srv.publishDraft(context.Background(), "pipe", fix.rootID)
@@ -233,7 +233,7 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		assertState(t, env, fix.invocationID, store.DraftFailed)
 	})
 	t.Run("not draft", func(t *testing.T) {
-		fix := preparePublication(t, env, tree, "not-draft", true, "good")
+		fix := preparePublication(t, env, tree, roleDir, "not-draft", true, "good")
 		fake := newPublishGitHub(t, fix.sha, "not-draft")
 		armPublisher(t, env, key, fake)
 		err := env.srv.publishDraft(context.Background(), "pipe", fix.rootID)
@@ -250,7 +250,7 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		assertState(t, env, fix.invocationID, store.DraftFailed)
 	})
 	t.Run("head mismatch", func(t *testing.T) {
-		fix := preparePublication(t, env, tree, "mismatch", true, "good")
+		fix := preparePublication(t, env, tree, roleDir, "mismatch", true, "good")
 		fake := newPublishGitHub(t, fix.sha, "mismatch")
 		armPublisher(t, env, key, fake)
 		err := env.srv.publishDraft(context.Background(), "pipe", fix.rootID)
@@ -258,7 +258,7 @@ func TestPublisherRouteAllowlist(t *testing.T) {
 		assertState(t, env, fix.invocationID, store.DraftFailed)
 	})
 	t.Run("unprocessable", func(t *testing.T) {
-		fix := preparePublication(t, env, tree, "422", true, "good")
+		fix := preparePublication(t, env, tree, roleDir, "422", true, "good")
 		fake := newPublishGitHub(t, fix.sha, "422")
 		armPublisher(t, env, key, fake)
 		err := env.srv.publishDraft(context.Background(), "pipe", fix.rootID)
@@ -295,7 +295,7 @@ func (f pubFix) ref(t *testing.T, env *env) string {
 	return ref
 }
 
-func bootPublication(t *testing.T) (*env, definition.NativeTree) {
+func bootPublication(t *testing.T) (*env, definition.NativeTree, string) {
 	t.Helper()
 	env := boot(t, bootOpts{definition: func(t *testing.T) string {
 		return writeBundleDefinition(t, "")
@@ -305,14 +305,15 @@ func bootPublication(t *testing.T) (*env, definition.NativeTree) {
 	tree := loadBundleTree(t, rootDir, pins)
 	tree.SourceCommit = strings.TrimSpace(gitServer(t, rootDir, "rev-parse", "HEAD"))
 	t.Setenv("FACTORY_ROLE_SOURCE", rootDir)
-	return env, tree
+	return env, tree, rootDir
 }
 
-func preparePublication(t *testing.T, env *env, tree definition.NativeTree, key string, full bool, mode string) pubFix {
+func preparePublication(t *testing.T, env *env, tree definition.NativeTree, roleDir, key string, full bool, mode string) pubFix {
 	t.Helper()
 	ctx := context.Background()
 	fac, agentID, itemID, invocationID := nativeLeaseFixture(t, env, "pipe", "native:d6b:"+key, store.StagePlanning)
 	prepareBundleGoal(t, env, fac.ID, invocationID, itemID)
+	env.srv.PutRoleCache(fac.ID, tree.SourceCommit, roleDir)
 	opened, err := env.srv.OpenNativeTree(ctx, "pipe", invocationID, apiTree(tree, agentID, itemID))
 	if err != nil || opened.RootTaskID == "" {
 		t.Fatal(err)
@@ -447,9 +448,9 @@ func finishRoot(t *testing.T, env *env, fix pubFix, complete bool) pubFix {
 	return fix
 }
 
-func stopDuringPrePostList(t *testing.T, env *env, tree definition.NativeTree, key *rsa.PrivateKey, name string, pause, adopt bool) {
+func stopDuringPrePostList(t *testing.T, env *env, tree definition.NativeTree, roleDir string, key *rsa.PrivateKey, name string, pause, adopt bool) {
 	t.Helper()
-	fix := preparePublication(t, env, tree, name, true, "open")
+	fix := preparePublication(t, env, tree, roleDir, name, true, "open")
 	fake := newPublishGitHub(t, fix.sha, "")
 	if adopt {
 		ref, err := publicationRef(fix.invocationID)

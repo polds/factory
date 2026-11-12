@@ -425,64 +425,20 @@ func seatNames(policy store.NativePolicy) (implementer, reviewer string, ok bool
 	return policy.Implementer, policy.Reviewer, true
 }
 
-// bindDeclaration copies declared slugs onto the tree that will be frozen.
-// A definition with no native block keeps the previous depth pair so a
-// bundle opened before native.root existed still publishes. A native block
-// with an empty slug does not fall back to depth.
+// bindDeclaration copies the applied declaration onto the tree that will be
+// frozen. An omitted native block, or an empty slug, leaves that seat empty.
+// Depth does not choose the implementer or the reviewer.
 func (s *Server) bindDeclaration(tree definition.NativeTree) definition.NativeTree {
 	if layout := s.roleLayout(); layout.Declared() {
 		tree.RosterPath = layout.RosterPath
 		tree.PathTemplate = layout.PathTemplate
 		tree.SeatFiles = append([]string{}, layout.Files...)
 	}
-	native := s.nativeDeclaration()
-	if native != nil {
+	if native := s.nativeDeclaration(); native != nil {
 		tree.Implementer = native.Implementer
 		tree.Reviewer = native.Reviewer
-		return tree
-	}
-	if tree.Implementer != "" && tree.Reviewer != "" {
-		return tree
-	}
-	impl, rev, ok := inferLegacySeats(tree)
-	if !ok {
-		return tree
-	}
-	if tree.Implementer == "" {
-		tree.Implementer = impl
-	}
-	if tree.Reviewer == "" {
-		tree.Reviewer = rev
 	}
 	return tree
-}
-
-func inferLegacySeats(tree definition.NativeTree) (implementer, reviewer string, ok bool) {
-	checked, err := definition.ValidateNativeTree(tree)
-	if err != nil {
-		return "", "", false
-	}
-	children := map[string]int{}
-	for _, persona := range tree.Personas {
-		if persona.ReportsTo != "" {
-			children[persona.ReportsTo]++
-		}
-	}
-	var impls, leaves []string
-	for _, persona := range tree.Personas {
-		switch checked.Depth[persona.Name] {
-		case 2:
-			impls = append(impls, persona.Name)
-		case 1:
-			if children[persona.Name] == 0 {
-				leaves = append(leaves, persona.Name)
-			}
-		}
-	}
-	if len(impls) != 1 || len(leaves) != 1 {
-		return "", "", false
-	}
-	return impls[0], leaves[0], true
 }
 
 func (s *Server) nativeDeclaration() *definition.NativeDeclaration {
@@ -542,8 +498,8 @@ func (s *Server) checkOpenDepth(tree definition.NativeTree) error {
 
 // attestIfCommit rejects a role_files open whose sourceCommit is not 40 hex
 // before the policy insert. A frozen policy is returned as-is. A legacy tree
-// with no pins and no seat files is not a git lookup. The checkout is the
-// per-factory cache, then a checkout noted while the bundle was loaded.
+// with no pins and no seat files is not a git lookup. The checkout is only
+// the per-factory cache for (factory_id, source_commit).
 func (s *Server) attestIfCommit(ctx context.Context, factoryID, invocationID string, tree definition.NativeTree) error {
 	if invocationID != "" && s.store != nil {
 		_, err := s.store.GetNativePolicy(ctx, invocationID)
@@ -565,15 +521,11 @@ func (s *Server) attestIfCommit(ctx context.Context, factoryID, invocationID str
 	}
 	layout := s.roleLayout()
 	if !layout.Declared() {
-		layout = definition.HistoricalRoleLayout()
+		return errors.New("attest: roleSource: absent object")
 	}
 	dir := roleCacheDir(factoryID, tree.SourceCommit)
 	if dir == "" {
-		noted, ok := definition.RoleCheckoutFor(ctx, tree.SourceCommit)
-		if !ok {
-			return errors.New("attest: absent object")
-		}
-		dir = noted
+		return errors.New("attest: absent object")
 	}
 	return definition.AttestRoleSource(ctx, dir, tree.SourceCommit, tree, layout)
 }

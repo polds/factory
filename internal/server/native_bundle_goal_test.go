@@ -45,7 +45,11 @@ func TestNativeBundleHTTPHarnessCheckout(t *testing.T) {
 	}
 	dir, pins := rewriteBundle(t)
 	tree := loadBundleTree(t, dir, pins)
-	pinRoleSource(t, dir, &tree)
+	fac, err := env.srv.factory(ctx, "pipe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinRoleSource(t, env.srv, fac.ID, dir, &tree)
 	c := &client.Client{BaseURL: env.base, APIKey: env.apiKey}
 	wire, err := json.Marshal(clientBundleRequest(tree))
 	if err != nil || !strings.Contains(string(wire), `"bundleMode":"role_files"`) || !strings.Contains(string(wire), `"sourceCommit"`) {
@@ -68,7 +72,7 @@ func TestNativeBundleHTTPHarnessCheckout(t *testing.T) {
 	if _, err := c.OpenNativeTree(ctx, "pipe", unknownID, unknown); err == nil || countQuery(t, env, `SELECT count(*) FROM native_policies WHERE invocation_id = $1`, unknownID) != 0 {
 		t.Fatal("unknown mode opened")
 	}
-	fac, err := env.srv.factory(ctx, "pipe")
+	fac, err = env.srv.factory(ctx, "pipe")
 	if err != nil {
 		t.Fatal(err)
 	}
