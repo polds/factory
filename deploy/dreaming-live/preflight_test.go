@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/polds/factory/internal/harness"
+	"github.com/polds/factory/internal/modelinfo"
 )
 
 func TestOfflineMatrix(t *testing.T) {
@@ -36,7 +37,7 @@ func TestModelInfoFallbacks(t *testing.T) {
 	// litellm_params.fallbacks is the list on the model. router_settings.fallbacks
 	// is the alternate shape, [{model: [fallback]}]. Rates are USD/token in model_info.
 	direct := []byte(modelInfoBody())
-	price, ok := priceFromModelInfo(direct)
+	price, ok := modelinfo.PriceFromModelInfo(direct, ModelID)
 	if !ok {
 		t.Fatal("litellm_params.fallbacks")
 	}
@@ -54,10 +55,10 @@ func TestModelInfoFallbacks(t *testing.T) {
 	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}
 	  }]
 	}`)
-	if _, ok := priceFromModelInfo(router); !ok {
+	if _, ok := modelinfo.PriceFromModelInfo(router, ModelID); !ok {
 		t.Fatal("router_settings.fallbacks")
 	}
-	if _, ok := priceFromModelInfo([]byte(`{"data":[{"model_name":"` + ModelID + `","model_info":{"input_cost_per_token":1,"output_cost_per_token":1}}]}`)); ok {
+	if _, ok := modelinfo.PriceFromModelInfo([]byte(`{"data":[{"model_name":"`+ModelID+`","model_info":{"input_cost_per_token":1,"output_cost_per_token":1}}]}`), ModelID); ok {
 		t.Fatal("missing fallback list was accepted")
 	}
 }

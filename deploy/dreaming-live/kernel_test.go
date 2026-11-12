@@ -49,6 +49,10 @@ func TestDriverKernelAncestors(t *testing.T) {
 	sweepLog := filepath.Join(t.TempDir(), "sweep")
 	var chats int
 	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/model/info" {
+			_, _ = io.WriteString(w, modelInfoBody())
+			return
+		}
 		if !strings.Contains(r.URL.Path, "chat") {
 			w.Header().Set("x-litellm-response-cost", "0.01")
 			_, _ = io.WriteString(w, `{"model":"`+ModelID+`","choices":[{"message":{"role":"assistant","content":"done"}}]}`)

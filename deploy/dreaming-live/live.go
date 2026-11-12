@@ -110,10 +110,6 @@ func bootAndRunChain(ctx context.Context) error {
 	if modelURL == "" || modelKey == "" {
 		return errors.New("M1 inference env")
 	}
-	price, err := json.Marshal(workedPrice())
-	if err != nil {
-		return err
-	}
 	def, err := liveDefinition()
 	if err != nil {
 		return err
@@ -139,7 +135,8 @@ func bootAndRunChain(ctx context.Context) error {
 		DatabaseURL: pool, APIKey: apiKey, WorkerAPIKey: workerKey,
 		DefinitionPath: def, TaskServerURL: "http://127.0.0.1:1",
 		InferenceBaseURL: modelURL, InferenceAPIKey: modelKey,
-		SpendPrice: string(price), WorkerPool: "standard", WorkerPlatform: "linux",
+		InferenceModel: ModelID, SpendCapCents: WMaxCents,
+		WorkerPool: "standard", WorkerPlatform: "linux",
 		WorkerMaxConcurrent: 2, ScheduleGate: make(chan struct{}), Console: "off",
 		GitHubAppID: appID, GitHubAppKey: key,
 		GitHubAPIBase: strings.TrimSpace(os.Getenv("FACTORY_GITHUB_API_BASE")),
@@ -157,6 +154,10 @@ func bootAndRunChain(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = srv.Close() }()
+	price := srv.SpendPrice()
+	if strings.TrimSpace(price) == "" {
+		return errors.New("spend price")
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -178,7 +179,7 @@ func bootAndRunChain(ctx context.Context) error {
 	scrubDriverSecrets()
 	result, err := RunLive(ctx, ChainInput{
 		Server: srv, Store: st, DSN: raw, BaseURL: "http://" + ln.Addr().String(),
-		APIKey: apiKey, ModelURL: modelURL, ModelKey: modelKey, Price: string(price),
+		APIKey: apiKey, ModelURL: modelURL, ModelKey: modelKey, Price: price,
 		Tree: tree, RoleDir: role, Ceiling: CeilingCents, Mode: "live",
 	})
 	if err != nil {
