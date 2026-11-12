@@ -28,6 +28,9 @@ What is still a process singleton, and what replaces it:
 | One publish repo | `publishRepo` and `FACTORY_PUBLISH_DRAFT_REPO` (`internal/server/publish_draft.go:18-21`, `internal/server/publish_draft.go:92-95`) | `publish` on the factory. A run may narrow issue key, title, body, and ref prefix. It may not name a repo outside the factory. |
 | One role checkout | `FACTORY_ROLE_SOURCE` (`internal/server/produced_bundle.go:468-472`) | A cache entry `(factory_id, source_commit)` filled from the factory's role repo. |
 | One GitHub App | `Config.GitHubAppID`, `Config.GitHubAppKey` (`internal/server/server.go:82-83`) | Stays a deployment credential. Every minted token is for one repo that the calling factory lists. |
+| One inference gateway | `Config.InferenceBaseURL`, set from `FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL` (`internal/server/server.go:41`, `cmd/factoryd/config.go:115`). Assignment copies it to `OPENAI_BASE_URL` when ambient inference is on (`internal/server/assign.go:90-91`). The companion `InferenceAPIKey` is the same deployment secret (`cmd/factoryd/config.go:116`). | Stays a deployment singleton. Every factory on the process uses this URL. `omitAmbientInference` skips it for a scanner, native, or claude-code harness, and for a read-only forge target (`internal/server/native_assignment.go:103-105`, `internal/server/native_assignment.go:130-138`). |
+
+Per-factory gateways are a later option. The definition schema already accepts `inference.providers[].baseUrl` (`internal/definition/types.go:357`, `docs/03-definition-schema.md:122`). Assignment does not read that field. TA-1 through TA-5 do not route model calls per factory. A factory that needs a different gateway runs in its own deployment, with its own `InferenceBaseURL`. Rate documents stay per factory either way.
 
 A factory cannot read another factory's runs, role bytes, secret values, or publication rows, and cannot charge another factory's ceiling. Two factories may list the same repo. That overlap is explicit in both definitions. The installation token for a call still names only the one repo of that call. Spend, secrets, and runs stay on the calling factory.
 
@@ -281,12 +284,16 @@ The second fixture is `examples/widget-factory/`. One repo `example/widget`. Rol
 | GitHub App id and private key | Chart secret, one per deployment | Operator credential used to mint installation tokens. Not an agent secret. Not a repo name. |
 | Bootstrap definition | `controlPlane.definition` | One smoke factory so `helm install` still serves a tree. |
 | Default `inference.rates` | Optional chart value | Copied onto a factory at apply when that factory omits rates. Not read live at reserve time. |
+| `InferenceBaseURL` | Chart env or process env `FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL` | One gateway for the deployment. Not a per-factory field in TA. |
+| `workers[].securityProfile` | Chart worker entry | Replaces `workers[].proof` (`deploy/helm/factory/values.yaml:233`, [PR #199](https://github.com/polds/factory/pull/199)). `locked` is today's proof behavior. The chart does not gain a target repo. |
 | Provider API keys | Chart secrets | Deployment credentials. Injected for a factory only through that factory's grants. |
 | Repositories, role paths, hierarchy limits, publish, evidence, models, secret names | Factory definition | Per factory. Several factories per release. |
 | Secret values | Kubernetes secret keys named by factory id and secret name | The definition stores the name. Lookup is `(factory_id, name)`. |
 | Denylist | `scripts/target-denylist.txt` in this repo | CI for Factory's own tree. Not a chart value. |
 
-`values.yaml` does not gain a target repo, an issue key, a role path, or a persona list.
+`values.yaml` does not gain a target repo, an issue key, a role path, or a persona list. `global.image.registry` stays `ghcr.io/acme` (`deploy/helm/factory/values.yaml:5`) through TA-5.
+
+`workers[].proof: true` is the locked worker from PR #199. The template fails the render when that flag is set and `setupCommand` or `teardownCommand` is set, and it omits both keys otherwise (`deploy/helm/factory/templates/_worker.tpl:125-127`, `deploy/helm/factory/templates/_worker.tpl:147-154`). `docs/06-execution-backends.md:252` records the same rule. TA-5 generalizes the flag into `securityProfile`. The only non-default value in TA is `locked`, with that same render rule. An empty profile, or `standard`, still renders a configured command. The example worker's name, pool, and worker id change from `proof` to `locked` so the chart example is not a proof pool. Golden files and `deploy/helm/factory/tests/proof-worker.sh` update with the render. That slice does not publish images, change the registry, or add a replica.
 
 ## Conformance suite
 
@@ -420,10 +427,13 @@ MODE=offline ./spike/dreaming/run_test.sh
 
 Paths: `e2e/conformance/**`, `examples/dreaming-definition/**`, `examples/widget-factory/**`, `.github/workflows/conformance-live.yml`, `.github/workflows/ci.yml`. Delete `deploy/dreaming-live/**`, `spike/dreaming/**`, `.github/workflows/dreaming-live.yml`. Update the D6 paragraph in `docs/12-build-sequence.md` so the command is the conformance script.
 
+The same PR renames the Helm proof worker. Paths for that slice only: `deploy/helm/factory/values.yaml`, `deploy/helm/factory/templates/_worker.tpl`, `deploy/helm/factory/tests/proof-worker.sh`, `deploy/helm/factory/tests/golden/**`, `docs/06-execution-backends.md`. `workers[].proof` becomes `securityProfile: locked`. The render rule stays the one in `_worker.tpl:125-154`. The example worker name, pool, and worker id become `locked`. This slice does not change `global.image.registry`, replica count, or any other chart value.
+
 Acceptance:
 
 - `MODE=offline ./e2e/conformance/run_test.sh` prints `conformance offline PASS`, covers the old P1–P14 failure rows and the secure case, and runs the widget isolation checks.
-- The live workflow's inputs are the definition path, `confirm`, `factory_sha`, and role blob ids. A checkout of the workflow file contains no denylist token.
+- The live workflow's inputs are one definition path, `confirm`, `factory_sha`, and role blob ids. A checkout of the workflow file contains no denylist token. A second definition path is not an input.
+- `helm template` fails when `securityProfile: locked` is combined with `setupCommand` or `teardownCommand`, and a locked worker's rendered config has neither key. A worker with no profile still renders a configured command. `workers[].proof` is gone. `global.image.registry` is still `ghcr.io/acme`.
 - Example definitions contain paths and blob ids and do not contain role file bodies.
 - The denylist script still exits 0.
 - No step dispatches the live workflow.
@@ -444,11 +454,14 @@ TA ends at TA-5. The following stay later work.
 | Item | Where it goes |
 | --- | --- |
 | Filling `inference.rates` from a live gateway | Issue #217. The ceiling hard stop already stands without it. |
+| Per-factory inference gateways | Later. `InferenceBaseURL` stays the deployment singleton. `inference.providers[].baseUrl` is the hook that later work would honor. |
 | A distinct GitHub App key per factory | A later deployment feature. One App installed on each listed repo is enough for TA. |
 | `dotted_to` as a delegation edge, and `allowAncestorShortcut` | A later contract change. Both stay refused. |
 | Merge, ready, labels, review requests, or comments on the published pull request | Stays out. The publisher remains draft-only. |
 | Console UI for many factories | Later. TA does not edit `web/console/`. |
-| More than one `factoryd` replica sharing API-backed definitions | M8, as [10](10-kubernetes-and-helm.md#m7-applied) already records. |
+| More than one `factoryd` replica sharing API-backed definitions | Later self-host milestone. M8, as [10](10-kubernetes-and-helm.md#m7-applied) already records (`docs/10-kubernetes-and-helm.md:392-395`). Not TA-1 through TA-5. |
+| Helm image publishing | Later self-host milestone. `global.image.registry` stays `ghcr.io/acme` (`deploy/helm/factory/values.yaml:5`). TA does not publish images. |
+| Two definition paths on the live workflow | Later self-host milestone. TA-5 takes one `definition` input per dispatch. The offline suite runs both factories from checked-in paths. |
 | Untrusted operators sharing one database | Out of the product. One Helm release is one operator. |
 | Scanner acceptance, Linear, and the improvement-loop reviewer pools | Unchanged milestones. |
 | Dispatching the live workflow | The orchestrator, after preflight, on a merged SHA. Not an agent. |
@@ -463,6 +476,14 @@ One GitHub App per deployment. The factory's `repositories` list is the allowlis
 
 Global hierarchy cap is 8, today's `NativeAbsoluteMaxDepth`. Raising it is a contract change, not a definition field.
 
-## Open questions
+`InferenceBaseURL` stays one gateway per deployment. Draft-only publish stays. One GitHub App key per deployment stays.
 
-None.
+## Later self-host milestone
+
+These are out of scope for TA-1 through TA-5. They are not open questions for this design.
+
+| Item | Pointer |
+| --- | --- |
+| Helm image publishing | The chart still uses the `ghcr.io/acme` placeholder (`deploy/helm/factory/values.yaml:5`). Publishing images and replacing that registry is later work. |
+| Multi-replica store | With the operator, rendering fails unless `controlPlane.replicas` is 1, because API-backed definitions are per pod (`docs/10-kubernetes-and-helm.md:392-395`). A shared store for more than one factoryd replica is M8. |
+| Live workflow inputs | TA-5 accepts one definition path per dispatch. Whether that workflow should accept two definition paths, one per factory, is a later choice. The offline conformance suite already loads both checked-in factories in one process. |

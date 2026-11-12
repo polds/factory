@@ -466,9 +466,9 @@ The driver prints `m10 offline PASS`. The same definition covers two schedule sl
 
 Design: [16](16-target-agnostic-core.md). One self-hosted `factoryd` serves many factories. Each factory is a registered definition with its own repos, role-source paths, hierarchy limits, publish target, evidence paths, secret grants, and snapshotted spend rates. Dreaming is one example factory. The conformance suite also runs a second synthetic factory so isolation is part of the proof.
 
-Five PRs, in order: schema, role source and hierarchy, publish/evidence/price, the denylist CI guard, then the conformance suite. Offline tests stay green on every PR. The last PR deletes `deploy/dreaming-live` and `spike/dreaming`, and points the manual live workflow at a definition file. That workflow stays `workflow_dispatch` only.
+Five PRs, in order: schema, role source and hierarchy, publish/evidence/price, the denylist CI guard, then the conformance suite. Offline tests stay green on every PR. The last PR deletes `deploy/dreaming-live` and `spike/dreaming`, points the manual live workflow at one definition file, and replaces Helm `workers[].proof` with `securityProfile: locked`. That workflow stays `workflow_dispatch` only. The inference gateway URL stays a deployment singleton.
 
-Out of scope for TA: live gateway rate fetch ([#217](https://github.com/polds/factory/issues/217) fills the per-factory price document), a GitHub App key per factory, dotted-line grants, ancestor shortcut, merge or ready publish, the console, and multi-replica definition storage (M8).
+Out of scope for TA: live gateway rate fetch ([#217](https://github.com/polds/factory/issues/217) fills the per-factory price document), per-factory inference gateways, a GitHub App key per factory, dotted-line grants, ancestor shortcut, merge or ready publish, the console, and the later self-host milestone (Helm image publishing, the multi-replica store, and a live workflow that accepts two definition paths).
 
 ## D6 — Live-run preflight and draft publication
 

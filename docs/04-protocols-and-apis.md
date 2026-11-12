@@ -173,7 +173,13 @@ reason.
 ## 2. REST API
 
 `/api/v1`, JSON, `application/problem+json` for errors. Bearer tokens (service account
-keys) or OIDC access tokens. `X-Factory-Team` header scopes multi-tenant deployments.
+keys) or OIDC access tokens. The factory uid in the path is the tenant
+([16](16-target-agnostic-core.md#tenancy)). There is no `X-Factory-Team` header.
+`Server.factory` loads that uid (`internal/server/backend.go:209`). A run, a
+secret grant, or a publish for a different factory fails closed. The worker
+websocket still reserves the `factory` worker-id prefix for a key whose team
+is `factory` (`internal/gateway/gateway.go:130-135`). That check is not a
+factory selector.
 
 The shape follows the observed Oz Agent API (O9) because it is a reasonable
 decomposition and because matching it lets existing SDK-shaped tooling port.
