@@ -115,6 +115,14 @@ spec:
                 type: object
               alias:
                 type: string
+              budget:
+                description: BudgetSpec is the factory-wide hard stop.
+                properties:
+                  ceilingCents:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                type: object
               codeForges:
                 items:
                   type: string
@@ -125,6 +133,22 @@ spec:
                 type: string
               displayName:
                 type: string
+              evidence:
+                description: EvidenceSpec is the oracle package frozen on the definition.
+                properties:
+                  break:
+                    maxLength: 64
+                    minLength: 1
+                    type: string
+                  mutation:
+                    type: string
+                  package:
+                    type: string
+                  sentinel:
+                    maxLength: 64
+                    minLength: 1
+                    type: string
+                type: object
               files:
                 description: Files is the lossless factory.yaml. When set, convert
                   prefers it.
@@ -174,6 +198,41 @@ spec:
                           type: string
                       type: object
                     type: object
+                  rates:
+                    description: SpendRateSpec is the spend price document on inference.rates.
+                    properties:
+                      max_tokens:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      models:
+                        items:
+                          description: ModelRateSpec is one model in inference.rates.
+                            Costs are decimal USD per token.
+                          properties:
+                            cache_creation_input_token_cost:
+                              type: string
+                            input_above:
+                              items:
+                                type: string
+                              type: array
+                            input_cost_per_token:
+                              type: string
+                            name:
+                              type: string
+                            output_above:
+                              items:
+                                type: string
+                              type: array
+                            output_cost_per_token:
+                              type: string
+                          type: object
+                        type: array
+                      prompt_byte_cap:
+                        format: int64
+                        minimum: 0
+                        type: integer
+                    type: object
                 type: object
               mcpServers:
                 additionalProperties:
@@ -194,6 +253,36 @@ spec:
                     url:
                       type: string
                   type: object
+                type: object
+              native:
+                description: NativeSpec is the hierarchy limit and seat selection.
+                properties:
+                  implementer:
+                    type: string
+                  limits:
+                    description: NativeLimitSpec is maxDepth and absoluteMaxDepth.
+                      Each is 1..8.
+                    properties:
+                      absoluteMaxDepth:
+                        format: int32
+                        maximum: 8
+                        minimum: 1
+                        type: integer
+                      maxDepth:
+                        format: int32
+                        maximum: 8
+                        minimum: 1
+                        type: integer
+                    type: object
+                  reviewer:
+                    type: string
+                  root:
+                    type: string
+                  seats:
+                    items:
+                      type: string
+                    maxItems: 256
+                    type: array
                 type: object
               pipeline:
                 description: PipelineSpec is the declarative stage machine.
@@ -226,10 +315,42 @@ spec:
                       type: string
                     type: array
                 type: object
+              publish:
+                description: PublishSpec is the draft-publication declaration.
+                properties:
+                  body:
+                    type: string
+                  enabled:
+                    type: boolean
+                  issueKey:
+                    type: string
+                  refPrefix:
+                    type: string
+                  repo:
+                    description: RepositoryRef is a code-forge repository.
+                    properties:
+                      codeForge:
+                        type: string
+                      deferred:
+                        type: boolean
+                      name:
+                        type: string
+                      owner:
+                        type: string
+                    type: object
+                  title:
+                    type: string
+                type: object
               repositories:
                 items:
-                  description: RepositoryRef is a code-forge repository.
+                  description: |-
+                    FactoryRepositorySpec is one factory.spec.repositories entry.
+                    CeilingCents is the optional per-repo hard stop.
                   properties:
+                    ceilingCents:
+                      format: int64
+                      minimum: 1
+                      type: integer
                     codeForge:
                       type: string
                     deferred:
@@ -240,6 +361,43 @@ spec:
                       type: string
                   type: object
                 type: array
+              roleSource:
+                description: RoleSourceSpec is the role-file layout declared on the
+                  factory.
+                properties:
+                  repo:
+                    description: RepositoryRef is a code-forge repository.
+                    properties:
+                      codeForge:
+                        type: string
+                      deferred:
+                        type: boolean
+                      name:
+                        type: string
+                      owner:
+                        type: string
+                    type: object
+                  roster:
+                    description: RosterSourceSpec is the roster path inside the role
+                      repo.
+                    properties:
+                      path:
+                        type: string
+                    type: object
+                  seats:
+                    description: SeatFileSpec is the seat path template and ordered
+                      file list.
+                    properties:
+                      files:
+                        items:
+                          type: string
+                        maxItems: 16
+                        minItems: 1
+                        type: array
+                      pathTemplate:
+                        type: string
+                    type: object
+                type: object
               schemaVersion:
                 type: string
               scorerDefaults:
@@ -324,6 +482,14 @@ spec:
                     == (has(self.reviewerEmails) && self.reviewerEmails.exists(e,
                     size(e.trim()) > 0))
             type: object
+            x-kubernetes-validations:
+            - message: budget.ceilingCents is required when publish.enabled is true
+              rule: '!has(self.publish) || !has(self.publish.enabled) || self.publish.enabled
+                == false || (has(self.budget) && has(self.budget.ceilingCents) &&
+                self.budget.ceilingCents > 0)'
+            - message: budget.ceilingCents is required when roleSource is set
+              rule: '!has(self.roleSource) || (has(self.budget) && has(self.budget.ceilingCents)
+                && self.budget.ceilingCents > 0)'
           status:
             description: FactoryStatus is the operator's view of a Factory.
             properties:

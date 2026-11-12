@@ -96,6 +96,8 @@ func loadFactory(root string, tree *Tree, diags *[]Diagnostic) (map[string]any, 
 		addDiag(diags, file, 1, SeverityError, "invalid YAML: "+err.Error())
 	} else {
 		validateSelfImprovement(raw, tree.Factory.SelfImprovement, lines, diags)
+		applyDeclarationDefaults(&tree.Factory, raw)
+		validateDeclaration(&tree.Factory, raw, lines, diags)
 	}
 	recordApprovalLines(tree, lines)
 	return raw, lines

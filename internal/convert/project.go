@@ -189,6 +189,11 @@ func factoryObject(tree *definition.Tree, files []v1alpha1.SourceFile, ns string
 			Alias:              f.Alias,
 			CodeForges:         append([]string{}, f.CodeForges...),
 			Repositories:       repos(f.Repositories),
+			RoleSource:         roleSourceSpec(f.RoleSource),
+			Native:             nativeSpec(f.Native),
+			Publish:            publishSpec(f.Publish),
+			Evidence:           evidenceSpec(f.Evidence),
+			Budget:             budgetSpec(f.Budget),
 			CredentialStrategy: f.CredentialStrategy,
 			Secrets:            namesOnly(f.Secrets),
 			SecretRefs:         secretRefs(f.Secrets),
@@ -268,7 +273,7 @@ func agentObject(factoryName, name string, agent definition.Agent, files []v1alp
 		CredentialStrategy: agent.CredentialStrategy,
 		MaxTurns:           int32(agent.MaxTurns),
 		WorkerHost:         agent.WorkerHost,
-		RequiredRepos:      repos(agent.RequiredRepos),
+		RequiredRepos:      repoRefs(agent.RequiredRepos),
 		Secrets:            namesOnly(agent.Secrets),
 		SecretRefs:         secretRefs(agent.Secrets),
 		MCPServers:         mcp,
@@ -307,7 +312,7 @@ func automationObject(factoryName, name string, auto definition.Automation, file
 		Harness:       harnessSpec(auto.Harness),
 		Runner:        auto.Runner,
 		Pool:          auto.Pool,
-		RequiredRepos: repos(auto.RequiredRepos),
+		RequiredRepos: repoRefs(auto.RequiredRepos),
 		Secrets:       namesOnly(auto.Secrets),
 		SecretRefs:    secretRefs(auto.Secrets),
 		MCPServers:    mcp,
@@ -435,13 +440,32 @@ func ref(name string) *v1alpha1.LocalRef {
 	return &v1alpha1.LocalRef{Name: name}
 }
 
-func repos(in []definition.Repository) []v1alpha1.RepositoryRef {
+func repoRefs(in []definition.Repository) []v1alpha1.RepositoryRef {
 	if len(in) == 0 {
 		return nil
 	}
 	out := make([]v1alpha1.RepositoryRef, len(in))
 	for i, repo := range in {
 		out[i] = v1alpha1.RepositoryRef{CodeForge: repo.CodeForge, Owner: repo.Owner, Name: repo.Name, Deferred: repo.Deferred}
+	}
+	return out
+}
+
+func repos(in []definition.Repository) []v1alpha1.FactoryRepositorySpec {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]v1alpha1.FactoryRepositorySpec, len(in))
+	for i, repo := range in {
+		out[i] = v1alpha1.FactoryRepositorySpec{
+			RepositoryRef: v1alpha1.RepositoryRef{
+				CodeForge: repo.CodeForge,
+				Owner:     repo.Owner,
+				Name:      repo.Name,
+				Deferred:  repo.Deferred,
+			},
+			CeilingCents: repo.CeilingCents,
+		}
 	}
 	return out
 }
@@ -550,7 +574,90 @@ func inferenceSpec(in *definition.Inference) (*v1alpha1.InferenceSpec, error) {
 			}
 		}
 	}
+	spec.Rates = rateSpec(in.Rates)
 	return spec, nil
+}
+
+func roleSourceSpec(in *definition.RoleSource) *v1alpha1.RoleSourceSpec {
+	if in == nil {
+		return nil
+	}
+	return &v1alpha1.RoleSourceSpec{
+		Repo:   v1alpha1.RepositoryRef{CodeForge: in.Repo.CodeForge, Owner: in.Repo.Owner, Name: in.Repo.Name, Deferred: in.Repo.Deferred},
+		Roster: v1alpha1.RosterSourceSpec{Path: in.Roster.Path},
+		Seats:  v1alpha1.SeatFileSpec{PathTemplate: in.Seats.PathTemplate, Files: append([]string{}, in.Seats.Files...)},
+	}
+}
+
+func nativeSpec(in *definition.NativeDeclaration) *v1alpha1.NativeSpec {
+	if in == nil {
+		return nil
+	}
+	return &v1alpha1.NativeSpec{
+		Limits: v1alpha1.NativeLimitSpec{
+			MaxDepth:         int32(in.Limits.MaxDepth),
+			AbsoluteMaxDepth: int32(in.Limits.AbsoluteMaxDepth),
+		},
+		Root:        in.Root,
+		Implementer: in.Implementer,
+		Reviewer:    in.Reviewer,
+		Seats:       append([]string{}, in.Seats...),
+	}
+}
+
+func publishSpec(in *definition.Publish) *v1alpha1.PublishSpec {
+	if in == nil {
+		return nil
+	}
+	spec := &v1alpha1.PublishSpec{
+		Enabled:   in.Enabled,
+		IssueKey:  in.IssueKey,
+		RefPrefix: in.RefPrefix,
+		Title:     redactText(in.Title),
+		Body:      redactText(in.Body),
+	}
+	if in.Repo != nil {
+		repo := *in.Repo
+		spec.Repo = &v1alpha1.RepositoryRef{CodeForge: repo.CodeForge, Owner: repo.Owner, Name: repo.Name, Deferred: repo.Deferred}
+	}
+	return spec
+}
+
+func evidenceSpec(in *definition.Evidence) *v1alpha1.EvidenceSpec {
+	if in == nil {
+		return nil
+	}
+	return &v1alpha1.EvidenceSpec{
+		Package:  in.Package,
+		Mutation: in.Mutation,
+		Sentinel: in.Sentinel,
+		Break:    in.Break,
+	}
+}
+
+func budgetSpec(in *definition.Budget) *v1alpha1.BudgetSpec {
+	if in == nil {
+		return nil
+	}
+	return &v1alpha1.BudgetSpec{CeilingCents: in.CeilingCents}
+}
+
+func rateSpec(in *definition.InferenceRates) *v1alpha1.SpendRateSpec {
+	if in == nil {
+		return nil
+	}
+	spec := &v1alpha1.SpendRateSpec{PromptByteCap: in.PromptByteCap, MaxTokens: in.MaxTokens}
+	for _, model := range in.Models {
+		spec.Models = append(spec.Models, v1alpha1.ModelRateSpec{
+			Name:                        model.Name,
+			InputCostPerToken:           model.InputCostPerToken,
+			OutputCostPerToken:          model.OutputCostPerToken,
+			CacheCreationInputTokenCost: model.CacheCreationInputTokenCost,
+			InputAbove:                  append([]string{}, model.InputAbove...),
+			OutputAbove:                 append([]string{}, model.OutputAbove...),
+		})
+	}
+	return spec
 }
 
 func scorerDefaults(in *definition.ScorerDefaults) (*v1alpha1.ScorerDefaultsSpec, error) {
