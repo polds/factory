@@ -27,6 +27,42 @@ func TestDuplicateDeploymentUsesHigherRate(t *testing.T) {
 	}
 }
 
+func TestUnpricedSiblingDeploymentFails(t *testing.T) {
+	raw := []byte(`{
+	  "data": [{
+	    "model_name": "m",
+	    "litellm_params": {"fallbacks": ["f"]},
+	    "model_info": {"input_cost_per_token": null, "output_cost_per_token": null}
+	  }, {
+	    "model_name": "m",
+	    "litellm_params": {"fallbacks": ["f"]},
+	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}
+	  }, {
+	    "model_name": "f",
+	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}
+	  }]
+	}`)
+	if _, ok := PriceFromModelInfo(raw, "m"); ok {
+		t.Fatal("null sibling was priced")
+	}
+	raw = []byte(`{
+	  "data": [{
+	    "model_name": "m",
+	    "litellm_params": {"fallbacks": ["f"]}
+	  }, {
+	    "model_name": "m",
+	    "litellm_params": {"fallbacks": ["f"]},
+	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}
+	  }, {
+	    "model_name": "f",
+	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}
+	  }]
+	}`)
+	if _, ok := PriceFromModelInfo(raw, "m"); ok {
+		t.Fatal("deployment without model_info was priced")
+	}
+}
+
 func TestExplicitEmptyFallbackListSkipsRouter(t *testing.T) {
 	raw := []byte(`{
 	  "router_settings": {"fallbacks": [{"m": ["f"]}]},

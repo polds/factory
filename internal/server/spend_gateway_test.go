@@ -120,6 +120,21 @@ func TestOpenSpendRatesFailBeforeRun(t *testing.T) {
 	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}
 	  }]
 	}`
+	// One deployment of the primary has null rates. A priced sibling must not cover it.
+	unpricedSibling := `{
+	  "data": [{
+	    "model_name": "metered-primary",
+	    "litellm_params": {"fallbacks": ["metered-fallback"]},
+	    "model_info": {"input_cost_per_token": null, "output_cost_per_token": null}
+	  }, {
+	    "model_name": "metered-primary",
+	    "litellm_params": {"fallbacks": ["metered-fallback"]},
+	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}
+	  }, {
+	    "model_name": "metered-fallback",
+	    "model_info": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}
+	  }]
+	}`
 	cases := []struct {
 		name   string
 		status int
@@ -130,6 +145,7 @@ func TestOpenSpendRatesFailBeforeRun(t *testing.T) {
 		{name: "missing fallback rate", status: http.StatusOK, body: missing},
 		{name: "W over cap", status: http.StatusOK, body: valid},
 		{name: "duplicate primary keeps pricier deployment", status: http.StatusOK, body: duplicatePrimary},
+		{name: "unpriced sibling deployment", status: http.StatusOK, body: unpricedSibling},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

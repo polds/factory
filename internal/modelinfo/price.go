@@ -118,12 +118,12 @@ func rateFor(name string, data []infoEntry, idxs []int) (harness.ModelRate, bool
 	for _, i := range idxs {
 		infos = append(infos, data[i].Info)
 	}
-	in, ok := maxField(infos, "input_cost_per_token")
-	if !ok || in == "" {
+	in, ok := requiredMaxField(infos, "input_cost_per_token")
+	if !ok {
 		return harness.ModelRate{}, false
 	}
-	out, ok := maxField(infos, "output_cost_per_token")
-	if !ok || out == "" {
+	out, ok := requiredMaxField(infos, "output_cost_per_token")
+	if !ok {
 		return harness.ModelRate{}, false
 	}
 	cache, ok := maxField(infos, "cache_creation_input_token_cost")
@@ -146,6 +146,35 @@ func rateFor(name string, data []infoEntry, idxs []int) (harness.ModelRate, bool
 		InputAbove:                  aboveIn,
 		OutputAbove:                 aboveOut,
 	}, true
+}
+
+// requiredMaxField is the maximum of key across every deployment.
+// A missing, null, or unparseable value on any deployment fails closed.
+func requiredMaxField(infos []map[string]json.RawMessage, key string) (string, bool) {
+	if len(infos) == 0 {
+		return "", false
+	}
+	var best string
+	var bestRate *big.Rat
+	for _, info := range infos {
+		raw, ok := info[key]
+		if !ok {
+			return "", false
+		}
+		text := rawNumber(raw)
+		if text == "" || text == "null" {
+			return "", false
+		}
+		rate, ok := parseRate(text)
+		if !ok {
+			return "", false
+		}
+		if bestRate == nil || rate.Cmp(bestRate) > 0 {
+			best = text
+			bestRate = rate
+		}
+	}
+	return best, best != ""
 }
 
 func maxField(infos []map[string]json.RawMessage, key string) (string, bool) {
