@@ -432,7 +432,7 @@ The same PR renames the Helm proof worker. Paths for that slice only: `deploy/he
 Acceptance:
 
 - `MODE=offline ./e2e/conformance/run_test.sh` prints `conformance offline PASS`, covers the old P1–P14 failure rows and the secure case, and runs the widget isolation checks.
-- The live workflow's inputs are one definition path, `confirm`, `factory_sha`, and role blob ids. A checkout of the workflow file contains no denylist token. A second definition path is not an input.
+- The live workflow's inputs are two definition paths, `confirm`, `factory_sha`, and role blob ids. A checkout of the workflow file contains no denylist token and no hardcoded Dreaming repo, ref, or persona path. TA-5 does not dispatch it. The first dispatch is TF-1.
 - `helm template` fails when `securityProfile: locked` is combined with `setupCommand` or `teardownCommand`, and a locked worker's rendered config has neither key. A worker with no profile still renders a configured command. `workers[].proof` is gone. `global.image.registry` is still `ghcr.io/acme`.
 - Example definitions contain paths and blob ids and do not contain role file bodies.
 - The denylist script still exits 0.
@@ -459,9 +459,9 @@ TA ends at TA-5. The following stay later work.
 | `dotted_to` as a delegation edge, and `allowAncestorShortcut` | A later contract change. Both stay refused. |
 | Merge, ready, labels, review requests, or comments on the published pull request | Stays out. The publisher remains draft-only. |
 | Console UI for many factories | Later. TA does not edit `web/console/`. |
-| More than one `factoryd` replica sharing API-backed definitions | Later self-host milestone. M8, as [10](10-kubernetes-and-helm.md#m7-applied) already records (`docs/10-kubernetes-and-helm.md:392-395`). Not TA-1 through TA-5. |
-| Helm image publishing | Later self-host milestone. `global.image.registry` stays `ghcr.io/acme` (`deploy/helm/factory/values.yaml:5`). TA does not publish images. |
-| Two definition paths on the live workflow | Later self-host milestone. TA-5 takes one `definition` input per dispatch. The offline suite runs both factories from checked-in paths. |
+| More than one `factoryd` replica sharing API-backed definitions | TF-2. Moved out of M8. `docs/10-kubernetes-and-helm.md:392-395`. Not TA-1 through TA-5. |
+| Helm image publishing | TF-3. `global.image.registry` stays `ghcr.io/acme` (`deploy/helm/factory/values.yaml:5`) through TA-5. |
+| First authorized live run | TF-1, the first step of TF, not the end of TA. Two definition inputs, live isolation, 2500 cent caps from the definitions and the run requests, draft pull requests only. |
 | Untrusted operators sharing one database | Out of the product. One Helm release is one operator. |
 | Scanner acceptance, Linear, and the improvement-loop reviewer pools | Unchanged milestones. |
 | Dispatching the live workflow | The orchestrator, after preflight, on a merged SHA. Not an agent. |
@@ -478,12 +478,22 @@ Global hierarchy cap is 8, today's `NativeAbsoluteMaxDepth`. Raising it is a con
 
 `InferenceBaseURL` stays one gateway per deployment. Draft-only publish stays. One GitHub App key per deployment stays.
 
-## Later self-host milestone
+The first authorized live run is TF-1, the first step of TF ([12](12-build-sequence.md#tf--two-factory-deployment)). It is not a sixth TA PR and it is not the end of TA. TA-5 leaves the workflow able to take two definition files and does not dispatch it.
 
-These are out of scope for TA-1 through TA-5. They are not open questions for this design.
+## First authorized live run
 
-| Item | Pointer |
+One `factoryd` process. The workflow passes two definition files and does not name a Dreaming repo, ref, pin, or persona path. Each definition sets `budget.ceilingCents` to 2500. Each run request sets `ceilingCents` to 2500. A request above its definition fails before queue. The live driver reads 2500 from the definition and the run request. The number must not be a harness constant or a workflow constant.
+
+The run opens one draft pull request per factory. Both stay drafts. Neither factory can read the other's runs, role bytes, or secret values. A charge against one factory leaves the other's `factory_budgets` spent and reserved cents unchanged. Counted spend on each factory stays at or under 2500 cents.
+
+The offline widget fixture may use a different ceiling so a cross-charge is visible in the suite. The live pair uses 2500 on both definitions and both requests. That is the $25 cap.
+
+## TF
+
+TF owns the chart and the authorized live run. Tasks and the exit are in [12](12-build-sequence.md#tf--two-factory-deployment). TA does not publish images, does not add a replica, and does not dispatch the workflow.
+
+| Item | Task |
 | --- | --- |
-| Helm image publishing | The chart still uses the `ghcr.io/acme` placeholder (`deploy/helm/factory/values.yaml:5`). Publishing images and replacing that registry is later work. |
-| Multi-replica store | With the operator, rendering fails unless `controlPlane.replicas` is 1, because API-backed definitions are per pod (`docs/10-kubernetes-and-helm.md:392-395`). A shared store for more than one factoryd replica is M8. |
-| Live workflow inputs | TA-5 accepts one definition path per dispatch. Whether that workflow should accept two definition paths, one per factory, is a later choice. The offline conformance suite already loads both checked-in factories in one process. |
+| Helm image publishing | TF-3. The chart placeholder is `ghcr.io/acme` (`deploy/helm/factory/values.yaml:5`). |
+| Multi-replica store | TF-2. Moved from M8. Operator mode still refuses `controlPlane.replicas` above 1 until that task (`docs/10-kubernetes-and-helm.md:392-395`). |
+| Two definitions, live isolation, $25, draft only | TF-1. The workflow already takes the definition files after TA-5. |

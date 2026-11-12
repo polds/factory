@@ -391,7 +391,8 @@ Shipped behavior where it differs from the sketch above:
   `factoryctl crds apply` is the upgrade path.
 - **Replicas.** With `operator.enabled`, rendering fails unless
   `controlPlane.replicas` is 1 and autoscaling is off. API-backed definitions
-  are per pod. A shared store for more than one factoryd replica is M8.
+  are per pod. A shared store for more than one factoryd replica is TF
+  ([12](12-build-sequence.md#tf--two-factory-deployment)).
   Chart-only mode still defaults to 2 replicas.
 - **Values.** `values.yaml` has a `worker:` image default and a `workers:` list.
   `terminationGracePeriodSeconds: 600` is the pod grace described above, not a
