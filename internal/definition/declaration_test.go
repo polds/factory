@@ -194,6 +194,32 @@ budget:
 			want: "seats.pathTemplate must contain {slug} once",
 		},
 		{
+			name: "empty budget",
+			yaml: `schemaVersion: v1alpha1
+name: t
+budget: {}
+`,
+			want: "budget.ceilingCents must be a positive integer",
+		},
+		{
+			name: "zero ceiling",
+			yaml: `schemaVersion: v1alpha1
+name: t
+budget:
+  ceilingCents: 0
+`,
+			want: "budget.ceilingCents must be a positive integer",
+		},
+		{
+			name: "negative ceiling",
+			yaml: `schemaVersion: v1alpha1
+name: t
+budget:
+  ceilingCents: -1
+`,
+			want: "budget.ceilingCents must be a positive integer",
+		},
+		{
 			name: "unknown key",
 			yaml: `schemaVersion: v1alpha1
 name: t

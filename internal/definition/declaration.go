@@ -148,10 +148,17 @@ func validateEvidence(file string, f *Factory, lines map[string]int, diags *[]Di
 }
 
 func validateBudget(file string, f *Factory, raw map[string]any, lines map[string]int, diags *[]Diagnostic) {
-	if !ceilingSet(raw) {
+	budget, present := raw["budget"]
+	if !present || budget == nil {
 		return
 	}
-	if f.Budget == nil || f.Budget.CeilingCents < 1 {
+	obj, ok := budget.(map[string]any)
+	v, set := any(nil), false
+	if ok {
+		v, set = obj["ceilingCents"]
+	}
+	n, nOK := wholeInt(v)
+	if !ok || !set || !nOK || n < 1 || f.Budget == nil || f.Budget.CeilingCents != n {
 		addDiag(diags, file, lineAt(lines, "budget.ceilingCents"), SeverityError, "budget.ceilingCents must be a positive integer")
 	}
 }
