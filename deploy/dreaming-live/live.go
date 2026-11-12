@@ -852,6 +852,22 @@ func liveDefinition() (string, error) {
 		"factory.yaml": `
 schemaVersion: v1alpha1
 name: pipe
+repositories:
+  - { codeForge: GITHUB, owner: northstar-ai-labs, name: dreaming }
+roleSource:
+  repo: { codeForge: GITHUB, owner: northstar-ai-labs, name: dreaming }
+  roster: { path: org/roster.yaml }
+  seats:
+    pathTemplate: "org/agents/{slug}/{file}"
+    files: [AGENTS.md, HEARTBEAT.md, SOUL.md, TOOLS.md]
+native:
+  limits: { maxDepth: 2, absoluteMaxDepth: 8 }
+  root: nils-aaberg
+  implementer: viktor-halas
+  reviewer: oskar-lindgren
+  seats: [nils-aaberg, beatriz-salgado, viktor-halas, oskar-lindgren]
+budget:
+  ceilingCents: 2500
 agentDefaults:
   model: auto
   runner: local

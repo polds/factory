@@ -59,8 +59,8 @@ func TestNativeTreeRejects(t *testing.T) {
 	}
 	atum := proofTree()
 	atum.AtumRoster = true
-	if _, err := ValidateNativeTree(atum); err == nil {
-		t.Fatal("atum accepted")
+	if _, err := ValidateNativeTree(atum); err != nil {
+		t.Fatal(err)
 	}
 	legacy := NativeTree{NativeHierarchy: false, ReportsToOmitted: true, Enforced: false}
 	if _, err := ValidateNativeTree(legacy); err != nil {

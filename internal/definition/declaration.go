@@ -149,7 +149,11 @@ func validateEvidence(file string, f *Factory, lines map[string]int, diags *[]Di
 
 func validateBudget(file string, f *Factory, raw map[string]any, lines map[string]int, diags *[]Diagnostic) {
 	budget, present := raw["budget"]
-	if !present || budget == nil {
+	if !present {
+		return
+	}
+	if budget == nil {
+		addDiag(diags, file, lineAt(lines, "budget.ceilingCents"), SeverityError, "budget.ceilingCents must be a positive integer")
 		return
 	}
 	obj, ok := budget.(map[string]any)

@@ -27,24 +27,42 @@ type NativeRuntime interface {
 
 // NativeTreeRequest freezes a roster. Principal is not a body field.
 type NativeTreeRequest struct {
-	Personas              []NativePersona `json:"personas"`
-	MaxDepth              int             `json:"maxDepth"`
-	AbsoluteMaxDepth      int             `json:"absoluteMaxDepth"`
-	AllowAncestorShortcut bool            `json:"allowAncestorShortcut"`
-	Delegation            string          `json:"delegation"`
-	Synthetic             bool            `json:"synthetic"`
-	NativeHierarchy       bool            `json:"nativeHierarchy"`
-	CeilingCents          int64           `json:"ceilingCents"`
-	Slots                 int             `json:"slots"`
-	MaxLive               int             `json:"maxLive"`
-	SharedKey             bool            `json:"sharedKey"`
-	AgentID               string          `json:"agentId,omitempty"`
-	WorkItemID            string          `json:"workItemId,omitempty"`
-	Stage                 string          `json:"stage,omitempty"`
-	SourceCommit          string          `json:"sourceCommit,omitempty"`
-	RosterSHA256          string          `json:"rosterSha256,omitempty"`
-	RosterGitBlob         string          `json:"rosterGitBlob,omitempty"`
-	BundleMode            string          `json:"bundleMode,omitempty"`
+	Personas              []NativePersona        `json:"personas"`
+	MaxDepth              int                    `json:"maxDepth"`
+	AbsoluteMaxDepth      int                    `json:"absoluteMaxDepth"`
+	AllowAncestorShortcut bool                   `json:"allowAncestorShortcut"`
+	Delegation            string                 `json:"delegation"`
+	Synthetic             bool                   `json:"synthetic"`
+	NativeHierarchy       bool                   `json:"nativeHierarchy"`
+	CeilingCents          int64                  `json:"ceilingCents"`
+	Slots                 int                    `json:"slots"`
+	MaxLive               int                    `json:"maxLive"`
+	SharedKey             bool                   `json:"sharedKey"`
+	AgentID               string                 `json:"agentId,omitempty"`
+	WorkItemID            string                 `json:"workItemId,omitempty"`
+	Stage                 string                 `json:"stage,omitempty"`
+	SourceCommit          string                 `json:"sourceCommit,omitempty"`
+	RosterSHA256          string                 `json:"rosterSha256,omitempty"`
+	RosterGitBlob         string                 `json:"rosterGitBlob,omitempty"`
+	BundleMode            string                 `json:"bundleMode,omitempty"`
+	Publish               *NativePublishRequest  `json:"publish,omitempty"`
+	Evidence              *NativeEvidenceRequest `json:"evidence,omitempty"`
+}
+
+// NativePublishRequest narrows issue key, title, body, and ref prefix.
+// It has no repo. The repo comes from the definition.
+type NativePublishRequest struct {
+	IssueKey  string `json:"issueKey,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Body      string `json:"body,omitempty"`
+	RefPrefix string `json:"refPrefix,omitempty"`
+}
+
+// NativeEvidenceRequest narrows the package and the mutation path.
+// Sentinel and break come from the definition.
+type NativeEvidenceRequest struct {
+	Package  string `json:"package,omitempty"`
+	Mutation string `json:"mutation,omitempty"`
 }
 
 // NativeRoleFile is one frozen role file. Bytes are content, not a grant.

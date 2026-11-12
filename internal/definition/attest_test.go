@@ -46,7 +46,7 @@ func TestAttestRoleSourceMatchesLocalCommit(t *testing.T) {
 	oldPath := os.Getenv("PATH")
 	wrapAttestGit(t, log)
 	t.Setenv("GIT_CONFIG", filepath.Join(t.TempDir(), "evil"))
-	if err := AttestRoleSource(context.Background(), dir, commit, tree); err != nil {
+	if err := AttestRoleSource(context.Background(), dir, commit, tree, orgRoleLayout()); err != nil {
 		t.Fatal(err)
 	}
 	recorded, err := os.ReadFile(log)
@@ -72,7 +72,7 @@ func TestAttestRoleSourceMatchesLocalCommit(t *testing.T) {
 	bad.Personas[0].Files = append([]RoleFile{}, tree.Personas[0].Files...)
 	bad.Personas[0].Files[0].Bytes = append([]byte{}, body...)
 	bad.Personas[0].Files[0].Bytes[0] = 'Q'
-	err = AttestRoleSource(context.Background(), dir, commit, bad)
+	err = AttestRoleSource(context.Background(), dir, commit, bad, orgRoleLayout())
 	if err == nil || !strings.Contains(err.Error(), "org/agents/alpha/AGENTS.md") || !strings.Contains(err.Error(), "byte mismatch") || strings.Contains(err.Error(), "ROLEBODY-7f3a") {
 		t.Fatal(err)
 	}
@@ -80,16 +80,16 @@ func TestAttestRoleSourceMatchesLocalCommit(t *testing.T) {
 	missing.Personas = append([]NativePersona{}, tree.Personas...)
 	missing.Personas[0].Files = append([]RoleFile{}, tree.Personas[0].Files...)
 	missing.Personas[0].Files = append(missing.Personas[0].Files, RoleFile{Name: "MISSING.md", Bytes: []byte("nope")})
-	err = AttestRoleSource(context.Background(), dir, commit, missing)
+	err = AttestRoleSource(context.Background(), dir, commit, missing, orgRoleLayout())
 	if err == nil || !strings.Contains(err.Error(), "org/agents/alpha/MISSING.md") || !strings.Contains(err.Error(), "absent object") || strings.Contains(err.Error(), "ROLEBODY-7f3a") {
 		t.Fatal(err)
 	}
 	blob := strings.TrimSpace(gitOut(t, dir, "rev-parse", "HEAD:org/roster.yaml"))
-	err = AttestRoleSource(context.Background(), dir, blob, tree)
+	err = AttestRoleSource(context.Background(), dir, blob, tree, orgRoleLayout())
 	if err == nil || !strings.Contains(err.Error(), blob) || !strings.Contains(err.Error(), "not a commit") {
 		t.Fatal(err)
 	}
-	err = AttestRoleSource(context.Background(), t.TempDir(), commit, tree)
+	err = AttestRoleSource(context.Background(), t.TempDir(), commit, tree, orgRoleLayout())
 	if err == nil || !strings.Contains(err.Error(), "not a commit") {
 		t.Fatal(err)
 	}

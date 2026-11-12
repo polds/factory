@@ -162,6 +162,9 @@ func openViktor(ctx context.Context, in ChainInput) (openedSeat, error) {
 		factoryUID = fac[0].ID
 	}
 	factoryID := fac[0].ID
+	if in.Server != nil {
+		in.Server.PutRoleCache(factoryID, in.Tree.SourceCommit, in.RoleDir)
+	}
 	agents, err := in.Store.ListAgents(ctx, factoryID)
 	if err != nil || len(agents) == 0 {
 		return openedSeat{}, fmt.Errorf("agents: %w", err)

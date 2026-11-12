@@ -48,6 +48,7 @@ func TestProducedHeadReviewerPipeline(t *testing.T) {
 	commit := strings.TrimSpace(gitServer(t, rootDir, "rev-parse", "HEAD"))
 	tree := loadBundleTree(t, rootDir, pins)
 	tree.SourceCommit = commit
+	env.srv.PutRoleCache(fac.ID, commit, rootDir)
 	t.Setenv("FACTORY_ROLE_SOURCE", rootDir)
 	if env.srv.cfg.Secrets == nil {
 		env.srv.cfg.Secrets = map[string]string{}
@@ -92,8 +93,8 @@ func TestProducedHeadReviewerPipeline(t *testing.T) {
 	absent.SourceCommit = strings.Repeat("b", 40)
 	absentInv := nativeInvocation(t, env, fac.ID, "", "native:d5:absent")
 	prepareBundleGoal(t, env, fac.ID, absentInv, "")
-	t.Setenv("FACTORY_ROLE_SOURCE", "")
-	if _, err := env.srv.OpenNativeTree(ctx, "pipe", absentInv, apiTree(absent, agentID, "")); err == nil || !strings.Contains(err.Error(), "FACTORY_ROLE_SOURCE") || !strings.Contains(err.Error(), "absent object") {
+	t.Setenv("FACTORY_ROLE_SOURCE", filepath.Join(t.TempDir(), "wrong-role-source"))
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", absentInv, apiTree(absent, agentID, "")); err == nil || !strings.Contains(err.Error(), "absent object") || strings.Contains(err.Error(), "FACTORY_ROLE_SOURCE") {
 		t.Fatal(err)
 	}
 	t.Setenv("FACTORY_ROLE_SOURCE", rootDir)
@@ -102,6 +103,7 @@ func TestProducedHeadReviewerPipeline(t *testing.T) {
 	blobTree.SourceCommit = blob
 	blobInv := nativeInvocation(t, env, fac.ID, "", "native:d5:blob")
 	prepareBundleGoal(t, env, fac.ID, blobInv, "")
+	env.srv.PutRoleCache(fac.ID, blob, rootDir)
 	if _, err := env.srv.OpenNativeTree(ctx, "pipe", blobInv, apiTree(blobTree, agentID, "")); err == nil || !strings.Contains(err.Error(), "not a commit") || strings.Contains(err.Error(), "SEAT:") {
 		t.Fatal(err)
 	}
@@ -347,7 +349,7 @@ func TestRoleFilesLabelIsNotACommit(t *testing.T) {
 	if countQuery(t, env, `SELECT count(*) FROM native_policies WHERE invocation_id = $1`, invocationID) != before {
 		t.Fatal("label inserted a policy")
 	}
-	pinRoleSource(t, rootDir, &tree)
+	pinRoleSource(t, env.srv, fac.ID, rootDir, &tree)
 	opened, err := env.srv.OpenNativeTree(ctx, "pipe", invocationID, apiTree(tree, agentID, itemID))
 	if err != nil || opened.RootTaskID == "" {
 		t.Fatal(err)
@@ -432,10 +434,11 @@ func postBundle(t *testing.T, env *env, runID, token, sha string, body []byte) i
 	return res.StatusCode
 }
 
-func pinRoleSource(t *testing.T, dir string, tree *definition.NativeTree) {
+func pinRoleSource(t *testing.T, srv *Server, factoryID, dir string, tree *definition.NativeTree) {
 	t.Helper()
 	commitRoleSource(t, dir)
 	tree.SourceCommit = strings.TrimSpace(gitServer(t, dir, "rev-parse", "HEAD"))
+	srv.PutRoleCache(factoryID, tree.SourceCommit, dir)
 	t.Setenv("FACTORY_ROLE_SOURCE", dir)
 }
 
@@ -541,6 +544,124 @@ func (m *memObjects) Delete(_ context.Context, key string) error {
 	m.deletes++
 	delete(m.objs, key)
 	return nil
+}
+
+func TestOpenRejectsDepthAboveDefinition(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writeBundleDefinition(t, "")
+	}})
+	ctx := context.Background()
+	fac, agentID, _, invocationID := nativeLeaseFixture(t, env, "pipe", "native:ta2:depth", store.StagePlanning)
+	snap := env.srv.snapshot()
+	snap.tree.Factory.Native = &definition.NativeDeclaration{
+		Limits: definition.NativeLimits{MaxDepth: 3, AbsoluteMaxDepth: 8},
+	}
+	policies := countQuery(t, env, `SELECT count(*) FROM native_policies`)
+	req := apiTree(serverProofTree(), agentID, "")
+	req.MaxDepth = 4
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", invocationID, req); err == nil || !strings.Contains(err.Error(), "maxDepth") {
+		t.Fatal(err)
+	}
+	req.MaxDepth = 2
+	req.AbsoluteMaxDepth = 9
+	fresh := nativeInvocation(t, env, fac.ID, "", "native:ta2:abs")
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", fresh, req); err == nil || !strings.Contains(err.Error(), "absoluteMaxDepth") {
+		t.Fatal(err)
+	}
+	snap.tree.Factory.Native.Limits.AbsoluteMaxDepth = 4
+	req.AbsoluteMaxDepth = 8
+	req.MaxDepth = 2
+	again := nativeInvocation(t, env, fac.ID, "", "native:ta2:above-def")
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", again, req); err == nil || !strings.Contains(err.Error(), "absoluteMaxDepth") {
+		t.Fatal(err)
+	}
+	if countQuery(t, env, `SELECT count(*) FROM native_policies`) != policies {
+		t.Fatal("rejected depth inserted a policy")
+	}
+	snap.tree.Factory.Native.Limits.AbsoluteMaxDepth = 8
+	req.AbsoluteMaxDepth = 8
+	req.MaxDepth = 2
+	okInv := nativeInvocation(t, env, fac.ID, "", "native:ta2:lower")
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", okInv, req); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRoleCacheIgnoresEnv(t *testing.T) {
+	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
+		t.Skip("FACTORY_TEST_DATABASE_URL unset")
+	}
+	env := boot(t, bootOpts{definition: func(t *testing.T) string {
+		return writeBundleDefinition(t, "")
+	}})
+	ctx := context.Background()
+	fac, agentID, itemID, invocationID := nativeLeaseFixture(t, env, "pipe", "native:ta2:cache", store.StagePlanning)
+	prepareBundleGoal(t, env, fac.ID, invocationID, itemID)
+	rootDir, _, pins := loadBundle(t)
+	commitRoleSource(t, rootDir)
+	tree := loadBundleTree(t, rootDir, pins)
+	tree.SourceCommit = strings.TrimSpace(gitServer(t, rootDir, "rev-parse", "HEAD"))
+	env.srv.PutRoleCache(fac.ID, tree.SourceCommit, rootDir)
+	wrong := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wrong, "not-the-cache"), []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FACTORY_ROLE_SOURCE", wrong)
+	snap := env.srv.snapshot()
+	snap.tree.Factory.RoleSource = &definition.RoleSource{
+		Roster: definition.RosterSource{Path: "org/roster.yaml"},
+		Seats: definition.SeatFiles{
+			PathTemplate: "org/agents/{slug}/{file}",
+			Files:        []string{"AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"},
+		},
+	}
+	snap.tree.Factory.Native = &definition.NativeDeclaration{
+		Limits:      definition.NativeLimits{MaxDepth: 8, AbsoluteMaxDepth: 8},
+		Root:        "nils-aaberg",
+		Implementer: "viktor-halas",
+		Reviewer:    "oskar-lindgren",
+		Seats:       []string{"nils-aaberg", "beatriz-salgado", "viktor-halas", "oskar-lindgren"},
+	}
+	opened, err := env.srv.OpenNativeTree(ctx, "pipe", invocationID, apiTree(tree, agentID, itemID))
+	if err != nil || opened.RootTaskID == "" {
+		t.Fatal(err)
+	}
+	policy, err := env.srv.store.GetNativePolicy(ctx, invocationID)
+	if err != nil || policy.Implementer != "viktor-halas" || policy.Reviewer != "oskar-lindgren" || !policy.SyntheticStored || !policy.Synthetic {
+		t.Fatalf("policy %+v %v", policy, err)
+	}
+	if policy.PathTemplate != "org/agents/{slug}/{file}" {
+		t.Fatalf("template %s", policy.PathTemplate)
+	}
+	roleCacheMu.Lock()
+	delete(roleCache, fac.ID+"\x00"+strings.ToLower(tree.SourceCommit))
+	roleCacheMu.Unlock()
+	miss := nativeInvocation(t, env, fac.ID, "", "native:ta2:cache-miss")
+	prepareBundleGoal(t, env, fac.ID, miss, "")
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", miss, apiTree(tree, agentID, "")); err == nil || !strings.Contains(err.Error(), "absent object") {
+		t.Fatalf("missing cache entry opened: %v", err)
+	}
+	env.srv.PutRoleCache(fac.ID, tree.SourceCommit, rootDir)
+	if _, err := env.raw.Exec(ctx, `
+		INSERT INTO factories (id, name, alias, schema_version, definition_source)
+		SELECT $1, $2, '', schema_version, definition_source FROM factories WHERE id = $3`,
+		"fac_other", "other", fac.ID); err != nil {
+		t.Fatal(err)
+	}
+	otherInv := nativeInvocation(t, env, "fac_other", "", "native:ta2:other-factory")
+	prepareBundleGoal(t, env, "fac_other", otherInv, "")
+	if _, err := env.srv.OpenNativeTree(ctx, "other", otherInv, apiTree(tree, agentID, "")); err == nil || !strings.Contains(err.Error(), "absent object") {
+		t.Fatalf("factory without a cache entry opened: %v", err)
+	}
+	snap.tree.Factory.RoleSource = nil
+	bare := nativeInvocation(t, env, fac.ID, "", "native:ta2:no-role-source")
+	prepareBundleGoal(t, env, fac.ID, bare, "")
+	if _, err := env.srv.OpenNativeTree(ctx, "pipe", bare, apiTree(tree, agentID, "")); err == nil || !strings.Contains(err.Error(), "roleSource") {
+		t.Fatalf("role-files open without roleSource: %v", err)
+	}
 }
 
 func (m *memObjects) keys() []string {
