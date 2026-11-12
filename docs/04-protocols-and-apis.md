@@ -173,13 +173,22 @@ reason.
 ## 2. REST API
 
 `/api/v1`, JSON, `application/problem+json` for errors. Bearer tokens (service account
-keys) or OIDC access tokens. The factory uid in the path is the tenant
-([16](16-target-agnostic-core.md#tenancy)). There is no `X-Factory-Team` header.
-`Server.factory` loads that uid (`internal/server/backend.go:209`). A run, a
-secret grant, or a publish for a different factory fails closed. The worker
-websocket still reserves the `factory` worker-id prefix for a key whose team
-is `factory` (`internal/gateway/gateway.go:130-135`). That check is not a
-factory selector.
+keys) or OIDC access tokens. There is no `X-Factory-Team` header.
+
+At this baseline `withAPIKey` compares the bearer to one process-wide
+`FACTORY_API_KEY` (`internal/api/handler.go:142-158`). That key is a
+deployment admin. It can read every factory. Routes with no factory uid,
+including `GET /api/v1/agent/runs/{runId}` and the approval, delivery,
+schedule, and work-item routes (`internal/api/handler.go:75-107`,
+`internal/api/console.go:86-101`), do not filter by factory.
+
+TA-3 adds a factory-scoped key bound to one `factory_id`
+([16](16-target-agnostic-core.md#tenancy)). For that key, a path uid that
+does not match is 403, and a run, approval, delivery, schedule, or work item
+that belongs to another factory is 404 with an empty problem body. The
+deployment admin key keeps today's reach. The worker websocket still reserves
+the `factory` worker-id prefix for a key whose team is `factory`
+(`internal/gateway/gateway.go:130-135`). That check is not a factory selector.
 
 The shape follows the observed Oz Agent API (O9) because it is a reasonable
 decomposition and because matching it lets existing SDK-shaped tooling port.

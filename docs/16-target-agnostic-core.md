@@ -22,17 +22,22 @@ What is still a process singleton, and what replaces it:
 
 | Singleton | Baseline | Replacement |
 | --- | --- | --- |
-| One definition tree | `Config.DefinitionPath`, `DefinitionGitURL`, `DefinitionGitRef`, `DefinitionGitSubdir` (`internal/server/server.go:37`, `internal/server/server.go:65-74`) | One source record per factory. The poller runs per git-backed factory. |
-| One secret map | `Config.Secrets` (`internal/server/server.go:52`) | Resolve `(factory_id, name)`. A missing name fails closed. No fall-through to another factory. |
+| One git definition source | `DefinitionPath`, `DefinitionGitURL`, `DefinitionGitRef`, `DefinitionGitSubdir`, `DefinitionGitProductionRef` (`internal/server/server.go:37`, `internal/server/server.go:65-74`) | Stays a deployment singleton through TA: one bootstrap git factory. `PUT /api/v1/factory/{name}/definition` is already per factory. TF-2 stores a source record per factory and runs one poller per git-backed factory. The process env is the default copied onto a factory that omits a source. |
+| One secret map | `Config.Secrets`, filled from `FACTORY_SECRET_*` (`internal/server/server.go:52`, `cmd/factoryd/config.go:213-225`) and passed whole into each resolver (`internal/server/native_assignment.go:79-91`) | TA-3. A run resolves `(factory_id, name)` against that factory's grant list. A missing name fails closed. A name granted only on another factory does not resolve. |
 | One spend-price document | `Config.SpendPrice`, else `FACTORY_SPEND_PRICE` (`internal/server/server.go:48-51`, `internal/server/run_spend.go:32-37`) | `inference.rates` on the factory, copied onto the invocation at open. |
 | One publish repo | `publishRepo` and `FACTORY_PUBLISH_DRAFT_REPO` (`internal/server/publish_draft.go:18-21`, `internal/server/publish_draft.go:92-95`) | `publish` on the factory. A run may narrow issue key, title, body, and ref prefix. It may not name a repo outside the factory. |
 | One role checkout | `FACTORY_ROLE_SOURCE` (`internal/server/produced_bundle.go:468-472`) | A cache entry `(factory_id, source_commit)` filled from the factory's role repo. |
 | One GitHub App | `Config.GitHubAppID`, `Config.GitHubAppKey` (`internal/server/server.go:82-83`) | Stays a deployment credential. Every minted token is for one repo that the calling factory lists. |
 | One inference gateway | `Config.InferenceBaseURL`, set from `FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL` (`internal/server/server.go:41`, `cmd/factoryd/config.go:115`). Assignment copies it to `OPENAI_BASE_URL` when ambient inference is on (`internal/server/assign.go:90-91`). The companion `InferenceAPIKey` is the same deployment secret (`cmd/factoryd/config.go:116`). | Stays a deployment singleton. Every factory on the process uses this URL. `omitAmbientInference` skips it for a scanner, native, or claude-code harness, and for a read-only forge target (`internal/server/native_assignment.go:103-105`, `internal/server/native_assignment.go:130-138`). |
+| One admin API key | `FACTORY_API_KEY` (`cmd/factoryd/config.go:109`). `withAPIKey` compares the bearer to that one value (`internal/api/handler.go:142-158`). | Stays a deployment-admin singleton. It can read every factory. It is not the actor in an isolation check. TA-3 adds factory-scoped keys. |
+| One worker API key | `FACTORY_WORKER_API_KEY` (`cmd/factoryd/config.go:110`) | Stays a deployment singleton. Workers are a shared pool. A task env still receives only that run's token and that factory's secret grants. |
+| One evidence admin URL | `FACTORY_DISPOSABLE_ADMIN_URL`, else `Config.DatabaseURL` (`internal/server/disposable.go:134-138`) | Stays a deployment singleton. Evidence databases share that cluster. Isolation is the per-run database and role, not a second server. The admin URL is not copied into a task env. A per-factory admin URL is out of scope. |
+| One ingress app | `FACTORY_GITHUB_WEBHOOK_SECRET`, `FACTORY_SLACK_*`, `FACTORY_LINEAR_*` (`cmd/factoryd/config.go:139-148`) | Stay deployment singletons. One webhook URL, one Slack bot, one Linear key. After the signature check, a delivery routes to the factory that lists the repo or the external team. Two factories listing the same repo fail closed. Per-factory Slack or Linear apps are out of scope, same as a second GitHub App key. |
+| GitHub token mode | `FACTORY_GITHUB_TOKEN_MODE` (`cmd/factoryd/config.go:59`, `cmd/factoryd/config.go:140`) | `app` is required once a second factory is registered. `pat` stays legal for a single-factory process, which is today's default. Apply of a second factory fails closed while mode is `pat`, so a planted `GH_TOKEN` is not a cross-repo credential. |
 
 Per-factory gateways are a later option. The definition schema already accepts `inference.providers[].baseUrl` (`internal/definition/types.go:357`, `docs/03-definition-schema.md:122`). Assignment does not read that field. TA-1 through TA-5 do not route model calls per factory. A factory that needs a different gateway runs in its own deployment, with its own `InferenceBaseURL`. Rate documents stay per factory either way.
 
-A factory cannot read another factory's runs, role bytes, secret values, or publication rows, and cannot charge another factory's ceiling. Two factories may list the same repo. That overlap is explicit in both definitions. The installation token for a call still names only the one repo of that call. Spend, secrets, and runs stay on the calling factory.
+A factory-scoped API key, and a run token, cannot read another factory's runs, role bytes, secret values, or publication rows, and cannot charge another factory's ceiling. The deployment admin key can. Isolation checks use the factory-scoped key and the run token, not `FACTORY_API_KEY`. Two factories may list the same repo. That overlap is explicit in both definitions. The installation token for a call still names only the one repo of that call. Spend and secret grants stay on the calling factory.
 
 The deployment is one trust domain: one operator, one database, one Helm release. Isolation inside that domain is `factory_id`. Operators who also want Kubernetes RBAC between teams put Factory resources in different namespaces. `factoryd` still enforces `factory_id` when they share a process.
 
@@ -44,7 +49,7 @@ Each factory has one source, fixed at create:
 
 | Source | How it is loaded | Version pin |
 | --- | --- | --- |
-| `git` | Per-factory URL, ref, subdir, production ref. The existing poller (`internal/defsync/doc.go`) runs once per factory. A non-production ref, a validation error, or an unchanged commit leaves the last applied tree. | `definitions.git_sha` |
+| `git` | URL, ref, subdir, production ref. Through TA this is the one process git source. TF-2 stores those fields per factory and runs the poller (`internal/defsync/doc.go`) once per git-backed factory. A non-production ref, a validation error, or an unchanged commit leaves the last applied tree. | `definitions.git_sha` |
 | `api` | `PUT /api/v1/factory/{name}/definition` with `generation` and `files` ([04](04-protocols-and-apis.md#factories-and-definitions)). A git-backed factory returns 409 and writes nothing. | published generation, stored as the definition row |
 | `path` | Local directory. Dev and the chart bootstrap factory only. | the apply digest |
 
@@ -95,7 +100,7 @@ Repo: {{.Repo}}
 Draft by Factory; human review required; Factory will not merge.
 ```
 
-`draft_publications` gains `factory_id`, matching the invocation's factory. Uniqueness on `(target_repo, issue_key)` stays global, so two factories that both list one repo cannot open two drafts for one issue key. The token repository list is that one repo.
+`draft_publications` gains `factory_id`, matching the invocation's factory. Uniqueness on `(target_repo, issue_key)` stays global, so two factories that both list one repo cannot open two drafts for one issue key. A unique violation whose existing row has a different `factory_id` refuses before a token mint. The store read that distinguishes "same factory" from "other factory" filters `factory_id`. The response carries no pull number, URL, ref, SHA, or detail from the other row. Same-invocation replay still returns that invocation's own row (`internal/store/draft_publication.go:48-50`). The token repository list is that one repo.
 
 ### Role source
 
@@ -157,6 +162,8 @@ Replacement is the `evidence` object on the definition, frozen on the invocation
 The prompt still does not choose the package or the path. Lexical `..`, absolute paths, and symlinks still fail. The DSN env name becomes `FACTORY_EVIDENCE_DSN`. Only the declared reviewer receives it, and only when the implementer's produced SHA is ready and both package and mutation are set. Any other assignee does not. The admin URL is still not copied into the task environment.
 
 `factoryEvidencePass` stays a generic marker. It is not a target name and it is not on the denylist.
+
+The evidence database and role are named `dreamd_` plus 32 hex (`internal/store/disposable.go:21`, `internal/server/disposable.go:503-507`, `internal/server/disposable.go:568-573`). That prefix is Dreaming's daemon name. TA-3 creates `factory_ev_` plus 32 hex only. The steady-state drop sweep accepts that shape only. A one-shot migration in `internal/store/migrations/` drops databases and roles already stored in `disposable_databases` whose names match `^dreamd_[0-9a-f]{32}$`, then deletes those ledger rows. It drops no other name. The denylist token is `dreamd`. The scanner skips `internal/store/migrations/*.sql`, so that one-shot file may name the old prefix. Create, `storeName`, and the sweep in Go may not.
 
 ### Spend price and model
 
@@ -289,6 +296,11 @@ The second fixture is `examples/widget-factory/`. One repo `example/widget`. Rol
 | Provider API keys | Chart secrets | Deployment credentials. Injected for a factory only through that factory's grants. |
 | Repositories, role paths, hierarchy limits, publish, evidence, models, secret names | Factory definition | Per factory. Several factories per release. |
 | Secret values | Kubernetes secret keys named by factory id and secret name | The definition stores the name. Lookup is `(factory_id, name)`. |
+| `FACTORY_API_KEY` | Chart secret, one per deployment | Deployment admin. Not a factory credential. |
+| Factory-scoped API keys | Per factory, created at apply | The isolation actor for REST reads. |
+| `FACTORY_WORKER_API_KEY` | Chart secret, one per deployment | Shared worker pool. |
+| `FACTORY_DISPOSABLE_ADMIN_URL` | Chart env | One evidence cluster for the deployment. |
+| Slack, Linear, GitHub webhook secrets | Chart secrets, one set per deployment | One ingress endpoint. Routing is after verify. |
 | Denylist | `scripts/target-denylist.txt` in this repo | CI for Factory's own tree. Not a chart value. |
 
 `values.yaml` does not gain a target repo, an issue key, a role path, or a persona list. `global.image.registry` stays `ghcr.io/acme` (`deploy/helm/factory/values.yaml:5`) through TA-5.
@@ -306,6 +318,8 @@ The same process then runs `examples/widget-factory/` and checks isolation:
 | Check | Expected |
 | --- | --- |
 | Widget publish repo set to the Dreaming repo | Refused before a token mint. |
+| Widget publish using Dreaming's issue key | Refused before a token mint. The body has none of Dreaming's publication fields. |
+| Widget-scoped API key on a Dreaming run, approval, delivery, schedule, or work item | 404. Empty problem body. The deployment admin key is not this actor. |
 | Widget run token on a Dreaming run route | 403 or 404. No body from the other factory. |
 | Charges against the widget factory cap | Dreaming `factory_budgets` spent and reserved cents unchanged. |
 | Widget attest pointed at `org/agents/...` | Absent object. The widget template is the only path that attests. |
@@ -315,7 +329,7 @@ Private role bytes stay out of git. The live job checks a pin out into the runne
 
 Deleted in the last PR: `deploy/dreaming-live/**`, `spike/dreaming/**`, `.github/workflows/dreaming-live.yml`. The CI step at `.github/workflows/ci.yml:275-276` runs `MODE=offline ./e2e/conformance/run_test.sh` and expects `conformance offline PASS`.
 
-The replacement workflow is `workflow_dispatch` only. Inputs are `mode` (`preflight` or `live`), `confirm`, `factory_sha`, `definition` (path to a definition file), and `role_blobs` (JSON blob ids). `confirm` must equal `factory-live`. The workflow reads the definition file for the repo, the ref prefix, and the pin. It does not embed a repo name. It is not dispatched by an agent. `mode=live` still checks the role repo out with a read token and runs the chain only after every preflight row passes.
+The replacement workflow is `workflow_dispatch` only. Inputs are `mode` (`preflight` or `live`), `confirm`, `factory_sha`, two definition paths, and `role_blobs` (JSON blob ids). `confirm` must equal `factory-live`. The workflow reads those files for the repos, the ref prefixes, and the pins. It does not embed a repo name. It is not dispatched by an agent. `mode=live` still checks the role repo out with a read token and runs the chain only after every preflight row passes.
 
 ## CI guard
 
@@ -329,11 +343,12 @@ beatriz-salgado
 viktor-halas
 oskar-lindgren
 tobias-lindqvist
+dreamd
 ```
 
 `roster`, `proof`, `SOUL`, and `HEARTBEAT` are not tokens. After this migration they are either mechanism words or definition data. `factoryEvidencePass` is not a token. The script prints `path:line` and exits non-zero. A unit test runs it against a temp tree that contains `dreaming` and expects failure, and against a clean tree and expects success. The `required` CI job runs the script. `shfmt` and `shellcheck` already cover `*.sh` (`.github/workflows/ci.yml:251-264`).
 
-The guard does not scan `examples/`, `e2e/`, `deploy/`, or `docs/`. Those trees are allowed to name a target. `internal/` and `cmd/` are not.
+The guard does not scan `examples/`, `e2e/`, `deploy/`, `docs/`, or `internal/store/migrations/*.sql`. The migration exception exists so the one-shot `dreamd_` drop can name the old prefix. Every other non-test file under `internal/` and `cmd/` is scanned.
 
 ## Migration
 
@@ -382,26 +397,31 @@ go test ./internal/definition/ ./internal/server/ ./internal/store/ ./internal/a
 MODE=offline ./spike/dreaming/run_test.sh
 ```
 
-### TA-3 — Publish, evidence, and the price snapshot
+### TA-3 — Publish, evidence, price, secrets, and factory-scoped keys
 
-Remove the publish constants, the process evidence paths, and the process price as the document a run reads.
+Remove the publish constants, the process evidence paths, and the process price as the document a run reads. Resolve secrets by `(factory_id, name)`. Add factory-scoped API keys. Rename the evidence database prefix.
 
-Paths: `internal/server/publish_draft.go`, `internal/server/disposable.go`, `internal/server/run_spend.go`, `internal/server/server.go`, `internal/harness/materialize.go`, `internal/harness/mutate.go`, `internal/harness/evidence.go`, `internal/store/draft_publication.go`, `internal/store/native_budget.go`, a new migration for `draft_publications.factory_id` and `factory_budgets`, matching tests, `docs/14-native-coordination.md`. `deploy/dreaming-live/**` may change so the offline rehearsal sets publish, evidence, rates, and the factory ceiling through the definition.
+Paths: `internal/server/publish_draft.go`, `internal/server/disposable.go`, `internal/server/run_spend.go`, `internal/server/server.go`, `internal/server/native_assignment.go`, `internal/server/m6_assign.go`, `internal/harness/materialize.go`, `internal/harness/mutate.go`, `internal/harness/evidence.go`, `internal/store/disposable.go`, `internal/store/draft_publication.go`, `internal/store/native_budget.go`, `internal/api/handler.go`, `cmd/factoryd/config.go`, a migration for `draft_publications.factory_id`, `factory_budgets`, and the one-shot `dreamd_` drop, matching tests, `docs/14-native-coordination.md`. `deploy/dreaming-live/**` may change so the offline rehearsal sets publish, evidence, rates, and the factory ceiling through the definition.
 
 Acceptance:
 
 - A factory with `publish.enabled: false` completes the root and writes no publication row.
 - A request that names a repo outside the factory fails before a token mint.
+- A second factory publishing the first factory's `(target_repo, issue_key)` fails before a token mint and the body contains none of the first row's fields.
 - The reviewer SHA gate, draft-only create, scrubbed logs, and the single-repo token scopes still hold.
 - The reviewer DSN is `FACTORY_EVIDENCE_DSN` and is absent from every other seat.
+- New evidence databases and roles match `^factory_ev_[0-9a-f]{32}$`. The Go create path and `storeName` contain no `dreamd`. The one-shot migration drops only stored `dreamd_` names.
 - Two factories in one test: a charge to the second factory's `factory_budgets` row leaves the first factory's spent and reserved cents unchanged. Deleting an invocation leaves the factory cap row in place.
+- A secret name granted only on factory A does not resolve on a factory B run.
+- A factory-scoped key for B gets 404 and an empty body on A's run, approval, delivery, schedule, and work item. The deployment admin key still reads both.
+- Applying a second factory while `FACTORY_GITHUB_TOKEN_MODE=pat` fails closed. `app` mode still mints a token for one listed repo.
 - `inference.rates` frozen at open is the document `W` uses. Editing the process env after open does not change `W`.
-- Non-test `internal/` and `cmd/` contain none of the default denylist tokens.
+- Non-test `internal/` and `cmd/`, other than `internal/store/migrations/*.sql`, contain none of the default denylist tokens.
 
 Verify:
 
 ```bash
-go test ./internal/server/ ./internal/harness/ ./internal/store/ -count=1 -timeout 45m
+go test ./internal/server/ ./internal/harness/ ./internal/store/ ./internal/api/ -count=1 -timeout 45m
 MODE=offline ./spike/dreaming/run_test.sh
 ```
 

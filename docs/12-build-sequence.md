@@ -473,7 +473,7 @@ Formally frozen. Not next. Not scheduled. No live Docker or cluster attestation 
 
 Design: [16](16-target-agnostic-core.md). One self-hosted `factoryd` serves many factories. Each factory is a registered definition with its own repos, role-source paths, hierarchy limits, publish target, evidence paths, secret grants, and snapshotted spend rates. Dreaming is one example factory. The conformance suite also runs a second synthetic factory so isolation is part of the proof.
 
-Five PRs, in order: schema, role source and hierarchy, publish/evidence/price, the denylist CI guard, then the conformance suite. Offline tests stay green on every PR. The last PR deletes `deploy/dreaming-live` and `spike/dreaming`, points the manual live workflow at two definition files, and replaces Helm `workers[].proof` with `securityProfile: locked`. That workflow stays `workflow_dispatch` only. TA does not dispatch it. The inference gateway URL stays a deployment singleton.
+Five PRs, in order: schema, role source and hierarchy, publish/evidence/price plus factory-scoped secrets and API keys, the denylist CI guard, then the conformance suite. Offline tests stay green on every PR. The last PR deletes `deploy/dreaming-live` and `spike/dreaming`, points the manual live workflow at two definition files, and replaces Helm `workers[].proof` with `securityProfile: locked`. That workflow stays `workflow_dispatch` only. TA does not dispatch it. The inference gateway URL stays a deployment singleton.
 
 Out of scope for TA: live gateway rate fetch ([#217](https://github.com/polds/factory/issues/217) fills the per-factory price document), per-factory inference gateways, a GitHub App key per factory, dotted-line grants, ancestor shortcut, merge or ready publish, the console, and TF (chart images, the multi-replica store, and the authorized live run).
 
@@ -489,13 +489,13 @@ The former D6 live run. One `factoryd`. Two definition files, passed in by the w
 
 Paths: `.github/workflows/conformance-live.yml`, `examples/dreaming-definition/**`, `examples/widget-factory/**`.
 
-Acceptance: one dispatch runs both definitions; each opens one draft pull request; a cross-factory run read fails; a charge on one factory leaves the other's `factory_budgets` spent and reserved cents unchanged; counted spend on each factory stays at or under 2500 cents; both pull requests are still drafts at the end. The workflow file contains no denylist token.
+Acceptance: one dispatch runs both definitions; each opens one draft pull request; a factory-scoped key for one factory gets an empty 404 on the other's run; the deployment admin key is not that check; a charge on one factory leaves the other's `factory_budgets` spent and reserved cents unchanged; counted spend on each factory stays at or under 2500 cents; both pull requests are still drafts at the end. The workflow file contains no denylist token.
 
 Verify: the orchestrator dispatches `workflow_dispatch` after preflight is green on the merged SHA. An agent does not dispatch it.
 
 ### TF-2 — Shared definition store
 
-The multi-replica leftover from M8. API-backed definitions are per pod today (`docs/10-kubernetes-and-helm.md:392-395`). TF needs both replicas of one install to serve both factories.
+The multi-replica leftover from M8, plus the per-factory git source. API-backed definitions are per pod today (`docs/10-kubernetes-and-helm.md:392-395`). Through TA the process has one git URL. TF needs both replicas of one install to serve both factories, each with its own source.
 
 Paths: the definition apply and read path in `internal/server/` and `internal/store/`, the operator replica guard in the Helm chart, `docs/10-kubernetes-and-helm.md`.
 
@@ -525,7 +525,7 @@ Verify: the driver prints the two draft URLs and exits non-zero if either respon
 
 The multi-tenancy leftover from M8, proved on the TF-4 cluster rather than on the Actions workflow.
 
-Acceptance: from that deployment, factory A cannot read factory B's runs, role bytes, or secret values, and cannot charge factory B's ceiling. Both caps are the definition value 2500 cents. The run request cannot raise them. Draft only, same as TF-1.
+Acceptance: from that deployment, a factory-scoped key for A cannot read B's runs, role bytes, or secret values, and cannot charge B's ceiling. `FACTORY_API_KEY` is the operator admin and is not this actor. Both caps are the definition value 2500 cents. The run request cannot raise them. Draft only, same as TF-1.
 
 Verify: the install driver runs the cross-read and cross-spend checks after both draft pull requests exist, and prints `tf live PASS`.
 
