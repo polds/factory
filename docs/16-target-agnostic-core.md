@@ -23,7 +23,7 @@ What is still a process singleton, and what replaces it:
 | Singleton | Baseline | Replacement |
 | --- | --- | --- |
 | One git definition source | `DefinitionPath`, `DefinitionGitURL`, `DefinitionGitRef`, `DefinitionGitSubdir`, `DefinitionGitProductionRef` (`internal/server/server.go:37`, `internal/server/server.go:65-74`) | Stays a deployment singleton through TA: one bootstrap git factory. `PUT /api/v1/factory/{name}/definition` is already per factory. TF-2 stores a source record per factory and runs one poller per git-backed factory. The process env is the default copied onto a factory that omits a source. |
-| One secret map | `Config.Secrets`, filled from `FACTORY_SECRET_*` (`internal/server/server.go:52`, `cmd/factoryd/config.go:213-225`) and passed whole into each resolver (`internal/server/native_assignment.go:79-91`) | TA-3. Values are per factory, not one global map filtered by grants. The env key is `FACTORY_SECRET_<factory>__<name>`. There is no fall-through to an unprefixed `FACTORY_SECRET_<name>`. The definition grant list still names the logical secret. A missing prefixed value fails closed. |
+| One secret map | `Config.Secrets`, filled from `FACTORY_SECRET_*` (`internal/server/server.go:52`, `cmd/factoryd/config.go:213-225`) and passed whole into each resolver (`internal/server/native_assignment.go:79-91`) | TA-3. `<factory>` is the factory id, not the name. The env key is `FACTORY_SECRET_<factoryID>__<NAME>`. The chart key is `<factoryID>/<NAME>`. `NAME` is `[A-Z][A-Z0-9_]*` and contains no `__`. There is no fall-through to `FACTORY_SECRET_<NAME>`. `FACTORY_SECRET_ALLOWLIST` and `FACTORY_SECRET_MOUNT_DIR` stay configuration (`internal/server/config.go:86-88`). The parser skips those two suffixes before it splits on `__` (`cmd/factoryd/config.go:225-230`). A missing prefixed value fails closed. An existing install's unprefixed `FACTORY_SECRET_<NAME>` stops resolving at TA-3. The operator copies each value to the prefixed key before that deploy. |
 | One spend-price document | `Config.SpendPrice`, else `FACTORY_SPEND_PRICE` (`internal/server/server.go:48-51`, `internal/server/run_spend.go:32-37`) | `inference.rates` on the factory, copied onto the invocation at open. |
 | One publish repo | `publishRepo` and `FACTORY_PUBLISH_DRAFT_REPO` (`internal/server/publish_draft.go:18-21`, `internal/server/publish_draft.go:92-95`) | `publish` on the factory. A run may narrow issue key, title, body, and ref prefix. It may not name a repo outside the factory. |
 | One role checkout | `FACTORY_ROLE_SOURCE` (`internal/server/produced_bundle.go:468-472`) | A cache entry `(factory_id, source_commit)` filled from the factory's role repo. |
@@ -39,7 +39,9 @@ Per-factory gateways are a later option. The definition schema already accepts `
 
 A factory-scoped API key, and a run token, cannot read another factory's runs, role bytes, secret values, or publication rows, and cannot charge another factory's ceiling. The deployment admin key can. Isolation checks use the factory-scoped key and the run token, not `FACTORY_API_KEY`.
 
-A scoped key may act only on its own factory. `POST /api/v1/agent/run` takes the factory from the JSON body (`internal/api/handler.go:298-312`). `POST /api/v1/agent/schedules` takes `factory_id` from the body (`internal/api/types.go:304`). When that value is not the key's factory, the handler returns 403 before any insert or reserve. The same check covers every other write whose body names a factory.
+A scoped key may act only on its own factory. The check is in `internal/api/handler.go`, on the API-key wrapper TA-3 adds beside `withAPIKey` (`internal/api/handler.go:142-158`), before the route handler runs. `POST /api/v1/agent/run` takes the factory from the JSON body (`internal/api/handler.go:298-312`). `POST /api/v1/agent/schedules` takes `factory_id` from the body (`internal/api/types.go:304`). When that value is not the key's factory, the handler returns 403 before any insert or reserve. The same check covers every other write whose body names a factory.
+
+List and query routes are a fourth shape. `GET /api/v1/agent/runs` filters only when `?factory_id=` is set (`internal/api/handler.go:253-265`). `GET /api/v1/agent/schedules` returns every schedule when `factory` is empty (`internal/api/integrations.go:249-254`). `GET /api/v1/factory` lists every factory (`internal/api/handler.go:177-184`). `GET /api/v1/agent/run-by-external-reference` (`internal/api/handler.go:106`) resolves across factories. For a scoped key the same wrapper forces the filter to the key's `factory_id` before the query. A `factory_id` or `factory` query that names another factory is 403. `GET /api/v1/factory` returns only the key's factory. An external-reference hit on another factory's run is an empty 404. The deployment admin key keeps the unfiltered lists.
 
 `PUT /api/v1/factory/{name}/definition` and `POST .../definition:apply` are deployment-admin only. A scoped key receives 403 on both, including for its own factory. `:validate` is allowed for a scoped key when the path uid is that key's factory, and it writes nothing.
 
@@ -303,7 +305,7 @@ TF-1's second definition is an input file, not this fixture. The operator suppli
 | `workers[].securityProfile` | Chart worker entry | Replaces `workers[].proof` (`deploy/helm/factory/values.yaml:233`, [PR #199](https://github.com/polds/factory/pull/199)). `locked` is today's proof behavior. The chart does not gain a target repo. |
 | Provider API keys | Chart secrets | Deployment credentials. Injected for a factory only through that factory's grants. |
 | Repositories, role paths, hierarchy limits, publish, evidence, models, secret names | Factory definition | Per factory. Several factories per release. |
-| Secret values | `FACTORY_SECRET_<factory>__<name>`, or the chart key `<factory>/<name>` | Same namespace as the singleton row. No unprefixed fall-through. The definition stores the logical name. |
+| Secret values | `FACTORY_SECRET_<factoryID>__<NAME>` and chart key `<factoryID>/<NAME>` | The singleton row is the only definition of this namespace. |
 | `FACTORY_API_KEY` | Chart secret, one per deployment | Deployment admin. Not a factory credential. |
 | Factory-scoped API keys | Per factory, created at apply | The isolation actor for REST reads. |
 | `FACTORY_WORKER_API_KEY` | Chart secret, one per deployment | Shared worker pool. |
@@ -337,6 +339,12 @@ The same process then runs `examples/widget-factory/` and checks isolation:
 | Widget key `POST /api/v1/agent/schedules` with Dreaming's `factory_id` | 403 before insert. |
 | Widget key `PUT` or `:apply` on either factory | 403. The admin key can apply both. |
 | Widget run whose `repo` is the Dreaming repo | Assignment refused before `InstallationByRepo`. No token. |
+| Widget key `GET /api/v1/agent/runs` with no query | Zero Dreaming runs. |
+| Widget key `GET /api/v1/agent/runs?factory_id=` set to Dreaming | 403. |
+| Widget key `GET /api/v1/agent/schedules` with no `factory` | Only widget schedules. |
+| Widget key `GET /api/v1/agent/schedules?factory=` set to Dreaming | 403. |
+| Widget key `GET /api/v1/factory` | Only the widget factory. |
+| Widget key `GET /api/v1/agent/run-by-external-reference` for a Dreaming run | 404. Empty body. |
 
 Private role bytes stay out of git. The live job checks a pin out into the runner temp directory, passes that directory as the cache input for that factory and commit, and does not upload it.
 
@@ -425,10 +433,11 @@ Acceptance:
 - The reviewer DSN is `FACTORY_EVIDENCE_DSN` and is absent from every other seat.
 - New evidence databases and roles match `^factory_ev_[0-9a-f]{32}$`. The Go create path and `storeName` contain no `dreamd`. The one-shot migration drops only stored `dreamd_` names.
 - Two factories in one test: a charge to the second factory's `factory_budgets` row leaves the first factory's spent and reserved cents unchanged. Deleting an invocation leaves the factory cap row in place.
-- A secret name granted on both factories resolves to two values. Factory B never receives factory A's value. An unprefixed `FACTORY_SECRET_<name>` is not a fall-through.
+- A secret name granted on both factories resolves to two values, from `FACTORY_SECRET_<factoryID>__<NAME>`. Factory B never receives factory A's value. An unprefixed `FACTORY_SECRET_<NAME>` does not resolve. `FACTORY_SECRET_ALLOWLIST` and `FACTORY_SECRET_MOUNT_DIR` stay configuration.
 - A factory-scoped key for B gets 404 and an empty body on A's run, approval, delivery, schedule, and work item. The deployment admin key still reads both.
 - A factory-scoped key for B gets 403 on `POST /api/v1/agent/run` and `POST /api/v1/agent/schedules` when the body names A, before insert or reserve. The same key gets 403 on `PUT` and `:apply` for every factory.
-- `tokenRepos` (`internal/server/m4_wire.go:365-401`) is checked against the run's factory `repositories` before `InstallationByRepo` (`internal/server/m4_wire.go:351`). Any repo that the factory does not list refuses the assignment and mints nothing. A seat token is `contents: read` and `metadata: read`. It is not `DefaultPermissions` (`internal/forge/github/token.go:54-61`). The publish token stays `contents: write`, `pull_requests: write`, and `metadata: read`.
+- The same key, on `GET /api/v1/agent/runs` and `GET /api/v1/agent/schedules` with no factory query, sees only B. A query that names A is 403. `GET /api/v1/factory` returns only B. `GET /api/v1/agent/run-by-external-reference` for A's run is an empty 404.
+- `tokenRepos` (`internal/server/m4_wire.go:365-401`) is checked against the run's factory `repositories` before `InstallationByRepo` (`internal/server/m4_wire.go:351`). Any repo that the factory does not list refuses the assignment and mints nothing. A native `role_files` seat token is `contents: read` and `metadata: read`. Other app-mode `GH_TOKEN` values, including ordinary agent runs and improvement tasks, keep today's permissions. Improvement task tokens stay `contents: write` (`internal/server/m6_schedule_test.go:35`, `internal/server/m6_schedule_test.go:53`). The publish token stays `contents: write`, `pull_requests: write`, and `metadata: read`. `mintGitHubToken` (`internal/server/m4_wire.go:343-355`, called from `internal/server/assign.go:55-60`) applies the repository check to every mint and changes permissions only for a `role_files` seat.
 - Applying a second factory while `FACTORY_GITHUB_TOKEN_MODE=pat` fails closed. `app` mode mints only for repos that factory lists.
 - `inference.rates` frozen at open is the document `W` uses. Editing the process env after open does not change `W`.
 - Non-test `internal/` and `cmd/`, other than `internal/store/migrations/*.sql`, contain none of the default denylist tokens.

@@ -188,8 +188,12 @@ does not match is 403, and a run, approval, delivery, schedule, or work item
 that belongs to another factory is 404 with an empty problem body. A body
 field that names a factory, including `POST /api/v1/agent/run` and
 `POST /api/v1/agent/schedules`, must equal the key's factory or the handler
-returns 403 before insert. Definition `PUT` and `:apply` stay on the
-deployment admin key. The admin key keeps today's reach. The worker websocket still reserves
+returns 403 before insert. List and query routes force the filter to that
+factory. An empty factory query does not mean every factory. A query that
+names another factory is 403. `GET /api/v1/factory` returns only the key's
+factory. `GET /api/v1/agent/run-by-external-reference` for another factory's
+run is an empty 404. Definition `PUT` and `:apply` stay on the
+deployment admin key. The admin key keeps today's unfiltered lists. The worker websocket still reserves
 the `factory` worker-id prefix for a key whose team is `factory`
 (`internal/gateway/gateway.go:130-135`). That check is not a factory selector.
 
