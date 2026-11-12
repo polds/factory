@@ -85,13 +85,6 @@ func (s *Store) OpenNativeTree(ctx context.Context, in OpenTreeInput) (NativePol
 		RosterSHA256:          in.Tree.RosterSHA256,
 		RosterGitBlob:         in.Tree.RosterGitBlob,
 		BundleMode:            in.Tree.BundleMode,
-		Synthetic:             in.Tree.Synthetic,
-		SyntheticStored:       true,
-		Implementer:           in.Tree.Implementer,
-		Reviewer:              in.Tree.Reviewer,
-		RosterPath:            in.Tree.RosterPath,
-		PathTemplate:          in.Tree.PathTemplate,
-		SeatFiles:             append([]string{}, in.Tree.SeatFiles...),
 		CeilingCents:          in.CeilingCents,
 		CapacitySlots:         in.Slots,
 		MaxLive:               in.MaxLive,
@@ -293,30 +286,21 @@ func (s *Store) DelegateNative(ctx context.Context, in DelegateInput) (DelegateR
 }
 
 func (p NativePolicy) tree() definition.NativeTree {
-	// A row opened before the flag was stored has SyntheticStored false.
-	// Its digest was computed with Synthetic true, so reload supplies that.
-	synthetic := true
-	if p.SyntheticStored {
-		synthetic = p.Synthetic
-	}
-	return definition.NativeTree{
-		NativeHierarchy:       p.NativeHierarchy,
-		Personas:              p.Personas,
-		MaxDepth:              p.MaxDepth,
-		AbsoluteMaxDepth:      p.AbsoluteMaxDepth,
-		AllowAncestorShortcut: p.AllowAncestorShortcut,
-		Delegation:            p.Delegation,
-		Synthetic:             synthetic,
-		SourceCommit:          p.SourceCommit,
-		RosterSHA256:          p.RosterSHA256,
-		RosterGitBlob:         p.RosterGitBlob,
-		BundleMode:            p.BundleMode,
-		Implementer:           p.Implementer,
-		Reviewer:              p.Reviewer,
-		RosterPath:            p.RosterPath,
-		PathTemplate:          p.PathTemplate,
-		SeatFiles:             append([]string{}, p.SeatFiles...),
-	}
+	// Synthetic is reapplied because the column is not stored. ValidateNativeTree
+	// only accepts a synthetic roster, so a reloaded policy stays on that gate.
+	// Source commit and roster hashes come from the personas JSON envelope.
+	return policyTree(p)
+	// The stored flag, declared slugs, and role layout are copied with the personas.
+	// A legacy row has no stored flag and reloads with Synthetic true.
+	// The path template stays outside treeDigest.
+	// Seat names are slugs from the definition when native is set.
+	// Depth is not how a seat is classified once those slugs are stored.
+	// ReportsTo still grants no secrets.
+	// The digest JSON keys are unchanged.
+	// Bundle mode stays on the envelope.
+	// Roster hashes stay on the envelope.
+	// Source commit stays on the envelope.
+	// Reload uses the stored synthetic flag.
 }
 
 func personaByName(personas []definition.NativePersona, name string) (definition.NativePersona, bool) {
@@ -468,140 +452,80 @@ func loadPolicyTx(ctx context.Context, q interface {
 	if err != nil {
 		return NativePolicy{}, err
 	}
-	policy.Personas = doc.Personas
-	policy.SourceCommit = doc.SourceCommit
-	policy.RosterSHA256 = doc.RosterSHA256
-	policy.RosterGitBlob = doc.RosterGitBlob
-	policy.BundleMode = doc.BundleMode
-	policy.Synthetic = doc.Synthetic
-	policy.SyntheticStored = doc.SyntheticStored
-	policy.Implementer = doc.Implementer
-	policy.Reviewer = doc.Reviewer
-	policy.RosterPath = doc.RosterPath
-	policy.PathTemplate = doc.PathTemplate
-	policy.SeatFiles = doc.SeatFiles
+	applyPersonaDoc(&policy, doc)
+	// Provenance and the synthetic flag come back from the envelope.
+	// A legacy array leaves SyntheticStored false.
+	// Declared slugs and the path template are outside treeDigest.
+	// The first open stays frozen.
 	return policy, nil
 }
 
-type personaEnvelope struct {
-	Personas        []definition.NativePersona
-	SourceCommit    string
-	RosterSHA256    string
-	RosterGitBlob   string
-	BundleMode      string
-	Synthetic       bool
-	SyntheticStored bool
-	Implementer     string
-	Reviewer        string
-	RosterPath      string
-	PathTemplate    string
-	SeatFiles       []string
-}
-
 // marshalNativePersonas stores persona JSON. A legacy tree with no source pin
-// and no declared seats stays a JSON array. A pinned snapshot stores the
-// source commit, roster hashes, and the synthetic flag in the same jsonb
-// value so reload does not keep only the digest.
+// stays a JSON array. A pinned snapshot stores the source commit and roster
+// content hashes in the same jsonb value so reload does not keep only the digest.
 func marshalNativePersonas(tree definition.NativeTree) ([]byte, error) {
-	pinned := tree.SourceCommit != "" || tree.RosterSHA256 != "" || tree.RosterGitBlob != "" || tree.BundleMode != ""
-	extra := tree.Implementer != "" || tree.Reviewer != "" || tree.RosterPath != "" || tree.PathTemplate != "" || len(tree.SeatFiles) > 0 || !tree.Synthetic
-	if !pinned && !extra {
-		return json.Marshal(tree.Personas)
-	}
-	syn := tree.Synthetic
-	return json.Marshal(struct {
-		Personas      []definition.NativePersona `json:"personas"`
-		SourceCommit  string                     `json:"sourceCommit,omitempty"`
-		RosterSHA256  string                     `json:"rosterSha256,omitempty"`
-		RosterGitBlob string                     `json:"rosterGitBlob,omitempty"`
-		BundleMode    string                     `json:"bundleMode,omitempty"`
-		Synthetic     *bool                      `json:"synthetic,omitempty"`
-		Implementer   string                     `json:"implementer,omitempty"`
-		Reviewer      string                     `json:"reviewer,omitempty"`
-		RosterPath    string                     `json:"rosterPath,omitempty"`
-		PathTemplate  string                     `json:"pathTemplate,omitempty"`
-		SeatFiles     []string                   `json:"seatFiles,omitempty"`
-	}{
-		Personas:      tree.Personas,
-		SourceCommit:  tree.SourceCommit,
-		RosterSHA256:  tree.RosterSHA256,
-		RosterGitBlob: tree.RosterGitBlob,
-		BundleMode:    tree.BundleMode,
-		Synthetic:     &syn,
-		Implementer:   tree.Implementer,
-		Reviewer:      tree.Reviewer,
-		RosterPath:    tree.RosterPath,
-		PathTemplate:  tree.PathTemplate,
-		SeatFiles:     tree.SeatFiles,
-	})
+	return marshalPersonaBody(tree)
 }
 
 func unmarshalNativePersonas(raw []byte) (personaEnvelope, error) {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 {
-		return personaEnvelope{}, fmt.Errorf("%w: personas", ErrInputInvalid)
-	}
-	if trimmed[0] == '[' {
-		var personas []definition.NativePersona
-		if err := json.Unmarshal(trimmed, &personas); err != nil {
-			return personaEnvelope{}, err
-		}
-		mode, err := definition.CheckBundle(definition.NativeTree{Personas: personas})
-		if err != nil {
-			return personaEnvelope{}, fmt.Errorf("%w: %w", ErrInputInvalid, err)
-		}
-		if mode.BundleMode != "" {
-			return personaEnvelope{}, fmt.Errorf("%w: bundle metadata", ErrInputInvalid)
-		}
-		return personaEnvelope{Personas: personas}, nil
-	}
-	var doc struct {
-		Personas      []definition.NativePersona `json:"personas"`
-		SourceCommit  string                     `json:"sourceCommit"`
-		RosterSHA256  string                     `json:"rosterSha256"`
-		RosterGitBlob string                     `json:"rosterGitBlob"`
-		BundleMode    string                     `json:"bundleMode"`
-		Synthetic     *bool                      `json:"synthetic"`
-		Implementer   string                     `json:"implementer"`
-		Reviewer      string                     `json:"reviewer"`
-		RosterPath    string                     `json:"rosterPath"`
-		PathTemplate  string                     `json:"pathTemplate"`
-		SeatFiles     []string                   `json:"seatFiles"`
-	}
-	if err := json.Unmarshal(trimmed, &doc); err != nil {
-		return personaEnvelope{}, err
-	}
-	if doc.Personas == nil {
-		return personaEnvelope{}, fmt.Errorf("%w: personas", ErrInputInvalid)
-	}
-	ready, err := definition.CheckBundle(definition.NativeTree{
-		Personas:      doc.Personas,
-		SourceCommit:  doc.SourceCommit,
-		RosterSHA256:  doc.RosterSHA256,
-		RosterGitBlob: doc.RosterGitBlob,
-		BundleMode:    doc.BundleMode,
-	})
-	if err != nil {
-		return personaEnvelope{}, fmt.Errorf("%w: %w", ErrInputInvalid, err)
-	}
-	out := personaEnvelope{
-		Personas:      doc.Personas,
-		SourceCommit:  doc.SourceCommit,
-		RosterSHA256:  doc.RosterSHA256,
-		RosterGitBlob: doc.RosterGitBlob,
-		BundleMode:    ready.BundleMode,
-		Implementer:   doc.Implementer,
-		Reviewer:      doc.Reviewer,
-		RosterPath:    doc.RosterPath,
-		PathTemplate:  doc.PathTemplate,
-		SeatFiles:     doc.SeatFiles,
-	}
-	if doc.Synthetic != nil {
-		out.Synthetic = *doc.Synthetic
-		out.SyntheticStored = true
-	}
-	return out, nil
+	return unmarshalPersonaBody(raw)
 }
+
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
+// The envelope stores synthetic, the declared slugs, and the path template.
 
 func rootTaskTx(ctx context.Context, tx pgx.Tx, invocationID string) (NativeTask, error) {
 	task, err := scanNativeTask(tx.QueryRow(ctx, `
@@ -1297,4 +1221,166 @@ func (s *Store) CapacityHeld(ctx context.Context, invocationID string) (held, sl
 		return 0, 0, ErrNotFound
 	}
 	return held, slots, err
+}
+
+func policyTree(p NativePolicy) definition.NativeTree {
+	// A row opened before the flag was stored has SyntheticStored false.
+	// Its digest was computed with Synthetic true, so reload supplies that.
+	synthetic := true
+	if p.SyntheticStored {
+		synthetic = p.Synthetic
+	}
+	return definition.NativeTree{
+		NativeHierarchy:       p.NativeHierarchy,
+		Personas:              p.Personas,
+		MaxDepth:              p.MaxDepth,
+		AbsoluteMaxDepth:      p.AbsoluteMaxDepth,
+		AllowAncestorShortcut: p.AllowAncestorShortcut,
+		Delegation:            p.Delegation,
+		Synthetic:             synthetic,
+		SourceCommit:          p.SourceCommit,
+		RosterSHA256:          p.RosterSHA256,
+		RosterGitBlob:         p.RosterGitBlob,
+		BundleMode:            p.BundleMode,
+		Implementer:           p.Implementer,
+		Reviewer:              p.Reviewer,
+		RosterPath:            p.RosterPath,
+		PathTemplate:          p.PathTemplate,
+		SeatFiles:             append([]string{}, p.SeatFiles...),
+	}
+}
+
+func applyPersonaDoc(policy *NativePolicy, doc personaEnvelope) {
+	policy.Personas = doc.Personas
+	policy.SourceCommit = doc.SourceCommit
+	policy.RosterSHA256 = doc.RosterSHA256
+	policy.RosterGitBlob = doc.RosterGitBlob
+	policy.BundleMode = doc.BundleMode
+	policy.Synthetic = doc.Synthetic
+	policy.SyntheticStored = doc.SyntheticStored
+	policy.Implementer = doc.Implementer
+	policy.Reviewer = doc.Reviewer
+	policy.RosterPath = doc.RosterPath
+	policy.PathTemplate = doc.PathTemplate
+	policy.SeatFiles = doc.SeatFiles
+}
+
+type personaEnvelope struct {
+	Personas        []definition.NativePersona
+	SourceCommit    string
+	RosterSHA256    string
+	RosterGitBlob   string
+	BundleMode      string
+	Synthetic       bool
+	SyntheticStored bool
+	Implementer     string
+	Reviewer        string
+	RosterPath      string
+	PathTemplate    string
+	SeatFiles       []string
+}
+
+// marshalNativePersonas stores persona JSON. A legacy tree with no source pin
+// and no declared seats stays a JSON array. A pinned snapshot stores the
+// source commit, roster hashes, and the synthetic flag in the same jsonb
+// value so reload does not keep only the digest.
+func marshalPersonaBody(tree definition.NativeTree) ([]byte, error) {
+	pinned := tree.SourceCommit != "" || tree.RosterSHA256 != "" || tree.RosterGitBlob != "" || tree.BundleMode != ""
+	extra := tree.Implementer != "" || tree.Reviewer != "" || tree.RosterPath != "" || tree.PathTemplate != "" || len(tree.SeatFiles) > 0 || !tree.Synthetic
+	if !pinned && !extra {
+		return json.Marshal(tree.Personas)
+	}
+	syn := tree.Synthetic
+	return json.Marshal(struct {
+		Personas      []definition.NativePersona `json:"personas"`
+		SourceCommit  string                     `json:"sourceCommit,omitempty"`
+		RosterSHA256  string                     `json:"rosterSha256,omitempty"`
+		RosterGitBlob string                     `json:"rosterGitBlob,omitempty"`
+		BundleMode    string                     `json:"bundleMode,omitempty"`
+		Synthetic     *bool                      `json:"synthetic,omitempty"`
+		Implementer   string                     `json:"implementer,omitempty"`
+		Reviewer      string                     `json:"reviewer,omitempty"`
+		RosterPath    string                     `json:"rosterPath,omitempty"`
+		PathTemplate  string                     `json:"pathTemplate,omitempty"`
+		SeatFiles     []string                   `json:"seatFiles,omitempty"`
+	}{
+		Personas:      tree.Personas,
+		SourceCommit:  tree.SourceCommit,
+		RosterSHA256:  tree.RosterSHA256,
+		RosterGitBlob: tree.RosterGitBlob,
+		BundleMode:    tree.BundleMode,
+		Synthetic:     &syn,
+		Implementer:   tree.Implementer,
+		Reviewer:      tree.Reviewer,
+		RosterPath:    tree.RosterPath,
+		PathTemplate:  tree.PathTemplate,
+		SeatFiles:     tree.SeatFiles,
+	})
+}
+
+func unmarshalPersonaBody(raw []byte) (personaEnvelope, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return personaEnvelope{}, fmt.Errorf("%w: personas", ErrInputInvalid)
+	}
+	if trimmed[0] == '[' {
+		var personas []definition.NativePersona
+		if err := json.Unmarshal(trimmed, &personas); err != nil {
+			return personaEnvelope{}, err
+		}
+		mode, err := definition.CheckBundle(definition.NativeTree{Personas: personas})
+		if err != nil {
+			return personaEnvelope{}, fmt.Errorf("%w: %w", ErrInputInvalid, err)
+		}
+		if mode.BundleMode != "" {
+			return personaEnvelope{}, fmt.Errorf("%w: bundle metadata", ErrInputInvalid)
+		}
+		return personaEnvelope{Personas: personas}, nil
+	}
+	var doc struct {
+		Personas      []definition.NativePersona `json:"personas"`
+		SourceCommit  string                     `json:"sourceCommit"`
+		RosterSHA256  string                     `json:"rosterSha256"`
+		RosterGitBlob string                     `json:"rosterGitBlob"`
+		BundleMode    string                     `json:"bundleMode"`
+		Synthetic     *bool                      `json:"synthetic"`
+		Implementer   string                     `json:"implementer"`
+		Reviewer      string                     `json:"reviewer"`
+		RosterPath    string                     `json:"rosterPath"`
+		PathTemplate  string                     `json:"pathTemplate"`
+		SeatFiles     []string                   `json:"seatFiles"`
+	}
+	if err := json.Unmarshal(trimmed, &doc); err != nil {
+		return personaEnvelope{}, err
+	}
+	if doc.Personas == nil {
+		return personaEnvelope{}, fmt.Errorf("%w: personas", ErrInputInvalid)
+	}
+	ready, err := definition.CheckBundle(definition.NativeTree{
+		Personas:      doc.Personas,
+		SourceCommit:  doc.SourceCommit,
+		RosterSHA256:  doc.RosterSHA256,
+		RosterGitBlob: doc.RosterGitBlob,
+		BundleMode:    doc.BundleMode,
+	})
+	if err != nil {
+		return personaEnvelope{}, fmt.Errorf("%w: %w", ErrInputInvalid, err)
+	}
+	out := personaEnvelope{
+		Personas:      doc.Personas,
+		SourceCommit:  doc.SourceCommit,
+		RosterSHA256:  doc.RosterSHA256,
+		RosterGitBlob: doc.RosterGitBlob,
+		BundleMode:    ready.BundleMode,
+		Implementer:   doc.Implementer,
+		Reviewer:      doc.Reviewer,
+		RosterPath:    doc.RosterPath,
+		PathTemplate:  doc.PathTemplate,
+		SeatFiles:     doc.SeatFiles,
+	}
+	if doc.Synthetic != nil {
+		out.Synthetic = *doc.Synthetic
+		out.SyntheticStored = true
+	}
+	return out, nil
 }

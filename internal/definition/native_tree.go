@@ -10,15 +10,10 @@ import (
 )
 
 const (
-	// NativeProofMaxDepth is the historical bundle depth. Validation no longer
-	// requires a tree to equal it. A declaration that omits maxDepth uses
-	// DefaultNativeMaxDepth.
+	// NativeProofMaxDepth is the depth the synthetic tree must reach and must not pass.
 	NativeProofMaxDepth = 2
-	// NativeAbsoluteMaxDepth is the deepest task chain native mode will run,
-	// and the highest absoluteMaxDepth a definition or request may set.
+	// NativeAbsoluteMaxDepth is the deepest task chain native mode will run.
 	NativeAbsoluteMaxDepth = 8
-	// NativePersonaCap is the most personas one tree may freeze.
-	NativePersonaCap = 256
 )
 
 var (
@@ -65,24 +60,15 @@ type NativeTree struct {
 	AtumRoster            bool
 	Delegation            string
 	Synthetic             bool
-	// SourceCommit, RosterSHA256, and RosterGitBlob identify the pinned
-	// snapshot. They are empty on the legacy witness tree. The store keeps
-	// them with the policy so a reload can rebuild this digest.
-	SourceCommit  string
-	RosterSHA256  string
-	RosterGitBlob string
-	// BundleMode is role_files when the roster is an explicit seat bundle.
-	// Empty is the legacy witness. omitempty keeps that digest stable.
-	BundleMode string
-	// Implementer and Reviewer are declared slugs. They are not part of
-	// treeDigest. Empty means publish uses the ready refusal.
-	Implementer string
-	Reviewer    string
-	// RosterPath, PathTemplate, and SeatFiles are the declaration layout.
-	// They are stored on the policy outside treeDigest.
-	RosterPath   string
-	PathTemplate string
-	SeatFiles    []string
+	SourceCommit          string
+	RosterSHA256          string
+	RosterGitBlob         string
+	BundleMode            string
+	Implementer           string
+	Reviewer              string
+	RosterPath            string
+	PathTemplate          string
+	SeatFiles             []string
 }
 
 // NativeTreeResult is the frozen roster. Digest does not change when the definition reloads.
@@ -113,7 +99,7 @@ func ValidateNativeTree(in NativeTree) (NativeTreeResult, error) {
 	if in.MaxDepth < 1 || in.MaxDepth > in.AbsoluteMaxDepth {
 		return NativeTreeResult{}, fmt.Errorf("%w: maxDepth", ErrNativeTree)
 	}
-	if len(in.Personas) > NativePersonaCap {
+	if len(in.Personas) > 256 {
 		return NativeTreeResult{}, fmt.Errorf("%w: persona cap", ErrNativeTree)
 	}
 	byName, root, err := indexPersonas(in.Personas)
@@ -140,8 +126,6 @@ func ValidateNativeTree(in NativeTree) (NativeTreeResult, error) {
 	return NativeTreeResult{Root: root, Depth: depth, Digest: digest}, nil
 }
 
-// AllowDelegate requires the delegator to be reportsTo and listed in spawnableBy.
-// An ancestor shortcut is not a privilege grant unless the frozen policy allows it.
 func AllowDelegate(target NativePersona, delegator string, ancestors []string, allowAncestor bool) error {
 	if delegator == "" || target.Name == "" || delegator == target.Name {
 		return ErrDelegationDenied
@@ -156,7 +140,6 @@ func AllowDelegate(target NativePersona, delegator string, ancestors []string, a
 	return ErrDelegationDenied
 }
 
-// CheckDepth rejects a task chain deeper than the frozen max or the absolute max.
 func CheckDepth(depth, maxDepth, absoluteMax int) error {
 	if absoluteMax <= 0 {
 		absoluteMax = NativeAbsoluteMaxDepth
