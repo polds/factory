@@ -174,6 +174,75 @@ in M4. Scorers shipped in M6
 [`schemas/v1alpha1`](../schemas/v1alpha1), and `factoryd` serves them with no
 authentication.
 
+### Role source, native limits, publish, evidence, and budget
+
+These objects are optional. Omitting them leaves the tree valid. Setting one
+registers it; unknown keys inside it are still errors. Runtime publish,
+attestation, spend, and evidence keep reading their process constants until a
+later change.
+
+```yaml
+roleSource:                         # required to attest role files
+  repo: { codeForge: GITHUB, owner: acme, name: payments-service }
+  roster: { path: team/roster.yaml }
+  seats:
+    pathTemplate: "team/roles/{slug}/{file}"
+    files: [ROLE.md]
+
+native:
+  limits:
+    maxDepth: 8                     # 1..8, default 8
+    absoluteMaxDepth: 8             # 1..8, default 8
+  root: lead
+  implementer: worker               # required when publish.enabled or evidence is set
+  reviewer: reviewer
+  seats: [lead, worker, reviewer]
+
+publish:
+  enabled: false                    # default false
+  repo: { codeForge: GITHUB, owner: acme, name: payments-service }
+  issueKey: payments#120
+  refPrefix: factory/draft-
+  title: "Factory draft"
+  body: ""                          # empty selects the default template
+
+evidence:
+  package: ./oracle
+  mutation: oracle/oracle.go
+  sentinel: factoryEvidencePass     # default; 1..64 bytes, no newline
+  break: factoryEvidenceFail        # default; different from sentinel
+
+budget:
+  ceilingCents: 2500                # no implicit default
+
+inference:
+  rates:                            # spend price document
+    prompt_byte_cap: 400000
+    max_tokens: 8192
+    models:
+      - name: example-model
+        input_cost_per_token: "0.000003"
+        output_cost_per_token: "0.000015"
+```
+
+`repositories[].ceilingCents` is an optional per-repo hard stop. A positive
+integer is the only accepted value.
+
+`roleSource.repo` and `publish.repo` must be one of `repositories`, including a
+deferred repo. `roster.path` is relative, stays the same under `filepath.Clean`,
+and has no `..`. `seats.pathTemplate` contains `{slug}` once and `{file}` once
+and no other braces. `seats.files` is 1 to 16 unique single path segments, in
+prompt order. `native.limits.maxDepth` and `absoluteMaxDepth` are integers from
+1 to 8; an omitted field defaults to 8 when `native` is set. `native.seats` holds
+at most 256 slugs. `publish.enabled: true` requires `budget.ceilingCents`, a
+listed `publish.repo`, `evidence.package`, `evidence.mutation`,
+`native.implementer`, and `native.reviewer`. Setting `roleSource` also requires
+`budget.ceilingCents`. Setting `evidence` requires the implementer and reviewer
+slugs. `evidence.sentinel` defaults to `factoryEvidencePass` and `evidence.break`
+defaults to `factoryEvidenceFail`. `inference.rates` is a spend price document:
+non-negative `prompt_byte_cap`, positive `max_tokens`, and at least one model
+with decimal per-token rates.
+
 ### Inheritance
 
 `factory.yaml` → `agentDefaults` → agent → automation, each a **sparse override** of the

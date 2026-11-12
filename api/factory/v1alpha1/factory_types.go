@@ -16,6 +16,9 @@ type Factory struct {
 }
 
 // FactorySpec is the desired factory definition.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.publish) || !has(self.publish.enabled) || self.publish.enabled == false || (has(self.budget) && has(self.budget.ceilingCents) && self.budget.ceilingCents > 0)",message="budget.ceilingCents is required when publish.enabled is true"
+// +kubebuilder:validation:XValidation:rule="!has(self.roleSource) || (has(self.budget) && has(self.budget.ceilingCents) && self.budget.ceilingCents > 0)",message="budget.ceilingCents is required when roleSource is set"
 type FactorySpec struct {
 	SchemaVersion      string                   `json:"schemaVersion,omitempty"`
 	DisplayName        string                   `json:"displayName,omitempty"`
@@ -23,6 +26,11 @@ type FactorySpec struct {
 	Alias              string                   `json:"alias,omitempty"`
 	CodeForges         []string                 `json:"codeForges,omitempty"`
 	Repositories       []RepositoryRef          `json:"repositories,omitempty"`
+	RoleSource         *RoleSourceSpec          `json:"roleSource,omitempty"`
+	Native             *NativeSpec              `json:"native,omitempty"`
+	Publish            *PublishSpec             `json:"publish,omitempty"`
+	Evidence           *EvidenceSpec            `json:"evidence,omitempty"`
+	Budget             *BudgetSpec              `json:"budget,omitempty"`
 	CredentialStrategy string                   `json:"credentialStrategy,omitempty"`
 	Secrets            []string                 `json:"secrets,omitempty"`
 	SecretRefs         []SecretRef              `json:"secretRefs,omitempty"`
@@ -56,6 +64,94 @@ type AgentDefaultsSpec struct {
 type InferenceSpec struct {
 	Default   InferenceDefaultSpec             `json:"default,omitempty"`
 	Providers map[string]InferenceProviderSpec `json:"providers,omitempty"`
+	Rates     *SpendRateSpec                   `json:"rates,omitempty"`
+}
+
+// RoleSourceSpec is the role-file layout declared on the factory.
+type RoleSourceSpec struct {
+	Repo   RepositoryRef    `json:"repo,omitempty"`
+	Roster RosterSourceSpec `json:"roster,omitempty"`
+	Seats  SeatFileSpec     `json:"seats,omitempty"`
+}
+
+// RosterSourceSpec is the roster path inside the role repo.
+type RosterSourceSpec struct {
+	Path string `json:"path,omitempty"`
+}
+
+// SeatFileSpec is the seat path template and ordered file list.
+type SeatFileSpec struct {
+	PathTemplate string `json:"pathTemplate,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	Files []string `json:"files,omitempty"`
+}
+
+// NativeSpec is the hierarchy limit and seat selection.
+type NativeSpec struct {
+	Limits      NativeLimitSpec `json:"limits,omitempty"`
+	Root        string          `json:"root,omitempty"`
+	Implementer string          `json:"implementer,omitempty"`
+	Reviewer    string          `json:"reviewer,omitempty"`
+	// +kubebuilder:validation:MaxItems=256
+	Seats []string `json:"seats,omitempty"`
+}
+
+// NativeLimitSpec is maxDepth and absoluteMaxDepth. Each is 1..8.
+type NativeLimitSpec struct {
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=8
+	MaxDepth int32 `json:"maxDepth,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=8
+	AbsoluteMaxDepth int32 `json:"absoluteMaxDepth,omitempty"`
+}
+
+// PublishSpec is the draft-publication declaration.
+type PublishSpec struct {
+	Enabled   bool           `json:"enabled,omitempty"`
+	Repo      *RepositoryRef `json:"repo,omitempty"`
+	IssueKey  string         `json:"issueKey,omitempty"`
+	RefPrefix string         `json:"refPrefix,omitempty"`
+	Title     string         `json:"title,omitempty"`
+	Body      string         `json:"body,omitempty"`
+}
+
+// EvidenceSpec is the oracle package frozen on the definition.
+type EvidenceSpec struct {
+	Package  string `json:"package,omitempty"`
+	Mutation string `json:"mutation,omitempty"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	Sentinel string `json:"sentinel,omitempty"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	Break string `json:"break,omitempty"`
+}
+
+// BudgetSpec is the factory-wide hard stop.
+type BudgetSpec struct {
+	// +kubebuilder:validation:Minimum=1
+	CeilingCents int64 `json:"ceilingCents,omitempty"`
+}
+
+// SpendRateSpec is the spend price document on inference.rates.
+type SpendRateSpec struct {
+	// +kubebuilder:validation:Minimum=0
+	PromptByteCap int64 `json:"prompt_byte_cap,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	MaxTokens int64           `json:"max_tokens,omitempty"`
+	Models    []ModelRateSpec `json:"models,omitempty"`
+}
+
+// ModelRateSpec is one model in inference.rates. Costs are decimal USD per token.
+type ModelRateSpec struct {
+	Name                        string   `json:"name,omitempty"`
+	InputCostPerToken           string   `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken          string   `json:"output_cost_per_token,omitempty"`
+	CacheCreationInputTokenCost string   `json:"cache_creation_input_token_cost,omitempty"`
+	InputAbove                  []string `json:"input_above,omitempty"`
+	OutputAbove                 []string `json:"output_above,omitempty"`
 }
 
 // InferenceDefaultSpec selects the default provider.

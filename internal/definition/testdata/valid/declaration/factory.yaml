@@ -1,0 +1,41 @@
+schemaVersion: v1alpha1
+name: payments
+repositories:
+  - { codeForge: GITHUB, owner: acme, name: payments-service }
+  - { codeForge: GITHUB, owner: acme, name: payments-docs, deferred: true, ceilingCents: 800 }
+roleSource:
+  repo: { codeForge: GITHUB, owner: acme, name: payments-service }
+  roster: { path: team/roster.yaml }
+  seats:
+    pathTemplate: "team/roles/{slug}/{file}"
+    files: [ROLE.md]
+native:
+  limits:
+    maxDepth: 8
+    absoluteMaxDepth: 8
+  root: lead
+  implementer: worker
+  reviewer: reviewer
+  seats: [lead, worker, reviewer]
+publish:
+  enabled: true
+  repo: { codeForge: GITHUB, owner: acme, name: payments-service }
+  issueKey: payments#120
+  refPrefix: factory/draft-
+  title: "Factory draft"
+  body: ""
+evidence:
+  package: ./oracle
+  mutation: oracle/oracle.go
+  sentinel: factoryEvidencePass
+  break: factoryEvidenceFail
+budget:
+  ceilingCents: 2500
+inference:
+  rates:
+    prompt_byte_cap: 400000
+    max_tokens: 8192
+    models:
+      - name: example-model
+        input_cost_per_token: "0.000003"
+        output_cost_per_token: "0.000015"

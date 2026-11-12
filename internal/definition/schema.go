@@ -19,6 +19,14 @@ var (
 		"deferred":  leaf(),
 	}}
 
+	factoryRepoSpec = &keySpec{children: map[string]*keySpec{
+		"codeForge":    leaf(),
+		"owner":        leaf(),
+		"name":         leaf(),
+		"deferred":     leaf(),
+		"ceilingCents": leaf(),
+	}}
+
 	harnessSpec = &keySpec{children: map[string]*keySpec{
 		"type":  leaf(),
 		"model": leaf(),
@@ -54,7 +62,12 @@ var (
 		"description":        leaf(),
 		"alias":              leaf(),
 		"codeForges":         leaf(),
-		"repositories":       {elem: repoSpec},
+		"repositories":       {elem: factoryRepoSpec},
+		"roleSource":         roleSourceSpec,
+		"native":             nativeSpec,
+		"publish":            publishSpec,
+		"evidence":           evidenceSpec,
+		"budget":             budgetSpec,
 		"credentialStrategy": leaf(),
 		"integrations": {elem: &keySpec{children: map[string]*keySpec{
 			"type": leaf(),
@@ -89,6 +102,7 @@ var (
 				"credentialRef": leaf(),
 			}},
 			"providers": {free: true, elem: providerSpec},
+			"rates":     rateSpec,
 		}},
 		"pipeline": pipelineSpec,
 		"selfImprovement": {children: map[string]*keySpec{
@@ -162,6 +176,61 @@ var (
 	}}
 
 	filterSpec = newDeepFree()
+
+	roleSourceSpec = &keySpec{children: map[string]*keySpec{
+		"repo": repoSpec,
+		"roster": {children: map[string]*keySpec{
+			"path": leaf(),
+		}},
+		"seats": {children: map[string]*keySpec{
+			"pathTemplate": leaf(),
+			"files":        leaf(),
+		}},
+	}}
+
+	nativeSpec = &keySpec{children: map[string]*keySpec{
+		"limits": {children: map[string]*keySpec{
+			"maxDepth":         leaf(),
+			"absoluteMaxDepth": leaf(),
+		}},
+		"root":        leaf(),
+		"implementer": leaf(),
+		"reviewer":    leaf(),
+		"seats":       leaf(),
+	}}
+
+	publishSpec = &keySpec{children: map[string]*keySpec{
+		"enabled":   leaf(),
+		"repo":      repoSpec,
+		"issueKey":  leaf(),
+		"refPrefix": leaf(),
+		"title":     leaf(),
+		"body":      leaf(),
+	}}
+
+	evidenceSpec = &keySpec{children: map[string]*keySpec{
+		"package":  leaf(),
+		"mutation": leaf(),
+		"sentinel": leaf(),
+		"break":    leaf(),
+	}}
+
+	budgetSpec = &keySpec{children: map[string]*keySpec{
+		"ceilingCents": leaf(),
+	}}
+
+	rateSpec = &keySpec{children: map[string]*keySpec{
+		"prompt_byte_cap": leaf(),
+		"max_tokens":      leaf(),
+		"models": {elem: &keySpec{children: map[string]*keySpec{
+			"name":                            leaf(),
+			"input_cost_per_token":            leaf(),
+			"output_cost_per_token":           leaf(),
+			"cache_creation_input_token_cost": leaf(),
+			"input_above":                     leaf(),
+			"output_above":                    leaf(),
+		}}},
+	}}
 
 	pipelineSpec = &keySpec{children: map[string]*keySpec{
 		"stages": leaf(),

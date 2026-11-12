@@ -52,6 +52,11 @@ type Factory struct {
 	Alias              string                  `json:"alias,omitempty"`
 	CodeForges         []string                `json:"codeForges,omitempty"`
 	Repositories       []Repository            `json:"repositories,omitempty"`
+	RoleSource         *RoleSource             `json:"roleSource,omitempty"`
+	Native             *NativeDeclaration      `json:"native,omitempty"`
+	Publish            *Publish                `json:"publish,omitempty"`
+	Evidence           *Evidence               `json:"evidence,omitempty"`
+	Budget             *Budget                 `json:"budget,omitempty"`
 	CredentialStrategy string                  `json:"credentialStrategy,omitempty"`
 	Integrations       []Integration           `json:"integrations,omitempty"`
 	Secrets            []string                `json:"secrets,omitempty"`
@@ -208,11 +213,69 @@ type Webhook struct {
 }
 
 // Repository is a code forge repository reference.
+// CeilingCents is an optional per-repo hard stop on factory repositories.
 type Repository struct {
-	CodeForge string `json:"codeForge,omitempty"`
-	Owner     string `json:"owner,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Deferred  bool   `json:"deferred,omitempty"`
+	CodeForge    string `json:"codeForge,omitempty"`
+	Owner        string `json:"owner,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Deferred     bool   `json:"deferred,omitempty"`
+	CeilingCents int64  `json:"ceilingCents,omitempty"`
+}
+
+// RoleSource is the role-file layout for one factory.
+type RoleSource struct {
+	Repo   Repository   `json:"repo,omitempty"`
+	Roster RosterSource `json:"roster,omitempty"`
+	Seats  SeatFiles    `json:"seats,omitempty"`
+}
+
+// RosterSource is the roster document path inside the role repo.
+type RosterSource struct {
+	Path string `json:"path,omitempty"`
+}
+
+// SeatFiles is the path template and the ordered seat file list.
+type SeatFiles struct {
+	PathTemplate string   `json:"pathTemplate,omitempty"`
+	Files        []string `json:"files,omitempty"`
+}
+
+// NativeDeclaration is the hierarchy limit and seat selection.
+type NativeDeclaration struct {
+	Limits      NativeLimits `json:"limits,omitempty"`
+	Root        string       `json:"root,omitempty"`
+	Implementer string       `json:"implementer,omitempty"`
+	Reviewer    string       `json:"reviewer,omitempty"`
+	Seats       []string     `json:"seats,omitempty"`
+}
+
+// NativeLimits is maxDepth and absoluteMaxDepth. Each is 1..8, default 8.
+type NativeLimits struct {
+	MaxDepth         int `json:"maxDepth,omitempty"`
+	AbsoluteMaxDepth int `json:"absoluteMaxDepth,omitempty"`
+}
+
+// Publish is the draft-publication declaration. Enabled defaults to false.
+type Publish struct {
+	Enabled   bool        `json:"enabled,omitempty"`
+	Repo      *Repository `json:"repo,omitempty"`
+	IssueKey  string      `json:"issueKey,omitempty"`
+	RefPrefix string      `json:"refPrefix,omitempty"`
+	Title     string      `json:"title,omitempty"`
+	Body      string      `json:"body,omitempty"`
+}
+
+// Evidence is the oracle package frozen on the definition.
+type Evidence struct {
+	Package  string `json:"package,omitempty"`
+	Mutation string `json:"mutation,omitempty"`
+	Sentinel string `json:"sentinel,omitempty"`
+	Break    string `json:"break,omitempty"`
+}
+
+// Budget is the factory-wide hard stop. There is no implicit ceiling.
+type Budget struct {
+	CeilingCents int64 `json:"ceilingCents,omitempty"`
 }
 
 // Integration is one factory integration entry.
@@ -340,6 +403,24 @@ type Runner struct {
 type Inference struct {
 	Default   InferenceDefault             `json:"default,omitempty"`
 	Providers map[string]InferenceProvider `json:"providers,omitempty"`
+	Rates     *InferenceRates              `json:"rates,omitempty"`
+}
+
+// InferenceRates is the spend price document snapshotted onto the factory.
+type InferenceRates struct {
+	PromptByteCap int64       `json:"prompt_byte_cap"`
+	MaxTokens     int64       `json:"max_tokens"`
+	Models        []ModelRate `json:"models"`
+}
+
+// ModelRate is one model in inference.rates. Costs are decimal USD per token.
+type ModelRate struct {
+	Name                        string   `json:"name"`
+	InputCostPerToken           string   `json:"input_cost_per_token"`
+	OutputCostPerToken          string   `json:"output_cost_per_token"`
+	CacheCreationInputTokenCost string   `json:"cache_creation_input_token_cost,omitempty"`
+	InputAbove                  []string `json:"input_above,omitempty"`
+	OutputAbove                 []string `json:"output_above,omitempty"`
 }
 
 // InferenceDefault selects the default provider.

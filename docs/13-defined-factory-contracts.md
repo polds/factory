@@ -50,7 +50,7 @@ The four personas in the witnesses are a synthetic coordinator, lead, and two sp
 | Input pull request | a target field; it does not satisfy `requires: [pullRequest]` |
 | Zero findings | `findingsCount: 0` with coverage present is success |
 | Publication | lexical path, symlink, 1 MiB report, 16 MiB artifact, secret scan |
-| Hierarchy | optional for legacy; native mode freezes one root, acyclic, connected, proof depth 2, absolute max 8 |
+| Hierarchy | optional for legacy; native mode freezes one root, acyclic, connected, maxDepth and absoluteMaxDepth from the definition, each at most 8 |
 | Delegation | direct manager: delegator is `reportsTo` and is in `spawnableBy`; ancestor shortcut stays off |
 | Lineage | `parent_run_id` stays the stage predecessor; a delegation edge has its own id |
 | Stage advance | only the stage owner; a child with the same stage string does not advance |
