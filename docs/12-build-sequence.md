@@ -462,9 +462,17 @@ The driver prints `m10 offline PASS`. The same definition covers two schedule sl
 | `paidProbeAllowed` | false | none |
 | `m10-live` dispatch | not dispatched | none |
 
+## TA — Target-agnostic core
+
+Design: [16](16-target-agnostic-core.md). One self-hosted `factoryd` serves many factories. Each factory is a registered definition with its own repos, role-source paths, hierarchy limits, publish target, evidence paths, secret grants, and snapshotted spend rates. Dreaming is one example factory. The conformance suite also runs a second synthetic factory so isolation is part of the proof.
+
+Five PRs, in order: schema, role source and hierarchy, publish/evidence/price, the denylist CI guard, then the conformance suite. Offline tests stay green on every PR. The last PR deletes `deploy/dreaming-live` and `spike/dreaming`, and points the manual live workflow at a definition file. That workflow stays `workflow_dispatch` only.
+
+Out of scope for TA: live gateway rate fetch ([#217](https://github.com/polds/factory/issues/217) fills the per-factory price document), a GitHub App key per factory, dotted-line grants, ancestor shortcut, merge or ready publish, the console, and multi-replica definition storage (M8).
+
 ## D6 — Live-run preflight and draft publication
 
-D6a stops a role-files run at a server-computed worst-case cost. D6b opens one draft pull request on northstar-ai-labs/dreaming after the reviewer's exact commit passes. D6c is the preflight, the driver, and the manual workflow. The workflow is `workflow_dispatch` only. It is not dispatched from an agent.
+D6a stops a role-files run at a server-computed worst-case cost. D6b opens one draft pull request on northstar-ai-labs/dreaming after the reviewer's exact commit passes. D6c is the preflight, the driver, and the manual workflow. The workflow is `workflow_dispatch` only. It is not dispatched from an agent. TA-5 re-points this preflight and that workflow at the conformance suite. Until that PR, the commands below stay the Dreaming path.
 
 The offline proof is:
 

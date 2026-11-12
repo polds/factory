@@ -1,0 +1,468 @@
+# 16 — Target-agnostic core
+
+Design. Baseline `main` `32fc0d1af2014bd913acd612b4e59e50fc7d5de7`. This page specifies the change. It does not implement it.
+
+Factory is an open-source agent factory in the sense of Warp Factories: any repo, any codebase, custom agentic pipelines, several repos on one factory, several factories on one deployment, self-hosted on the operator's infrastructure with the Helm chart ([10](10-kubernetes-and-helm.md)). `factoryd` is a service that accepts definitions. Its code knows nothing about Dreaming or about any other repo it serves. Dreaming is one example factory (one definition, one repo) used to test and verify. Peter runs his own `factoryd` for Dreaming later. New Dreaming-specific code is frozen.
+
+One `factoryd` process serves N factories. A factory is one applied definition. A factory lists one or more repositories. A run, a secret grant, a spend ceiling, a GitHub App token, and a publish target belong to one factory and to one repo in that factory's list. Repo, issue key, ref prefix, role-source path, model, and price are fields of a factory or of an invocation. They are not process-wide constants.
+
+## Tenancy
+
+The store already has the row shape this needs.
+
+| Object | Where it is keyed | Baseline |
+| --- | --- | --- |
+| Factory | `factories.name` unique, `factories.id` | `internal/store/migrations/0001_init.sql:4-13` |
+| Applied definition | `definitions.factory_id`, `git_sha`, status `applied` or `superseded` | `internal/store/migrations/0001_init.sql:16-24` |
+| Run | `runs.factory_id` | `internal/store/migrations/0001_init.sql:57-59` |
+| Invocation | `invocations.factory_id`, `definition_revision`, `definition_digest` | `internal/store/migrations/0013_m8_invocations.sql:3-11` |
+| Spend lines | `factory:<factoryID>:<invocationID>` plus invocation, lead, and agent lines. That factory line includes the invocation id, so it dies with the invocation. | `internal/store/native_runtime.go:323-334`. `budget_scopes.invocation_id` is `NOT NULL` and `ON DELETE CASCADE` (`internal/store/migrations/0015_native_runtime.sql:137-140`). |
+
+What is still a process singleton, and what replaces it:
+
+| Singleton | Baseline | Replacement |
+| --- | --- | --- |
+| One definition tree | `Config.DefinitionPath`, `DefinitionGitURL`, `DefinitionGitRef`, `DefinitionGitSubdir` (`internal/server/server.go:37`, `internal/server/server.go:65-74`) | One source record per factory. The poller runs per git-backed factory. |
+| One secret map | `Config.Secrets` (`internal/server/server.go:52`) | Resolve `(factory_id, name)`. A missing name fails closed. No fall-through to another factory. |
+| One spend-price document | `Config.SpendPrice`, else `FACTORY_SPEND_PRICE` (`internal/server/server.go:48-51`, `internal/server/run_spend.go:32-37`) | `inference.rates` on the factory, copied onto the invocation at open. |
+| One publish repo | `publishRepo` and `FACTORY_PUBLISH_DRAFT_REPO` (`internal/server/publish_draft.go:18-21`, `internal/server/publish_draft.go:92-95`) | `publish` on the factory. A run may narrow issue key, title, body, and ref prefix. It may not name a repo outside the factory. |
+| One role checkout | `FACTORY_ROLE_SOURCE` (`internal/server/produced_bundle.go:468-472`) | A cache entry `(factory_id, source_commit)` filled from the factory's role repo. |
+| One GitHub App | `Config.GitHubAppID`, `Config.GitHubAppKey` (`internal/server/server.go:82-83`) | Stays a deployment credential. Every minted token is for one repo that the calling factory lists. |
+
+A factory cannot read another factory's runs, role bytes, secret values, or publication rows, and cannot charge another factory's ceiling. Two factories may list the same repo. That overlap is explicit in both definitions. The installation token for a call still names only the one repo of that call. Spend, secrets, and runs stay on the calling factory.
+
+The deployment is one trust domain: one operator, one database, one Helm release. Isolation inside that domain is `factory_id`. Operators who also want Kubernetes RBAC between teams put Factory resources in different namespaces. `factoryd` still enforces `factory_id` when they share a process.
+
+## Where a definition lives
+
+A definition is registered with `factoryd`. It is not implied by the repo a run edits.
+
+Each factory has one source, fixed at create:
+
+| Source | How it is loaded | Version pin |
+| --- | --- | --- |
+| `git` | Per-factory URL, ref, subdir, production ref. The existing poller (`internal/defsync/doc.go`) runs once per factory. A non-production ref, a validation error, or an unchanged commit leaves the last applied tree. | `definitions.git_sha` |
+| `api` | `PUT /api/v1/factory/{name}/definition` with `generation` and `files` ([04](04-protocols-and-apis.md#factories-and-definitions)). A git-backed factory returns 409 and writes nothing. | published generation, stored as the definition row |
+| `path` | Local directory. Dev and the chart bootstrap factory only. | the apply digest |
+
+Create rejects a second source on an existing factory. The current 409 for "git-backed" stays.
+
+An invocation stores `definition_revision` and `definition_digest` (`internal/store/migrations/0013_m8_invocations.sql:10-11`). Completion, attestation replay, and publish read that pin. A later apply does not retarget an in-flight run.
+
+A factory may set `definition.repo` to one repository it already lists, plus a subdir (default `.factory/`). That is still a registration: the factory row records the remote, and apply validates the tree before it serves. The work tree a seat edits is a different pin (`pinned_head_sha`, and the role `sourceCommit`). The publish ref prefix cannot name the definition ref. The publisher's token is not granted a push to the definition branch.
+
+Role bytes are a third pin. They are attested at open and frozen on the policy. They are not the definition git sha, and they are not written into the Factory git tree. The example definition records paths and blob ids. It does not record file bodies.
+
+Helm chart-only mode keeps one bootstrap factory from `controlPlane.definition` (`deploy/helm/factory/values.yaml:70-77`). Further factories are registered with a git URL, an API put, or a Factory CRD ([10](10-kubernetes-and-helm.md#factory)). The chart does not grow a list of target repos.
+
+## Security properties that stay
+
+These stay generic mechanisms. TA does not weaken them.
+
+| Property | Mechanism that stays |
+| --- | --- |
+| Exact-SHA reviewer gate before publish | The declared reviewer and the declared implementer both have a ready produced head, and the SHAs are equal (`internal/server/publish_draft.go:438-454`). The publisher checks out that SHA, requires a clean porcelain and `HEAD` equal to it (`internal/server/publish_draft.go:633-652`), and verifies the bundle tip before push. |
+| Role-source attestation by git blob | Byte-for-byte compare of the roster and each seat file against a local commit. SHA-256 and git blob id both mismatch-fail. Absent object fails. The compare does not fetch and does not write the bytes into the Factory checkout (`internal/definition/attest.go:17-19`, `internal/definition/attest.go:33-56`). |
+| Spend hard stop | Integer cents. Ancestor lines lock in `scope_id` order. A reserve past the ceiling is `budget_denied` and pauses the root so publish refuses (`internal/server/run_spend.go:100-124`). `PublicationSpendBlocked` refuses the draft (`internal/server/publish_draft.go:355-365`). Worst-case `W` comes from the frozen price document (`internal/harness/spend.go:36-72`). |
+| Draft-only publish | The pull request is created with `draft: true`. A non-draft response or a head mismatch fails the row (`internal/server/publish_draft.go:274-288`). The publisher has no merge, ready, label, reviewer, or comment call. |
+| No token to seats | The installation token is minted for the publish repo only, after the reviewer gate, with `contents: write`, `pull_requests: write`, `metadata: read` (`internal/server/publish_draft.go:315-319`). It is not placed in a task environment, event, or log. Log text is scrubbed (`internal/server/publish_draft.go:771-786`). |
+| `reportsTo` grants nothing | `ReportsDoNotGrantSecrets` returns the secret list unchanged (`internal/definition/native_tree.go:153-160`). |
+| One draft per issue | `draft_publications` stays unique on `(target_repo, issue_key)` (`internal/store/migrations/0019_draft_publication.sql:21-22`). A second invocation does not mint a second token. |
+
+The publication row is still inserted as `pending` before the token is minted. Root cancelled, paused, or not completed still refuses (`internal/server/publish_draft.go:369-397`). A truncated evidence transcript, a missing named red or green test, a dirty tree, and a missing sentinel still refuse.
+
+## Coupling inventory
+
+Grep baseline: `dreaming`, `northstar`, `oskar`, `viktor`, `nils`, `beatriz`, `roster`, `SOUL`, `HEARTBEAT`, `proof`, plus the env names below. Test fixtures and `testdata/` may keep target names. Non-test `cmd/` has none of these identifiers at this baseline. Non-test hits under `internal/` are the rows below.
+
+### Publish target
+
+`internal/server/publish_draft.go:19-22` fixes the repo `northstar-ai-labs/dreaming`, the issue key `dreaming#454`, the ref prefix `factory/dreaming-454-`, and the title `Factory: DB-backed tenant-isolation tests (#454)`. `FACTORY_PUBLISH_DRAFT_REPO` only gates entry (`internal/server/publish_draft.go:92-95`) and is then required to equal that constant (`internal/server/publish_draft.go:400-402`). The pending row stores the constants (`internal/server/publish_draft.go:146-151`). Remote, pull listing, create, and installation lookup all use the constant (`internal/server/publish_draft.go:174`, `internal/server/publish_draft.go:210`, `internal/server/publish_draft.go:237`, `internal/server/publish_draft.go:270`, `internal/server/publish_draft.go:311`). The body is fixed prose, including `Oskar evidence` and `Refs #454` (`internal/server/publish_draft.go:748-756`). The ref suffix is the invocation id's first 8 characters (`internal/server/publish_draft.go:730-745`).
+
+Replacement is the `publish` object below. Defaults: `enabled: false`. With `enabled: false`, or with no `publish` object, the root completion returns without a publication row, which is today's empty-env behavior. `enabled: true` with an empty repo, an empty issue key, a repo the factory does not list, a ref prefix that fails the grammar, or a body template that fails to render fails closed before a token mint. The request may set `issueKey`, `title`, `body`, and `refPrefix`. The repo comes from the definition only. The ref grammar is `^factory/[A-Za-z0-9][A-Za-z0-9._-]{0,48}-$`. The default prefix is `factory/draft-`. The suffix check at `internal/server/publish_draft.go:730-745` stays. Title cap 256 bytes. Body template cap 8192 bytes. The template data is only `Head`, `Pin`, `Red`, `Green`, `Counted`, `Sentinel`, `IssueKey`, `Repo`. An unknown or empty field fails the render. The default body is:
+
+```text
+Head {{.Head}}
+Pin {{.Pin}}
+Evidence: red {{.Red}} failed; green {{.Green}} passed.
+Spend counted cents: {{.Counted}}
+Sentinel: {{.Sentinel}}
+Issue: {{.IssueKey}}
+Repo: {{.Repo}}
+Draft by Factory; human review required; Factory will not merge.
+```
+
+`draft_publications` gains `factory_id`, matching the invocation's factory. Uniqueness on `(target_repo, issue_key)` stays global, so two factories that both list one repo cannot open two drafts for one issue key. The token repository list is that one repo.
+
+### Role source
+
+`AttestRoleSource` loads `org/roster.yaml` and `org/agents/<name>/<file>` (`internal/definition/attest.go:33-46`). `rolePath` allows only that roster path and the four names `AGENTS.md`, `HEARTBEAT.md`, `SOUL.md`, `TOOLS.md` (`internal/definition/attest.go:90-117`). `LoadPinnedRoles` uses the same roster constant and the same four names (`internal/definition/pinned_roles.go:19`, `internal/definition/pinned_roles.go:27-28`) and reads `org/agents/<slug>/<name>` (`internal/definition/pinned_roles.go:385-386`). The open path takes the checkout from `FACTORY_ROLE_SOURCE` (`internal/server/produced_bundle.go:468-472`). `NativeTreeRequest` carries personas, depth, and roster hashes, and carries no path template (`internal/api/native_runtime.go:28-48`, `internal/client/native_runtime.go:29-49`).
+
+The declaration is native in `factory.yaml`. The load path reads that declaration. An importer may emit the declaration for a repo whose layout is already Dreaming's. The importer lives at `examples/dreaming-definition/import-roles/`. It is an authoring tool: it writes paths and blob ids, it does not copy role bytes into the output, and `factoryd` does not call it. `cmd/` stays free of layout names so the denylist stays empty there. A load-path importer would put one repo's layout back on the open path.
+
+`roleSource` fields:
+
+| Field | Default | Validation | Fail closed |
+| --- | --- | --- | --- |
+| `repo` | none | Must be one of `repositories` | Role-files open with no `roleSource` is rejected. Legacy trees with no pins and no seat files skip attestation, as today (`internal/server/produced_bundle.go:475-484`). |
+| `roster.path` | none | Relative, `filepath.Clean` stable, no `..`, not absolute | Absent object or a symlink, as `readPinned` does today (`internal/definition/pinned_roles.go:504-536`). |
+| `seats.pathTemplate` | none | Contains `{slug}` once and `{file}` once. No other braces. | Substitution that fails the same lexical rules as `rolePath` is an absent object. |
+| `seats.files` | none | 1 to 16 single path segments, unique, order is prompt order and digest order | A seat with a different set or order fails before queue (`internal/definition/pinned_roles.go:375-383`). |
+
+Roster document, generic, required keys only: a mapping with an `agents` sequence. Each agent has `slug`, `role`, optional `reports_to`. Unknown keys fail. The current required `meta` mapping (`internal/definition/pinned_roles.go:453-478`) is dropped. `role` matches `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`. The fixed set `ceo`, `cto`, `manager`, `general`, `worker` (`internal/definition/pinned_roles.go:30-32`) is dropped. Caps stay: roster 262144 bytes, each role file 65536 bytes (`internal/definition/pinned_roles.go:17-18`).
+
+Attestation still uses local `git cat-file` and still compares SHA-256 and git blob id. The server fills a cache directory for `(factory_id, commit)` from the role repo with a `contents: read`, `metadata: read` installation token on that repo only, then attests against the cache. The compare itself still does not fetch. A commit that is not a 40-hex commit fails before insert, as today (`internal/server/produced_bundle.go:465-466`). The cache is not an artifact path and is not committed.
+
+The path template is stored on the policy outside `treeDigest`. `treeDigest`'s JSON shape stays (`internal/definition/native_tree.go:218-249`), so an already frozen policy digest still matches.
+
+### Hierarchy and proof shape
+
+`NativeProofMaxDepth` is 2 and `ValidateNativeTree` requires `MaxDepth` to equal it and the deepest persona to reach it (`internal/definition/native_tree.go:13-17`, `internal/definition/native_tree.go:99-101`, `internal/definition/native_tree.go:116-118`). The same function requires `Synthetic` and rejects `AtumRoster` (`internal/definition/native_tree.go:90-92`). Reload forces `Synthetic: true` so the reloaded policy still passes that gate (`internal/store/native_runtime.go:288-291`). `LoadPinnedRoles` requires `ProofRoot` to be the single seat whose manager lies outside the selection (`internal/definition/pinned_roles.go:52`, `internal/definition/pinned_roles.go:79-81`, `internal/definition/pinned_roles.go:346-361`) and rejects a parent whose source role is `general` or `worker` (`internal/definition/pinned_roles.go:366-369`). It also stamps the proof depth onto the tree (`internal/definition/pinned_roles.go:110-117`). `seatNames` then finds the implementer as the only depth-2 persona and the reviewer as the only depth-1 leaf (`internal/server/produced_bundle.go:411-447`).
+
+Replacement:
+
+| Rule | Behavior |
+| --- | --- |
+| One root, acyclic, connected | Stays. Root count other than 1 fails (`internal/definition/native_tree.go:183-185`). |
+| `maxDepth` | Definition field. Default 8. A persona deeper than `maxDepth` fails validation. The exact-equality check and the "must reach depth 2" check are removed. |
+| `absoluteMaxDepth` | Definition field. Default 8. Global maximum 8, the current `NativeAbsoluteMaxDepth`. A value outside 1..8 fails validation. `CheckDepth` still refuses a task chain past either frozen number (`internal/definition/native_tree.go:142-150`). |
+| Request depth | A `NativeTreeRequest` may set a lower `maxDepth` or `absoluteMaxDepth`. A value above the definition, or an `absoluteMaxDepth` above 8, fails the open before insert. |
+| `Synthetic`, `AtumRoster` | Stop being gates. They remain in the digest struct so old digests stay valid. New opens leave them false. Reload stops rewriting `Synthetic`. |
+| Declared root | `native.root` is the one seat whose frozen `reportsTo` is empty. Its source `reports_to` is kept as `sourceReportsTo` and is not a delegation edge. Every other selected seat's manager must be in the selection. Two seats with a manager outside the selection fail as two roots. |
+| `dotted_to` | Still rejected (`internal/definition/pinned_roles.go:351-353`). |
+| Parent source role | No longer a gate. |
+| Delegation | `direct_manager` stays required (`internal/definition/native_tree.go:96-98`). `allowAncestorShortcut: true` fails validation. The field stays in the digest. Turning the shortcut on is a later contract change. |
+| Implementer and reviewer | `native.implementer` and `native.reviewer` are slugs in the selection. Publish and reviewer evidence use those names. Depth is not how a seat is classified. When either slug is empty, publish fails with the existing ready refusal and the reviewer DSN is not attached. |
+| Persona cap | 256 personas in one tree. Over that, validation fails. |
+| Seat file count | The declared file list, 1..16. |
+
+`reportsTo` still grants no secrets and no repository access.
+
+### Evidence, sentinel, and the test DSN
+
+The package and the mutation path come from the process environment (`internal/server/disposable.go:30-32`, `internal/server/disposable.go:47-56`, `internal/server/disposable.go:85-91`). The publisher reads the same mutation env and requires the blob at the reviewed SHA to contain `factoryEvidencePass` (`internal/server/publish_draft.go:654-662`). The harness rewrites that constant to `factoryEvidenceFail` (`internal/harness/mutate.go:11-14`, `internal/harness/mutate.go:71-79`). The disposable database URL is `DREAMD_TEST_DSN` (`internal/harness/materialize.go:35-37`).
+
+Replacement is the `evidence` object on the definition, frozen on the invocation. The request may set `package` and `mutation`. `sentinel` and `break` come from the definition only, so a run cannot point the publisher at a different token than the harness rewrites.
+
+| Field | Default | Validation |
+| --- | --- | --- |
+| `package` | empty | `EvidencePackagePath` (`internal/harness/evidence.go:32-36`). Empty with publish enabled fails closed. |
+| `mutation` | empty | `EvidenceMutationPath` (`internal/harness/evidence.go:39-44`). Empty with publish enabled fails closed. |
+| `sentinel` | `factoryEvidencePass` | 1..64 bytes, no newline. The reviewed blob must contain it. |
+| `break` | `factoryEvidenceFail` | Same grammar, different from `sentinel`. |
+
+The prompt still does not choose the package or the path. Lexical `..`, absolute paths, and symlinks still fail. The DSN env name becomes `FACTORY_EVIDENCE_DSN`. Only the declared reviewer receives it, and only when the implementer's produced SHA is ready and both package and mutation are set. Any other assignee does not. The admin URL is still not copied into the task environment.
+
+`factoryEvidencePass` stays a generic marker. It is not a target name and it is not on the denylist.
+
+### Spend price and model
+
+Issue [#217](https://github.com/polds/factory/issues/217) tracks the live price document: Dreaming's driver still builds `workedPrice()` (`deploy/dreaming-live/offline.go:234-242`) and hands it to the server. `factoryd` already computes `W` from a price document rather than from a Dreaming constant (`internal/server/run_spend.go:32-37`, `internal/harness/spend.go:69-72`). TA treats that split as the landed shape and does not call a gateway.
+
+The document moves to `inference.rates` on the factory (the same JSON as `SpendPrice`). Apply copies it onto the factory row. Open copies it onto the invocation. Reserve and the harness read the invocation copy. A chart default, when the definition omits rates, is copied onto the factory at apply. A later chart change does not change an in-flight invocation. A `role_files` open with an empty or unparsable frozen document fails before queue. Legacy runs that are not `role_files` keep today's behavior: no spend URL is attached (`internal/server/run_spend.go:39-46`).
+
+The model id stays the agent `model` / `harness` field ([03](03-definition-schema.md#factoryyaml)). The Dreaming model string belongs in the example definition. Two factories on one process can name different models and different rate documents.
+
+The hard stop remains a ceiling. Today's ceiling is the invocation's. TA adds a factory cap and an optional per-repo cap that outlive one invocation, because the existing scope row cannot: `invocation_id` cascades away (`internal/store/migrations/0015_native_runtime.sql:137-140`).
+
+| Cap | Field | Scope id | Rule |
+| --- | --- | --- | --- |
+| Factory | `budget.ceilingCents` | row in new table `factory_budgets`, keyed by `factory_id` | Required when the factory uses `role_files` or `publish.enabled`. No implicit default. A `role_files` open without it fails before queue. Legacy factories that omit it keep invocation ceilings only. |
+| Repo | `repositories[].ceilingCents` | row in `factory_budgets`, keyed by `factory_id` plus `owner/name` | Optional. When set, a run whose target repo is that repo counts against this cap and the factory cap. |
+| Invocation | existing `ceilingCents` on the open | `internal/store/native_runtime.go:323-334` | May be lower than the factory cap and the repo cap. A request above either fails the open. |
+
+Reserve locks the invocation lines and the `factory_budgets` rows in id order, in the same transaction as today. A reserve that would pass any locked ceiling is `budget_denied` and pauses the root (`internal/server/run_spend.go:100-124`). Deleting an invocation does not delete `factory_budgets`. One factory's charges do not change another factory's spent or reserved cents.
+
+#217 may later fill `inference.rates` from gateway rates. TA does not wait on that issue, and TA does not add a gateway client.
+
+### Other target-shaped surfaces
+
+| Surface | Baseline | TA treatment |
+| --- | --- | --- |
+| Dreaming harness | `deploy/dreaming-live`, 6145 lines of Go, package `dreaminglive` | Becomes the conformance suite in the last PR. Deleted there. |
+| Spike driver | `spike/dreaming/*`, including `spike/dreaming/definition/seats.yaml:1-18` (`proof_root: nils-aaberg`, `publish_repo: northstar-ai-labs/dreaming`) | Deleted in the last PR. The example definition replaces `seats.yaml`. |
+| Live workflow | `.github/workflows/dreaming-live.yml:14-44` (`dreaming-live-454`, concurrency `dreaming-live`) and `:138-139` (repo and `FACTORY_ROLE_SOURCE`) | Replaced by a workflow that takes a definition path. Not dispatched by this work. |
+| CI step | `.github/workflows/ci.yml:275-276`, `MODE=offline ./spike/dreaming/run_test.sh` | Renamed in the last PR. Until then the command stays green. |
+| Docs that describe the constant | Role files at `docs/14-native-coordination.md:7`. Publish when the env repo is Dreaming at `docs/14-native-coordination.md:15`. | Updated in the PR that changes the behavior they describe. |
+| Test fixtures | `internal/server/publish_draft_test.go`, `internal/definition/pinned_roles_test.go`, and the rest of `*_test.go` | May keep Dreaming names. The guard does not scan them. |
+
+`draft_publications` has no token column and no bundle bytes (`internal/store/migrations/0019_draft_publication.sql:1-3`). That stays.
+
+## Schema
+
+Added to `factory.yaml` ([03](03-definition-schema.md#factoryyaml)). Unknown keys are already errors (`internal/definition/validate.go:15`). TA-1 registers these keys in the loader, in `schemas/v1alpha1/factory.schema.json`, and in the Factory CRD. `docs/13-defined-factory-contracts.md:53` replaces the hierarchy row "proof depth 2, absolute max 8" with "maxDepth and absoluteMaxDepth from the definition, each at most 8". Contract version stays `defined-factory/1`. The digest JSON shape stays.
+
+```yaml
+definition:                         # optional. Registration, not the work tree.
+  repo: { codeForge: GITHUB, owner: acme, name: factory-defs }
+  subdir: .factory
+
+roleSource:                         # required for bundleMode role_files
+  repo: { codeForge: GITHUB, owner: acme, name: payments-service }
+  roster: { path: team/roster.yaml }
+  seats:
+    pathTemplate: "team/roles/{slug}/{file}"
+    files: [ROLE.md]
+
+native:
+  limits:
+    maxDepth: 8                     # 1..8, default 8
+    absoluteMaxDepth: 8             # 1..8, default 8, global max 8
+  root: lead
+  implementer: worker               # required when publish.enabled or evidence is on
+  reviewer: reviewer
+  seats: [lead, worker, reviewer]
+
+publish:
+  enabled: false
+  repo: { codeForge: GITHUB, owner: acme, name: payments-service }
+  issueKey: payments#120
+  refPrefix: factory/draft-
+  title: "Factory draft"
+  body: ""                          # empty selects the default template
+
+evidence:
+  package: ./oracle
+  mutation: oracle/oracle.go
+  sentinel: factoryEvidencePass
+  break: factoryEvidenceFail
+
+budget:
+  ceilingCents: 2500                # factory-wide hard stop; required for role_files
+
+inference:
+  rates:                            # SpendPrice JSON, snapshotted per factory
+    prompt_byte_cap: 400000
+    max_tokens: 8192
+    models:
+      - name: example-model
+        input_cost_per_token: "0.000003"
+        output_cost_per_token: "0.000015"
+```
+
+`repositories` is the allowlist. `roleSource.repo` and `publish.repo` must appear in it. A deferred repo may be a publish target only when it is listed.
+
+`NativeTreeRequest` gains optional `publish` (`issueKey`, `title`, `body`, `refPrefix`) and `evidence` (`package`, `mutation`). It does not gain a repo, a role path, a sentinel, or a price. Those come from the pinned definition. The existing persona, depth, and roster-hash fields stay (`internal/api/native_runtime.go:28-48`).
+
+Dreaming, as data under `examples/dreaming-definition/` and nowhere under `internal/` or `cmd/`:
+
+```yaml
+name: dreaming
+repositories:
+  - { codeForge: GITHUB, owner: northstar-ai-labs, name: dreaming }
+roleSource:
+  repo: { codeForge: GITHUB, owner: northstar-ai-labs, name: dreaming }
+  roster: { path: org/roster.yaml }
+  seats:
+    pathTemplate: "org/agents/{slug}/{file}"
+    files: [AGENTS.md, HEARTBEAT.md, SOUL.md, TOOLS.md]
+native:
+  limits: { maxDepth: 2, absoluteMaxDepth: 8 }
+  root: nils-aaberg
+  implementer: viktor-halas
+  reviewer: oskar-lindgren
+  seats: [nils-aaberg, beatriz-salgado, viktor-halas, oskar-lindgren]
+budget:
+  ceilingCents: 2500
+publish:
+  enabled: true
+  repo: { codeForge: GITHUB, owner: northstar-ai-labs, name: dreaming }
+  issueKey: dreaming#454
+  refPrefix: factory/dreaming-454-
+```
+
+The second fixture is `examples/widget-factory/`. One repo `example/widget`. Role paths `team/roster.yaml` and `team/roles/{slug}/ROLE.md`. Seats `lead`, `worker`, `reviewer`. Issue key `widget#1`. Ref prefix `factory/draft-`. `budget.ceilingCents` is a different integer from the Dreaming example. Its rate document is its own. The conformance process loads both factories.
+
+## Helm and config
+
+| Setting | Where it lives | Why |
+| --- | --- | --- |
+| Image, replicas, database, object store, ingress, OIDC, worker pools | Chart values ([10](10-kubernetes-and-helm.md#values)) | Deployment machinery. Shared by every factory on the release. |
+| GitHub App id and private key | Chart secret, one per deployment | Operator credential used to mint installation tokens. Not an agent secret. Not a repo name. |
+| Bootstrap definition | `controlPlane.definition` | One smoke factory so `helm install` still serves a tree. |
+| Default `inference.rates` | Optional chart value | Copied onto a factory at apply when that factory omits rates. Not read live at reserve time. |
+| Provider API keys | Chart secrets | Deployment credentials. Injected for a factory only through that factory's grants. |
+| Repositories, role paths, hierarchy limits, publish, evidence, models, secret names | Factory definition | Per factory. Several factories per release. |
+| Secret values | Kubernetes secret keys named by factory id and secret name | The definition stores the name. Lookup is `(factory_id, name)`. |
+| Denylist | `scripts/target-denylist.txt` in this repo | CI for Factory's own tree. Not a chart value. |
+
+`values.yaml` does not gain a target repo, an issue key, a role path, or a persona list.
+
+## Conformance suite
+
+`deploy/dreaming-live` and `spike/dreaming` become `e2e/conformance/`. The suite drives `factoryd` through the public HTTP API and two definition files. It does not link Dreaming types into `internal/`.
+
+The suite covers today's offline rows: each preflight failure on its own case, and the secure case. With `FACTORY_TEST_DATABASE_URL` and `FACTORY_TEST_S3_ENDPOINT` set, it rehearses one draft pull request, a tiny ceiling, HTTP 402, cancel, a missing sentinel, a compile-only red transcript, and a second publish that stops before another token mint. Those cases run against the Dreaming example definition.
+
+The same process then runs `examples/widget-factory/` and checks isolation:
+
+| Check | Expected |
+| --- | --- |
+| Widget publish repo set to the Dreaming repo | Refused before a token mint. |
+| Widget run token on a Dreaming run route | 403 or 404. No body from the other factory. |
+| Charges against the widget factory cap | Dreaming `factory_budgets` spent and reserved cents unchanged. |
+| Widget attest pointed at `org/agents/...` | Absent object. The widget template is the only path that attests. |
+| Dreaming secret name resolved on the widget factory | Unresolved. Fail closed. |
+
+Private role bytes stay out of git. The live job checks a pin out into the runner temp directory, passes that directory as the cache input for that factory and commit, and does not upload it.
+
+Deleted in the last PR: `deploy/dreaming-live/**`, `spike/dreaming/**`, `.github/workflows/dreaming-live.yml`. The CI step at `.github/workflows/ci.yml:275-276` runs `MODE=offline ./e2e/conformance/run_test.sh` and expects `conformance offline PASS`.
+
+The replacement workflow is `workflow_dispatch` only. Inputs are `mode` (`preflight` or `live`), `confirm`, `factory_sha`, `definition` (path to a definition file), and `role_blobs` (JSON blob ids). `confirm` must equal `factory-live`. The workflow reads the definition file for the repo, the ref prefix, and the pin. It does not embed a repo name. It is not dispatched by an agent. `mode=live` still checks the role repo out with a read token and runs the chain only after every preflight row passes.
+
+## CI guard
+
+`scripts/check-target-agnostic.sh` fails when a non-test file under `internal/` or `cmd/` contains a denylist token. The scan is case-insensitive and is a substring match. It skips `*_test.go` and `testdata/`. The token list is `scripts/target-denylist.txt`, one token per line, comments with `#`. Default tokens:
+
+```text
+dreaming
+northstar
+nils-aaberg
+beatriz-salgado
+viktor-halas
+oskar-lindgren
+tobias-lindqvist
+```
+
+`roster`, `proof`, `SOUL`, and `HEARTBEAT` are not tokens. After this migration they are either mechanism words or definition data. `factoryEvidencePass` is not a token. The script prints `path:line` and exits non-zero. A unit test runs it against a temp tree that contains `dreaming` and expects failure, and against a clean tree and expects success. The `required` CI job runs the script. `shfmt` and `shellcheck` already cover `*.sh` (`.github/workflows/ci.yml:251-264`).
+
+The guard does not scan `examples/`, `e2e/`, `deploy/`, or `docs/`. Those trees are allowed to name a target. `internal/` and `cmd/` are not.
+
+## Migration
+
+Five PRs, merged in order. Offline tests stay green on each one. TA-1 through TA-4 keep `MODE=offline ./spike/dreaming/run_test.sh`. TA-5 replaces that command. No PR dispatches the live workflow. No PR edits `web/console/`.
+
+### TA-1 — Schema only
+
+Register the new `factory.yaml` keys, defaults, and validation. Runtime still uses the constants.
+
+Paths: `docs/03-definition-schema.md`, `docs/13-defined-factory-contracts.md`, `docs/contracts/defined-factory/**`, `schemas/v1alpha1/factory.schema.json`, `internal/definition/**`, `internal/convert/**`, `deploy/helm/factory/crds/factory.dev_factories.yaml`.
+
+Acceptance:
+
+- A tree that sets `roleSource`, `native`, `publish`, `evidence`, `budget`, and `inference.rates` validates.
+- A tree that omits them still validates, and legacy witness digests are unchanged.
+- `absoluteMaxDepth: 9`, a publish repo absent from `repositories`, `publish.enabled: true` without `budget.ceilingCents`, a path template without `{slug}`, and an unknown key fail validation.
+- `ValidateNativeTree` behavior is unchanged in this PR.
+
+Verify:
+
+```bash
+go test ./internal/definition/ ./internal/convert/ -count=1
+python3 docs/contracts/defined-factory/validate.py
+MODE=offline ./spike/dreaming/run_test.sh
+```
+
+### TA-2 — Role source and hierarchy
+
+Core reads paths, limits, root, implementer, and reviewer from the definition. The exact depth check, the synthetic-roster gate, the fixed role set, and the outside-manager check leave `internal/`.
+
+Paths: `internal/definition/attest.go`, `internal/definition/pinned_roles.go`, `internal/definition/native_tree.go`, `internal/server/produced_bundle.go`, `internal/store/native_runtime.go`, `internal/api/native_runtime.go`, `internal/client/native_runtime.go`, matching `*_test.go`, `docs/14-native-coordination.md`. `deploy/dreaming-live/**` and `spike/dreaming/**` may change only so the offline driver supplies the Dreaming declaration through the API.
+
+Acceptance:
+
+- Dreaming's layout attests when the declaration names `org/roster.yaml` and `org/agents/{slug}/{file}`.
+- The widget layout attests with `team/roles/{slug}/ROLE.md` and fails closed on `org/agents/...`.
+- A tree of depth 0 and a tree of depth 3 validate when `maxDepth` allows them. Depth 9 fails.
+- `treeDigest` JSON keys are unchanged. A stored legacy digest still matches.
+- `FACTORY_ROLE_SOURCE` is no longer read. The checkout is the per-factory cache.
+- Publish still uses the old constants. This PR does not need the denylist to be clean if a comment remains; TA-3 removes the publish names. Prefer no new target names under `internal/`.
+
+Verify:
+
+```bash
+go test ./internal/definition/ ./internal/server/ ./internal/store/ ./internal/api/ ./internal/client/ -count=1 -timeout 45m
+MODE=offline ./spike/dreaming/run_test.sh
+```
+
+### TA-3 — Publish, evidence, and the price snapshot
+
+Remove the publish constants, the process evidence paths, and the process price as the document a run reads.
+
+Paths: `internal/server/publish_draft.go`, `internal/server/disposable.go`, `internal/server/run_spend.go`, `internal/server/server.go`, `internal/harness/materialize.go`, `internal/harness/mutate.go`, `internal/harness/evidence.go`, `internal/store/draft_publication.go`, `internal/store/native_budget.go`, a new migration for `draft_publications.factory_id` and `factory_budgets`, matching tests, `docs/14-native-coordination.md`. `deploy/dreaming-live/**` may change so the offline rehearsal sets publish, evidence, rates, and the factory ceiling through the definition.
+
+Acceptance:
+
+- A factory with `publish.enabled: false` completes the root and writes no publication row.
+- A request that names a repo outside the factory fails before a token mint.
+- The reviewer SHA gate, draft-only create, scrubbed logs, and the single-repo token scopes still hold.
+- The reviewer DSN is `FACTORY_EVIDENCE_DSN` and is absent from every other seat.
+- Two factories in one test: a charge to the second factory's `factory_budgets` row leaves the first factory's spent and reserved cents unchanged. Deleting an invocation leaves the factory cap row in place.
+- `inference.rates` frozen at open is the document `W` uses. Editing the process env after open does not change `W`.
+- Non-test `internal/` and `cmd/` contain none of the default denylist tokens.
+
+Verify:
+
+```bash
+go test ./internal/server/ ./internal/harness/ ./internal/store/ -count=1 -timeout 45m
+MODE=offline ./spike/dreaming/run_test.sh
+```
+
+### TA-4 — Denylist guard
+
+Paths: `scripts/check-target-agnostic.sh`, `scripts/target-denylist.txt`, `scripts/check-target-agnostic_test.sh`, `.github/workflows/ci.yml`.
+
+Acceptance:
+
+- The script exits 0 on this tree and exits 1 when a temp `internal/` file contains `northstar` or `Oskar`.
+- The `required` job runs it.
+- `shfmt` and `shellcheck` are clean.
+- The Dreaming offline command is unchanged.
+
+Verify:
+
+```bash
+scripts/check-target-agnostic_test.sh
+MODE=offline ./spike/dreaming/run_test.sh
+```
+
+### TA-5 — Conformance suite and the D6 re-point
+
+Paths: `e2e/conformance/**`, `examples/dreaming-definition/**`, `examples/widget-factory/**`, `.github/workflows/conformance-live.yml`, `.github/workflows/ci.yml`. Delete `deploy/dreaming-live/**`, `spike/dreaming/**`, `.github/workflows/dreaming-live.yml`. Update the D6 paragraph in `docs/12-build-sequence.md` so the command is the conformance script.
+
+Acceptance:
+
+- `MODE=offline ./e2e/conformance/run_test.sh` prints `conformance offline PASS`, covers the old P1–P14 failure rows and the secure case, and runs the widget isolation checks.
+- The live workflow's inputs are the definition path, `confirm`, `factory_sha`, and role blob ids. A checkout of the workflow file contains no denylist token.
+- Example definitions contain paths and blob ids and do not contain role file bodies.
+- The denylist script still exits 0.
+- No step dispatches the live workflow.
+
+Verify:
+
+```bash
+MODE=offline ./e2e/conformance/run_test.sh
+scripts/check-target-agnostic.sh
+```
+
+TA-4 and TA-5 both edit `.github/workflows/ci.yml`, so they merge in that order. Example files may be written while TA-3 is in review. They merge only in TA-5, after the API they call exists.
+
+## Out of scope
+
+TA ends at TA-5. The following stay later work.
+
+| Item | Where it goes |
+| --- | --- |
+| Filling `inference.rates` from a live gateway | Issue #217. The ceiling hard stop already stands without it. |
+| A distinct GitHub App key per factory | A later deployment feature. One App installed on each listed repo is enough for TA. |
+| `dotted_to` as a delegation edge, and `allowAncestorShortcut` | A later contract change. Both stay refused. |
+| Merge, ready, labels, review requests, or comments on the published pull request | Stays out. The publisher remains draft-only. |
+| Console UI for many factories | Later. TA does not edit `web/console/`. |
+| More than one `factoryd` replica sharing API-backed definitions | M8, as [10](10-kubernetes-and-helm.md#m7-applied) already records. |
+| Untrusted operators sharing one database | Out of the product. One Helm release is one operator. |
+| Scanner acceptance, Linear, and the improvement-loop reviewer pools | Unchanged milestones. |
+| Dispatching the live workflow | The orchestrator, after preflight, on a merged SHA. Not an agent. |
+
+## Decisions
+
+The role layout is a native `factory.yaml` declaration. The Dreaming importer is an example authoring tool and is not on the load path. Reasons: every factory then loads through one validator; attestation stays a blob compare against declared paths; the denylist stays empty under `cmd/` and `internal/`; the open path does not branch on a repo's historical layout.
+
+The definition is registered per factory (`git`, `api`, or `path`). A repo the factory edits is a target, not an implicit definition. A factory may point `definition.repo` at one listed repo. Apply still validates before serving, and the publish ref cannot move the definition ref.
+
+One GitHub App per deployment. The factory's `repositories` list is the allowlist for every token that factory mints.
+
+Global hierarchy cap is 8, today's `NativeAbsoluteMaxDepth`. Raising it is a contract change, not a definition field.
+
+## Open questions
+
+None.
