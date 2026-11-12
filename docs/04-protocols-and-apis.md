@@ -185,8 +185,11 @@ schedule, and work-item routes (`internal/api/handler.go:75-107`,
 TA-3 adds a factory-scoped key bound to one `factory_id`
 ([16](16-target-agnostic-core.md#tenancy)). For that key, a path uid that
 does not match is 403, and a run, approval, delivery, schedule, or work item
-that belongs to another factory is 404 with an empty problem body. The
-deployment admin key keeps today's reach. The worker websocket still reserves
+that belongs to another factory is 404 with an empty problem body. A body
+field that names a factory, including `POST /api/v1/agent/run` and
+`POST /api/v1/agent/schedules`, must equal the key's factory or the handler
+returns 403 before insert. Definition `PUT` and `:apply` stay on the
+deployment admin key. The admin key keeps today's reach. The worker websocket still reserves
 the `factory` worker-id prefix for a key whose team is `factory`
 (`internal/gateway/gateway.go:130-135`). That check is not a factory selector.
 

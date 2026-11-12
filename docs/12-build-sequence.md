@@ -499,9 +499,9 @@ The multi-replica leftover from M8, plus the per-factory git source. API-backed 
 
 Paths: the definition apply and read path in `internal/server/` and `internal/store/`, the operator replica guard in the Helm chart, `docs/10-kubernetes-and-helm.md`.
 
-Acceptance: two `factoryd` replicas, one database. Apply on one replica is visible on the other. Killing either replica leaves both factories serving. Chart-only mode may keep its default of 2 replicas. Operator mode may set `controlPlane.replicas` above 1.
+Acceptance: two `factoryd` replicas, one database. Apply on one replica is visible on the other. Killing either replica leaves both factories serving. Chart-only mode may keep its default of 2 replicas. Operator mode may set `controlPlane.replicas` above 1. Each git-backed factory has its own poller. A new commit on factory A's remote reloads A and leaves factory B's applied digest unchanged.
 
-Verify: an integration test applies a definition on replica A and reads it from replica B, then the reverse.
+Verify: an integration test applies a definition on replica A and reads it from replica B, then the reverse. A second case advances only A's git remote and checks B's digest.
 
 ### TF-3 — Publish chart images
 
