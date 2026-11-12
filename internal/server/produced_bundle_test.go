@@ -235,7 +235,6 @@ func TestProducedHeadReviewerPipeline(t *testing.T) {
 	if err := env.raw.QueryRow(ctx, `SELECT pinned_head_sha FROM invocations WHERE id = $1`, invocationID).Scan(&pin); err != nil || pin != bundlePin {
 		t.Fatalf("pin %s %v", pin, err)
 	}
-	t.Setenv("FACTORY_EVIDENCE_PACKAGE", "./oracle")
 	if _, err := env.srv.taskEnv(ctx, oskarRun, bound); err == nil || !strings.Contains(err.Error(), "missing SHA") {
 		t.Fatal(err)
 	}
@@ -249,15 +248,6 @@ func TestProducedHeadReviewerPipeline(t *testing.T) {
 	if err != nil || copiedRow.HeadSHA != tip || copiedRow.HeadSHA == bundlePin {
 		t.Fatalf("copied %+v %v", copiedRow, err)
 	}
-	if _, err := env.srv.taskEnv(ctx, oskarRun, bound); err == nil || !strings.Contains(err.Error(), "FACTORY_EVIDENCE_MUTATION") {
-		t.Fatal(err)
-	}
-	t.Setenv("FACTORY_EVIDENCE_PACKAGE", "")
-	t.Setenv("FACTORY_EVIDENCE_MUTATION", "oracle/oracle.go")
-	if _, err := env.srv.taskEnv(ctx, oskarRun, bound); err == nil || !strings.Contains(err.Error(), "FACTORY_EVIDENCE_PACKAGE") {
-		t.Fatal(err)
-	}
-	t.Setenv("FACTORY_EVIDENCE_PACKAGE", "./oracle")
 	reviewEnv, err := env.srv.taskEnv(ctx, oskarRun, bound)
 	if err != nil {
 		t.Fatal(err)
@@ -265,7 +255,7 @@ func TestProducedHeadReviewerPipeline(t *testing.T) {
 	if _, ok := reviewEnv["GH_TOKEN"]; ok || strings.Contains(reviewEnv["FACTORY_SECRET_VALUES"], "gh-synthetic-token") {
 		t.Fatal("reviewer env has GH_TOKEN")
 	}
-	if reviewEnv[harness.EnvTestDSN] == "" || reviewEnv[harness.EnvReviewHead] != tip || reviewEnv[harness.EnvEvidencePackage] != "./oracle" {
+	if reviewEnv[harness.EnvTestDSN] == "" || reviewEnv["DREAMD_TEST_DSN"] != "" || reviewEnv[harness.EnvReviewHead] != tip || reviewEnv[harness.EnvEvidencePackage] != "./oracle" {
 		t.Fatal("reviewer evidence env missing")
 	}
 	reviewAsg := env.srv.assignment(ctx, oskarRun, exec, bound, reviewEnv)

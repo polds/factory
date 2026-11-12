@@ -41,11 +41,11 @@ func (s *Server) SpendPrice() string {
 	return s.spendPriceJSON()
 }
 
-func (s *Server) attachSpend(run store.Run, env map[string]string) {
+func (s *Server) attachSpend(ctx context.Context, run store.Run, env map[string]string) {
 	if env == nil || env[harness.EnvBundleMode] != definition.BundleModeRoleFiles {
 		return
 	}
-	price := strings.TrimSpace(s.spendPriceJSON())
+	price := strings.TrimSpace(s.invocationPrice(ctx, s.runInvocation(ctx, run)))
 	base := strings.TrimRight(s.cfg.TaskServerURL, "/")
 	if price == "" || base == "" {
 		return
@@ -97,7 +97,7 @@ func (s *Server) handleSpendReserve(w http.ResponseWriter, r *http.Request) {
 		writeSpend(w, http.StatusConflict, map[string]any{"error": "budget_denied"})
 		return
 	}
-	wCents, priced := s.serverW()
+	wCents, priced := s.invocationW(r.Context(), seat.InvocationID)
 	if !priced {
 		s.observeReserve(body.Cents, http.StatusConflict)
 		writeSpend(w, http.StatusConflict, map[string]string{"error": "unpriced"})
@@ -178,7 +178,7 @@ func (s *Server) handleSpendSettle(w http.ResponseWriter, r *http.Request) {
 	}
 	charge := body.Cents
 	if body.MissingUsage || body.AllowanceExhausted {
-		if wCents, priced := s.serverW(); priced {
+		if wCents, priced := s.invocationW(r.Context(), seat.InvocationID); priced {
 			charge = wCents
 		} else if reservedCents > 0 {
 			charge = reservedCents
@@ -218,7 +218,36 @@ func (s *Server) handleSpendSettle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serverW() (int64, bool) {
-	price, err := harness.ParseSpendPrice(s.spendPriceJSON())
+	return priceW(s.spendPriceJSON())
+}
+
+func (s *Server) invocationPrice(ctx context.Context, invocationID string) string {
+	if s.store != nil && invocationID != "" {
+		frozen, err := s.store.FrozenRun(ctx, invocationID)
+		if err == nil && len(bytes.TrimSpace(frozen.RatesJSON)) > 0 && string(frozen.RatesJSON) != "null" {
+			return string(frozen.RatesJSON)
+		}
+	}
+	return s.spendPriceJSON()
+}
+
+func (s *Server) invocationW(ctx context.Context, invocationID string) (int64, bool) {
+	return priceW(s.invocationPrice(ctx, invocationID))
+}
+
+func (s *Server) runInvocation(ctx context.Context, run store.Run) string {
+	if s.store == nil || run.WorkItemID == "" {
+		return ""
+	}
+	item, err := s.store.GetWorkItem(ctx, run.WorkItemID)
+	if err != nil {
+		return ""
+	}
+	return item.InvocationID
+}
+
+func priceW(raw string) (int64, bool) {
+	price, err := harness.ParseSpendPrice(raw)
 	if err != nil {
 		return 0, false
 	}
