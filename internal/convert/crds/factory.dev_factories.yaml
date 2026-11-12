@@ -343,8 +343,14 @@ spec:
                 type: object
               repositories:
                 items:
-                  description: RepositoryRef is a code-forge repository.
+                  description: |-
+                    FactoryRepositorySpec is one factory.spec.repositories entry.
+                    CeilingCents is the optional per-repo hard stop.
                   properties:
+                    ceilingCents:
+                      format: int64
+                      minimum: 1
+                      type: integer
                     codeForge:
                       type: string
                     deferred:

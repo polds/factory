@@ -25,7 +25,7 @@ type FactorySpec struct {
 	Description        string                   `json:"description,omitempty"`
 	Alias              string                   `json:"alias,omitempty"`
 	CodeForges         []string                 `json:"codeForges,omitempty"`
-	Repositories       []RepositoryRef          `json:"repositories,omitempty"`
+	Repositories       []FactoryRepositorySpec  `json:"repositories,omitempty"`
 	RoleSource         *RoleSourceSpec          `json:"roleSource,omitempty"`
 	Native             *NativeSpec              `json:"native,omitempty"`
 	Publish            *PublishSpec             `json:"publish,omitempty"`
@@ -42,6 +42,26 @@ type FactorySpec struct {
 	ScorerDefaults     *ScorerDefaultsSpec      `json:"scorerDefaults,omitempty"`
 	// Files is the lossless factory.yaml. When set, convert prefers it.
 	Files []SourceFile `json:"files,omitempty"`
+}
+
+// FactoryRepositorySpec is one factory.spec.repositories entry.
+// CeilingCents is the optional per-repo hard stop.
+type FactoryRepositorySpec struct {
+	RepositoryRef `json:",inline"`
+	// +kubebuilder:validation:Minimum=1
+	CeilingCents int64 `json:"ceilingCents,omitempty"`
+}
+
+// RepositoryRefs returns the embedded repository identity without the per-repo ceiling.
+func RepositoryRefs(in []FactoryRepositorySpec) []RepositoryRef {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]RepositoryRef, len(in))
+	for i := range in {
+		out[i] = in[i].RepositoryRef
+	}
+	return out
 }
 
 // AgentDefaultsSpec is factory.spec.agentDefaults.

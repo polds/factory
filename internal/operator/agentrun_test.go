@@ -386,7 +386,7 @@ func createRepoFactory(t *testing.T, ctx context.Context, ns, name string) {
 	if err := k8sClient.Create(ctx, &factoryv1.Factory{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
 		Spec: factoryv1.FactorySpec{
-			Repositories: []factoryv1.RepositoryRef{{
+			Repositories: []factoryv1.FactoryRepositorySpec{{
 				CodeForge: "GITHUB",
 				Owner:     "polds",
 				Name:      "factory-m7-target",

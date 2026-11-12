@@ -273,7 +273,7 @@ func agentObject(factoryName, name string, agent definition.Agent, files []v1alp
 		CredentialStrategy: agent.CredentialStrategy,
 		MaxTurns:           int32(agent.MaxTurns),
 		WorkerHost:         agent.WorkerHost,
-		RequiredRepos:      repos(agent.RequiredRepos),
+		RequiredRepos:      repoRefs(agent.RequiredRepos),
 		Secrets:            namesOnly(agent.Secrets),
 		SecretRefs:         secretRefs(agent.Secrets),
 		MCPServers:         mcp,
@@ -312,7 +312,7 @@ func automationObject(factoryName, name string, auto definition.Automation, file
 		Harness:       harnessSpec(auto.Harness),
 		Runner:        auto.Runner,
 		Pool:          auto.Pool,
-		RequiredRepos: repos(auto.RequiredRepos),
+		RequiredRepos: repoRefs(auto.RequiredRepos),
 		Secrets:       namesOnly(auto.Secrets),
 		SecretRefs:    secretRefs(auto.Secrets),
 		MCPServers:    mcp,
@@ -440,13 +440,32 @@ func ref(name string) *v1alpha1.LocalRef {
 	return &v1alpha1.LocalRef{Name: name}
 }
 
-func repos(in []definition.Repository) []v1alpha1.RepositoryRef {
+func repoRefs(in []definition.Repository) []v1alpha1.RepositoryRef {
 	if len(in) == 0 {
 		return nil
 	}
 	out := make([]v1alpha1.RepositoryRef, len(in))
 	for i, repo := range in {
 		out[i] = v1alpha1.RepositoryRef{CodeForge: repo.CodeForge, Owner: repo.Owner, Name: repo.Name, Deferred: repo.Deferred}
+	}
+	return out
+}
+
+func repos(in []definition.Repository) []v1alpha1.FactoryRepositorySpec {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]v1alpha1.FactoryRepositorySpec, len(in))
+	for i, repo := range in {
+		out[i] = v1alpha1.FactoryRepositorySpec{
+			RepositoryRef: v1alpha1.RepositoryRef{
+				CodeForge: repo.CodeForge,
+				Owner:     repo.Owner,
+				Name:      repo.Name,
+				Deferred:  repo.Deferred,
+			},
+			CeilingCents: repo.CeilingCents,
+		}
 	}
 	return out
 }

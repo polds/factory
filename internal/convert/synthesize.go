@@ -102,6 +102,11 @@ func synthesizeFactory(obj map[string]any) (string, []byte, error) {
 	copyString(out, spec, "alias")
 	copyAny(out, spec, "codeForges")
 	copyAny(out, spec, "repositories")
+	copyAny(out, spec, "roleSource")
+	copyAny(out, spec, "native")
+	copyAny(out, spec, "publish")
+	copyAny(out, spec, "evidence")
+	copyAny(out, spec, "budget")
 	copyString(out, spec, "credentialStrategy")
 	if secrets := stringList(spec["secrets"]); len(secrets) > 0 {
 		out["secrets"] = secrets

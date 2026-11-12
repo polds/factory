@@ -213,7 +213,7 @@ func (r *AgentRunReconciler) runRepository(ctx context.Context, run *factoryv1.A
 	if err := r.reader().Get(ctx, key, &factory); err != nil {
 		return "", err
 	}
-	return firstGitHubRepo(factory.Spec.Repositories), nil
+	return firstGitHubRepo(factoryv1.RepositoryRefs(factory.Spec.Repositories)), nil
 }
 
 func (r *AgentRunReconciler) reader() client.Reader {
