@@ -348,11 +348,18 @@ func (s *Server) mintGitHubToken(ctx context.Context, run store.Run, bound bound
 	if len(repos) == 0 {
 		return "", errors.New("server: github token: no repository")
 	}
+	if err := s.reposAllowed(ctx, run.FactoryID, repos); err != nil {
+		return "", err
+	}
 	id, err := s.integ.githubApp.InstallationByRepo(ctx, repos[0])
 	if err != nil {
 		return "", fmt.Errorf("server: github token: %w", err)
 	}
-	tok, err := s.installToken(ctx, id, repos, run, bound, ghclient.DefaultPermissions)
+	perms := ghclient.DefaultPermissions
+	if s.roleFilesSeat(ctx, run) {
+		perms = ghclient.ReadPermissions
+	}
+	tok, err := s.installToken(ctx, id, repos, run, bound, perms)
 	if err != nil {
 		return "", fmt.Errorf("server: github token: %w", err)
 	}
