@@ -45,10 +45,18 @@ type Config struct {
 	// replaces that default on the model request. An empty API key omits
 	// Authorization unless one of these lines sets it.
 	InferenceExtraHeaders []inference.Header
+	// InferenceModel is the model a spend cap prices, with its gateway fallbacks.
+	InferenceModel string
 	// SpendPrice is the JSON price document for role_files model calls.
-	// Empty reads FACTORY_SPEND_PRICE from the process environment. The
-	// harness receives the same document and does not choose W.
-	SpendPrice          string
+	// Empty with a positive SpendCapCents is filled from GET
+	// {InferenceBaseURL}/model/info before the server opens a database.
+	// Empty with a zero cap reads FACTORY_SPEND_PRICE from the process
+	// environment. The harness receives the same document and does not choose W.
+	SpendPrice string
+	// SpendCapCents is the worst-case cap in cents. When it is positive and
+	// SpendPrice is empty, Open refuses to start unless gateway rates parse
+	// for InferenceModel and its fallbacks and the worst case is within this cap.
+	SpendCapCents       int64
 	Secrets             map[string]string
 	WorkerPool          string
 	WorkerPlatform      string
@@ -248,10 +256,15 @@ var (
 	_ events.Source     = logSource{}
 )
 
-// Open migrates the database, applies the local definition, and starts the
-// scheduler. The caller serves Handler and calls Close.
+// Open resolves a capped spend price, then migrates the database, applies the
+// local definition, and starts the scheduler. The caller serves Handler and
+// calls Close. Missing gateway rates return before the database opens.
 func Open(ctx context.Context, cfg Config) (*Server, error) {
-	cfg, err := normalize(cfg)
+	cfg, err := prepareSpend(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err = normalize(cfg)
 	if err != nil {
 		return nil, err
 	}

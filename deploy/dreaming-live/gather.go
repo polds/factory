@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/polds/factory/internal/harness"
+	"github.com/polds/factory/internal/modelinfo"
 )
 
 // RunChecked is the preflight or live command. It writes preflight.json.
@@ -83,8 +84,8 @@ func gather(ctx context.Context, mode string) (World, []string, error) {
 		SecretNames: jobSecretNames(),
 		Tests:       map[string]string{},
 		Allowlist:   "absent",
-		Price:       workedPrice(),
-		FallbackOK:  true,
+		Price:       harness.SpendPrice{},
+		FallbackOK:  false,
 		Now:         time.Now(),
 	}
 	applyJobFile(&world)
@@ -350,7 +351,11 @@ func fillModel(ctx context.Context, world *World) error {
 	}
 	defer func() { _ = infoRes.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(infoRes.Body, 1<<20))
-	price, ok := priceFromModelInfo(raw)
+	if infoRes.StatusCode < 200 || infoRes.StatusCode >= 300 {
+		world.FallbackOK = false
+		return nil
+	}
+	price, ok := modelinfo.PriceFromModelInfo(raw, ModelID)
 	world.FallbackOK = ok
 	if ok {
 		world.Price = price
@@ -378,86 +383,6 @@ func draftRows(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	return 0, err
-}
-
-// priceFromModelInfo reads GET /model/info.
-// Rates are USD per token in model_info (external-api-facts: input_cost_per_token,
-// output_cost_per_token, cache_creation_input_token_cost, above-N tiers).
-// The fallback list is litellm_params.fallbacks. When that key is absent, the
-// same list is read from router_settings.fallbacks, which LiteLLM stores as
-// [{model: [fallback, ...]}]. A missing list from both places fails closed.
-func priceFromModelInfo(raw []byte) (harness.SpendPrice, bool) {
-	var doc struct {
-		Data []struct {
-			ModelName string `json:"model_name"`
-			Params    struct {
-				Fallbacks []string `json:"fallbacks"`
-			} `json:"litellm_params"`
-			Info map[string]json.RawMessage `json:"model_info"`
-		} `json:"data"`
-		Router struct {
-			Fallbacks []map[string][]string `json:"fallbacks"`
-		} `json:"router_settings"`
-	}
-	if json.Unmarshal(raw, &doc) != nil {
-		return harness.SpendPrice{}, false
-	}
-	byName := map[string]int{}
-	for i, item := range doc.Data {
-		byName[item.ModelName] = i
-	}
-	primary, ok := byName[ModelID]
-	if !ok {
-		return harness.SpendPrice{}, false
-	}
-	fallbacks := doc.Data[primary].Params.Fallbacks
-	if fallbacks == nil {
-		fallbacks = routerFallbacks(doc.Router.Fallbacks, ModelID)
-	}
-	if fallbacks == nil {
-		return harness.SpendPrice{}, false
-	}
-	names := append([]string{ModelID}, fallbacks...)
-	price := workedPrice()
-	price.Models = nil
-	for _, name := range names {
-		idx, found := byName[name]
-		if !found {
-			return harness.SpendPrice{}, false
-		}
-		info := doc.Data[idx].Info
-		model := harness.ModelRate{Name: name}
-		model.InputCostPerToken = rawNumber(info["input_cost_per_token"])
-		model.OutputCostPerToken = rawNumber(info["output_cost_per_token"])
-		model.CacheCreationInputTokenCost = rawNumber(info["cache_creation_input_token_cost"])
-		if model.InputCostPerToken == "" || model.OutputCostPerToken == "" {
-			return harness.SpendPrice{}, false
-		}
-		for key, value := range info {
-			if strings.Contains(key, "above") && strings.Contains(key, "input") {
-				model.InputAbove = append(model.InputAbove, rawNumber(value))
-			}
-			if strings.Contains(key, "above") && strings.Contains(key, "output") {
-				model.OutputAbove = append(model.OutputAbove, rawNumber(value))
-			}
-		}
-		price.Models = append(price.Models, model)
-	}
-	return price, true
-}
-
-func routerFallbacks(rows []map[string][]string, model string) []string {
-	for _, row := range rows {
-		if names, ok := row[model]; ok {
-			return names
-		}
-	}
-	return nil
-}
-
-func rawNumber(raw json.RawMessage) string {
-	text := strings.TrimSpace(string(raw))
-	return strings.Trim(text, `"`)
 }
 
 func installationDoc(ctx context.Context, appID int64, key *rsa.PrivateKey) (int64, int, string, map[string]string, bool, error) {

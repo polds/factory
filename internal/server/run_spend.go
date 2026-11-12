@@ -36,6 +36,11 @@ func (s *Server) spendPriceJSON() string {
 	return strings.TrimSpace(os.Getenv(harness.EnvSpendPrice))
 }
 
+// SpendPrice is the JSON price document the spend hard stop meters with.
+func (s *Server) SpendPrice() string {
+	return s.spendPriceJSON()
+}
+
 func (s *Server) attachSpend(run store.Run, env map[string]string) {
 	if env == nil || env[harness.EnvBundleMode] != definition.BundleModeRoleFiles {
 		return
