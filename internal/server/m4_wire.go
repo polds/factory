@@ -438,5 +438,8 @@ func githubSlug(s string) bool {
 type secretSource struct{ s *Server }
 
 func (a secretSource) Secret(ctx context.Context, name string) (string, error) {
+	if id := webhooks.FactoryIDFromContext(ctx); id != "" {
+		return a.s.resolveFactorySecret(ctx, id, name)
+	}
 	return a.s.resolveInjectedSecret(ctx, name)
 }

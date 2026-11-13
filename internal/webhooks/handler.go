@@ -271,7 +271,7 @@ func routeAllows(route routeKind, mode string) bool {
 func (h *handler) verify(r *http.Request, reg store.WebhookRegistration, body []byte, now time.Time) error {
 	switch authMode(reg.AuthMode) {
 	case authToken:
-		secret, err := h.secret(r, reg.SecretRef)
+		secret, err := h.secret(r, reg.FactoryID, reg.SecretRef)
 		if err != nil || !bearerMatch(r.Header.Get("Authorization"), secret) {
 			return errUnauthorized
 		}
@@ -279,7 +279,7 @@ func (h *handler) verify(r *http.Request, reg store.WebhookRegistration, body []
 	case authURLToken:
 		return nil
 	case authSignature:
-		secret, err := h.secret(r, reg.SecretRef)
+		secret, err := h.secret(r, reg.FactoryID, reg.SecretRef)
 		if err != nil {
 			return errUnauthorized
 		}
@@ -296,11 +296,11 @@ func (h *handler) verify(r *http.Request, reg store.WebhookRegistration, body []
 	}
 }
 
-func (h *handler) secret(r *http.Request, name string) (string, error) {
+func (h *handler) secret(r *http.Request, factoryID, name string) (string, error) {
 	if h.secrets == nil || name == "" {
 		return "", errUnauthorized
 	}
-	value, err := h.secrets.Secret(r.Context(), name)
+	value, err := h.secrets.Secret(WithFactoryID(r.Context(), factoryID), name)
 	if err != nil || value == "" {
 		return "", errUnauthorized
 	}

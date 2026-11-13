@@ -10,6 +10,7 @@ import (
 	"github.com/polds/factory/internal/definition"
 	ghclient "github.com/polds/factory/internal/forge/github"
 	"github.com/polds/factory/internal/store"
+	"github.com/polds/factory/internal/webhooks"
 )
 
 func TestFactorySecretValuesDoNotCross(t *testing.T) {
@@ -29,6 +30,24 @@ func TestFactorySecretValuesDoNotCross(t *testing.T) {
 	}
 	if _, err := s.resolveFactorySecret(context.Background(), "fac_c", "TOKEN"); err == nil {
 		t.Fatal("unprefixed name resolved for a factory")
+	}
+}
+
+func TestWebhookSecretFollowsFactory(t *testing.T) {
+	s := &Server{cfg: Config{
+		Secrets: map[string]string{"M5_WEBHOOK": "unprefixed"},
+		FactorySecrets: map[string]map[string]string{
+			"fac_a": {"M5_WEBHOOK": "value-a"},
+			"fac_b": {"M5_WEBHOOK": "value-b"},
+		},
+	}}
+	src := secretSource{s}
+	got, err := src.Secret(webhooks.WithFactoryID(context.Background(), "fac_b"), "M5_WEBHOOK")
+	if err != nil || got != "value-b" || got == "unprefixed" {
+		t.Fatalf("got %q err %v", got, err)
+	}
+	if _, err := src.Secret(webhooks.WithFactoryID(context.Background(), "fac_c"), "M5_WEBHOOK"); err == nil {
+		t.Fatal("other factory resolved the webhook secret")
 	}
 }
 
