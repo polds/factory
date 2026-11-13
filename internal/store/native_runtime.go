@@ -112,12 +112,11 @@ func (s *Store) OpenNativeTree(ctx context.Context, in OpenTreeInput) (NativePol
 		VALUES ($1, $2, 0)`, in.InvocationID, in.Slots); err != nil {
 		return NativePolicy{}, NativeTask{}, fmt.Errorf("store: native capacity: %w", err)
 	}
-	root := NativeTaskInput{
+	task, err := insertNativeTaskTx(ctx, tx, NativeTaskInput{
 		FactoryID:    in.FactoryID,
 		InvocationID: in.InvocationID,
 		Assignee:     checked.Root,
-	}
-	task, err := insertNativeTaskTx(ctx, tx, root)
+	})
 	if err != nil {
 		return NativePolicy{}, NativeTask{}, err
 	}
@@ -136,10 +135,11 @@ func (s *Store) OpenNativeTree(ctx context.Context, in OpenTreeInput) (NativePol
 	}); err != nil {
 		return NativePolicy{}, NativeTask{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	stored, err := commitOpenedPolicy(ctx, tx, in.InvocationID)
+	if err != nil {
 		return NativePolicy{}, NativeTask{}, err
 	}
-	return policy, task, nil
+	return stored, task, nil
 }
 
 // GetNativePolicy returns the frozen roster.
@@ -1154,6 +1154,17 @@ func (s *Store) CapacityHeld(ctx context.Context, invocationID string) (held, sl
 		return 0, 0, ErrNotFound
 	}
 	return held, slots, err
+}
+
+func commitOpenedPolicy(ctx context.Context, tx pgx.Tx, invocationID string) (NativePolicy, error) {
+	stored, err := loadPolicyTx(ctx, tx, invocationID)
+	if err != nil {
+		return NativePolicy{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return NativePolicy{}, err
+	}
+	return stored, nil
 }
 
 func policyTree(p NativePolicy) definition.NativeTree {

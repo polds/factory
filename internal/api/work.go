@@ -51,6 +51,9 @@ func (h *handler) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		h.writeStatusErr(w, err, "conflict")
 		return
 	}
+	if h.hideForeign(w, r, task.FactoryID) {
+		return
+	}
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -122,6 +125,18 @@ func (h *handler) handleDecideApproval(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeProblem(w, http.StatusNotFound, "not found")
 		return
+	}
+	if actor, limited := actorFrom(r.Context()); limited && !actor.admin {
+		lookup, ok := h.backend.(ApprovalFactory)
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		factoryID, err := lookup.ApprovalFactory(r.Context(), id)
+		if err != nil || factoryID != actor.factoryID {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 	}
 	var body decideBody
 	if err := decodeJSON(w, r, &body); err != nil {

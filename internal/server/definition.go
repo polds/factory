@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/definition"
+	"github.com/polds/factory/internal/harness"
 	"github.com/polds/factory/internal/store"
 )
 
@@ -68,11 +70,18 @@ func (s *Server) applyTree(ctx context.Context, tree *definition.Tree) (string, 
 }
 
 func (s *Server) applyTreeDir(ctx context.Context, tree *definition.Tree, dir string) (string, error) {
+	if err := s.refusePatSecondFactory(ctx, tree.Factory.Name); err != nil {
+		return "", err
+	}
+	if err := s.applyDefaultRates(tree); err != nil {
+		return "", err
+	}
 	prev := s.snapshot()
 	applied, err := s.appliedDefinition(tree)
 	if err != nil {
 		return "", err
 	}
+	applied.FactoryID = soleFactorySecretID(s.cfg.FactorySecrets)
 	id, err := s.store.ApplyDefinition(ctx, tree.Factory.Name, applied)
 	if err != nil {
 		return "", err
@@ -111,7 +120,121 @@ func (s *Server) applyTreeDir(ctx context.Context, tree *definition.Tree, dir st
 	if err := s.syncDefinition(ctx, tree); err != nil {
 		return "", err
 	}
+	if err := s.syncFactoryScope(ctx, fac.ID, tree, dir); err != nil {
+		return "", err
+	}
 	return id, nil
+}
+
+func (s *Server) refusePatSecondFactory(ctx context.Context, name string) error {
+	mode := strings.ToLower(strings.TrimSpace(s.cfg.GitHubTokenMode))
+	if mode == "" {
+		mode = "pat"
+	}
+	if mode != "pat" || s.store == nil {
+		return nil
+	}
+	n, err := s.store.CountFactories(ctx)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
+	_, err = s.store.GetFactory(ctx, name)
+	if errors.Is(err, store.ErrNotFound) {
+		return errors.New("server: FACTORY_GITHUB_TOKEN_MODE=pat refuses a second factory")
+	}
+	return err
+}
+
+func (s *Server) applyDefaultRates(tree *definition.Tree) error {
+	if tree == nil || strings.TrimSpace(s.cfg.DefaultRates) == "" {
+		return nil
+	}
+	if tree.Factory.Inference != nil && tree.Factory.Inference.Rates != nil {
+		return nil
+	}
+	parsed, err := harness.ParseSpendPrice(s.cfg.DefaultRates)
+	if err != nil {
+		return err
+	}
+	rates := &definition.InferenceRates{
+		PromptByteCap: parsed.PromptByteCap,
+		MaxTokens:     parsed.MaxTokens,
+	}
+	for _, model := range parsed.Models {
+		rates.Models = append(rates.Models, definition.ModelRate{
+			Name: model.Name, InputCostPerToken: model.InputCostPerToken,
+			OutputCostPerToken:          model.OutputCostPerToken,
+			CacheCreationInputTokenCost: model.CacheCreationInputTokenCost,
+			InputAbove:                  model.InputAbove, OutputAbove: model.OutputAbove,
+		})
+	}
+	if tree.Factory.Inference == nil {
+		tree.Factory.Inference = &definition.Inference{}
+	}
+	tree.Factory.Inference.Rates = rates
+	return nil
+}
+
+func (s *Server) syncFactoryScope(ctx context.Context, factoryID string, tree *definition.Tree, dir string) error {
+	if s.store == nil || tree == nil {
+		return nil
+	}
+	if tree.Factory.Budget != nil && tree.Factory.Budget.CeilingCents > 0 {
+		if err := s.store.UpsertFactoryBudget(ctx, factoryID, "", tree.Factory.Budget.CeilingCents); err != nil {
+			return err
+		}
+	}
+	for _, repo := range tree.Factory.Repositories {
+		if repo.CeilingCents <= 0 || repo.Owner == "" || repo.Name == "" {
+			continue
+		}
+		if err := s.store.UpsertFactoryBudget(ctx, factoryID, repo.Owner+"/"+repo.Name, repo.CeilingCents); err != nil {
+			return err
+		}
+	}
+	if _, _, err := s.store.EnsureFactoryKey(ctx, factoryID); err != nil {
+		return err
+	}
+	if dir == s.cfg.DefinitionPath {
+		s.bindBootstrapSecrets(factoryID)
+	}
+	return nil
+}
+
+func (s *Server) bindBootstrapSecrets(factoryID string) {
+	if factoryID == "" || len(s.cfg.BootstrapSecrets) == 0 {
+		return
+	}
+	if s.cfg.FactorySecrets == nil {
+		s.cfg.FactorySecrets = map[string]map[string]string{}
+	}
+	grants := s.cfg.FactorySecrets[factoryID]
+	if grants == nil {
+		grants = map[string]string{}
+	}
+	for name, value := range s.cfg.BootstrapSecrets {
+		if _, exists := grants[name]; !exists {
+			grants[name] = value
+		}
+	}
+	s.cfg.FactorySecrets[factoryID] = grants
+}
+
+// soleFactorySecretID returns the factory id when the process has exactly
+// one FACTORY_SECRET_<factoryID>__NAME grant. Offline drivers set that grant
+// before the row exists, and the insert uses this id.
+func soleFactorySecretID(grants map[string]map[string]string) string {
+	if len(grants) != 1 {
+		return ""
+	}
+	var id string
+	for key := range grants {
+		id = strings.TrimSpace(key)
+	}
+	return id
 }
 
 func (s *Server) snapshot() loaded {
@@ -121,10 +244,19 @@ func (s *Server) snapshot() loaded {
 }
 
 func (s *Server) appliedDefinition(tree *definition.Tree) (store.AppliedDefinition, error) {
+	var rates any
+	if tree.Factory.Inference != nil {
+		rates = tree.Factory.Inference.Rates
+	}
 	spec, err := json.Marshal(map[string]any{
-		"name":    tree.Factory.Name,
-		"secrets": tree.Factory.Secrets,
-		"digest":  tree.Digest,
+		"name":         tree.Factory.Name,
+		"secrets":      tree.Factory.Secrets,
+		"digest":       tree.Digest,
+		"repositories": tree.Factory.Repositories,
+		"publish":      tree.Factory.Publish,
+		"evidence":     tree.Factory.Evidence,
+		"budget":       tree.Factory.Budget,
+		"rates":        rates,
 	})
 	if err != nil {
 		return store.AppliedDefinition{}, err

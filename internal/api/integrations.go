@@ -236,6 +236,18 @@ func (h *handler) handleReplayDelivery(w http.ResponseWriter, r *http.Request) {
 		writeReadErr(w, err)
 		return
 	}
+	if actor, limited := actorFrom(r.Context()); limited && !actor.admin {
+		lookup, ok := h.backend.(DeliveryFactory)
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		factoryID, err := lookup.DeliveryFactory(r.Context(), id)
+		if err != nil || factoryID != actor.factoryID {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+	}
 	// Re-dispatch only. The verifier is not called, and query values cannot
 	// ask for that: a stored delivery no longer has its signature headers.
 	d, err := db.ReplayDelivery(r.Context(), id)
@@ -251,7 +263,13 @@ func (h *handler) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := sb.ListSchedules(r.Context(), strings.TrimSpace(r.URL.Query().Get("factory")))
+	factory := strings.TrimSpace(r.URL.Query().Get("factory"))
+	if forced, ok := h.scopeQuery(w, r, "factory"); !ok {
+		return
+	} else if forced != "" {
+		factory = forced
+	}
+	rows, err := sb.ListSchedules(r.Context(), factory)
 	if err != nil {
 		h.writeStatusErr(w, err, "schedule exists")
 		return
@@ -273,6 +291,9 @@ func (h *handler) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.FactoryID = strings.TrimSpace(req.FactoryID)
+	if h.rejectForeign(w, r, req.FactoryID) {
+		return
+	}
 	req.Automation = strings.TrimSpace(req.Automation)
 	req.Name = strings.TrimSpace(req.Name)
 	req.Cron = strings.TrimSpace(req.Cron)
@@ -300,6 +321,9 @@ func (h *handler) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
 	row, err := sb.GetSchedule(r.Context(), r.PathValue("id"))
 	if err != nil {
 		h.writeStatusErr(w, err, "schedule exists")
+		return
+	}
+	if h.hideForeign(w, r, row.FactoryID) {
 		return
 	}
 	writeJSON(w, http.StatusOK, row)
@@ -382,7 +406,20 @@ func (h *handler) handleRunByExternalReference(w http.ResponseWriter, r *http.Re
 	}
 	row, err := eb.RunByExternalReference(r.Context(), provider, ref)
 	if err != nil {
+		if _, ok := actorFrom(r.Context()); ok {
+			if actor, limited := actorFrom(r.Context()); limited && !actor.admin {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+		}
 		h.writeStatusErr(w, err, "conflict")
+		return
+	}
+	factoryID := ""
+	if row.Run != nil {
+		factoryID = row.Run.FactoryID
+	}
+	if h.hideForeign(w, r, factoryID) {
 		return
 	}
 	writeJSON(w, http.StatusOK, row)

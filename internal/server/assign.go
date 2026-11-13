@@ -48,7 +48,7 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 	env := make(map[string]string, len(allow)+12)
 	var values []string
 	for _, name := range allow {
-		value, err := s.resolveInjectedSecret(ctx, name)
+		value, err := s.resolveFactorySecret(ctx, run.FactoryID, name)
 		if err != nil || value == "" {
 			return nil, fmt.Errorf("server: secret %s is not configured: %w", name, err)
 		}
@@ -137,7 +137,7 @@ func (s *Server) taskEnv(ctx context.Context, run store.Run, bound boundAgent) (
 			return nil, err
 		}
 	}
-	s.attachSpend(run, env)
+	s.attachSpend(ctx, run, env)
 	return env, nil
 }
 

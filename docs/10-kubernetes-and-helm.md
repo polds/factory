@@ -398,6 +398,14 @@ Shipped behavior where it differs from the sketch above:
   `terminationGracePeriodSeconds: 600` is the pod grace described above, not a
   600s process drain.
 
+## Factory secrets
+
+Factory secret values are not a process-wide `FACTORY_SECRET_<NAME>` map. The env key is `FACTORY_SECRET_<factoryID>__<NAME>`. The Helm Secret data key is `<factoryID>.<NAME>`. A slash is not a valid Secret key.
+
+The chart's bootstrap factory does not have an id until factoryd creates it on first boot. Set `controlPlane.bootstrapSecrets` to a map of `NAME` to value. The chart stores those under `bootstrap.<NAME>` and injects `FACTORY_BOOTSTRAP_SECRET_<NAME>`. After the bootstrap factory exists, factoryd binds each value to that factory id. Those values are the ones that factory resolves. An unprefixed `FACTORY_SECRET_<NAME>` does not resolve. `FACTORY_SECRET_ALLOWLIST` and `FACTORY_SECRET_MOUNT_DIR` stay configuration.
+
+`controlPlane.factorySecrets` is the same map for factories whose ids are already known. `controlPlane.inference.defaultRates`, when set, is copied onto a factory at apply if that factory omits `inference.rates`. Reserve reads the copy frozen at open.
+
 ## Scan security (M10-S, opt-in)
 
 G14/G18 **foundations** add optional Helm values only; defaults are unchanged:

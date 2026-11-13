@@ -44,7 +44,7 @@ line is set, not unset, so compose will not fill it. Before `up`, set:
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
-| `FACTORY_SECRET_GH_TOKEN` | yes | Allowlisted as `GH_TOKEN`. Empty fails assignment (`secret GH_TOKEN is not configured`). A dummy is enough to assign a run. A push needs a real token. |
+| `FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN` | yes | Allowlisted as `GH_TOKEN`. Empty fails assignment (`secret GH_TOKEN is not configured`). A dummy is enough to assign a run. A push needs a real token. |
 | `FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL` | for a model call | Copied into the task as `OPENAI_BASE_URL`. Empty: the harness exits `config_invalid`. |
 | `FACTORY_INFERENCE_OPENAI_API_KEY` | when the endpoint requires a key | Copied into the task as `OPENAI_API_KEY`. |
 | `FACTORY_TASK_SERVER_URL` | on Docker Desktop | `http://host.docker.internal:8080`. Linux default `http://172.17.0.1:8080` applies when this is empty. |
@@ -64,7 +64,7 @@ host OS. A macOS binary exits 126 there.
 ```bash
 cp deploy/.env.example deploy/.env
 awk '
-  $0 == "FACTORY_SECRET_GH_TOKEN=" { print "FACTORY_SECRET_GH_TOKEN=m2-offline-dummy"; next }
+  $0 == "FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN=" { print "FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN=m2-offline-dummy"; next }
   { print }
 ' deploy/.env > deploy/.env.new && mv deploy/.env.new deploy/.env
 

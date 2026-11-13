@@ -32,6 +32,7 @@ func TestPinnedWorkerExecuteTask(t *testing.T) {
 	repo, first, pin := serverTwoCommitRepo(t)
 	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-litellm-response-cost", "0.001")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
 	}))
 	t.Cleanup(model.Close)

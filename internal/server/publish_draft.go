@@ -15,13 +15,6 @@ import (
 )
 
 const (
-	publishEnvRepo   = "FACTORY_PUBLISH_DRAFT_REPO"
-	publishRepo      = "northstar-ai-labs/dreaming"
-	publishIssueKey  = "dreaming#454"
-	publishRefPrefix = "factory/dreaming-454-"
-	publishTitle     = "Factory: DB-backed tenant-isolation tests (#454)"
-	publishSentinel  = "factoryEvidencePass"
-
 	reasonRootCancelled = "root cancelled"
 	reasonRootPaused    = "root paused"
 	reasonRootOpen      = "root not completed"
@@ -89,8 +82,7 @@ func (s *Server) finishDraftPublication(ctx context.Context, factoryUID, taskID 
 }
 
 func (s *Server) publishDraft(ctx context.Context, factoryUID, taskID string) error {
-	repo := strings.TrimSpace(os.Getenv(publishEnvRepo))
-	if repo == "" || s.store == nil {
+	if s.store == nil {
 		return nil
 	}
 	fac, err := s.factory(ctx, factoryUID)
@@ -104,7 +96,17 @@ func (s *Server) publishDraft(ctx context.Context, factoryUID, taskID string) er
 	if task.ParentTaskID != "" {
 		return nil
 	}
-	existing, err := s.store.GetDraftPublication(ctx, task.InvocationID)
+	plan, err := s.resolvePublish(ctx, fac.ID, task.InvocationID)
+	if err != nil {
+		return err
+	}
+	if !plan.enabled {
+		return nil
+	}
+	if err := plan.closed(); err != nil {
+		return err
+	}
+	existing, err := s.draftForFactory(ctx, fac.ID, task.InvocationID)
 	if err == nil {
 		switch existing.State {
 		case store.DraftOpened, store.DraftFailed:
@@ -122,14 +124,14 @@ func (s *Server) publishDraft(ctx context.Context, factoryUID, taskID string) er
 		}
 		return err
 	}
-	pass, err := s.reviewAllows(ctx, task.InvocationID, repo)
+	pass, err := s.reviewAllows(ctx, task.InvocationID)
 	if err != nil {
 		if existing.InvocationID != "" {
 			return s.failDraft(ctx, existing, err)
 		}
 		return err
 	}
-	work, cleanup, err := s.checkoutPublished(ctx, pass)
+	work, cleanup, err := s.checkoutPublished(ctx, pass, plan)
 	if err != nil {
 		if existing.InvocationID != "" {
 			return s.failDraft(ctx, existing, err)
@@ -137,7 +139,7 @@ func (s *Server) publishDraft(ctx context.Context, factoryUID, taskID string) er
 		return err
 	}
 	defer cleanup()
-	ref, err := publicationRef(task.InvocationID)
+	ref, err := publicationRef(plan.refPrefix, task.InvocationID)
 	if err != nil {
 		return err
 	}
@@ -145,8 +147,9 @@ func (s *Server) publishDraft(ctx context.Context, factoryUID, taskID string) er
 	if row.InvocationID == "" {
 		row, err = s.store.InsertDraftPending(ctx, store.DraftPublication{
 			InvocationID: task.InvocationID,
-			TargetRepo:   publishRepo,
-			IssueKey:     publishIssueKey,
+			FactoryID:    fac.ID,
+			TargetRepo:   plan.repo,
+			IssueKey:     plan.issueKey,
 			HeadSHA:      pass.x,
 			GitRef:       ref,
 		})
@@ -160,24 +163,38 @@ func (s *Server) publishDraft(ctx context.Context, factoryUID, taskID string) er
 			return nil
 		}
 	}
+	if row.FactoryID != fac.ID {
+		return refuse(reasonIssue)
+	}
 	if row.HeadSHA != pass.x || row.GitRef != ref {
 		return s.failDraft(ctx, row, refuse(reasonReady))
 	}
-	return s.publishFromRow(ctx, task, row, pass, work)
+	return s.publishFromRow(ctx, task, row, pass, work, plan)
 }
 
-func (s *Server) publishFromRow(ctx context.Context, task store.NativeTask, row store.DraftPublication, pass reviewPass, work draftGit) error {
-	client, token, err := s.publicationClient(ctx)
+func (s *Server) draftForFactory(ctx context.Context, factoryID, invocationID string) (store.DraftPublication, error) {
+	row, err := s.store.GetDraftPublication(ctx, invocationID)
+	if err != nil {
+		return store.DraftPublication{}, err
+	}
+	if row.FactoryID != factoryID {
+		return store.DraftPublication{}, store.ErrNotFound
+	}
+	return row, nil
+}
+
+func (s *Server) publishFromRow(ctx context.Context, task store.NativeTask, row store.DraftPublication, pass reviewPass, work draftGit, plan publishPlan) error {
+	client, token, err := s.publicationClient(ctx, plan.repo)
 	if err != nil {
 		return s.failDraft(ctx, row, scrubbedPublish(err, github.Token{}))
 	}
-	remote, err := publishGitRemote(s.cfg.GitHubAPIBase, publishRepo)
+	remote, err := publishGitRemote(s.cfg.GitHubAPIBase, plan.repo)
 	if err != nil {
 		return s.failDraft(ctx, row, err)
 	}
 	git := work.withToken(token.Value(), remote)
 	if row.State == store.DraftPending {
-		pushed, err := s.pushDraft(ctx, task, row, pass, client, token, git)
+		pushed, err := s.pushDraft(ctx, task, row, pass, client, token, git, plan)
 		if err != nil {
 			return err
 		}
@@ -189,25 +206,25 @@ func (s *Server) publishFromRow(ctx context.Context, task store.NativeTask, row 
 	if err := s.rootAllows(ctx, task); err != nil {
 		return s.failDraft(ctx, row, err)
 	}
-	if err := s.openDraft(ctx, client, token, task, row, pass, git); err != nil {
+	if err := s.openDraft(ctx, client, token, task, row, pass, git, plan); err != nil {
 		return s.failDraft(ctx, row, err)
 	}
 	s.deletePublishedObject(ctx, pass.impl)
 	return nil
 }
 
-func (s *Server) pushDraft(ctx context.Context, task store.NativeTask, row store.DraftPublication, pass reviewPass, client *github.Client, token github.Token, git draftGit) (store.DraftPublication, error) {
+func (s *Server) pushDraft(ctx context.Context, task store.NativeTask, row store.DraftPublication, pass reviewPass, client *github.Client, token github.Token, git draftGit, plan publishPlan) (store.DraftPublication, error) {
 	if err := s.rootAllows(ctx, task); err != nil {
 		return store.DraftPublication{}, s.failDraft(ctx, row, err)
 	}
-	heads, err := git.listRemote(publishRefPrefix)
+	heads, err := git.listRemote(plan.refPrefix)
 	if err != nil {
 		return store.DraftPublication{}, s.failDraft(ctx, row, scrubbedPublish(err, token))
 	}
 	if len(heads.refs) > 0 {
 		return store.DraftPublication{}, s.failDraft(ctx, row, refuse(reasonRef))
 	}
-	pulls, err := client.ListPullsByHeadPrefix(ctx, token, publishRepo, publishRefPrefix)
+	pulls, err := client.ListPullsByHeadPrefix(ctx, token, plan.repo, plan.refPrefix)
 	if err != nil {
 		return store.DraftPublication{}, s.failDraft(ctx, row, scrubbedPublish(err, token))
 	}
@@ -229,12 +246,12 @@ func (s *Server) pushDraft(ctx context.Context, task store.NativeTask, row store
 	return advanced, nil
 }
 
-func (s *Server) openDraft(ctx context.Context, client *github.Client, token github.Token, task store.NativeTask, row store.DraftPublication, pass reviewPass, git draftGit) error {
-	heads, err := git.listRemote(publishRefPrefix)
+func (s *Server) openDraft(ctx context.Context, client *github.Client, token github.Token, task store.NativeTask, row store.DraftPublication, pass reviewPass, git draftGit, plan publishPlan) error {
+	heads, err := git.listRemote(plan.refPrefix)
 	if err != nil {
 		return scrubbedPublish(err, token)
 	}
-	pulls, err := client.ListPullsByHeadPrefix(ctx, token, publishRepo, publishRefPrefix)
+	pulls, err := client.ListPullsByHeadPrefix(ctx, token, plan.repo, plan.refPrefix)
 	if err != nil {
 		return scrubbedPublish(err, token)
 	}
@@ -266,8 +283,11 @@ func (s *Server) openDraft(ctx context.Context, client *github.Client, token git
 	if err := s.rootAllowsPublish(ctx, task); err != nil {
 		return err
 	}
-	body := publicationBody(pass)
-	created, err := client.CreateDraftPullRequest(ctx, token, publishRepo, row.GitRef, heads.base, publishTitle, body)
+	body, err := renderPublishBody(plan, pass)
+	if err != nil {
+		return refuse(reasonGitHub)
+	}
+	created, err := client.CreateDraftPullRequest(ctx, token, plan.repo, row.GitRef, heads.base, plan.title, body)
 	if err != nil {
 		return scrubbedPublish(err, token)
 	}
@@ -277,7 +297,7 @@ func (s *Server) openDraft(ctx context.Context, client *github.Client, token git
 	if !strings.EqualFold(created.HeadSHA, pass.x) || created.HeadRef != row.GitRef {
 		return refuse(reasonHeadMismatch)
 	}
-	confirmed, err := client.GetPullRequest(ctx, token, publishRepo, created.Number)
+	confirmed, err := client.GetPullRequest(ctx, token, plan.repo, created.Number)
 	if err != nil {
 		return scrubbedPublish(err, token)
 	}
@@ -293,7 +313,7 @@ func (s *Server) openDraft(ctx context.Context, client *github.Client, token git
 	return err
 }
 
-func (s *Server) publicationClient(ctx context.Context) (*github.Client, github.Token, error) {
+func (s *Server) publicationClient(ctx context.Context, repo string) (*github.Client, github.Token, error) {
 	if s.cfg.GitHubAppID <= 0 || s.cfg.GitHubAppKey == nil {
 		return nil, github.Token{}, refuse(reasonGitHub)
 	}
@@ -308,11 +328,11 @@ func (s *Server) publicationClient(ctx context.Context) (*github.Client, github.
 	if err != nil {
 		return nil, github.Token{}, refuse(reasonGitHub)
 	}
-	installation, err := client.InstallationByRepo(ctx, publishRepo)
+	installation, err := client.InstallationByRepo(ctx, repo)
 	if err != nil {
 		return nil, github.Token{}, scrubbedPublish(err, github.Token{})
 	}
-	token, err := client.InstallationToken(ctx, installation, []string{publishRepo}, map[string]string{
+	token, err := client.InstallationToken(ctx, installation, []string{repo}, map[string]string{
 		"contents":      "write",
 		"pull_requests": "write",
 		"metadata":      "read",
@@ -397,10 +417,7 @@ func (s *Server) rootAllows(ctx context.Context, task store.NativeTask) error {
 	}
 }
 
-func (s *Server) reviewAllows(ctx context.Context, invocationID, repo string) (reviewPass, error) {
-	if repo != publishRepo {
-		return reviewPass{}, refuse(reasonRepo)
-	}
+func (s *Server) reviewAllows(ctx context.Context, invocationID string) (reviewPass, error) {
 	blocked, err := s.store.PublicationSpendBlocked(ctx, invocationID)
 	if err != nil {
 		return reviewPass{}, err
@@ -569,7 +586,7 @@ func namedTest(transcript, action string) string {
 	return ""
 }
 
-func (s *Server) checkoutPublished(ctx context.Context, pass reviewPass) (draftGit, func(), error) {
+func (s *Server) checkoutPublished(ctx context.Context, pass reviewPass, plan publishPlan) (draftGit, func(), error) {
 	client := s.objects()
 	if client == nil {
 		return draftGit{}, nil, refuse(reasonReady)
@@ -651,13 +668,13 @@ func (s *Server) checkoutPublished(ctx context.Context, pass reviewPass) (draftG
 		cleanup()
 		return draftGit{}, nil, refuse(reasonHead)
 	}
-	mutation := strings.TrimSpace(os.Getenv(harness.EnvEvidenceMutation))
+	mutation := strings.TrimSpace(plan.mutation)
 	if harness.EvidenceMutationPath(mutation) != nil || mutation == "" {
 		cleanup()
 		return draftGit{}, nil, refuse(reasonSentinel)
 	}
 	blob, err := g.stdout("cat-file", "blob", pass.x+":"+mutation)
-	if err != nil || !strings.Contains(blob, publishSentinel) {
+	if err != nil || !strings.Contains(blob, plan.sentinel) {
 		cleanup()
 		return draftGit{}, nil, refuse(reasonSentinel)
 	}
@@ -725,35 +742,6 @@ func (s *Server) retainProducedBundle(ctx context.Context, invocationID string) 
 	default:
 		return true, nil
 	}
-}
-
-func publicationRef(invocationID string) (string, error) {
-	if len(invocationID) < 8 {
-		return "", refuse(reasonReady)
-	}
-	suffix := invocationID[:8]
-	for _, r := range suffix {
-		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-		case r == '_':
-		default:
-			return "", refuse(reasonReady)
-		}
-	}
-	return publishRefPrefix + suffix, nil
-}
-
-func publicationBody(pass reviewPass) string {
-	return fmt.Sprintf(`Head %s
-Pin %s
-Oskar evidence: red %s failed; green %s passed.
-Spend counted cents: %d
-The test file carries the factoryEvidencePass sentinel used for mutation proof.
-Refs #454
-Draft by Factory; human review required; Factory will not merge.
-`, pass.x, pass.pin, pass.red, pass.green, pass.counted)
 }
 
 func publishGitRemote(apiBase, repo string) (string, error) {

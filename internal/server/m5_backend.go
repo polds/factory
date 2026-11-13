@@ -478,7 +478,8 @@ func (s *Server) Workers(ctx context.Context) (api.WorkersView, error) {
 }
 
 func (s *Server) Secrets(ctx context.Context, factory string) ([]api.Secret, error) {
-	if _, err := s.factory(ctx, factory); err != nil {
+	fac, err := s.factory(ctx, factory)
+	if err != nil {
 		return nil, err
 	}
 	snap := s.snapshot()
@@ -538,6 +539,9 @@ func (s *Server) Secrets(ctx context.Context, factory string) ([]api.Secret, err
 	out := make([]api.Secret, 0, len(names))
 	for _, name := range names {
 		_, present := s.cfg.Secrets[name]
+		if !present && s.cfg.FactorySecrets[fac.ID][name] != "" {
+			present = true
+		}
 		uses := used[name]
 		sec := api.Secret{
 			Name:     name,

@@ -131,7 +131,7 @@ func upsertFactory(ctx context.Context, tx pgx.Tx, name string, d AppliedDefinit
 	var factoryID string
 	err := tx.QueryRow(ctx, `SELECT id FROM factories WHERE name = $1 FOR UPDATE`, name).Scan(&factoryID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		factoryID, err = NewID(PrefixFactory)
+		factoryID, err = newFactoryID(ctx, tx, d.FactoryID)
 		if err != nil {
 			return "", err
 		}
@@ -156,6 +156,26 @@ func upsertFactory(ctx context.Context, tx pgx.Tx, name string, d AppliedDefinit
 		return "", fmt.Errorf("store: factory: %w", err)
 	}
 	return factoryID, nil
+}
+
+// newFactoryID uses preferred when it is set and no row already has it.
+// A second factory in the same process gets a generated id so it does not
+// share the first factory's secret grant.
+func newFactoryID(ctx context.Context, tx pgx.Tx, preferred string) (string, error) {
+	if preferred != "" {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM factories WHERE id = $1`, preferred).Scan(&n); err != nil {
+			return "", fmt.Errorf("store: factory: %w", err)
+		}
+		if n == 0 {
+			return preferred, nil
+		}
+	}
+	id, err := NewID(PrefixFactory)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func jsonOr(raw json.RawMessage, fallback string) json.RawMessage {

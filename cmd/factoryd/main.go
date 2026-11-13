@@ -185,7 +185,12 @@ Environment:
       the compose service name. Default http://172.17.0.1:8080 (Linux
       bridge gateway, factoryd port published on the host). Docker Desktop
       uses http://host.docker.internal:8080.
-  FACTORY_SECRET_<NAME>
+  FACTORY_SECRET_<factoryID>__<NAME>
+      Value of NAME for that factory. NAME matches [A-Z][A-Z0-9_]* and
+      contains no double underscore. An unprefixed FACTORY_SECRET_<NAME>
+      is ignored.
+  FACTORY_BOOTSTRAP_SECRET_<NAME>
+      Copied onto the bootstrap factory after it is created.
   FACTORY_S3_ENDPOINT, FACTORY_S3_BUCKET, FACTORY_S3_ACCESS_KEY, FACTORY_S3_SECRET_KEY
   FACTORY_S3_FORCE_PATH_STYLE (default true), FACTORY_S3_REGION (default us-east-1)
   FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL, FACTORY_INFERENCE_OPENAI_API_KEY
@@ -202,7 +207,7 @@ Environment:
   FACTORY_GITHUB_WEBHOOK_SECRET
   FACTORY_GITHUB_TOKEN_MODE
       app mints a scoped installation token when a run allowlist includes
-      GH_TOKEN. pat (default) copies FACTORY_SECRET_GH_TOKEN.
+      GH_TOKEN. pat (default) copies that factory's GH_TOKEN grant.
   FACTORY_SLACK_BOT_TOKEN
   FACTORY_SLACK_SIGNING_SECRET
   FACTORY_SLACK_TEAM_ID
