@@ -65,6 +65,22 @@ controlPlane:
     providers:
       anthropic:
         existingSecret: anthropic-api-key
+    # Optional SpendPrice JSON copied onto a factory at apply when that
+    # factory omits inference.rates. Reserve reads the frozen copy, not this
+    # value. Leave it empty to copy nothing.
+    defaultRates: {}
+  # Bootstrap factory secrets. The factory id does not exist until factoryd
+  # creates the chart factory on first boot, so these cannot be keyed by id.
+  # Secret data keys are bootstrap.<NAME>. The process env is
+  # FACTORY_BOOTSTRAP_SECRET_<NAME>. After create, factoryd binds each value
+  # to FACTORY_SECRET_<factoryID>__<NAME> for that factory only. An unprefixed
+  # FACTORY_SECRET_<NAME> is not written and does not resolve.
+  # NAME matches [A-Z][A-Z0-9_]*.
+  bootstrapSecrets: {}
+  # Secrets for factories whose ids are already known. The chart key is
+  # <factoryID>.<NAME> (a slash is not a valid Kubernetes Secret key). The
+  # process env key is FACTORY_SECRET_<factoryID>__<NAME>.
+  factorySecrets: {}
   telemetry:
     otlpEndpoint: http://otel-collector.observability.svc:4318
   definition:

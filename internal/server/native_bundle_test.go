@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -491,6 +492,17 @@ native:
   seats: [nils-aaberg, beatriz-salgado, viktor-halas, oskar-lindgren]
 budget:
   ceilingCents: 2500
+evidence:
+  package: ./oracle
+  mutation: oracle/tenant_test.go
+inference:
+  rates:
+    prompt_byte_cap: 400000
+    max_tokens: 8192
+    models:
+      - name: example-model
+        input_cost_per_token: "0.000003"
+        output_cost_per_token: "0.000015"
 agentDefaults:
   model: auto
   runner: local
@@ -506,6 +518,31 @@ pipeline:
 	}
 	writeAgent(t, root, "worker", "IMPLEMENT", extra)
 	return root
+}
+
+func writePublicationDefinition(t *testing.T) string {
+	t.Helper()
+	dir := writeBundleDefinition(t, "")
+	path := filepath.Join(dir, "factory.yaml")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Replace(string(body),
+		"  - { codeForge: GITHUB, owner: example, name: fixture }\n",
+		"  - { codeForge: GITHUB, owner: example, name: fixture }\n  - { codeForge: GITHUB, owner: northstar-ai-labs, name: dreaming }\n",
+		1)
+	text = strings.Replace(text, "agentDefaults:", `publish:
+  enabled: true
+  repo: { codeForge: GITHUB, owner: northstar-ai-labs, name: dreaming }
+  issueKey: dreaming#454
+  refPrefix: factory/dreaming-454-
+  title: "Factory: DB-backed tenant-isolation tests (#454)"
+agentDefaults:`, 1)
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func loadBundle(t *testing.T) (string, definition.PinnedRoles, map[string]map[string][]byte) {

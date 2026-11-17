@@ -47,12 +47,18 @@ type Config struct {
 	InferenceExtraHeaders []inference.Header
 	// InferenceModel is the model a spend cap prices, with its gateway fallbacks.
 	InferenceModel string
-	// SpendPrice is the JSON price document for role_files model calls.
-	// Empty with a positive SpendCapCents is filled from GET
-	// {InferenceBaseURL}/model/info before the server opens a database.
-	// Empty with a zero cap reads FACTORY_SPEND_PRICE from the process
-	// environment. The harness receives the same document and does not choose W.
+	// SpendPrice is a legacy process document. A run reads inference.rates
+	// frozen on its invocation. SpendPrice is not that document.
 	SpendPrice string
+	// DefaultRates is copied onto a factory at apply when the definition
+	// omits inference.rates. Reserve does not read it.
+	DefaultRates string
+	// FactorySecrets maps factory id to secret name to value.
+	// An unprefixed FACTORY_SECRET_<NAME> is not an entry.
+	FactorySecrets map[string]map[string]string
+	// BootstrapSecrets are provisioned before the bootstrap factory id exists.
+	// bindBootstrapSecrets copies them onto that id after create.
+	BootstrapSecrets map[string]string
 	// SpendCapCents is the worst-case cap in cents. When it is positive and
 	// SpendPrice is empty, Open refuses to start unless gateway rates parse
 	// for InferenceModel and its fallbacks and the worst case is within this cap.
@@ -219,6 +225,8 @@ type Server struct {
 	// evidenceBundleForTest selects the evidence path without a role_files row.
 	// Production leaves it false.
 	evidenceBundleForTest bool
+	// roleFilesForTest forces the role_files installation-token permissions.
+	roleFilesForTest bool
 	// evidenceAttempt runs at the end of taskEnv. Tests return one transient
 	// error so taskEnvRetry provisions a single database.
 	evidenceAttempt func() error

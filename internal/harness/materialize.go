@@ -33,8 +33,8 @@ const (
 	// EnvEvidenceStatus carries privilege_unavailable when creation was denied.
 	EnvEvidenceStatus = "FACTORY_EVIDENCE_STATUS"
 	// EnvTestDSN is the disposable database URL. It is the only database URL
-	// added to the task environment.
-	EnvTestDSN = "DREAMD_TEST_DSN"
+	// added to the task environment. Only the declared reviewer receives it.
+	EnvTestDSN = "FACTORY_EVIDENCE_DSN"
 	// EnvReviewHead is the produced commit the reviewer must check out.
 	EnvReviewHead = "FACTORY_REVIEW_HEAD"
 	// EnvBundleURL is the factoryd URL of that commit's bundle.

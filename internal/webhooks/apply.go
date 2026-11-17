@@ -14,8 +14,28 @@ import (
 
 // SecretSource resolves a credential name to its current value.
 // Implementations must not put the value in the error text.
+// WithFactoryID on ctx selects the factory grant.
 type SecretSource interface {
 	Secret(ctx context.Context, name string) (string, error)
+}
+
+type factoryIDKey struct{}
+
+// WithFactoryID marks ctx with the factory whose secret grant should resolve.
+func WithFactoryID(ctx context.Context, factoryID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, factoryIDKey{}, strings.TrimSpace(factoryID))
+}
+
+// FactoryIDFromContext returns the factory id set by WithFactoryID.
+func FactoryIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(factoryIDKey{}).(string)
+	return id
 }
 
 // Sync is the registration store used at definition apply.
@@ -34,6 +54,7 @@ func Apply(ctx context.Context, sync Sync, secrets SecretSource, factoryID strin
 	if strings.TrimSpace(factoryID) == "" {
 		return fmt.Errorf("webhooks: factory is required")
 	}
+	ctx = WithFactoryID(ctx, factoryID)
 	if sync == nil {
 		return fmt.Errorf("webhooks: registration store is required")
 	}

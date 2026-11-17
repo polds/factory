@@ -354,6 +354,10 @@ func apiTree(tree definition.NativeTree, agentID, itemID string, ceiling int64) 
 		AgentID: agentID, WorkItemID: itemID, Stage: store.StagePlanning,
 		SourceCommit: tree.SourceCommit, RosterSHA256: tree.RosterSHA256,
 		RosterGitBlob: tree.RosterGitBlob, BundleMode: tree.BundleMode,
+		Evidence: &api.NativeEvidenceRequest{
+			Package:  configuredPackage(),
+			Mutation: configuredMutation(),
+		},
 	}
 }
 

@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 
 	"github.com/polds/factory/internal/api"
 	"github.com/polds/factory/internal/coordination"
@@ -54,6 +57,9 @@ func (s *Server) OpenNativeTree(ctx context.Context, factoryUID, invocationID st
 	}
 	tree = s.bindDeclaration(tree)
 	if err := s.attestIfCommit(ctx, fac.ID, invocationID, tree); err != nil {
+		return api.NativeTreeOpened{}, err
+	}
+	if err := s.freezeOpen(ctx, fac.ID, invocationID, tree, req); err != nil {
 		return api.NativeTreeOpened{}, err
 	}
 	policy, task, err := coordination.OpenTree(ctx, s.store, store.OpenTreeInput{
@@ -334,6 +340,76 @@ func (s *Server) ListNativeTrees(ctx context.Context, factoryUID string) ([]api.
 		out = append(out, item)
 	}
 	return out, nil
+}
+
+func (s *Server) freezeOpen(ctx context.Context, factoryID, invocationID string, tree definition.NativeTree, req api.NativeTreeRequest) error {
+	contract, err := s.factoryContract(ctx, factoryID)
+	if err != nil {
+		return err
+	}
+	mode := tree.BundleMode
+	if checked, err := definition.CheckBundle(tree); err == nil && checked.BundleMode != "" {
+		mode = checked.BundleMode
+	}
+	roleFiles := mode == definition.BundleModeRoleFiles
+	publishOn := contract.Publish != nil && contract.Publish.Enabled
+	var rates string
+	if len(contract.Rates) > 0 && string(contract.Rates) != "null" {
+		rates, err = contract.ratesJSON()
+		if err != nil && roleFiles {
+			return fmt.Errorf("server: inference rates: %w", err)
+		}
+		if err != nil {
+			rates = ""
+		}
+	}
+	if roleFiles && rates == "" {
+		return errors.New("server: inference rates are empty")
+	}
+	if (roleFiles || publishOn) && !contract.HasCeiling {
+		return errors.New("server: factory ceiling is empty")
+	}
+	if contract.HasCeiling && req.CeilingCents > contract.CeilingCents {
+		return errors.New("server: ceiling exceeds factory cap")
+	}
+	existing, err := s.store.FrozenRun(ctx, invocationID)
+	if err != nil {
+		return err
+	}
+	if len(existing.RatesJSON) > 0 || existing.Package != "" || existing.IssueKey != "" || existing.Mutation != "" {
+		return nil
+	}
+	doc := store.FrozenRun{}
+	if rates != "" {
+		doc.RatesJSON = json.RawMessage(rates)
+	}
+	if req.Publish != nil {
+		doc.IssueKey = req.Publish.IssueKey
+		doc.Title = req.Publish.Title
+		doc.Body = req.Publish.Body
+		doc.RefPrefix = req.Publish.RefPrefix
+	}
+	if contract.Evidence != nil {
+		doc.Package = contract.Evidence.Package
+		doc.Mutation = contract.Evidence.Mutation
+		doc.Sentinel = contract.Evidence.Sentinel
+		doc.Break = contract.Evidence.Break
+	}
+	if req.Evidence != nil {
+		if req.Evidence.Package != "" {
+			doc.Package = req.Evidence.Package
+		}
+		if req.Evidence.Mutation != "" {
+			doc.Mutation = req.Evidence.Mutation
+		}
+	}
+	if doc.Sentinel == "" {
+		doc.Sentinel = definition.DefaultEvidenceSentinel
+	}
+	if doc.Break == "" {
+		doc.Break = definition.DefaultEvidenceBreak
+	}
+	return s.store.PutFrozenRun(ctx, invocationID, doc)
 }
 
 func (s *Server) nativeHead(ctx context.Context, factoryUID, taskID string) (store.Factory, store.NativeTask, error) {

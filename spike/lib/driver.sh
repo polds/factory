@@ -486,10 +486,10 @@ from redact_evidence import public_https_url
 root = Path(sys.argv[1])
 planted = []
 for name in (
-    "FACTORY_SECRET_M5_WEBHOOK",
+    "FACTORY_SECRET_fac_00000000000000000000000001__M5_WEBHOOK",
     "FACTORY_WORKER_API_KEY",
     "S3_SECRET_KEY",
-    "FACTORY_SECRET_M5_PLANTED",
+    "FACTORY_SECRET_fac_00000000000000000000000001__M5_PLANTED",
     "FACTORY_INFERENCE_OPENAI_API_KEY",
 ):
     value = os.environ.get(name, "")
@@ -709,7 +709,7 @@ post_signed() {
   local url="$1" dest="$2"
   shift 2
   local sig="" code="" secret=""
-  secret="${POST_SIGNED_SECRET:-${FACTORY_SECRET_M5_WEBHOOK:-}}"
+  secret="${POST_SIGNED_SECRET:-${FACTORY_SECRET_fac_00000000000000000000000001__M5_WEBHOOK:-}}"
   sig="$(openssl dgst -sha256 -hmac "$secret" "$dest" | awk '{print $NF}')"
   code="$(curl --connect-timeout 2 -m 5 -sS -o "$WORK/deliver-body.txt" -w '%{http_code}' \
     -X POST "$url" \

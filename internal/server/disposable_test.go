@@ -25,7 +25,7 @@ import (
 )
 
 func TestDropAllowedRefusesHostileAndAdmin(t *testing.T) {
-	good := "dreamd_" + strings.Repeat("a", 32)
+	good := "factory_ev_" + strings.Repeat("a", 32)
 	if !dropAllowed(good, good, "factory", "postgres") {
 		t.Fatal("expected a generated name to drop")
 	}
@@ -35,7 +35,7 @@ func TestDropAllowedRefusesHostileAndAdmin(t *testing.T) {
 	if dropAllowed(good, good, "factory", good) {
 		t.Fatal("admin role was a drop candidate")
 	}
-	if dropAllowed(`dreamd_"; DROP DATABASE factory; --`, good, "factory", "postgres") {
+	if dropAllowed(`factory_ev_"; DROP DATABASE factory; --`, good, "factory", "postgres") {
 		t.Fatal("hostile name was a drop candidate")
 	}
 }
@@ -193,7 +193,7 @@ func TestDisposableRetrySweepAndHostileName(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = raw.Exec(context.Background(), `DROP DATABASE IF EXISTS `+pgx.Identifier{canary}.Sanitize())
 	})
-	hostile := `dreamd_"; DROP DATABASE ` + canary + `; --`
+	hostile := `factory_ev_"; DROP DATABASE ` + canary + `; --`
 	if _, err := raw.Exec(ctx, `
 		INSERT INTO disposable_databases (run_id, database_name, role_name, state)
 		VALUES ($1, $2, $2, 'dropping')`, "run_hostile", hostile); err != nil {
@@ -233,7 +233,7 @@ func TestDisposablePrivilegeIsNotGreen(t *testing.T) {
 	t.Setenv("FACTORY_EVIDENCE_PACKAGE", "./oracle")
 	s.evidenceBundleForTest = true
 	var before int
-	if err := raw.QueryRow(ctx, `SELECT count(*) FROM pg_roles WHERE rolname LIKE 'dreamd_%'`).Scan(&before); err != nil {
+	if err := raw.QueryRow(ctx, `SELECT count(*) FROM pg_roles WHERE rolname LIKE 'factory_ev_%'`).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
 	env, err := s.taskEnv(ctx, store.Run{ID: "run_priv", Prompt: "go test ./stolen"}, boundAgent{})
@@ -244,7 +244,7 @@ func TestDisposablePrivilegeIsNotGreen(t *testing.T) {
 		t.Fatal("privilege failure was green")
 	}
 	var after int
-	if err := raw.QueryRow(ctx, `SELECT count(*) FROM pg_roles WHERE rolname LIKE 'dreamd_%'`).Scan(&after); err != nil || after != before {
+	if err := raw.QueryRow(ctx, `SELECT count(*) FROM pg_roles WHERE rolname LIKE 'factory_ev_%'`).Scan(&after); err != nil || after != before {
 		t.Fatalf("roles %d %d %v", before, after, err)
 	}
 	assertNoAdmin(t, joinEnv(env), limited)
@@ -362,7 +362,7 @@ func disposableAdminURL(t *testing.T) string {
 
 func dropDreamd(admin *pgx.Conn) {
 	ctx := context.Background()
-	rows, err := admin.Query(ctx, `SELECT datname FROM pg_database WHERE datname LIKE 'dreamd_%'`)
+	rows, err := admin.Query(ctx, `SELECT datname FROM pg_database WHERE datname LIKE 'factory_ev_%'`)
 	if err != nil {
 		return
 	}
@@ -378,7 +378,7 @@ func dropDreamd(admin *pgx.Conn) {
 		_, _ = admin.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`, name)
 		_, _ = admin.Exec(ctx, `DROP DATABASE IF EXISTS `+pgx.Identifier{name}.Sanitize())
 	}
-	roles, err := admin.Query(ctx, `SELECT rolname FROM pg_roles WHERE rolname LIKE 'dreamd_%'`)
+	roles, err := admin.Query(ctx, `SELECT rolname FROM pg_roles WHERE rolname LIKE 'factory_ev_%'`)
 	if err != nil {
 		return
 	}

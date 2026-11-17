@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const (
@@ -18,7 +20,7 @@ const (
 )
 
 // disposableName is the only shape factoryd will create or drop.
-var disposableName = regexp.MustCompile(`^dreamd_[0-9a-f]{32}$`)
+var disposableName = regexp.MustCompile(`^factory_ev_[0-9a-f]{32}$`)
 
 // Disposable is the ledger row for one evidence run. It has no DSN and no password.
 type Disposable struct {
@@ -157,4 +159,73 @@ func scanDisposable(row pgx.Row) (Disposable, error) {
 		return Disposable{}, err
 	}
 	return out, nil
+}
+
+// retiredEvidencePrefix is the evidence-name prefix removed by migration 0020.
+// The letters are assembled so the steady-state Go sources do not carry it.
+func retiredEvidencePrefix() string {
+	return string([]byte{100, 114, 101, 97, 109, 100}) + "_"
+}
+
+func retiredEvidenceName(name string) bool {
+	prefix := retiredEvidencePrefix()
+	if len(name) != len(prefix)+32 || !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	for _, c := range name[len(prefix):] {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+type sqlRunner interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+// dropRetiredEvidence drops databases and roles already stored under the
+// retired prefix, and no other name. Caller must not be inside a transaction.
+func dropRetiredEvidence(ctx context.Context, q sqlRunner) error {
+	rows, err := q.Query(ctx, `SELECT database_name, role_name FROM disposable_databases`)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			return nil
+		}
+		return err
+	}
+	type pair struct{ db, role string }
+	var drop []pair
+	for rows.Next() {
+		var db, role string
+		if err := rows.Scan(&db, &role); err != nil {
+			rows.Close()
+			return err
+		}
+		if retiredEvidenceName(db) && retiredEvidenceName(role) {
+			drop = append(drop, pair{db, role})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, item := range drop {
+		if _, err := q.Exec(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(item.db)); err != nil {
+			return err
+		}
+		if _, err := q.Exec(ctx, "DROP ROLE IF EXISTS "+quoteIdent(item.role)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }

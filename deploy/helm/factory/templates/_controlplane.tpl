@@ -145,6 +145,28 @@ spec:
             - name: FACTORY_SECRET_ALLOWLIST
               value: {{ include "factory.secretProjectionAllowlist" . | quote }}
             {{- end }}
+            {{- range $name, $_ := .Values.controlPlane.bootstrapSecrets }}
+            - name: FACTORY_BOOTSTRAP_SECRET_{{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "factory.fullname" $ }}-factory-secrets
+                  key: bootstrap.{{ $name }}
+            {{- end }}
+            {{- range $id, $secrets := .Values.controlPlane.factorySecrets }}
+            {{- range $sname, $_ := $secrets }}
+            - name: FACTORY_SECRET_{{ $id }}__{{ $sname }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "factory.fullname" $ }}-factory-secrets
+                  key: {{ $id }}.{{ $sname }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.controlPlane.inference.defaultRates }}
+            {{- if gt (len .) 0 }}
+            - name: FACTORY_DEFAULT_INFERENCE_RATES
+              value: {{ . | toJson | quote }}
+            {{- end }}
+            {{- end }}
           {{- with .Values.controlPlane.extraEnvFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}

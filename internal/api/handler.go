@@ -141,8 +141,13 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) withAPIKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !h.authorized(r) {
+		actor, ok := h.authenticate(r)
+		if !ok {
 			writeProblem(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		r = r.WithContext(contextWithActor(r.Context(), actor))
+		if !actor.admin && !h.permitScoped(w, r, actor) {
 			return
 		}
 		next(w, r)
@@ -182,6 +187,15 @@ func (h *handler) handleListFactories(w http.ResponseWriter, r *http.Request) {
 	}
 	if factories == nil {
 		factories = []Factory{}
+	}
+	if actor, ok := actorFrom(r.Context()); ok && !actor.admin {
+		kept := make([]Factory, 0, 1)
+		for _, factory := range factories {
+			if factory.ID == actor.factoryID {
+				kept = append(kept, factory)
+			}
+		}
+		factories = kept
 	}
 	writeJSON(w, http.StatusOK, factories)
 }
@@ -255,6 +269,11 @@ func (h *handler) handleListRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) listRuns(w http.ResponseWriter, r *http.Request, factoryID string) {
+	if forced, ok := h.scopeQuery(w, r, "factory_id"); !ok {
+		return
+	} else if forced != "" {
+		factoryID = forced
+	}
 	q := r.URL.Query()
 	queryFactory := strings.TrimSpace(q.Get("factory_id"))
 	if factoryID != "" && queryFactory != "" && queryFactory != factoryID {
@@ -309,6 +328,9 @@ func (h *handler) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "prompt is required")
 		return
 	}
+	if h.rejectForeign(w, r, req.Factory) {
+		return
+	}
 	run, err := h.backend.StartRun(r.Context(), req)
 	if err != nil {
 		h.writeBackendErr(w, err)
@@ -324,12 +346,19 @@ func (h *handler) handleGetRun(w http.ResponseWriter, r *http.Request) {
 			h.writeConsoleErr(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, normalizeRunDetail(detail))
+		detail = normalizeRunDetail(detail)
+		if h.hideForeign(w, r, detail.FactoryID) {
+			return
+		}
+		writeJSON(w, http.StatusOK, detail)
 		return
 	}
 	run, err := h.backend.GetRun(r.Context(), r.PathValue("runId"))
 	if err != nil {
 		h.writeBackendErr(w, err)
+		return
+	}
+	if h.hideForeign(w, r, run.FactoryID) {
 		return
 	}
 	writeJSON(w, http.StatusOK, run)

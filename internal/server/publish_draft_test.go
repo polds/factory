@@ -29,6 +29,11 @@ import (
 
 const publishToken = "ghs_PUBLISH_TEST_TOKEN_VALUE_NOT_A_SECRET"
 
+const (
+	publishRepo      = "northstar-ai-labs/dreaming"
+	publishRefPrefix = "factory/dreaming-454-"
+)
+
 func TestDraftPublishRequiresReviewerPass(t *testing.T) {
 	if os.Getenv("FACTORY_TEST_DATABASE_URL") == "" {
 		t.Skip("FACTORY_TEST_DATABASE_URL unset")
@@ -62,9 +67,9 @@ func TestDraftPublishRequiresReviewerPass(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fix := preparePublication(t, env, tree, roleDir, tc.name, tc.full, tc.mode)
 			if tc.mode == "repo" {
-				t.Setenv(publishEnvRepo, "other/repo")
-			} else {
-				t.Setenv(publishEnvRepo, publishRepo)
+				env.srv.snapshot().tree.Factory.Publish.Repo = &definition.Repository{Owner: "other", Name: "repo"}
+			} else if env.srv.snapshot().tree != nil && env.srv.snapshot().tree.Factory.Publish != nil {
+				env.srv.snapshot().tree.Factory.Publish.Repo = &definition.Repository{Owner: "northstar-ai-labs", Name: "dreaming"}
 			}
 			if tc.mode != "no-sentinel" && tc.mode != "tool-error" {
 				t.Setenv(harness.EnvEvidenceMutation, "oracle/tenant_test.go")
@@ -298,7 +303,7 @@ func (f pubFix) ref(t *testing.T, env *env) string {
 func bootPublication(t *testing.T) (*env, definition.NativeTree, string) {
 	t.Helper()
 	env := boot(t, bootOpts{definition: func(t *testing.T) string {
-		return writeBundleDefinition(t, "")
+		return writePublicationDefinition(t)
 	}})
 	rootDir, _, pins := loadBundle(t)
 	commitRoleSource(t, rootDir)
@@ -453,7 +458,7 @@ func stopDuringPrePostList(t *testing.T, env *env, tree definition.NativeTree, r
 	fix := preparePublication(t, env, tree, roleDir, name, true, "open")
 	fake := newPublishGitHub(t, fix.sha, "")
 	if adopt {
-		ref, err := publicationRef(fix.invocationID)
+		ref, err := publicationRef(publishRefPrefix, fix.invocationID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -546,7 +551,9 @@ func publishAppKey(t *testing.T) *rsa.PrivateKey {
 
 func armPublisher(t *testing.T, env *env, key *rsa.PrivateKey, fake *publishGitHub) {
 	t.Helper()
-	t.Setenv(publishEnvRepo, publishRepo)
+	if env.srv.snapshot().tree != nil && env.srv.snapshot().tree.Factory.Publish != nil {
+		env.srv.snapshot().tree.Factory.Publish.Repo = &definition.Repository{Owner: "northstar-ai-labs", Name: "dreaming"}
+	}
 	t.Setenv(harness.EnvEvidenceMutation, "oracle/tenant_test.go")
 	env.srv.cfg.GitHubAppID = 4242
 	env.srv.cfg.GitHubAppKey = key
@@ -597,7 +604,7 @@ func assertOpened(t *testing.T, env *env, fix pubFix, fake *publishGitHub) {
 		t.Fatal("row contains the token")
 	}
 	body := fake.createBody()
-	for _, needle := range []string{fix.sha, "factoryEvidencePass", "Refs #454", "Draft by Factory; human review required; Factory will not merge.", "Spend counted cents:"} {
+	for _, needle := range []string{fix.sha, "factoryEvidencePass", "Issue: dreaming#454", "Draft by Factory; human review required; Factory will not merge.", "Spend counted cents:"} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("body missing %s", needle)
 		}

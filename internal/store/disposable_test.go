@@ -12,12 +12,12 @@ import (
 func TestDisposableLedgerReusesOneRow(t *testing.T) {
 	h := newHarness(t, true)
 	ctx := context.Background()
-	name := "dreamd_" + strings.Repeat("ab", 16)
+	name := "factory_ev_" + strings.Repeat("ab", 16)
 	row, created, err := h.st.InsertDisposable(ctx, "run_d4", name, name)
 	if err != nil || !created || row.State != store.DisposableCreating || row.DatabaseName != name || row.RoleName != name {
 		t.Fatalf("insert created %v state %s err %v", created, row.State, err)
 	}
-	again, created, err := h.st.InsertDisposable(ctx, "run_d4", "dreamd_"+strings.Repeat("cd", 16), "dreamd_"+strings.Repeat("cd", 16))
+	again, created, err := h.st.InsertDisposable(ctx, "run_d4", "factory_ev_"+strings.Repeat("cd", 16), "factory_ev_"+strings.Repeat("cd", 16))
 	if err != nil || created || again.DatabaseName != name || again.RoleName != name {
 		t.Fatalf("reuse created %v name changed %v err %v", created, again.DatabaseName != name, err)
 	}

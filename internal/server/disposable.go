@@ -34,47 +34,17 @@ func (s *Server) attachEvidence(ctx context.Context, run store.Run, env map[stri
 	if !s.evidenceRequested(env) {
 		return nil
 	}
+	if s.evidenceBundleForTest {
+		return s.attachHarnessEvidence(ctx, run, env, strings.TrimSpace(os.Getenv("FACTORY_EVIDENCE_PACKAGE")), strings.TrimSpace(os.Getenv("FACTORY_EVIDENCE_MUTATION")))
+	}
 	seat, err := s.classifySeat(ctx, run)
 	if err != nil {
 		return err
 	}
-	if seat.kind == "other" {
+	if seat.kind != "reviewer" {
 		return nil
 	}
-	if seat.kind == "reviewer" {
-		return s.attachReviewerEvidence(ctx, run, env, seat)
-	}
-	pkg := strings.TrimSpace(os.Getenv("FACTORY_EVIDENCE_PACKAGE"))
-	if pkg == "" {
-		return nil
-	}
-	if err := harness.EvidencePackagePath(pkg); err != nil {
-		return err
-	}
-	mut := strings.TrimSpace(os.Getenv("FACTORY_EVIDENCE_MUTATION"))
-	if err := harness.EvidenceMutationPath(mut); err != nil {
-		return err
-	}
-	env[harness.EnvEvidencePackage] = pkg
-	if mut != "" {
-		env[harness.EnvEvidenceMutation] = mut
-	}
-	if s.store == nil || run.ID == "" {
-		return errors.New("server: disposable run")
-	}
-	dsn, priv, err := s.ensureDisposable(ctx, run.ID)
-	if err != nil {
-		return err
-	}
-	if priv {
-		env[harness.EnvEvidenceStatus] = harness.EvidencePrivilegeUnavailable
-		return nil
-	}
-	env[harness.EnvTestDSN] = dsn
-	for _, needle := range harness.RedactionNeedles([]string{dsn}) {
-		env["FACTORY_SECRET_VALUES"] = appendSecret(env["FACTORY_SECRET_VALUES"], needle)
-	}
-	return nil
+	return s.attachReviewerEvidence(ctx, run, env, seat)
 }
 
 func (s *Server) attachReviewerEvidence(ctx context.Context, run store.Run, env map[string]string, seat seatClass) error {
@@ -82,11 +52,13 @@ func (s *Server) attachReviewerEvidence(ctx context.Context, run store.Run, env 
 	if err != nil || row.State != store.ProducedReady || !commitHex40(row.HeadSHA) {
 		return errors.New("produced head: reviewer: missing SHA")
 	}
-	pkg := strings.TrimSpace(os.Getenv("FACTORY_EVIDENCE_PACKAGE"))
+	pkg, mut, err := s.frozenEvidence(ctx, run)
+	if err != nil {
+		return err
+	}
 	if pkg == "" {
 		return errors.New("produced head: reviewer: FACTORY_EVIDENCE_PACKAGE unset")
 	}
-	mut := strings.TrimSpace(os.Getenv("FACTORY_EVIDENCE_MUTATION"))
 	if mut == "" {
 		return errors.New("produced head: reviewer: FACTORY_EVIDENCE_MUTATION unset")
 	}
@@ -106,6 +78,53 @@ func (s *Server) attachReviewerEvidence(ctx context.Context, run store.Run, env 
 	env[harness.EnvOriginURL] = "https://github.com/" + ovs[0].RepoOwner + "/" + ovs[0].RepoName + ".git"
 	base := strings.TrimRight(s.cfg.TaskServerURL, "/")
 	env[harness.EnvBundleURL] = base + "/api/v1/agent/runs/" + run.ID + "/head.bundle"
+	if s.store == nil || run.ID == "" {
+		return errors.New("server: disposable run")
+	}
+	dsn, priv, err := s.ensureDisposable(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	if priv {
+		env[harness.EnvEvidenceStatus] = harness.EvidencePrivilegeUnavailable
+		return nil
+	}
+	env[harness.EnvTestDSN] = dsn
+	for _, needle := range harness.RedactionNeedles([]string{dsn}) {
+		env["FACTORY_SECRET_VALUES"] = appendSecret(env["FACTORY_SECRET_VALUES"], needle)
+	}
+	return nil
+}
+
+func (s *Server) frozenEvidence(ctx context.Context, run store.Run) (string, string, error) {
+	if s.store == nil || run.WorkItemID == "" {
+		return "", "", nil
+	}
+	item, err := s.store.GetWorkItem(ctx, run.WorkItemID)
+	if err != nil || item.InvocationID == "" {
+		return "", "", err
+	}
+	frozen, err := s.store.FrozenRun(ctx, item.InvocationID)
+	if err != nil {
+		return "", "", err
+	}
+	return strings.TrimSpace(frozen.Package), strings.TrimSpace(frozen.Mutation), nil
+}
+
+func (s *Server) attachHarnessEvidence(ctx context.Context, run store.Run, env map[string]string, pkg, mut string) error {
+	if pkg == "" {
+		return nil
+	}
+	if err := harness.EvidencePackagePath(pkg); err != nil {
+		return err
+	}
+	if err := harness.EvidenceMutationPath(mut); err != nil {
+		return err
+	}
+	env[harness.EnvEvidencePackage] = pkg
+	if mut != "" {
+		env[harness.EnvEvidenceMutation] = mut
+	}
 	if s.store == nil || run.ID == "" {
 		return errors.New("server: disposable run")
 	}
@@ -501,10 +520,11 @@ func dropAllowed(database, role, adminDB, adminRole string) bool {
 }
 
 func storeName(name string) bool {
-	if len(name) != len("dreamd_")+32 || !strings.HasPrefix(name, "dreamd_") {
+	const prefix = "factory_ev_"
+	if len(name) != len(prefix)+32 || !strings.HasPrefix(name, prefix) {
 		return false
 	}
-	for _, c := range name[len("dreamd_"):] {
+	for _, c := range name[len(prefix):] {
 		switch {
 		case c >= '0' && c <= '9', c >= 'a' && c <= 'f':
 		default:
@@ -570,7 +590,7 @@ func newDisposableName() (string, error) {
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
 	}
-	return "dreamd_" + hex.EncodeToString(raw[:]), nil
+	return "factory_ev_" + hex.EncodeToString(raw[:]), nil
 }
 
 func newDisposablePassword() (string, error) {

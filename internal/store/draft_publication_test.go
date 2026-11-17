@@ -13,11 +13,12 @@ import (
 func TestDraftPublicationRows(t *testing.T) {
 	h := newHarness(t, true)
 	ctx := context.Background()
-	_, first, _ := seedNativeInvocation(t, h, "draft-a")
+	factoryID, first, _ := seedNativeInvocation(t, h, "draft-a")
 	second := insertNativeInvocation(t, h, mustFactory(t, h), "draft-b")
 	sha := strings.Repeat("a", 40)
 	row := store.DraftPublication{
 		InvocationID: first,
+		FactoryID:    factoryID,
 		TargetRepo:   "northstar-ai-labs/dreaming",
 		IssueKey:     "dreaming#454",
 		HeadSHA:      sha,
@@ -57,7 +58,7 @@ func TestDraftPublicationRows(t *testing.T) {
 		t.Fatalf("columns %v", columns)
 	}
 	if _, err := h.st.InsertDraftPending(ctx, store.DraftPublication{
-		InvocationID: first, TargetRepo: row.TargetRepo, IssueKey: row.IssueKey,
+		InvocationID: first, FactoryID: factoryID, TargetRepo: row.TargetRepo, IssueKey: row.IssueKey,
 		HeadSHA: sha, GitRef: row.GitRef, Detail: "ghs_supersecretvalue",
 	}); err == nil {
 		t.Fatal("detail accepted a token")
@@ -88,7 +89,7 @@ func TestDraftPublicationRows(t *testing.T) {
 			defer wg.Done()
 			<-start
 			_, err := h.st.InsertDraftPending(ctx, store.DraftPublication{
-				InvocationID: id, TargetRepo: "other/repo", IssueKey: "dreaming#454",
+				InvocationID: id, FactoryID: factoryID, TargetRepo: "other/repo", IssueKey: "dreaming#454",
 				HeadSHA: sha, GitRef: "factory/dreaming-454-" + id[:8],
 			})
 			mu.Lock()

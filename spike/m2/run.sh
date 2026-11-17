@@ -14,7 +14,7 @@
 # A non-empty shell variable wins over the file. OPENAI_BASE_URL, M2_MODEL,
 # GH_TOKEN, and optional OPENAI_API_KEY are the shell names.
 # FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL, FACTORY_INFERENCE_OPENAI_API_KEY,
-# and FACTORY_SECRET_GH_TOKEN are the same values. Nothing in this script
+# and FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN are the same values. Nothing in this script
 # prints those values.
 set -euo pipefail
 # shellcheck source=spike/lib/common.sh
@@ -82,7 +82,7 @@ on_err() {
 apply_live_env_aliases() {
   copy_if_empty OPENAI_BASE_URL FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL
   copy_if_empty OPENAI_API_KEY FACTORY_INFERENCE_OPENAI_API_KEY
-  copy_if_empty GH_TOKEN FACTORY_SECRET_GH_TOKEN
+  copy_if_empty GH_TOKEN FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN
 }
 
 # GNU date accepts %N. macOS date does not; python3 is already required.
@@ -330,7 +330,7 @@ reset_stale_host_logs() {
 # offline child is forked. The previous values stay on the redact list.
 apply_offline_secrets() {
   local gw="$1"
-  local live_gh="${FACTORY_SECRET_GH_TOKEN:-}"
+  local live_gh="${FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN:-}"
   local live_key="${FACTORY_INFERENCE_OPENAI_API_KEY:-}"
   local live_url="${FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL:-}"
   local live_shell_gh="${GH_TOKEN:-}"
@@ -339,7 +339,7 @@ apply_offline_secrets() {
   unset GH_TOKEN OPENAI_API_KEY OPENAI_BASE_URL
   export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$stub_url"
   export FACTORY_INFERENCE_OPENAI_API_KEY="$OFFLINE_DUMMY_KEY"
-  export FACTORY_SECRET_GH_TOKEN="$OFFLINE_GH"
+  export FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN="$OFFLINE_GH"
   redact_if_live "$live_gh" "$OFFLINE_GH"
   redact_if_live "$live_key" "$OFFLINE_DUMMY_KEY"
   redact_if_live "$live_url" "$stub_url"
@@ -569,7 +569,7 @@ if [[ "$MODE" == live ]]; then
   command -v gh >/dev/null || die "gh not found (required for MODE=live)"
   [[ -n "${OPENAI_BASE_URL:-}" ]] || die "OPENAI_BASE_URL or FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL is required for MODE=live"
   [[ -n "${M2_MODEL:-}" ]] || die "M2_MODEL is required for MODE=live"
-  [[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN or FACTORY_SECRET_GH_TOKEN is required for MODE=live"
+  [[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN or FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN is required for MODE=live"
   M2_REPO="${M2_REPO:-polds/factory}"
   echo "live repo: ${M2_REPO}"
 fi
@@ -648,7 +648,7 @@ else
   echo "task OPENAI_BASE_URL host: $(url_log_host "$live_base")"
   export FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$live_base"
   export FACTORY_INFERENCE_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
-  export FACTORY_SECRET_GH_TOKEN="$GH_TOKEN"
+  export FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN="$GH_TOKEN"
   SECRETS+=("$GH_TOKEN")
   if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     SECRETS+=("$OPENAI_API_KEY")

@@ -26,7 +26,7 @@ source "$ROOT/spike/lib/cleanup.sh"
 
 MODE="${MODE:-offline}"
 # Public https locator of the offline target. Live stores this shape as
-# FACTORY_SECRET_DEFINITION_GIT_URL, and the forge html_url is that string
+# FACTORY_SECRET_fac_00000000000000000000000001__DEFINITION_GIT_URL, and the forge html_url is that string
 # plus /pull/N. The router still clones the git:// URL.
 M7_PUBLIC_REPO_URL="${M7_PUBLIC_REPO_URL:-https://pr.invalid/m7/factory-m7-target}"
 PHASE_PREFIX=m7
@@ -1044,9 +1044,9 @@ if [[ -f "$WORK/openai-extra-headers" ]]; then
 fi
 k -n "${NAMESPACE}" create secret generic m7-runtime \
   --from-file=FACTORY_INFERENCE_OPENAI_API_KEY="$WORK/worker-key" \
-  --from-file=FACTORY_SECRET_GH_TOKEN="$WORK/gh-token" \
-  --from-file=FACTORY_SECRET_DEFINITION_GIT_URL="$WORK/definition-git-url" \
-  --from-file=FACTORY_SECRET_GITHUB_API_BASE="$WORK/github-api-base" \
+  --from-file=FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN="$WORK/gh-token" \
+  --from-file=FACTORY_SECRET_fac_00000000000000000000000001__DEFINITION_GIT_URL="$WORK/definition-git-url" \
+  --from-file=FACTORY_SECRET_fac_00000000000000000000000001__GITHUB_API_BASE="$WORK/github-api-base" \
   "${header_args[@]}" \
   --dry-run=client -o yaml | k apply -f -
 if [[ "$MODE" != "offline" ]]; then
@@ -1054,9 +1054,9 @@ if [[ "$MODE" != "offline" ]]; then
     --from-file=FACTORY_INFERENCE_OPENAI_API_KEY="$WORK/openai-key" \
     --from-file=FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL="$WORK/openai-base" \
     --from-file=FACTORY_GITHUB_APP_ID="$WORK/app-id" \
-    --from-file=FACTORY_SECRET_GH_TOKEN="$WORK/gh-token" \
-    --from-file=FACTORY_SECRET_DEFINITION_GIT_URL="$WORK/definition-git-url" \
-    --from-file=FACTORY_SECRET_GITHUB_API_BASE="$WORK/github-api-base" \
+    --from-file=FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN="$WORK/gh-token" \
+    --from-file=FACTORY_SECRET_fac_00000000000000000000000001__DEFINITION_GIT_URL="$WORK/definition-git-url" \
+    --from-file=FACTORY_SECRET_fac_00000000000000000000000001__GITHUB_API_BASE="$WORK/github-api-base" \
     "${header_args[@]}" \
     --dry-run=client -o yaml | k apply -f -
   k -n "${NAMESPACE}" create secret generic m7-github-app \

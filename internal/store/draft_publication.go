@@ -25,6 +25,7 @@ const (
 // It has no token and no bundle bytes.
 type DraftPublication struct {
 	InvocationID string
+	FactoryID    string
 	TargetRepo   string
 	IssueKey     string
 	State        string
@@ -220,10 +221,10 @@ func (s *Store) InvocationRootStatus(ctx context.Context, invocationID string) (
 }
 
 const draftColumns = `invocation_id, target_repo, issue_key, state, head_sha, git_ref,
-	pr_number, pr_url, draft, detail`
+	pr_number, pr_url, draft, detail, factory_id`
 
 func validateDraftPending(row DraftPublication) error {
-	if row.InvocationID == "" || row.TargetRepo == "" || row.IssueKey == "" || row.GitRef == "" {
+	if row.InvocationID == "" || row.FactoryID == "" || row.TargetRepo == "" || row.IssueKey == "" || row.GitRef == "" {
 		return fmt.Errorf("%w: publication", ErrInputInvalid)
 	}
 	if len(row.HeadSHA) != 40 {
@@ -260,10 +261,10 @@ func draftTransition(from, to string) bool {
 func insertDraftTx(ctx context.Context, tx pgx.Tx, row DraftPublication) (DraftPublication, error) {
 	inserted, err := scanDraft(tx.QueryRow(ctx, `
 		INSERT INTO draft_publications (
-		    invocation_id, target_repo, issue_key, state, head_sha, git_ref, detail)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		    invocation_id, factory_id, target_repo, issue_key, state, head_sha, git_ref, detail)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING `+draftColumns,
-		row.InvocationID, row.TargetRepo, row.IssueKey, DraftPending, row.HeadSHA, row.GitRef, row.Detail))
+		row.InvocationID, row.FactoryID, row.TargetRepo, row.IssueKey, DraftPending, row.HeadSHA, row.GitRef, row.Detail))
 	if err != nil {
 		return DraftPublication{}, fmt.Errorf("store: publication: %w", err)
 	}
@@ -283,7 +284,7 @@ func scanDraft(row pgx.Row) (DraftPublication, error) {
 	var draft *bool
 	err := row.Scan(
 		&out.InvocationID, &out.TargetRepo, &out.IssueKey, &out.State, &out.HeadSHA, &out.GitRef,
-		&number, &url, &draft, &out.Detail)
+		&number, &url, &draft, &out.Detail, &out.FactoryID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return DraftPublication{}, ErrNotFound
 	}

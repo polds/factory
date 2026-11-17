@@ -43,6 +43,21 @@ func (s *Server) redactionValues(values []string) []string {
 	return append(out, s.secretRedactor().Needles()...)
 }
 
+func (s *Server) resolveFactorySecret(ctx context.Context, factoryID, name string) (string, error) {
+	if grants, ok := s.cfg.FactorySecrets[factoryID]; ok {
+		value := grants[name]
+		if value == "" {
+			return "", fmt.Errorf("server: secret %s is not configured", name)
+		}
+		s.secretRedactor().Observe(name, value)
+		return value, nil
+	}
+	if len(s.cfg.FactorySecrets) > 0 {
+		return "", fmt.Errorf("server: secret %s is not configured", name)
+	}
+	return s.resolveInjectedSecret(ctx, name)
+}
+
 func (s *Server) resolveInjectedSecret(ctx context.Context, name string) (string, error) {
 	res, err := s.resolverFrom(os.Getenv)
 	if err != nil {

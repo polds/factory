@@ -16,7 +16,7 @@ not executed, and are not printed.
 | --- | --- | --- | --- |
 | `OPENAI_BASE_URL` | `FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL` | yes | OpenAI-compatible endpoint reachable from a task container |
 | `M2_MODEL` | | yes | Model id written into the definition before factoryd boots |
-| `GH_TOKEN` | `FACTORY_SECRET_GH_TOKEN` | yes | Fine-grained token that can push and open PRs |
+| `GH_TOKEN` | `FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN` | yes | Fine-grained token that can push and open PRs |
 | `OPENAI_API_KEY` | `FACTORY_INFERENCE_OPENAI_API_KEY` | no | Sent only when set |
 | `M2_REPO` | | no | Default `polds/factory` |
 
@@ -26,7 +26,7 @@ Scratch (logs, the bare repo, watch transcripts, the event archive) is
 ## Laptop (`deploy/.env`)
 
 `run.sh` reads `deploy/.env` when the file exists, then accepts either the
-shell names or the `FACTORY_SECRET_GH_TOKEN` / `FACTORY_INFERENCE_*` names in
+shell names or the `FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN` / `FACTORY_INFERENCE_*` names in
 the table above. To boot the stack and drive it yourself, `run` needs
 `--factory m2` (the name in `deploy/m2-factory`).
 
@@ -35,14 +35,14 @@ compose does not substitute a default. Set these before `up`:
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
-| `FACTORY_SECRET_GH_TOKEN` | yes | Allowlisted as `GH_TOKEN`. Empty fails assignment with `secret GH_TOKEN is not configured`. A dummy assigns a run. Offline `run.sh` exports a dummy; a live push needs a real token. |
+| `FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN` | yes | Allowlisted as `GH_TOKEN`. Empty fails assignment with `secret GH_TOKEN is not configured`. A dummy assigns a run. Offline `run.sh` exports a dummy; a live push needs a real token. |
 | `FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL` | for a model call | Copied into the task as `OPENAI_BASE_URL`. Empty: the harness exits `config_invalid`. Must be reachable from the task container. |
 | `FACTORY_INFERENCE_OPENAI_API_KEY` | when the endpoint requires a key | Copied into the task as `OPENAI_API_KEY`. |
 | `FACTORY_TASK_SERVER_URL` | on Docker Desktop | `http://host.docker.internal:8080`. Linux keeps the default `http://172.17.0.1:8080` when this stays empty. |
 
 `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `M2_MODEL`, `M2_REPO`, and `GH_TOKEN` in
 the example are shell names for `run.sh`. Compose does not interpolate them.
-`run.sh` also reads the `FACTORY_INFERENCE_*` and `FACTORY_SECRET_GH_TOKEN`
+`run.sh` also reads the `FACTORY_INFERENCE_*` and `FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN`
 lines from the same file.
 `agentDefaults.model` ships as `m2-offline-stub`. An empty `FACTORY_API_KEY`
 still becomes `m2-dev-api-key`.
@@ -50,7 +50,7 @@ still becomes `m2-dev-api-key`.
 ```bash
 cp deploy/.env.example deploy/.env
 awk '
-  $0 == "FACTORY_SECRET_GH_TOKEN=" { print "FACTORY_SECRET_GH_TOKEN=m2-offline-dummy"; next }
+  $0 == "FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN=" { print "FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN=m2-offline-dummy"; next }
   { print }
 ' deploy/.env > deploy/.env.new && mv deploy/.env.new deploy/.env
 

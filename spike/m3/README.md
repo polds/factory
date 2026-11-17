@@ -37,7 +37,7 @@ That command needs the live credentials in `deploy/.env` or the shell. CI and th
 | Shell name | Also accepted | Required | Meaning |
 | --- | --- | --- | --- |
 | `OPENAI_BASE_URL` | `FACTORY_INFERENCE_OPENAI_COMPATIBLE_BASE_URL` | yes | Endpoint reachable from a task container |
-| `GH_TOKEN` | `FACTORY_SECRET_GH_TOKEN` | yes | Token that can push and open a draft PR |
+| `GH_TOKEN` | `FACTORY_SECRET_fac_00000000000000000000000001__GH_TOKEN` | yes | Token that can push and open a draft PR |
 | `M3_MODEL_TRIAGE` | | yes | Model id for the triage agent |
 | `M3_MODEL_PLANNING` | | yes | Model id for the spec agent |
 | `M3_MODEL_BUILDING` | | yes | Model id for the implementer |
